@@ -1,0 +1,71 @@
+defmodule Kollywood.AgentTest do
+  use ExUnit.Case, async: true
+
+  alias Kollywood.Agent
+  alias Kollywood.Agent.Session
+  alias Kollywood.Config
+
+  setup do
+    root =
+      Path.join(System.tmp_dir!(), "kollywood_agent_test_#{System.unique_integer([:positive])}")
+
+    workspace = Path.join(root, "workspace")
+    cli_path = Path.join(root, "fake_cli.sh")
+
+    File.mkdir_p!(workspace)
+
+    File.write!(cli_path, """
+    #!/usr/bin/env bash
+    set -eu
+
+    prompt="$(cat)"
+    echo "pwd:$PWD"
+    echo "prompt:$prompt"
+    echo "token:${KOLLYWOOD_TOKEN:-missing}"
+    """)
+
+    File.chmod!(cli_path, 0o755)
+
+    on_exit(fn ->
+      File.rm_rf!(root)
+    end)
+
+    %{workspace: workspace, cli_path: cli_path}
+  end
+
+  test "maps agent kind to adapter module" do
+    assert Agent.adapter_module(:amp) == Kollywood.Agent.Amp
+    assert Agent.adapter_module(:claude) == Kollywood.Agent.Claude
+    assert Agent.adapter_module(:opencode) == Kollywood.Agent.OpenCode
+  end
+
+  test "dispatches start/run/stop using config agent kind", %{
+    workspace: workspace,
+    cli_path: cli_path
+  } do
+    config = %Config{
+      tracker: %{},
+      polling: %{},
+      workspace: %{},
+      hooks: %{},
+      raw: %{},
+      agent: %{
+        kind: :amp,
+        command: cli_path,
+        env: %{"KOLLYWOOD_TOKEN" => "abc123"},
+        timeout_ms: 10_000,
+        args: []
+      }
+    }
+
+    assert {:ok, %Session{} = session} = Agent.start_session(config, workspace)
+    assert session.adapter == Kollywood.Agent.Amp
+
+    assert {:ok, result} = Agent.run_turn(session, "finish stage 3")
+    assert result.output =~ "pwd:#{workspace}"
+    assert result.output =~ "prompt:finish stage 3"
+    assert result.output =~ "token:abc123"
+
+    assert :ok = Agent.stop_session(session)
+  end
+end

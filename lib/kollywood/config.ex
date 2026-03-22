@@ -125,7 +125,7 @@ defmodule Kollywood.Config do
 
     base = %{
       root: Map.get(workspace, "root", "~/kollywood-workspaces"),
-      strategy: String.to_atom(strategy)
+      strategy: workspace_strategy(strategy)
     }
 
     case strategy do
@@ -139,6 +139,10 @@ defmodule Kollywood.Config do
         base
     end
   end
+
+  defp workspace_strategy("worktree"), do: :worktree
+  defp workspace_strategy("clone"), do: :clone
+  defp workspace_strategy(_strategy), do: :clone
 
   defp parse_hooks(raw) do
     hooks = Map.get(raw, "hooks", %{})
@@ -157,7 +161,39 @@ defmodule Kollywood.Config do
     %{
       kind: kind,
       max_concurrent_agents: Map.get(agent, "max_concurrent_agents", 5),
-      max_turns: Map.get(agent, "max_turns", 20)
+      max_turns: Map.get(agent, "max_turns", 20),
+      command: optional_string(Map.get(agent, "command")),
+      args: string_list(Map.get(agent, "args", [])),
+      env: string_map(Map.get(agent, "env", %{})),
+      timeout_ms: positive_integer(Map.get(agent, "timeout_ms", 300_000), 300_000)
     }
   end
+
+  defp optional_string(value) when is_binary(value) and value != "", do: value
+  defp optional_string(_value), do: nil
+
+  defp string_list(values) when is_list(values) do
+    Enum.map(values, &to_string/1)
+  end
+
+  defp string_list(_values), do: []
+
+  defp string_map(values) when is_map(values) do
+    Map.new(values, fn {key, val} ->
+      {to_string(key), to_string(val)}
+    end)
+  end
+
+  defp string_map(_values), do: %{}
+
+  defp positive_integer(value, _default) when is_integer(value) and value > 0, do: value
+
+  defp positive_integer(value, default) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, ""} when int > 0 -> int
+      _ -> default
+    end
+  end
+
+  defp positive_integer(_value, default), do: default
 end
