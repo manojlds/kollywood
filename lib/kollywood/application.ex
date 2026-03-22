@@ -7,13 +7,14 @@ defmodule Kollywood.Application do
 
   @impl true
   def start(_type, _args) do
+    workflow_path =
+      Application.get_env(:kollywood, :workflow_path, Path.join(File.cwd!(), "WORKFLOW.md"))
+
     children = [
       KollywoodWeb.Telemetry,
       {DNSCluster, query: Application.get_env(:kollywood, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Kollywood.PubSub},
-      # Start a worker by calling: Kollywood.Worker.start_link(arg)
-      # {Kollywood.Worker, arg},
-      # Start to serve requests, typically the last entry
+      {Kollywood.WorkflowStore, path: workflow_path},
       KollywoodWeb.Endpoint
     ]
 
