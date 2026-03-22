@@ -1,17 +1,8 @@
 version: "0.5"
+x-port: 4000
 
 processes:
   server:
     command: mix phx.server
-    readiness_probe:
-      http_get:
-        host: 127.0.0.1
-        port: 4000
-        path: /
-      initial_delay_seconds: 30
-      period_seconds: 5
-      failure_threshold: 10
     availability:
       restart: on_failure
-      backoff_seconds: 5
-      max_restarts: 3
