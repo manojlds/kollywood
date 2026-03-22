@@ -5,6 +5,34 @@ To start your Phoenix server:
 * Run `mix setup` to install and setup dependencies
 * Start Phoenix endpoint with `mix phx.server` or inside IEx with `iex -S mix phx.server`
 
+### devenv flow
+
+This project includes a `devenv.nix` with a `server` process.
+
+```bash
+devenv processes up server
+```
+
+For background mode:
+
+```bash
+devenv processes up --detach server
+```
+
+On first start (or when `mix.lock` changes), the devenv server process
+automatically runs:
+
+```bash
+mix local.hex --force
+mix local.rebar --force
+mix setup
+```
+
+So `vaibhav dev start kollywood server` can bootstrap and run without a
+separate manual setup step.
+
+`vaibhav dev` integration metadata is stored in `.vaibhav-devservers`.
+
 Now you can visit [`localhost:4000`](http://localhost:4000) from your browser.
 
 Ready to run in production? Please [check our deployment guides](https://hexdocs.pm/phoenix/deployment.html).

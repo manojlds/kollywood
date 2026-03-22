@@ -11,20 +11,20 @@ defmodule Kollywood.WorkspaceTest do
     on_exit(fn -> File.rm_rf!(root) end)
 
     config = %{
-      workspace: %{root: root, strategy: :directory},
+      workspace: %{root: root, strategy: :clone},
       hooks: @no_hooks
     }
 
     %{root: root, config: config}
   end
 
-  # --- Directory strategy ---
+  # --- Clone strategy ---
 
-  test "creates directory workspace for an issue", %{root: root, config: config} do
+  test "creates clone workspace for an issue", %{root: root, config: config} do
     assert {:ok, workspace} = Workspace.create_for_issue("ABC-123", config)
     assert workspace.key == "ABC-123"
     assert workspace.path == Path.join(root, "ABC-123")
-    assert workspace.strategy == :directory
+    assert workspace.strategy == :clone
     assert File.dir?(workspace.path)
   end
 
@@ -46,7 +46,7 @@ defmodule Kollywood.WorkspaceTest do
 
   test "runs after_create hook on new workspace", %{root: root} do
     config = %{
-      workspace: %{root: root, strategy: :directory},
+      workspace: %{root: root, strategy: :clone},
       hooks: %{@no_hooks | after_create: "touch hook_ran.txt"}
     }
 
@@ -56,7 +56,7 @@ defmodule Kollywood.WorkspaceTest do
 
   test "fails on after_create hook failure and cleans up", %{root: root} do
     config = %{
-      workspace: %{root: root, strategy: :directory},
+      workspace: %{root: root, strategy: :clone},
       hooks: %{@no_hooks | after_create: "exit 1"}
     }
 
@@ -110,7 +110,7 @@ defmodule Kollywood.WorkspaceTest do
     config = %{
       workspace: %{
         root: "~/kollywood_test_tilde_#{System.unique_integer([:positive])}",
-        strategy: :directory
+        strategy: :clone
       },
       hooks: @no_hooks
     }
