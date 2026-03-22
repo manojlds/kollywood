@@ -9,6 +9,7 @@ defmodule Kollywood.Agent do
   alias Kollywood.Agent.Amp
   alias Kollywood.Agent.Claude
   alias Kollywood.Agent.OpenCode
+  alias Kollywood.Agent.Pi
   alias Kollywood.Agent.Session
   alias Kollywood.Config
 
@@ -33,6 +34,7 @@ defmodule Kollywood.Agent do
   def adapter_module(:amp), do: Amp
   def adapter_module(:claude), do: Claude
   def adapter_module(:opencode), do: OpenCode
+  def adapter_module(:pi), do: Pi
 
   @doc "Starts an adapter session from `%Kollywood.Config{}` and workspace info."
   @spec start_session(Config.t(), map() | String.t(), map()) :: session_result()

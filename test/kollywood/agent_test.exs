@@ -37,6 +37,7 @@ defmodule Kollywood.AgentTest do
     assert Agent.adapter_module(:amp) == Kollywood.Agent.Amp
     assert Agent.adapter_module(:claude) == Kollywood.Agent.Claude
     assert Agent.adapter_module(:opencode) == Kollywood.Agent.OpenCode
+    assert Agent.adapter_module(:pi) == Kollywood.Agent.Pi
   end
 
   test "dispatches start/run/stop using config agent kind", %{
