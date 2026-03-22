@@ -31,7 +31,8 @@ mix setup
 So `vaibhav dev start kollywood server` can bootstrap and run without a
 separate manual setup step.
 
-`vaibhav dev` integration metadata is stored in `.vaibhav-devservers`.
+`vaibhav` auto-discovers process ports from devenv task scripts and live
+process checks, so no per-project metadata file is required.
 
 Now you can visit [`localhost:4000`](http://localhost:4000) from your browser.
 
