@@ -1,8 +1,0 @@
-version: "0.5"
-x-port: 4000
-
-processes:
-  server:
-    command: mix phx.server
-    availability:
-      restart: on_failure

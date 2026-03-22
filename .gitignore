@@ -37,3 +37,4 @@ npm-debug.log
 
 erl_crash.dump
 .process-compose.log
+.devenv/
