@@ -121,7 +121,7 @@ defmodule Kollywood.Config do
 
   defp parse_workspace(raw) do
     workspace = Map.get(raw, "workspace", %{})
-    strategy = Map.get(workspace, "strategy", "directory")
+    strategy = Map.get(workspace, "strategy", "clone")
 
     base = %{
       root: Map.get(workspace, "root", "~/kollywood-workspaces"),
