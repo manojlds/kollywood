@@ -2,11 +2,11 @@ defmodule Kollywood.Config do
   @moduledoc """
   Parses and validates the YAML front matter from WORKFLOW.md.
 
-  Supports multiple agent kinds: amp, claude, opencode.
+  Supports multiple agent kinds: amp, claude, opencode, pi.
   """
 
-  @type agent_kind :: :amp | :claude | :opencode
-  @valid_agent_kinds ~w(amp claude opencode)a
+  @type agent_kind :: :amp | :claude | :opencode | :pi
+  @valid_agent_kinds ~w(amp claude opencode pi)a
 
   @type t :: %__MODULE__{
           tracker: map(),
@@ -85,7 +85,7 @@ defmodule Kollywood.Config do
 
     cond do
       is_nil(kind_str) ->
-        {:error, "agent.kind is required (amp, claude, or opencode)"}
+        {:error, "agent.kind is required (amp, claude, opencode, or pi)"}
 
       String.to_existing_atom(kind_str) in @valid_agent_kinds ->
         {:ok, String.to_existing_atom(kind_str)}
