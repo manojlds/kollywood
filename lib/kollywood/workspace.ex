@@ -2,11 +2,10 @@ defmodule Kollywood.Workspace do
   @moduledoc """
   Manages per-issue isolated workspace directories.
 
-  Supports three strategies:
+  Supports two strategies:
 
-  - `directory` — plain directories with hooks (default)
-  - `worktree` — git worktrees from a source repo (shared object store, instant)
-  - `clone` — full git clone via `after_create` hook
+  - `directory` — plain directories with hooks (default). Use `after_create` hook for git clone, deps install, etc.
+  - `worktree` — git worktrees from a source repo (shared object store, instant creation)
 
   ## Lifecycle hooks
 
