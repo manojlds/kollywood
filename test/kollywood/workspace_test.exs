@@ -11,17 +11,20 @@ defmodule Kollywood.WorkspaceTest do
     on_exit(fn -> File.rm_rf!(root) end)
 
     config = %{
-      workspace: %{root: root},
+      workspace: %{root: root, strategy: :directory},
       hooks: @no_hooks
     }
 
     %{root: root, config: config}
   end
 
-  test "creates workspace for an issue", %{root: root, config: config} do
+  # --- Directory strategy ---
+
+  test "creates directory workspace for an issue", %{root: root, config: config} do
     assert {:ok, workspace} = Workspace.create_for_issue("ABC-123", config)
     assert workspace.key == "ABC-123"
     assert workspace.path == Path.join(root, "ABC-123")
+    assert workspace.strategy == :directory
     assert File.dir?(workspace.path)
   end
 
@@ -43,7 +46,7 @@ defmodule Kollywood.WorkspaceTest do
 
   test "runs after_create hook on new workspace", %{root: root} do
     config = %{
-      workspace: %{root: root},
+      workspace: %{root: root, strategy: :directory},
       hooks: %{@no_hooks | after_create: "touch hook_ran.txt"}
     }
 
@@ -53,7 +56,7 @@ defmodule Kollywood.WorkspaceTest do
 
   test "fails on after_create hook failure and cleans up", %{root: root} do
     config = %{
-      workspace: %{root: root},
+      workspace: %{root: root, strategy: :directory},
       hooks: %{@no_hooks | after_create: "exit 1"}
     }
 
@@ -95,7 +98,6 @@ defmodule Kollywood.WorkspaceTest do
   test "remove runs before_remove hook", %{config: config} do
     {:ok, workspace} = Workspace.create_for_issue("DEL-2", config)
 
-    # Hook creates a file in /tmp to prove it ran (since workspace gets deleted)
     marker = Path.join(System.tmp_dir!(), "del2_marker_#{System.unique_integer([:positive])}")
     hooks = %{@no_hooks | before_remove: "touch #{marker}"}
 
@@ -104,9 +106,12 @@ defmodule Kollywood.WorkspaceTest do
     File.rm(marker)
   end
 
-  test "expands ~ in workspace root", %{root: _root} do
+  test "expands ~ in workspace root" do
     config = %{
-      workspace: %{root: "~/kollywood_test_tilde_#{System.unique_integer([:positive])}"},
+      workspace: %{
+        root: "~/kollywood_test_tilde_#{System.unique_integer([:positive])}",
+        strategy: :directory
+      },
       hooks: @no_hooks
     }
 
@@ -114,5 +119,101 @@ defmodule Kollywood.WorkspaceTest do
     assert String.starts_with?(workspace.path, System.user_home!())
     refute workspace.path =~ "~"
     File.rm_rf!(workspace.root)
+  end
+
+  # --- Worktree strategy ---
+
+  defp setup_git_repo(root) do
+    repo = Path.join(root, "source_repo")
+    File.mkdir_p!(repo)
+    System.cmd("git", ["init"], cd: repo, stderr_to_stdout: true)
+    System.cmd("git", ["config", "user.email", "test@test.com"], cd: repo)
+    System.cmd("git", ["config", "user.name", "Test"], cd: repo)
+    File.write!(Path.join(repo, "README.md"), "# Test")
+    System.cmd("git", ["add", "."], cd: repo)
+    System.cmd("git", ["commit", "-m", "init"], cd: repo, stderr_to_stdout: true)
+    repo
+  end
+
+  test "creates worktree workspace", %{root: root} do
+    source = setup_git_repo(root)
+    wt_root = Path.join(root, "worktrees")
+
+    config = %{
+      workspace: %{root: wt_root, strategy: :worktree, source: source, branch_prefix: "kw/"},
+      hooks: @no_hooks
+    }
+
+    assert {:ok, workspace} = Workspace.create_for_issue("WT-1", config)
+    assert workspace.strategy == :worktree
+    assert workspace.branch == "kw/WT-1"
+    assert File.dir?(workspace.path)
+    assert File.exists?(Path.join(workspace.path, "README.md"))
+  end
+
+  test "reuses existing worktree", %{root: root} do
+    source = setup_git_repo(root)
+    wt_root = Path.join(root, "worktrees")
+
+    config = %{
+      workspace: %{root: wt_root, strategy: :worktree, source: source, branch_prefix: "kw/"},
+      hooks: @no_hooks
+    }
+
+    {:ok, ws1} = Workspace.create_for_issue("WT-2", config)
+    File.write!(Path.join(ws1.path, "work.txt"), "done")
+
+    {:ok, ws2} = Workspace.create_for_issue("WT-2", config)
+    assert ws1.path == ws2.path
+    assert File.exists?(Path.join(ws2.path, "work.txt"))
+  end
+
+  test "worktree runs after_create hook", %{root: root} do
+    source = setup_git_repo(root)
+    wt_root = Path.join(root, "worktrees")
+
+    config = %{
+      workspace: %{root: wt_root, strategy: :worktree, source: source, branch_prefix: "kw/"},
+      hooks: %{@no_hooks | after_create: "touch hook_ran.txt"}
+    }
+
+    {:ok, workspace} = Workspace.create_for_issue("WT-3", config)
+    assert File.exists?(Path.join(workspace.path, "hook_ran.txt"))
+  end
+
+  test "worktree cleans up on hook failure", %{root: root} do
+    source = setup_git_repo(root)
+    wt_root = Path.join(root, "worktrees")
+
+    config = %{
+      workspace: %{root: wt_root, strategy: :worktree, source: source, branch_prefix: "kw/"},
+      hooks: %{@no_hooks | after_create: "exit 1"}
+    }
+
+    assert {:error, _} = Workspace.create_for_issue("WT-4", config)
+    refute File.dir?(Path.join(wt_root, "WT-4"))
+
+    # Branch should also be cleaned up
+    {branches, 0} = System.cmd("git", ["branch"], cd: source, stderr_to_stdout: true)
+    refute branches =~ "kw/WT-4"
+  end
+
+  test "removes worktree and branch", %{root: root} do
+    source = setup_git_repo(root)
+    wt_root = Path.join(root, "worktrees")
+
+    config = %{
+      workspace: %{root: wt_root, strategy: :worktree, source: source, branch_prefix: "kw/"},
+      hooks: @no_hooks
+    }
+
+    {:ok, workspace} = Workspace.create_for_issue("WT-5", config)
+    assert File.dir?(workspace.path)
+
+    Workspace.remove(workspace, @no_hooks)
+    refute File.dir?(workspace.path)
+
+    {branches, 0} = System.cmd("git", ["branch"], cd: source, stderr_to_stdout: true)
+    refute branches =~ "kw/WT-5"
   end
 end

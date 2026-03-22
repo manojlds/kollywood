@@ -14,10 +14,9 @@ polling:
 
 workspace:
   root: ~/kollywood-workspaces
-
-hooks:
-  after_create: |
-    git clone --depth 1 "$REPO_URL" .
+  strategy: worktree
+  source: ~/projects/kollywood
+  branch_prefix: kollywood/
 
 agent:
   kind: amp
