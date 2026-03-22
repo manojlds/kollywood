@@ -121,10 +121,23 @@ defmodule Kollywood.Config do
 
   defp parse_workspace(raw) do
     workspace = Map.get(raw, "workspace", %{})
+    strategy = Map.get(workspace, "strategy", "directory")
 
-    %{
-      root: Map.get(workspace, "root", "~/kollywood-workspaces")
+    base = %{
+      root: Map.get(workspace, "root", "~/kollywood-workspaces"),
+      strategy: String.to_atom(strategy)
     }
+
+    case strategy do
+      "worktree" ->
+        Map.merge(base, %{
+          source: Map.get(workspace, "source"),
+          branch_prefix: Map.get(workspace, "branch_prefix", "kollywood/")
+        })
+
+      _ ->
+        base
+    end
   end
 
   defp parse_hooks(raw) do

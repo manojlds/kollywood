@@ -2,12 +2,13 @@ defmodule Kollywood.Workspace do
   @moduledoc """
   Manages per-issue isolated workspace directories.
 
-  Each issue gets a directory at `<workspace_root>/<sanitized_identifier>`.
-  Workspaces persist across retries and continuation runs.
+  Supports three strategies:
+
+  - `directory` — plain directories with hooks (default)
+  - `worktree` — git worktrees from a source repo (shared object store, instant)
+  - `clone` — full git clone via `after_create` hook
 
   ## Lifecycle hooks
-
-  Four shell hooks can be configured in WORKFLOW.md:
 
   - `after_create` — runs once when a new workspace is created (fatal on failure)
   - `before_run` — runs before each agent turn (fatal on failure)
@@ -20,38 +21,43 @@ defmodule Kollywood.Workspace do
   @type t :: %__MODULE__{
           path: String.t(),
           key: String.t(),
-          root: String.t()
+          root: String.t(),
+          strategy: atom(),
+          branch: String.t() | nil
         }
 
-  defstruct [:path, :key, :root]
+  defstruct [:path, :key, :root, :strategy, :branch]
 
   @doc """
   Creates or reuses a workspace for the given issue identifier.
-
-  Returns `{:ok, workspace}` if the workspace exists or was created successfully.
-  Returns `{:error, reason}` if creation or the `after_create` hook fails.
   """
   @spec create_for_issue(String.t(), map()) :: {:ok, t()} | {:error, String.t()}
   def create_for_issue(identifier, config) do
     root = expand_root(config.workspace.root)
     key = sanitize_key(identifier)
     path = Path.join(root, key)
+    strategy = Map.get(config.workspace, :strategy, :directory)
 
-    with :ok <- validate_path(path, root) do
-      workspace = %__MODULE__{path: path, key: key, root: root}
+    with :ok <- validate_path(path, root),
+         :ok <- File.mkdir_p(root) do
+      workspace = %__MODULE__{
+        path: path,
+        key: key,
+        root: root,
+        strategy: strategy
+      }
 
       if File.dir?(path) do
         Logger.info("Reusing workspace for #{identifier} at #{path}")
-        {:ok, workspace}
+        {:ok, maybe_set_branch(workspace, config)}
       else
-        create_new(workspace, identifier, config.hooks)
+        create_new(workspace, identifier, config)
       end
     end
   end
 
   @doc """
   Runs the `before_run` hook in the workspace directory.
-  Returns `:ok` or `{:error, reason}`.
   """
   @spec before_run(t(), map()) :: :ok | {:error, String.t()}
   def before_run(%__MODULE__{} = workspace, hooks) do
@@ -59,8 +65,7 @@ defmodule Kollywood.Workspace do
   end
 
   @doc """
-  Runs the `after_run` hook in the workspace directory.
-  Always returns `:ok` (failures are logged but ignored).
+  Runs the `after_run` hook. Failures are logged but ignored.
   """
   @spec after_run(t(), map()) :: :ok
   def after_run(%__MODULE__{} = workspace, hooks) do
@@ -75,7 +80,7 @@ defmodule Kollywood.Workspace do
   end
 
   @doc """
-  Removes the workspace directory after running the `before_remove` hook.
+  Removes the workspace. For worktrees, uses `git worktree remove`.
   """
   @spec remove(t(), map()) :: :ok
   def remove(%__MODULE__{} = workspace, hooks) do
@@ -88,15 +93,7 @@ defmodule Kollywood.Workspace do
         :ok
     end
 
-    case File.rm_rf(workspace.path) do
-      {:ok, _} ->
-        Logger.info("Removed workspace at #{workspace.path}")
-        :ok
-
-      {:error, reason, path} ->
-        Logger.error("Failed to remove workspace at #{path}: #{reason}")
-        :ok
-    end
+    do_remove(workspace)
   end
 
   @doc """
@@ -108,19 +105,120 @@ defmodule Kollywood.Workspace do
     String.replace(identifier, ~r/[^A-Za-z0-9._-]/, "_")
   end
 
-  # --- Private ---
+  # --- Private: creation strategies ---
 
-  defp create_new(workspace, identifier, hooks) do
-    Logger.info("Creating workspace for #{identifier} at #{workspace.path}")
+  defp create_new(workspace, identifier, config) do
+    case workspace.strategy do
+      :worktree -> create_worktree(workspace, identifier, config)
+      _ -> create_directory(workspace, identifier, config.hooks)
+    end
+  end
+
+  defp create_directory(workspace, identifier, hooks) do
+    Logger.info("Creating directory workspace for #{identifier} at #{workspace.path}")
 
     with :ok <- File.mkdir_p(workspace.path),
          :ok <- run_hook(hooks.after_create, workspace.path, "after_create") do
       {:ok, workspace}
     else
       {:error, reason} ->
-        # Clean up on failure
         File.rm_rf(workspace.path)
         {:error, "Failed to create workspace: #{reason}"}
+    end
+  end
+
+  defp create_worktree(workspace, identifier, config) do
+    source = expand_root(config.workspace.source || ".")
+    prefix = Map.get(config.workspace, :branch_prefix, "kollywood/")
+    branch = "#{prefix}#{workspace.key}"
+
+    Logger.info("Creating worktree for #{identifier} at #{workspace.path} (branch: #{branch})")
+
+    case git(["worktree", "add", "-b", branch, workspace.path], source) do
+      {_output, 0} ->
+        workspace = %{workspace | branch: branch}
+
+        case run_hook(config.hooks.after_create, workspace.path, "after_create") do
+          :ok ->
+            {:ok, workspace}
+
+          {:error, reason} ->
+            git(["worktree", "remove", "--force", workspace.path], source)
+            git(["branch", "-D", branch], source)
+            {:error, "after_create hook failed: #{reason}"}
+        end
+
+      {output, _code} ->
+        # Branch may already exist — try adding worktree for existing branch
+        case git(["worktree", "add", workspace.path, branch], source) do
+          {_output, 0} ->
+            {:ok, %{workspace | branch: branch}}
+
+          {_, _} ->
+            {:error, "Failed to create worktree: #{String.trim(output)}"}
+        end
+    end
+  end
+
+  # --- Private: removal ---
+
+  defp do_remove(%__MODULE__{strategy: :worktree} = workspace) do
+    # Find the source repo by reading the worktree's .git file
+    git_file = Path.join(workspace.path, ".git")
+
+    source =
+      case File.read(git_file) do
+        {:ok, content} ->
+          # .git file contains "gitdir: /path/to/source/.git/worktrees/<name>"
+          content
+          |> String.trim()
+          |> String.replace_prefix("gitdir: ", "")
+          |> Path.dirname()
+          |> Path.dirname()
+          |> Path.dirname()
+
+        _ ->
+          workspace.root
+      end
+
+    case git(["worktree", "remove", "--force", workspace.path], source) do
+      {_, 0} ->
+        Logger.info("Removed worktree at #{workspace.path}")
+
+        if workspace.branch do
+          git(["branch", "-D", workspace.branch], source)
+        end
+
+        :ok
+
+      {output, _} ->
+        Logger.error("Failed to remove worktree: #{String.trim(output)}")
+        :ok
+    end
+  end
+
+  defp do_remove(workspace) do
+    case File.rm_rf(workspace.path) do
+      {:ok, _} ->
+        Logger.info("Removed workspace at #{workspace.path}")
+        :ok
+
+      {:error, reason, path} ->
+        Logger.error("Failed to remove workspace at #{path}: #{reason}")
+        :ok
+    end
+  end
+
+  # --- Private: helpers ---
+
+  defp maybe_set_branch(workspace, config) do
+    case workspace.strategy do
+      :worktree ->
+        prefix = Map.get(config.workspace, :branch_prefix, "kollywood/")
+        %{workspace | branch: "#{prefix}#{workspace.key}"}
+
+      _ ->
+        workspace
     end
   end
 
@@ -155,7 +253,10 @@ defmodule Kollywood.Workspace do
         {:error, "#{name} hook exited with code #{exit_code}: #{String.trim(output)}"}
     end
   rescue
-    e ->
-      {:error, "#{name} hook failed: #{Exception.message(e)}"}
+    e -> {:error, "#{name} hook failed: #{Exception.message(e)}"}
+  end
+
+  defp git(args, cwd) do
+    System.cmd("git", args, cd: cwd, stderr_to_stdout: true)
   end
 end
