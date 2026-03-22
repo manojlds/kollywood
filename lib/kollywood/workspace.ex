@@ -4,7 +4,7 @@ defmodule Kollywood.Workspace do
 
   Supports two strategies:
 
-  - `directory` — plain directories with hooks (default). Use `after_create` hook for git clone, deps install, etc.
+  - `clone` — creates a directory and runs hooks (default). Use `after_create` hook for git clone, deps install, etc.
   - `worktree` — git worktrees from a source repo (shared object store, instant creation)
 
   ## Lifecycle hooks
@@ -109,12 +109,12 @@ defmodule Kollywood.Workspace do
   defp create_new(workspace, identifier, config) do
     case workspace.strategy do
       :worktree -> create_worktree(workspace, identifier, config)
-      _ -> create_directory(workspace, identifier, config.hooks)
+      _ -> create_clone(workspace, identifier, config.hooks)
     end
   end
 
-  defp create_directory(workspace, identifier, hooks) do
-    Logger.info("Creating directory workspace for #{identifier} at #{workspace.path}")
+  defp create_clone(workspace, identifier, hooks) do
+    Logger.info("Creating clone workspace for #{identifier} at #{workspace.path}")
 
     with :ok <- File.mkdir_p(workspace.path),
          :ok <- run_hook(hooks.after_create, workspace.path, "after_create") do
