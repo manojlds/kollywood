@@ -197,7 +197,7 @@ defmodule Kollywood.OrchestratorTest do
   end
 
   test "marks prd_json story done after successful run", %{root: root} do
-    prd_path = Path.join([root, ".ralphi", "prd.json"])
+    prd_path = Path.join(root, "prd.json")
     write_prd!(prd_path)
 
     %{store: workflow_store} =

@@ -21,7 +21,7 @@ defmodule Kollywood.Tracker.PrdJsonTest do
   end
 
   test "lists active stories and includes dependency blockers", %{root: root} do
-    path = Path.join([root, ".ralphi", "prd.json"])
+    path = Path.join(root, "prd.json")
 
     write_prd!(path, [
       %{"id" => "US-001", "title" => "Foundation", "status" => "done", "priority" => 1},
@@ -75,7 +75,7 @@ defmodule Kollywood.Tracker.PrdJsonTest do
   end
 
   test "updates story status for in_progress, failed and done", %{root: root} do
-    path = Path.join([root, ".ralphi", "prd.json"])
+    path = Path.join(root, "prd.json")
 
     write_prd!(path, [
       %{"id" => "US-010", "title" => "Dogfood story", "status" => "open", "priority" => 1}

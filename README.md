@@ -36,13 +36,22 @@ process checks, so no per-project metadata file is required.
 
 Now you can visit [`localhost:4000`](http://localhost:4000) from your browser.
 
-## Local Dogfood Tracker (`.ralphi/prd.json`)
+## Local Dogfood Tracker (`prd.json`)
 
-Kollywood can run against a local PRD tracker file in Ralph format.
+Kollywood can run against a local PRD tracker file.
 
 - Default tracker config is in `WORKFLOW.md` (`tracker.kind: prd_json`)
-- Default tracker path is `.ralphi/prd.json`
+- Default tracker path is `prd.json`
 - Stories use `status` values: `open`, `in_progress`, `done`
+
+CLI helpers:
+
+```bash
+mix kollywood.prd list
+mix kollywood.prd add --title "Implement dogfood status page"
+mix kollywood.prd set-status US-001 in_progress
+mix kollywood.prd set-status US-001 done
+```
 
 Minimal story shape:
 

@@ -1,7 +1,7 @@
 ---
 tracker:
   kind: prd_json
-  path: .ralphi/prd.json
+  path: prd.json
   active_states:
     - open
     - in_progress
