@@ -106,6 +106,7 @@ defmodule Kollywood.ConfigTest do
     assert config.polling.interval_ms == 5000
     assert config.agent.max_concurrent_agents == 5
     assert config.agent.max_turns == 20
+    assert config.agent.max_retry_backoff_ms == 300_000
     assert config.agent.command == nil
     assert config.agent.args == []
     assert config.agent.env == %{}
@@ -127,6 +128,7 @@ defmodule Kollywood.ConfigTest do
       env:
         OPENAI_API_KEY: test-key
       timeout_ms: "90000"
+      max_retry_backoff_ms: "120000"
     ---
     prompt
     """
@@ -136,5 +138,6 @@ defmodule Kollywood.ConfigTest do
     assert config.agent.args == ["--print", "--json"]
     assert config.agent.env == %{"OPENAI_API_KEY" => "test-key"}
     assert config.agent.timeout_ms == 90_000
+    assert config.agent.max_retry_backoff_ms == 120_000
   end
 end
