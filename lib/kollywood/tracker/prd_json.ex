@@ -1,8 +1,8 @@
 defmodule Kollywood.Tracker.PrdJson do
   @moduledoc """
-  Local tracker adapter backed by `.ralphi/prd.json`.
+  Local tracker adapter backed by `prd.json`.
 
-  This adapter follows the Ralph PRD story format and exposes stories as
+  This adapter follows the local PRD story format and exposes stories as
   orchestrator issues.
   """
 
@@ -10,7 +10,7 @@ defmodule Kollywood.Tracker.PrdJson do
 
   alias Kollywood.Config
 
-  @default_path ".ralphi/prd.json"
+  @default_path "prd.json"
   @default_priority 99
 
   @impl true

@@ -156,7 +156,7 @@ defmodule Kollywood.ConfigTest do
 
     assert {:ok, config, _} = Config.parse(content)
     assert config.tracker.kind == "prd_json"
-    assert config.tracker.path == ".ralphi/prd.json"
+    assert config.tracker.path == "prd.json"
     assert config.tracker.active_states == ["open", "in_progress"]
     assert config.tracker.terminal_states == ["done"]
   end
@@ -175,7 +175,7 @@ defmodule Kollywood.ConfigTest do
     """
 
     assert {:ok, config, _} = Config.parse(content)
-    assert config.tracker.path == ".ralphi/prd.json"
+    assert config.tracker.path == "prd.json"
     assert config.tracker.active_states == ["open", "in_progress"]
     assert config.tracker.terminal_states == ["done"]
   end

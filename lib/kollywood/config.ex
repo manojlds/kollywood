@@ -130,10 +130,10 @@ defmodule Kollywood.Config do
 
   defp tracker_default_path(kind) do
     case String.downcase(kind) do
-      "prd_json" -> ".ralphi/prd.json"
-      "prd-json" -> ".ralphi/prd.json"
-      "prd" -> ".ralphi/prd.json"
-      "local" -> ".ralphi/prd.json"
+      "prd_json" -> "prd.json"
+      "prd-json" -> "prd.json"
+      "prd" -> "prd.json"
+      "local" -> "prd.json"
       _other -> nil
     end
   end
