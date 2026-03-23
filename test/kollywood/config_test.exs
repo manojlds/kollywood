@@ -140,4 +140,43 @@ defmodule Kollywood.ConfigTest do
     assert config.agent.timeout_ms == 90_000
     assert config.agent.max_retry_backoff_ms == 120_000
   end
+
+  test "defaults tracker settings for prd_json" do
+    content = """
+    ---
+    tracker:
+      kind: prd_json
+    workspace:
+      root: /tmp
+    agent:
+      kind: pi
+    ---
+    prompt
+    """
+
+    assert {:ok, config, _} = Config.parse(content)
+    assert config.tracker.kind == "prd_json"
+    assert config.tracker.path == ".ralphi/prd.json"
+    assert config.tracker.active_states == ["open", "in_progress"]
+    assert config.tracker.terminal_states == ["done"]
+  end
+
+  test "supports local tracker alias defaults" do
+    content = """
+    ---
+    tracker:
+      kind: local
+    workspace:
+      root: /tmp
+    agent:
+      kind: amp
+    ---
+    prompt
+    """
+
+    assert {:ok, config, _} = Config.parse(content)
+    assert config.tracker.path == ".ralphi/prd.json"
+    assert config.tracker.active_states == ["open", "in_progress"]
+    assert config.tracker.terminal_states == ["done"]
+  end
 end

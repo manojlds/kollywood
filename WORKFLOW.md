@@ -1,13 +1,12 @@
 ---
 tracker:
-  kind: linear
-  project_slug: my-project
+  kind: prd_json
+  path: .ralphi/prd.json
   active_states:
-    - Todo
-    - In Progress
+    - open
+    - in_progress
   terminal_states:
-    - Done
-    - Cancelled
+    - done
 
 polling:
   interval_ms: 5000
