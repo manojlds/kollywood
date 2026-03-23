@@ -8,7 +8,9 @@
 import Config
 
 config :kollywood,
-  generators: [timestamp_type: :utc_datetime]
+  generators: [timestamp_type: :utc_datetime],
+  orchestrator_enabled: true,
+  orchestrator: []
 
 # Configure the endpoint
 config :kollywood, KollywoodWeb.Endpoint,

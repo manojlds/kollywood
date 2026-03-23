@@ -115,7 +115,7 @@ defmodule Kollywood.Config do
     polling = Map.get(raw, "polling", %{})
 
     %{
-      interval_ms: Map.get(polling, "interval_ms", 5000)
+      interval_ms: positive_integer(Map.get(polling, "interval_ms", 5000), 5000)
     }
   end
 
@@ -160,8 +160,10 @@ defmodule Kollywood.Config do
 
     %{
       kind: kind,
-      max_concurrent_agents: Map.get(agent, "max_concurrent_agents", 5),
-      max_turns: Map.get(agent, "max_turns", 20),
+      max_concurrent_agents: positive_integer(Map.get(agent, "max_concurrent_agents", 5), 5),
+      max_turns: positive_integer(Map.get(agent, "max_turns", 20), 20),
+      max_retry_backoff_ms:
+        positive_integer(Map.get(agent, "max_retry_backoff_ms", 300_000), 300_000),
       command: optional_string(Map.get(agent, "command")),
       args: string_list(Map.get(agent, "args", [])),
       env: string_map(Map.get(agent, "env", %{})),
