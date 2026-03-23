@@ -102,13 +102,40 @@ defmodule Kollywood.Config do
 
   defp parse_tracker(raw) do
     tracker = Map.get(raw, "tracker", %{})
+    kind = tracker_kind(Map.get(tracker, "kind", "linear"))
+
+    {default_active_states, default_terminal_states} = tracker_default_states(kind)
 
     %{
-      kind: Map.get(tracker, "kind", "linear"),
+      kind: kind,
+      path: optional_string(Map.get(tracker, "path")) || tracker_default_path(kind),
       project_slug: Map.get(tracker, "project_slug"),
-      active_states: Map.get(tracker, "active_states", ["Todo", "In Progress"]),
-      terminal_states: Map.get(tracker, "terminal_states", ["Done", "Cancelled"])
+      active_states: string_list(Map.get(tracker, "active_states", default_active_states)),
+      terminal_states: string_list(Map.get(tracker, "terminal_states", default_terminal_states))
     }
+  end
+
+  defp tracker_kind(kind) when is_binary(kind), do: String.trim(kind)
+  defp tracker_kind(kind), do: to_string(kind)
+
+  defp tracker_default_states(kind) do
+    case String.downcase(kind) do
+      "prd_json" -> {["open", "in_progress"], ["done"]}
+      "prd-json" -> {["open", "in_progress"], ["done"]}
+      "prd" -> {["open", "in_progress"], ["done"]}
+      "local" -> {["open", "in_progress"], ["done"]}
+      _other -> {["Todo", "In Progress"], ["Done", "Cancelled"]}
+    end
+  end
+
+  defp tracker_default_path(kind) do
+    case String.downcase(kind) do
+      "prd_json" -> ".ralphi/prd.json"
+      "prd-json" -> ".ralphi/prd.json"
+      "prd" -> ".ralphi/prd.json"
+      "local" -> ".ralphi/prd.json"
+      _other -> nil
+    end
   end
 
   defp parse_polling(raw) do

@@ -17,7 +17,7 @@ defmodule Kollywood.Orchestrator do
   alias Kollywood.AgentRunner
   alias Kollywood.AgentRunner.Result
   alias Kollywood.Config
-  alias Kollywood.Tracker.Noop
+  alias Kollywood.Tracker
   alias Kollywood.WorkflowStore
 
   @default_poll_interval_ms 5_000
@@ -28,7 +28,7 @@ defmodule Kollywood.Orchestrator do
 
   @type state :: %__MODULE__{
           workflow_store: WorkflowStore.server() | Config.t(),
-          tracker: module() | (Config.t() -> {:ok, [map()]} | {:error, String.t()}),
+          tracker: :auto | module() | (Config.t() -> {:ok, [map()]} | {:error, String.t()}),
           runner: module() | (map(), keyword() -> {:ok, Result.t()} | {:error, Result.t()}),
           task_supervisor: pid(),
           runner_opts: keyword(),
@@ -103,7 +103,7 @@ defmodule Kollywood.Orchestrator do
     with {:ok, task_supervisor} <- Task.Supervisor.start_link() do
       state = %__MODULE__{
         workflow_store: Keyword.get(opts, :workflow_store, WorkflowStore),
-        tracker: Keyword.get(opts, :tracker, Noop),
+        tracker: Keyword.get(opts, :tracker, :auto),
         runner: Keyword.get(opts, :runner, AgentRunner),
         task_supervisor: task_supervisor,
         runner_opts: Keyword.get(opts, :runner_opts, []),
@@ -203,6 +203,8 @@ defmodule Kollywood.Orchestrator do
         reason =
           "Runner task exited before returning a result: #{inspect(reason)}"
 
+        state = tracker_mark_failed(state, issue_id, reason, next_attempt)
+
         delay = retry_backoff_delay_ms(state, next_attempt)
 
         state = schedule_retry(state, issue_id, run_entry.issue, next_attempt, reason, delay)
@@ -217,13 +219,14 @@ defmodule Kollywood.Orchestrator do
 
   defp run_poll_cycle(state) do
     with {:ok, config} <- fetch_config(state.workflow_store),
-         {:ok, issues} <- list_active_issues(state.tracker, config) do
+         tracker <- resolve_tracker(state.tracker, config),
+         {:ok, issues} <- list_active_issues(tracker, config) do
       state
       |> apply_runtime_limits(config)
       |> Map.put(:last_poll_at, DateTime.utc_now())
       |> reconcile_running(issues, config)
       |> prune_ineligible_retries(issues, config)
-      |> dispatch_available(issues, config)
+      |> dispatch_available(issues, config, tracker)
       |> Map.put(:last_error, nil)
     else
       {:error, reason} ->
@@ -234,7 +237,8 @@ defmodule Kollywood.Orchestrator do
 
   defp dispatch_retry(state, issue_id, retry_entry) do
     with {:ok, config} <- fetch_config(state.workflow_store),
-         {:ok, issues} <- list_active_issues(state.tracker, config) do
+         tracker <- resolve_tracker(state.tracker, config),
+         {:ok, issues} <- list_active_issues(tracker, config) do
       state = apply_runtime_limits(state, config)
       issue = find_issue(issues, issue_id)
 
@@ -256,7 +260,7 @@ defmodule Kollywood.Orchestrator do
           )
 
         true ->
-          start_issue_run(state, issue, retry_entry.attempt)
+          start_issue_run(state, issue, retry_entry.attempt, config, tracker)
       end
     else
       {:error, reason} ->
@@ -314,7 +318,7 @@ defmodule Kollywood.Orchestrator do
     end)
   end
 
-  defp dispatch_available(state, issues, config) do
+  defp dispatch_available(state, issues, config, tracker) do
     available_slots = max(state.max_concurrent_agents - map_size(state.running), 0)
 
     if available_slots == 0 do
@@ -325,38 +329,52 @@ defmodule Kollywood.Orchestrator do
       |> sort_issues_for_dispatch()
       |> Enum.take(available_slots)
       |> Enum.reduce(state, fn issue, acc ->
-        start_issue_run(acc, issue, nil)
+        start_issue_run(acc, issue, nil, config, tracker)
       end)
     end
   end
 
-  defp start_issue_run(state, issue, attempt) do
+  defp start_issue_run(state, issue, attempt, config, tracker) do
     issue_id = issue_id(issue)
     identifier = issue_identifier(issue)
 
-    run_opts = [workflow_store: state.workflow_store, attempt: attempt] ++ state.runner_opts
+    with :ok <- tracker_prepare_issue_for_run(tracker, config, issue_id) do
+      run_opts = [workflow_store: state.workflow_store, attempt: attempt] ++ state.runner_opts
 
-    task =
-      Task.Supervisor.async_nolink(state.task_supervisor, fn ->
-        invoke_runner(state.runner, issue, run_opts)
-      end)
+      task =
+        Task.Supervisor.async_nolink(state.task_supervisor, fn ->
+          invoke_runner(state.runner, issue, run_opts)
+        end)
 
-    run_entry = %{
-      issue: issue,
-      attempt: attempt,
-      task_ref: task.ref,
-      task_pid: task.pid,
-      started_at: DateTime.utc_now()
-    }
+      run_entry = %{
+        issue: issue,
+        attempt: attempt,
+        task_ref: task.ref,
+        task_pid: task.pid,
+        started_at: DateTime.utc_now()
+      }
 
-    Logger.info(
-      "Dispatching issue_id=#{issue_id} identifier=#{identifier} attempt=#{inspect(attempt)}"
-    )
+      Logger.info(
+        "Dispatching issue_id=#{issue_id} identifier=#{identifier} attempt=#{inspect(attempt)}"
+      )
 
-    state
-    |> cancel_retry(issue_id)
-    |> put_running(issue_id, run_entry)
-    |> claim(issue_id)
+      state
+      |> cancel_retry(issue_id)
+      |> put_running(issue_id, run_entry)
+      |> claim(issue_id)
+    else
+      {:error, reason} ->
+        retry_attempt = retry_attempt_from_run_attempt(attempt)
+
+        schedule_retry(
+          state,
+          issue_id,
+          issue,
+          retry_attempt,
+          "tracker update failed before dispatch: #{reason}",
+          retry_backoff_delay_ms(state, retry_attempt)
+        )
+    end
   end
 
   defp eligible_for_new_dispatch?(issue, state, config) do
@@ -365,7 +383,8 @@ defmodule Kollywood.Orchestrator do
     issue_dispatchable?(issue, config) and
       not is_nil(issue_id) and
       not Map.has_key?(state.running, issue_id) and
-      not MapSet.member?(state.claimed, issue_id)
+      not MapSet.member?(state.claimed, issue_id) and
+      not MapSet.member?(state.completed, issue_id)
   end
 
   defp issue_dispatchable?(issue, config) do
@@ -379,23 +398,17 @@ defmodule Kollywood.Orchestrator do
       non_empty_string?(title) and
       active_state?(state_name, config) and
       not terminal_state?(state_name, config) and
-      not blocked_todo_issue?(issue, config)
+      not blocked_issue?(issue, config)
   end
 
-  defp blocked_todo_issue?(issue, config) do
-    issue_state = normalize_state(field(issue, :state))
-
-    if issue_state == "todo" do
-      issue
-      |> field(:blocked_by)
-      |> list_value()
-      |> Enum.any?(fn blocker ->
-        blocker_state = field(blocker, :state)
-        not terminal_state?(blocker_state, config)
-      end)
-    else
-      false
-    end
+  defp blocked_issue?(issue, config) do
+    issue
+    |> field(:blocked_by)
+    |> list_value()
+    |> Enum.any?(fn blocker ->
+      blocker_state = field(blocker, :state)
+      not terminal_state?(blocker_state, config)
+    end)
   end
 
   defp sort_issues_for_dispatch(issues) do
@@ -414,23 +427,33 @@ defmodule Kollywood.Orchestrator do
     state = %{state | completed: MapSet.put(state.completed, issue_id)}
 
     if result.status in [:ok, :max_turns_reached] do
-      schedule_retry(
-        state,
-        issue_id,
-        run_entry.issue,
-        1,
-        nil,
-        state.continuation_delay_ms
-      )
+      case tracker_mark_done(state, issue_id, result, run_entry) do
+        {:ok, state} ->
+          state
+
+        {:error, reason, state} ->
+          next_attempt = next_retry_attempt(run_entry.attempt)
+
+          schedule_retry(
+            state,
+            issue_id,
+            run_entry.issue,
+            next_attempt,
+            "failed to mark issue done: #{reason}",
+            retry_backoff_delay_ms(state, next_attempt)
+          )
+      end
     else
       next_attempt = next_retry_attempt(run_entry.attempt)
+      reason = "runner returned non-success status: #{inspect(result.status)}"
+      state = tracker_mark_failed(state, issue_id, reason, next_attempt)
 
       schedule_retry(
         state,
         issue_id,
         run_entry.issue,
         next_attempt,
-        "runner returned non-success status: #{inspect(result.status)}",
+        reason,
         retry_backoff_delay_ms(state, next_attempt)
       )
     end
@@ -439,6 +462,7 @@ defmodule Kollywood.Orchestrator do
   defp handle_runner_result(state, issue_id, run_entry, {:error, %Result{} = result}) do
     next_attempt = next_retry_attempt(run_entry.attempt)
     reason = result.error || "runner returned error"
+    state = tracker_mark_failed(state, issue_id, reason, next_attempt)
 
     schedule_retry(
       state,
@@ -452,13 +476,15 @@ defmodule Kollywood.Orchestrator do
 
   defp handle_runner_result(state, issue_id, run_entry, other_result) do
     next_attempt = next_retry_attempt(run_entry.attempt)
+    reason = "runner returned unexpected result: #{inspect(other_result)}"
+    state = tracker_mark_failed(state, issue_id, reason, next_attempt)
 
     schedule_retry(
       state,
       issue_id,
       run_entry.issue,
       next_attempt,
-      "runner returned unexpected result: #{inspect(other_result)}",
+      reason,
       retry_backoff_delay_ms(state, next_attempt)
     )
   end
@@ -503,6 +529,13 @@ defmodule Kollywood.Orchestrator do
   defp next_retry_attempt(nil), do: 1
   defp next_retry_attempt(attempt) when is_integer(attempt) and attempt >= 1, do: attempt + 1
   defp next_retry_attempt(_), do: 1
+
+  defp retry_attempt_from_run_attempt(nil), do: 1
+
+  defp retry_attempt_from_run_attempt(attempt) when is_integer(attempt) and attempt >= 1,
+    do: attempt
+
+  defp retry_attempt_from_run_attempt(_), do: 1
 
   defp claim(state, issue_id), do: %{state | claimed: MapSet.put(state.claimed, issue_id)}
 
@@ -592,6 +625,89 @@ defmodule Kollywood.Orchestrator do
       other ->
         {:error, "workflow config is invalid: #{inspect(other)}"}
     end
+  end
+
+  defp resolve_tracker(:auto, config) do
+    kind = get_in(config, [Access.key(:tracker, %{}), Access.key(:kind)])
+    Tracker.module_for_kind(kind)
+  end
+
+  defp resolve_tracker(tracker, _config), do: tracker
+
+  defp tracker_prepare_issue_for_run(tracker, config, issue_id) do
+    with :ok <- tracker_call(tracker, :claim_issue, [config, issue_id]),
+         :ok <- tracker_call(tracker, :mark_in_progress, [config, issue_id]) do
+      :ok
+    end
+  end
+
+  defp tracker_mark_done(state, issue_id, %Result{} = result, run_entry) do
+    with {:ok, config} <- fetch_config(state.workflow_store),
+         tracker <- resolve_tracker(state.tracker, config),
+         :ok <-
+           tracker_call(tracker, :mark_done, [config, issue_id, tracker_done_metadata(result)]) do
+      state = release_claim(state, issue_id)
+      {:ok, maybe_cleanup_terminal_workspace(state, run_entry, config)}
+    else
+      {:error, reason} -> {:error, reason, state}
+    end
+  end
+
+  defp tracker_mark_failed(state, issue_id, reason, attempt) do
+    with {:ok, config} <- fetch_config(state.workflow_store),
+         tracker <- resolve_tracker(state.tracker, config),
+         :ok <- tracker_call(tracker, :mark_failed, [config, issue_id, reason, attempt]) do
+      state
+    else
+      {:error, tracker_reason} ->
+        Logger.warning(
+          "Failed to mark issue failed issue_id=#{issue_id} attempt=#{attempt}: #{tracker_reason}"
+        )
+
+        state
+    end
+  end
+
+  defp tracker_call(tracker, _function_name, _args) when is_function(tracker, 1), do: :ok
+
+  defp tracker_call(tracker, function_name, args) when is_atom(tracker) do
+    arity = length(args)
+
+    if function_exported?(tracker, function_name, arity) do
+      response = apply(tracker, function_name, args)
+      normalize_tracker_action_response(response, tracker, function_name, arity)
+    else
+      :ok
+    end
+  rescue
+    error ->
+      arity = length(args)
+
+      {:error,
+       "tracker module #{inspect(tracker)} failed in #{function_name}/#{arity}: #{Exception.message(error)}"}
+  end
+
+  defp tracker_call(tracker, _function_name, _args) do
+    {:error, "invalid tracker adapter: #{inspect(tracker)}"}
+  end
+
+  defp normalize_tracker_action_response(:ok, _tracker, _function_name, _arity), do: :ok
+
+  defp normalize_tracker_action_response({:error, reason}, _tracker, _function_name, _arity),
+    do: {:error, to_string(reason)}
+
+  defp normalize_tracker_action_response(response, tracker, function_name, arity) do
+    {:error,
+     "tracker module #{inspect(tracker)} returned #{inspect(response)} for #{function_name}/#{arity}"}
+  end
+
+  defp tracker_done_metadata(%Result{} = result) do
+    %{
+      status: result.status,
+      turn_count: result.turn_count,
+      ended_at: result.ended_at,
+      workspace_path: result.workspace_path
+    }
   end
 
   defp list_active_issues(tracker, config) when is_function(tracker, 1) do

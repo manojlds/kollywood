@@ -196,6 +196,53 @@ defmodule Kollywood.OrchestratorTest do
     send(runner_pid, {:complete_runner, "ISS-5", {:ok, success_result(issue)}})
   end
 
+  test "marks prd_json story done after successful run", %{root: root} do
+    prd_path = Path.join([root, ".ralphi", "prd.json"])
+    write_prd!(prd_path)
+
+    %{store: workflow_store} =
+      start_workflow_store!(root, %{
+        tracker_kind: "prd_json",
+        tracker_path: prd_path,
+        tracker_active_states: ["open", "in_progress"],
+        tracker_terminal_states: ["done"]
+      })
+
+    test_pid = self()
+
+    runner = fn issue, opts ->
+      send(test_pid, {:runner_started, issue.id, self(), Keyword.get(opts, :attempt)})
+      {:ok, success_result(issue)}
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         runner: runner,
+         auto_poll: false,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_started, "US-001", runner_pid, nil}
+
+    runner_ref = Process.monitor(runner_pid)
+    assert_receive {:DOWN, ^runner_ref, :process, ^runner_pid, reason}
+    assert reason in [:normal, :noproc]
+
+    _ = :sys.get_state(orchestrator)
+
+    assert prd_story_status(prd_path, "US-001") == "done"
+
+    status = Orchestrator.status(orchestrator)
+    assert status.running_count == 0
+    assert status.retry_count == 0
+    assert status.claimed_count == 0
+    assert status.completed_count == 1
+  end
+
   defp issue(id, identifier, priority) do
     %{
       id: id,
@@ -260,6 +307,11 @@ defmodule Kollywood.OrchestratorTest do
     content =
       workflow_content(%{
         workspace_root: workspace_root,
+        poll_interval_ms: Map.get(opts, :poll_interval_ms, 1000),
+        tracker_kind: Map.get(opts, :tracker_kind, "linear"),
+        tracker_path: Map.get(opts, :tracker_path),
+        tracker_active_states: Map.get(opts, :tracker_active_states, ["Todo", "In Progress"]),
+        tracker_terminal_states: Map.get(opts, :tracker_terminal_states, ["Done", "Cancelled"]),
         max_concurrent_agents: Map.get(opts, :max_concurrent_agents, 2),
         max_retry_backoff_ms: Map.get(opts, :max_retry_backoff_ms, 300_000)
       })
@@ -274,16 +326,30 @@ defmodule Kollywood.OrchestratorTest do
   end
 
   defp workflow_content(%{workspace_root: workspace_root} = opts) do
+    tracker_path_line =
+      case Map.get(opts, :tracker_path) do
+        nil -> ""
+        path -> "\n  path: #{path}"
+      end
+
+    tracker_active_states =
+      opts
+      |> Map.get(:tracker_active_states, ["Todo", "In Progress"])
+      |> yaml_list(4)
+
+    tracker_terminal_states =
+      opts
+      |> Map.get(:tracker_terminal_states, ["Done", "Cancelled"])
+      |> yaml_list(4)
+
     """
     ---
     tracker:
-      kind: linear
+      kind: #{Map.get(opts, :tracker_kind, "linear")}#{tracker_path_line}
       active_states:
-        - Todo
-        - In Progress
+    #{tracker_active_states}
       terminal_states:
-        - Done
-        - Cancelled
+    #{tracker_terminal_states}
     polling:
       interval_ms: #{Map.get(opts, :poll_interval_ms, 1000)}
     workspace:
@@ -297,5 +363,44 @@ defmodule Kollywood.OrchestratorTest do
     ---
     Work on {{ issue.identifier }}
     """
+  end
+
+  defp yaml_list(values, indent) when is_list(values) do
+    prefix = String.duplicate(" ", indent)
+
+    values
+    |> Enum.map_join("\n", fn value -> "#{prefix}- #{value}" end)
+  end
+
+  defp write_prd!(path) do
+    data = %{
+      "project" => "kollywood",
+      "branchName" => "dogfood/prd-json-tracker",
+      "description" => "Dogfood PRD",
+      "userStories" => [
+        %{
+          "id" => "US-001",
+          "title" => "Mark me done",
+          "description" => "Run one orchestrator issue and mark it done.",
+          "acceptanceCriteria" => ["Issue is marked done in PRD"],
+          "priority" => 1,
+          "status" => "open",
+          "dependsOn" => []
+        }
+      ]
+    }
+
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, Jason.encode!(data, pretty: true))
+  end
+
+  defp prd_story_status(path, story_id) do
+    {:ok, content} = File.read(path)
+    {:ok, data} = Jason.decode(content)
+
+    data
+    |> Map.fetch!("userStories")
+    |> Enum.find(fn story -> Map.get(story, "id") == story_id end)
+    |> Map.get("status")
   end
 end
