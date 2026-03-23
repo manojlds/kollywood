@@ -36,6 +36,27 @@ process checks, so no per-project metadata file is required.
 
 Now you can visit [`localhost:4000`](http://localhost:4000) from your browser.
 
+## Local Dogfood Tracker (`.ralphi/prd.json`)
+
+Kollywood can run against a local PRD tracker file in Ralph format.
+
+- Default tracker config is in `WORKFLOW.md` (`tracker.kind: prd_json`)
+- Default tracker path is `.ralphi/prd.json`
+- Stories use `status` values: `open`, `in_progress`, `done`
+
+Minimal story shape:
+
+```json
+{
+  "id": "US-001",
+  "title": "Implement feature",
+  "description": "What needs to be built",
+  "priority": 1,
+  "status": "open",
+  "dependsOn": []
+}
+```
+
 Ready to run in production? Please [check our deployment guides](https://hexdocs.pm/phoenix/deployment.html).
 
 ## Learn more
