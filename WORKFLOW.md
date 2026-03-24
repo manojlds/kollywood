@@ -26,6 +26,14 @@ review:
   agent:
     kind: pi
 
+publish:
+  provider: github
+  auto_push: never
+  auto_create_pr: never
+
+git:
+  require_commit: true
+
 workspace:
   root: ~/kollywood-workspaces
   strategy: worktree

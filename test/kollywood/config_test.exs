@@ -112,6 +112,12 @@ defmodule Kollywood.ConfigTest do
     assert config.agent.env == %{}
     assert config.agent.timeout_ms == 300_000
     assert config.tracker.active_states == ["Todo", "In Progress"]
+
+    assert config.publish.provider == :github
+    assert config.publish.auto_push == :never
+    assert config.publish.auto_create_pr == :never
+
+    assert config.git.require_commit == true
   end
 
   test "parses optional agent runtime settings" do
@@ -251,6 +257,100 @@ defmodule Kollywood.ConfigTest do
     assert config.review.agent.args == ["--print"]
     assert config.review.agent.env == %{"REVIEW_MODE" => "strict"}
     assert config.review.agent.timeout_ms == 120_000
+  end
+
+  test "parses publish and git policy settings" do
+    content = """
+    ---
+    publish:
+      provider: gitlab
+      auto_push: on_pass
+      auto_create_pr: draft
+    git:
+      require_commit: false
+    workspace:
+      root: /tmp
+    agent:
+      kind: pi
+    ---
+    prompt
+    """
+
+    assert {:ok, config, _} = Config.parse(content)
+
+    assert config.publish.provider == :gitlab
+    assert config.publish.auto_push == :on_pass
+    assert config.publish.auto_create_pr == :draft
+
+    assert config.git.require_commit == false
+  end
+
+  test "rejects invalid publish.provider" do
+    content = """
+    ---
+    publish:
+      provider: bitbucket
+    workspace:
+      root: /tmp
+    agent:
+      kind: amp
+    ---
+    prompt
+    """
+
+    assert {:error, msg} = Config.parse(content)
+    assert msg =~ "Invalid publish.provider"
+  end
+
+  test "rejects invalid publish.auto_push" do
+    content = """
+    ---
+    publish:
+      auto_push: always
+    workspace:
+      root: /tmp
+    agent:
+      kind: amp
+    ---
+    prompt
+    """
+
+    assert {:error, msg} = Config.parse(content)
+    assert msg =~ "Invalid publish.auto_push"
+  end
+
+  test "rejects invalid publish.auto_create_pr" do
+    content = """
+    ---
+    publish:
+      auto_create_pr: yes
+    workspace:
+      root: /tmp
+    agent:
+      kind: amp
+    ---
+    prompt
+    """
+
+    assert {:error, msg} = Config.parse(content)
+    assert msg =~ "Invalid publish.auto_create_pr"
+  end
+
+  test "rejects invalid git.require_commit" do
+    content = """
+    ---
+    git:
+      require_commit: maybe
+    workspace:
+      root: /tmp
+    agent:
+      kind: amp
+    ---
+    prompt
+    """
+
+    assert {:error, msg} = Config.parse(content)
+    assert msg =~ "Invalid git.require_commit"
   end
 
   test "rejects invalid review.agent.kind" do
