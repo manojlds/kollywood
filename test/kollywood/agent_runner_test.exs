@@ -414,6 +414,103 @@ defmodule Kollywood.AgentRunnerTest do
     assert log =~ "processes down"
   end
 
+  test "full_stack runtime identity env cannot be overridden by user env", %{
+    root: root,
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    prompt_log: prompt_log
+  } do
+    fake_devenv_log = Path.join(root, "fake_devenv_identity.log")
+    fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    expected_workspace_path = Path.join(workspace_root, @issue.identifier)
+
+    runtime =
+      full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log)
+      |> put_in([:full_stack, :env, "KOLLYWOOD_RUNTIME_WORKTREE_KEY"], "tampered-key")
+      |> put_in([:full_stack, :env, "KOLLYWOOD_RUNTIME_WORKTREE_PATH"], "/tmp/tampered-path")
+
+    config =
+      runner_config(workspace_root, cli_path, prompt_log)
+      |> Map.put(:checks, %{
+        required: [
+          "test \"$KOLLYWOOD_RUNTIME_WORKTREE_KEY\" = \"#{@issue.identifier}\"",
+          "test \"$KOLLYWOOD_RUNTIME_WORKTREE_PATH\" = \"#{expected_workspace_path}\""
+        ],
+        timeout_ms: 10_000,
+        fail_fast: true
+      })
+      |> Map.put(:runtime, runtime)
+
+    template = "Work on {{ issue.identifier }}"
+
+    assert {:ok, result} =
+             AgentRunner.run_issue(@issue,
+               config: config,
+               prompt_template: template,
+               mode: :single_turn
+             )
+
+    assert result.status == :ok
+  end
+
+  test "full_stack runtime fails fast when no isolated port offset is available", %{
+    root: root,
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    prompt_log: prompt_log
+  } do
+    fake_devenv_log = Path.join(root, "fake_devenv_offset_exhausted.log")
+    fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+
+    runtime =
+      full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log)
+      |> put_in([:full_stack, :port_offset_mod], 1)
+
+    config =
+      runner_config(workspace_root, cli_path, prompt_log)
+      |> Map.put(:checks, %{required: ["sleep 1"], timeout_ms: 10_000, fail_fast: true})
+      |> Map.put(:runtime, runtime)
+
+    template = "Work on {{ issue.identifier }}"
+
+    first_issue = %{@issue | id: "ISS-ISO-1", identifier: "ISO-1"}
+    second_issue = %{@issue | id: "ISS-ISO-2", identifier: "ISO-2"}
+    parent = self()
+
+    first_task =
+      Task.async(fn ->
+        AgentRunner.run_issue(first_issue,
+          config: config,
+          prompt_template: template,
+          mode: :single_turn,
+          on_event: fn event ->
+            if event.type == :runtime_started do
+              send(parent, {:runtime_started, first_issue.id})
+            end
+          end
+        )
+      end)
+
+    assert_receive {:runtime_started, "ISS-ISO-1"}, 5_000
+
+    second_task =
+      Task.async(fn ->
+        AgentRunner.run_issue(second_issue,
+          config: config,
+          prompt_template: template,
+          mode: :single_turn
+        )
+      end)
+
+    assert {:error, second_result} = Task.await(second_task, 10_000)
+    assert second_result.error =~ "no available runtime port offsets"
+    assert :runtime_start_failed in Enum.map(second_result.events, & &1.type)
+    refute :runtime_stopping in Enum.map(second_result.events, & &1.type)
+
+    assert {:ok, first_result} = Task.await(first_task, 15_000)
+    assert first_result.status == :ok
+  end
+
   test "runs config-enabled review round and passes on REVIEW_PASS", %{
     workspace_root: workspace_root,
     cli_path: cli_path,
@@ -599,6 +696,8 @@ defmodule Kollywood.AgentRunnerTest do
     set -eu
 
     if [ -n "${FAKE_DEVENV_LOG:-}" ]; then
+      printf "PWD:%s\\n" "$PWD" >> "$FAKE_DEVENV_LOG"
+      printf "ENV:KEY=%s PATH=%s OFFSET=%s APP_PORT=%s\\n" "${KOLLYWOOD_RUNTIME_WORKTREE_KEY:-}" "${KOLLYWOOD_RUNTIME_WORKTREE_PATH:-}" "${KOLLYWOOD_RUNTIME_PORT_OFFSET:-}" "${APP_PORT:-}" >> "$FAKE_DEVENV_LOG"
       printf "CMD:%s\\n" "$*" >> "$FAKE_DEVENV_LOG"
     fi
 
