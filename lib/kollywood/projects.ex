@@ -80,16 +80,23 @@ defmodule Kollywood.Projects do
 
   def slugify(_value), do: "project"
 
-  defp normalize_attrs(attrs) when is_list(attrs), do: Map.new(attrs)
-  defp normalize_attrs(attrs) when is_map(attrs), do: attrs
+  defp normalize_attrs(attrs) when is_list(attrs), do: attrs |> Map.new() |> stringify_keys()
+  defp normalize_attrs(attrs) when is_map(attrs), do: stringify_keys(attrs)
   defp normalize_attrs(_attrs), do: %{}
+
+  defp stringify_keys(map) do
+    Map.new(map, fn
+      {k, v} when is_atom(k) -> {Atom.to_string(k), v}
+      {k, v} -> {k, v}
+    end)
+  end
 
   defp put_default_slug(%{"slug" => slug} = attrs) when is_binary(slug) and slug != "", do: attrs
   defp put_default_slug(%{slug: slug} = attrs) when is_binary(slug) and slug != "", do: attrs
 
   defp put_default_slug(attrs) do
     name = Map.get(attrs, :name) || Map.get(attrs, "name") || "project"
-    Map.put(attrs, :slug, slugify(to_string(name)))
+    Map.put(attrs, "slug", slugify(to_string(name)))
   end
 
   defp put_default_branch(%{"default_branch" => branch} = attrs)
@@ -100,7 +107,7 @@ defmodule Kollywood.Projects do
        when is_binary(branch) and branch != "",
        do: attrs
 
-  defp put_default_branch(attrs), do: Map.put(attrs, :default_branch, "main")
+  defp put_default_branch(attrs), do: Map.put(attrs, "default_branch", "main")
 
   defp put_default_workflow_and_tracker_paths(attrs) do
     provider = Map.get(attrs, :provider) || Map.get(attrs, "provider")
@@ -110,9 +117,9 @@ defmodule Kollywood.Projects do
       local_path = Path.expand(String.trim(local_path))
 
       attrs
-      |> Map.put_new(:workflow_path, Path.join(local_path, "WORKFLOW.md"))
-      |> Map.put_new(:tracker_path, Path.join(local_path, "prd.json"))
-      |> Map.put(:local_path, local_path)
+      |> Map.put_new("workflow_path", Path.join(local_path, "WORKFLOW.md"))
+      |> Map.put_new("tracker_path", Path.join(local_path, "prd.json"))
+      |> Map.put("local_path", local_path)
     else
       attrs
     end
