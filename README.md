@@ -91,6 +91,9 @@ Orchestrator controls:
 mix kollywood.orch.status
 mix kollywood.orch.poll
 mix kollywood.orch.stop US-001
+mix kollywood.orch.logs US-001
+mix kollywood.orch.logs US-001 --attempt 2
+mix kollywood.orch.logs US-001 --follow
 ```
 
 Quality gates are configured in `WORKFLOW.md`:

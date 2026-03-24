@@ -151,6 +151,81 @@ defmodule Kollywood.OrchestratorTest do
     assert reason in [:normal, :noproc]
   end
 
+  test "persists worker/reviewer/check/runtime logs and metadata per attempt", %{root: root} do
+    prd_path = Path.join(root, "prd.json")
+
+    %{store: workflow_store} =
+      start_workflow_store!(root, %{tracker_kind: "prd_json", tracker_path: prd_path})
+
+    issue = issue("ISS-LOG", "US-LOG", 1)
+    test_pid = self()
+    issues_agent = start_agent!(fn -> [issue] end)
+
+    tracker = fn _config -> {:ok, Agent.get(issues_agent, & &1)} end
+
+    runner = fn issue, opts ->
+      on_event = Keyword.fetch!(opts, :on_event)
+      send(test_pid, {:runner_started, issue.id, self(), Keyword.get(opts, :attempt)})
+
+      on_event.(%{type: :turn_succeeded, turn: 1, duration_ms: 5, output: "worker-output"})
+      on_event.(%{type: :review_passed, cycle: 1, output: "review-output"})
+
+      on_event.(%{
+        type: :check_passed,
+        check_index: 1,
+        command: "mix test",
+        duration_ms: 3,
+        output: "checks-output"
+      })
+
+      on_event.(%{type: :runtime_started, duration_ms: 7, output: "runtime-output"})
+
+      {:ok, success_result(issue)}
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: tracker,
+         runner: runner,
+         auto_poll: false,
+         continuation_delay_ms: 60_000,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_started, "ISS-LOG", runner_pid, nil}
+
+    runner_ref = Process.monitor(runner_pid)
+    assert_receive {:DOWN, ^runner_ref, :process, ^runner_pid, reason}
+    assert reason in [:normal, :noproc]
+
+    _ = :sys.get_state(orchestrator)
+
+    attempt_dir = Path.join([root, ".kollywood", "run_logs", "US-LOG", "attempt-0001"])
+
+    assert File.exists?(Path.join(attempt_dir, "worker.log"))
+    assert File.exists?(Path.join(attempt_dir, "reviewer.log"))
+    assert File.exists?(Path.join(attempt_dir, "checks.log"))
+    assert File.exists?(Path.join(attempt_dir, "runtime.log"))
+    assert File.exists?(Path.join(attempt_dir, "events.jsonl"))
+
+    assert File.read!(Path.join(attempt_dir, "worker.log")) =~ "worker-output"
+    assert File.read!(Path.join(attempt_dir, "reviewer.log")) =~ "review-output"
+    assert File.read!(Path.join(attempt_dir, "checks.log")) =~ "checks-output"
+    assert File.read!(Path.join(attempt_dir, "runtime.log")) =~ "runtime-output"
+
+    metadata = read_json!(Path.join(attempt_dir, "metadata.json"))
+
+    assert metadata["status"] == "ok"
+    assert metadata["attempt"] == 1
+    assert metadata["runner_attempt"] == nil
+    assert metadata["turn_count"] == 1
+    assert metadata["story_id"] == "US-LOG"
+  end
+
   test "retries failed runs with backoff and increments attempt", %{root: root} do
     %{store: workflow_store} = start_workflow_store!(root, %{max_retry_backoff_ms: 200})
     issue = issue("ISS-3", "ABC-3", 1)
@@ -519,5 +594,11 @@ defmodule Kollywood.OrchestratorTest do
     |> Map.fetch!("userStories")
     |> Enum.find(fn story -> Map.get(story, "id") == story_id end)
     |> Map.get("status")
+  end
+
+  defp read_json!(path) do
+    {:ok, content} = File.read(path)
+    {:ok, decoded} = Jason.decode(content)
+    decoded
   end
 end
