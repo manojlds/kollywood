@@ -270,6 +270,111 @@ defmodule Kollywood.AgentRunnerTest do
     assert :checks_passed in Enum.map(result.events, & &1.type)
   end
 
+  test "checks_only profile runs checks without starting runtime processes", %{
+    root: root,
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    prompt_log: prompt_log
+  } do
+    fake_devenv_log = Path.join(root, "fake_devenv_checks_only.log")
+    fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+
+    config =
+      runner_config(workspace_root, cli_path, prompt_log)
+      |> Map.put(:checks, %{required: ["test -d ."], timeout_ms: 10_000, fail_fast: true})
+      |> Map.put(:runtime, full_stack_runtime(:checks_only, fake_devenv, fake_devenv_log))
+
+    template = "Work on {{ issue.identifier }}"
+
+    assert {:ok, result} =
+             AgentRunner.run_issue(@issue,
+               config: config,
+               prompt_template: template,
+               mode: :single_turn
+             )
+
+    assert result.status == :ok
+    refute :runtime_started in Enum.map(result.events, & &1.type)
+    refute File.exists?(fake_devenv_log)
+  end
+
+  test "full_stack profile starts isolated runtime and runs checks in devenv shell", %{
+    root: root,
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    prompt_log: prompt_log
+  } do
+    fake_devenv_log = Path.join(root, "fake_devenv_full_stack.log")
+    fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+
+    config =
+      runner_config(workspace_root, cli_path, prompt_log)
+      |> Map.put(:checks, %{
+        required: [
+          "test \"$RUNTIME_SENTINEL\" = \"ok\"",
+          "test \"$KOLLYWOOD_RUNTIME_PROFILE\" = \"full_stack\"",
+          "test -n \"$APP_PORT\""
+        ],
+        timeout_ms: 10_000,
+        fail_fast: true
+      })
+      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log))
+
+    template = "Work on {{ issue.identifier }}"
+
+    assert {:ok, result} =
+             AgentRunner.run_issue(@issue,
+               config: config,
+               prompt_template: template,
+               mode: :single_turn
+             )
+
+    event_types = Enum.map(result.events, & &1.type)
+    assert :runtime_starting in event_types
+    assert :runtime_started in event_types
+    assert :runtime_stopping in event_types
+    assert :runtime_stopped in event_types
+
+    log = File.read!(fake_devenv_log)
+    assert log =~ "processes up --detach --strict-ports server"
+    assert log =~ "shell -- bash -lc test \"$RUNTIME_SENTINEL\" = \"ok\""
+    assert log =~ "processes down"
+  end
+
+  test "full_stack runtime is stopped when checks fail", %{
+    root: root,
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    prompt_log: prompt_log
+  } do
+    fake_devenv_log = Path.join(root, "fake_devenv_fail.log")
+    fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+
+    config =
+      runner_config(workspace_root, cli_path, prompt_log)
+      |> Map.put(:checks, %{required: ["exit 3"], timeout_ms: 10_000, fail_fast: true})
+      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log))
+
+    template = "Work on {{ issue.identifier }}"
+
+    assert {:error, result} =
+             AgentRunner.run_issue(@issue,
+               config: config,
+               prompt_template: template,
+               mode: :single_turn
+             )
+
+    assert result.error =~ "required checks failed"
+
+    event_types = Enum.map(result.events, & &1.type)
+    assert :runtime_started in event_types
+    assert :runtime_stopped in event_types
+
+    log = File.read!(fake_devenv_log)
+    assert log =~ "processes up --detach --strict-ports server"
+    assert log =~ "processes down"
+  end
+
   test "runs config-enabled review round and passes on REVIEW_PASS", %{
     workspace_root: workspace_root,
     cli_path: cli_path,
@@ -411,9 +516,78 @@ defmodule Kollywood.AgentRunnerTest do
       workspace: %{root: workspace_root, strategy: :clone},
       hooks: hooks,
       checks: %{required: [], timeout_ms: 10_000, fail_fast: true},
+      runtime: %{
+        profile: :checks_only,
+        full_stack: %{
+          command: "devenv",
+          processes: [],
+          env: %{},
+          ports: %{},
+          port_offset_mod: 1000,
+          start_timeout_ms: 120_000,
+          stop_timeout_ms: 60_000
+        }
+      },
       review: %{enabled: false, max_cycles: 1, agent: %{kind: agent.kind}},
       agent: agent,
       raw: %{}
     }
+  end
+
+  defp full_stack_runtime(profile, command, log_path) do
+    %{
+      profile: profile,
+      full_stack: %{
+        command: command,
+        processes: ["server"],
+        env: %{
+          "FAKE_DEVENV_LOG" => log_path,
+          "RUNTIME_SENTINEL" => "ok"
+        },
+        ports: %{"APP_PORT" => 4100},
+        port_offset_mod: 1000,
+        start_timeout_ms: 10_000,
+        stop_timeout_ms: 10_000
+      }
+    }
+  end
+
+  defp write_fake_devenv!(root, log_path) do
+    path = Path.join(root, "fake_devenv.sh")
+
+    File.write!(path, """
+    #!/usr/bin/env bash
+    set -eu
+
+    if [ -n "${FAKE_DEVENV_LOG:-}" ]; then
+      printf "CMD:%s\\n" "$*" >> "$FAKE_DEVENV_LOG"
+    fi
+
+    if [ "${1:-}" = "shell" ]; then
+      shift
+
+      if [ "${1:-}" = "--" ]; then
+        shift
+      fi
+
+      "$@"
+      exit $?
+    fi
+
+    if [ "${1:-}" = "processes" ] && [ "${2:-}" = "up" ]; then
+      exit 0
+    fi
+
+    if [ "${1:-}" = "processes" ] && [ "${2:-}" = "down" ]; then
+      exit 0
+    fi
+
+    echo "unexpected fake devenv invocation: $*" >&2
+    exit 41
+    """)
+
+    File.chmod!(path, 0o755)
+    File.rm(log_path)
+    path
   end
 end

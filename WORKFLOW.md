@@ -20,6 +20,16 @@ checks:
   timeout_ms: 1800000
   fail_fast: true
 
+runtime:
+  profile: checks_only
+  full_stack:
+    command: devenv
+    processes:
+      - server
+    env: {}
+    ports:
+      PORT: 4000
+
 review:
   enabled: true
   max_cycles: 2

@@ -58,6 +58,7 @@ defmodule Kollywood.AgentRunner do
         identifier: issue_meta.identifier,
         started_at: started_at,
         workspace: nil,
+        runtime: default_runtime_state(config),
         session: nil,
         turn_count: 0,
         last_output: nil,
@@ -70,10 +71,16 @@ defmodule Kollywood.AgentRunner do
 
       case Workspace.create_for_issue(issue_meta.identifier, config) do
         {:ok, workspace} ->
+          runtime = runtime_for_workspace(config, workspace)
+
           state =
             state
             |> Map.put(:workspace, workspace)
-            |> emit(:workspace_ready, %{workspace_path: workspace.path})
+            |> Map.put(:runtime, runtime)
+            |> emit(:workspace_ready, %{
+              workspace_path: workspace.path,
+              runtime_profile: runtime.profile
+            })
 
           run_with_session(
             state,
@@ -127,36 +134,59 @@ defmodule Kollywood.AgentRunner do
 
         {status, reason, run_state} = normalize_run_result(run_result)
 
-        case stop_session(run_state, session) do
-          {:ok, stopped_state} ->
-            if is_nil(reason) do
-              case finalize_with_quality_gates(
-                     stopped_state,
-                     config,
-                     status,
-                     session_opts,
-                     turn_opts,
-                     prompt_template
-                   ) do
-                {:ok, qualified_state} ->
-                  succeed(qualified_state, status)
+        outcome =
+          case stop_session(run_state, session) do
+            {:ok, stopped_state} ->
+              if is_nil(reason) do
+                case finalize_with_quality_gates(
+                       stopped_state,
+                       config,
+                       status,
+                       session_opts,
+                       turn_opts,
+                       prompt_template
+                     ) do
+                  {:ok, qualified_state} ->
+                    {:ok, status, qualified_state}
 
-                {:error, gate_reason, qualified_state} ->
-                  fail(qualified_state, gate_reason)
+                  {:error, gate_reason, qualified_state} ->
+                    {:error, gate_reason, qualified_state}
+                end
+              else
+                {:error, reason, stopped_state}
               end
-            else
-              fail(stopped_state, reason)
-            end
 
-          {:error, stop_reason, stopped_state} ->
-            combined_reason =
-              combine_errors(reason, "Failed to stop agent session: #{stop_reason}")
+            {:error, stop_reason, stopped_state} ->
+              combined_reason =
+                combine_errors(reason, "Failed to stop agent session: #{stop_reason}")
 
-            fail(stopped_state, combined_reason)
-        end
+              {:error, combined_reason, stopped_state}
+          end
+
+        finalize_run_with_runtime(outcome)
 
       {:error, reason} ->
         fail(state, "Failed to start agent session: #{reason}")
+    end
+  end
+
+  defp finalize_run_with_runtime({:ok, status, state}) do
+    case maybe_stop_runtime(state) do
+      {:ok, stopped_state} ->
+        succeed(stopped_state, status)
+
+      {:error, reason, stopped_state} ->
+        fail(stopped_state, reason)
+    end
+  end
+
+  defp finalize_run_with_runtime({:error, reason, state}) do
+    case maybe_stop_runtime(state) do
+      {:ok, stopped_state} ->
+        fail(stopped_state, reason)
+
+      {:error, runtime_reason, stopped_state} ->
+        fail(stopped_state, merge_error_messages(reason, runtime_reason))
     end
   end
 
@@ -324,60 +354,71 @@ defmodule Kollywood.AgentRunner do
           {:error, "required checks failed: workspace path is unavailable", state}
 
         workspace_path ->
-          timeout_ms = checks_timeout_ms(config)
-          fail_fast = checks_fail_fast?(config)
+          with {:ok, state} <- ensure_runtime_for_checks(state) do
+            timeout_ms = checks_timeout_ms(config)
+            fail_fast = checks_fail_fast?(config)
 
-          state =
-            emit(state, :checks_started, %{
-              check_count: length(commands),
-              timeout_ms: timeout_ms,
-              fail_fast: fail_fast
-            })
+            state =
+              emit(state, :checks_started, %{
+                check_count: length(commands),
+                timeout_ms: timeout_ms,
+                fail_fast: fail_fast,
+                runtime_profile: runtime_profile_from_state(state)
+              })
 
-          {state, errors} =
-            commands
-            |> Enum.with_index(1)
-            |> Enum.reduce({state, []}, fn {command, index}, {acc_state, acc_errors} ->
-              if fail_fast and acc_errors != [] do
-                {acc_state, acc_errors}
-              else
-                acc_state =
-                  emit(acc_state, :check_started, %{check_index: index, command: command})
+            {state, errors} =
+              commands
+              |> Enum.with_index(1)
+              |> Enum.reduce({state, []}, fn {command, index}, {acc_state, acc_errors} ->
+                if fail_fast and acc_errors != [] do
+                  {acc_state, acc_errors}
+                else
+                  acc_state =
+                    emit(acc_state, :check_started, %{check_index: index, command: command})
 
-                case execute_check_command(workspace_path, command, timeout_ms) do
-                  {:ok, duration_ms} ->
-                    {
-                      emit(acc_state, :check_passed, %{
-                        check_index: index,
-                        command: command,
-                        duration_ms: duration_ms
-                      }),
-                      acc_errors
-                    }
+                  case execute_check_command(
+                         workspace_path,
+                         command,
+                         timeout_ms,
+                         acc_state.runtime
+                       ) do
+                    {:ok, duration_ms} ->
+                      {
+                        emit(acc_state, :check_passed, %{
+                          check_index: index,
+                          command: command,
+                          duration_ms: duration_ms
+                        }),
+                        acc_errors
+                      }
 
-                  {:error, reason, duration_ms, output_preview} ->
-                    error_message =
-                      "check ##{index} failed (#{command}): #{reason}#{preview_suffix(output_preview)}"
+                    {:error, reason, duration_ms, output_preview} ->
+                      error_message =
+                        "check ##{index} failed (#{command}): #{reason}#{preview_suffix(output_preview)}"
 
-                    {
-                      emit(acc_state, :check_failed, %{
-                        check_index: index,
-                        command: command,
-                        reason: reason,
-                        duration_ms: duration_ms,
-                        output_preview: output_preview
-                      }),
-                      acc_errors ++ [error_message]
-                    }
+                      {
+                        emit(acc_state, :check_failed, %{
+                          check_index: index,
+                          command: command,
+                          reason: reason,
+                          duration_ms: duration_ms,
+                          output_preview: output_preview
+                        }),
+                        acc_errors ++ [error_message]
+                      }
+                  end
                 end
-              end
-            end)
+              end)
 
-          if errors == [] do
-            {:ok, emit(state, :checks_passed, %{check_count: length(commands)})}
+            if errors == [] do
+              {:ok, emit(state, :checks_passed, %{check_count: length(commands)})}
+            else
+              reason = "required checks failed:\n#{Enum.map_join(errors, "\n", &"- #{&1}")}"
+              {:error, reason, emit(state, :checks_failed, %{error_count: length(errors)})}
+            end
           else
-            reason = "required checks failed:\n#{Enum.map_join(errors, "\n", &"- #{&1}")}"
-            {:error, reason, emit(state, :checks_failed, %{error_count: length(errors)})}
+            {:error, reason, state} ->
+              {:error, reason, state}
           end
       end
     end
@@ -509,29 +550,337 @@ defmodule Kollywood.AgentRunner do
     end
   end
 
-  defp execute_check_command(workspace_path, command, timeout_ms) do
+  defp execute_check_command(workspace_path, command, timeout_ms, runtime) do
+    {executable, args, env} = check_command_invocation(command, runtime)
+
+    case execute_command(executable, args, workspace_path, env, timeout_ms) do
+      {:ok, _output, duration_ms} ->
+        {:ok, duration_ms}
+
+      {:error, reason, output_preview, duration_ms} ->
+        {:error, reason, duration_ms, output_preview}
+    end
+  end
+
+  defp ensure_runtime_for_checks(state) do
+    runtime = state.runtime || default_runtime_state(nil)
+
+    case runtime.profile do
+      :checks_only ->
+        {:ok, state}
+
+      :full_stack ->
+        if runtime.started? do
+          {:ok, state}
+        else
+          state =
+            emit(state, :runtime_starting, %{
+              runtime_profile: :full_stack,
+              command: runtime.command,
+              workspace_path: runtime.workspace_path,
+              process_count: length(runtime.processes)
+            })
+
+          case execute_command(
+                 runtime.command,
+                 runtime_start_args(runtime),
+                 runtime.workspace_path,
+                 runtime.env,
+                 runtime.start_timeout_ms
+               ) do
+            {:ok, _output, duration_ms} ->
+              runtime = %{runtime | started?: true, process_state: :running}
+
+              state =
+                state
+                |> Map.put(:runtime, runtime)
+                |> emit(:runtime_started, %{
+                  runtime_profile: :full_stack,
+                  duration_ms: duration_ms,
+                  workspace_path: runtime.workspace_path,
+                  command: runtime.command,
+                  process_count: length(runtime.processes),
+                  port_offset: runtime.port_offset,
+                  resolved_ports: runtime.resolved_ports
+                })
+
+              {:ok, state}
+
+            {:error, reason, output_preview, duration_ms} ->
+              runtime = %{runtime | process_state: :start_failed}
+
+              state =
+                state
+                |> Map.put(:runtime, runtime)
+                |> emit(:runtime_start_failed, %{
+                  runtime_profile: :full_stack,
+                  duration_ms: duration_ms,
+                  workspace_path: runtime.workspace_path,
+                  command: runtime.command,
+                  reason: reason,
+                  output_preview: output_preview
+                })
+
+              {:error,
+               "failed to start runtime processes: #{reason}#{preview_suffix(output_preview)}",
+               state}
+          end
+        end
+    end
+  end
+
+  defp maybe_stop_runtime(state) do
+    runtime = state.runtime || default_runtime_state(nil)
+
+    cond do
+      runtime.profile != :full_stack ->
+        {:ok, state}
+
+      runtime.started? != true ->
+        {:ok, state}
+
+      true ->
+        state =
+          emit(state, :runtime_stopping, %{
+            runtime_profile: :full_stack,
+            command: runtime.command,
+            workspace_path: runtime.workspace_path
+          })
+
+        case execute_command(
+               runtime.command,
+               runtime_stop_args(runtime),
+               runtime.workspace_path,
+               runtime.env,
+               runtime.stop_timeout_ms
+             ) do
+          {:ok, _output, duration_ms} ->
+            runtime = %{runtime | started?: false, process_state: :stopped}
+
+            state =
+              state
+              |> Map.put(:runtime, runtime)
+              |> emit(:runtime_stopped, %{
+                runtime_profile: :full_stack,
+                duration_ms: duration_ms,
+                workspace_path: runtime.workspace_path,
+                command: runtime.command
+              })
+
+            {:ok, state}
+
+          {:error, reason, output_preview, duration_ms} ->
+            runtime = %{runtime | process_state: :stop_failed}
+
+            state =
+              state
+              |> Map.put(:runtime, runtime)
+              |> emit(:runtime_stop_failed, %{
+                runtime_profile: :full_stack,
+                duration_ms: duration_ms,
+                workspace_path: runtime.workspace_path,
+                command: runtime.command,
+                reason: reason,
+                output_preview: output_preview
+              })
+
+            {:error,
+             "failed to stop runtime processes: #{reason}#{preview_suffix(output_preview)}",
+             state}
+        end
+    end
+  end
+
+  defp check_command_invocation(command, %{profile: :full_stack} = runtime) do
+    {runtime.command, ["shell", "--", "bash", "-lc", command], runtime.env}
+  end
+
+  defp check_command_invocation(command, _runtime) do
+    {"bash", ["-lc", command], %{}}
+  end
+
+  defp runtime_start_args(runtime) do
+    base = ["processes", "up", "--detach", "--strict-ports"]
+
+    if runtime.processes == [] do
+      base
+    else
+      base ++ runtime.processes
+    end
+  end
+
+  defp runtime_stop_args(_runtime), do: ["processes", "down"]
+
+  defp execute_command(command, args, workspace_path, env, timeout_ms) do
     started_at_ms = System.monotonic_time(:millisecond)
 
+    opts =
+      [cd: workspace_path, stderr_to_stdout: true]
+      |> maybe_put_env(env)
+
     try do
-      task =
-        Task.async(fn ->
-          System.cmd("bash", ["-lc", command], cd: workspace_path, stderr_to_stdout: true)
-        end)
+      task = Task.async(fn -> System.cmd(command, args, opts) end)
 
       case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
-        {:ok, {_output, 0}} ->
-          {:ok, elapsed_ms(started_at_ms)}
+        {:ok, {output, 0}} ->
+          {:ok, output, elapsed_ms(started_at_ms)}
 
         {:ok, {output, exit_code}} ->
-          {:error, "exit code #{exit_code}", elapsed_ms(started_at_ms), output_preview(output)}
+          {:error, "exit code #{exit_code}", output_preview(output), elapsed_ms(started_at_ms)}
 
         nil ->
-          {:error, "timed out after #{timeout_ms}ms", elapsed_ms(started_at_ms), ""}
+          {:error, "timed out after #{timeout_ms}ms", "", elapsed_ms(started_at_ms)}
       end
     rescue
       error ->
-        {:error, Exception.message(error), elapsed_ms(started_at_ms), ""}
+        {:error, Exception.message(error), "", elapsed_ms(started_at_ms)}
     end
+  end
+
+  defp maybe_put_env(opts, env) when map_size(env) == 0, do: opts
+  defp maybe_put_env(opts, env), do: Keyword.put(opts, :env, env_to_cmd_env(env))
+
+  defp env_to_cmd_env(env) when is_map(env), do: Enum.to_list(env)
+  defp env_to_cmd_env(_env), do: []
+
+  defp runtime_profile_from_state(state) do
+    state
+    |> Map.get(:runtime, %{})
+    |> Map.get(:profile, :checks_only)
+  end
+
+  defp default_runtime_state(config) do
+    case runtime_profile(config) do
+      :full_stack ->
+        %{
+          profile: :full_stack,
+          process_state: :pending,
+          started?: false,
+          command: "devenv",
+          processes: [],
+          env: %{},
+          resolved_ports: %{},
+          port_offset: 0,
+          start_timeout_ms: 120_000,
+          stop_timeout_ms: 60_000,
+          workspace_path: nil
+        }
+
+      :checks_only ->
+        %{
+          profile: :checks_only,
+          process_state: :not_required,
+          started?: false,
+          command: nil,
+          processes: [],
+          env: %{},
+          resolved_ports: %{},
+          port_offset: 0,
+          start_timeout_ms: 120_000,
+          stop_timeout_ms: 60_000,
+          workspace_path: nil
+        }
+    end
+  end
+
+  defp runtime_for_workspace(config, workspace) do
+    workspace_key = Map.get(workspace, :key) || Path.basename(workspace.path)
+
+    case runtime_profile(config) do
+      :checks_only ->
+        %{
+          default_runtime_state(config)
+          | workspace_path: workspace.path
+        }
+
+      :full_stack ->
+        full_stack = runtime_full_stack_config(config)
+        user_env = runtime_env_map(field(full_stack, :env))
+        ports = runtime_ports_map(field(full_stack, :ports))
+        offset_mod = positive_integer(field(full_stack, :port_offset_mod), 1000)
+        port_offset = runtime_port_offset(workspace_key, offset_mod)
+
+        resolved_ports =
+          Map.new(ports, fn {key, base_port} ->
+            {key, base_port + port_offset}
+          end)
+
+        builtins = %{
+          "KOLLYWOOD_RUNTIME_PROFILE" => "full_stack",
+          "KOLLYWOOD_RUNTIME_WORKTREE_KEY" => to_string(workspace_key),
+          "KOLLYWOOD_RUNTIME_WORKTREE_PATH" => workspace.path,
+          "KOLLYWOOD_RUNTIME_PORT_OFFSET" => Integer.to_string(port_offset)
+        }
+
+        port_env =
+          Map.new(resolved_ports, fn {key, value} ->
+            {key, Integer.to_string(value)}
+          end)
+
+        %{
+          profile: :full_stack,
+          process_state: :pending,
+          started?: false,
+          command: optional_string(field(full_stack, :command)) || "devenv",
+          processes: runtime_processes(field(full_stack, :processes)),
+          env: builtins |> Map.merge(user_env) |> Map.merge(port_env),
+          resolved_ports: resolved_ports,
+          port_offset: port_offset,
+          start_timeout_ms: positive_integer(field(full_stack, :start_timeout_ms), 120_000),
+          stop_timeout_ms: positive_integer(field(full_stack, :stop_timeout_ms), 60_000),
+          workspace_path: workspace.path
+        }
+    end
+  end
+
+  defp runtime_profile(config) do
+    case field(runtime_config(config), :profile) do
+      :full_stack -> :full_stack
+      "full_stack" -> :full_stack
+      _other -> :checks_only
+    end
+  end
+
+  defp runtime_config(config), do: Map.get(config || %{}, :runtime) || %{}
+
+  defp runtime_full_stack_config(config) do
+    case field(runtime_config(config), :full_stack) do
+      value when is_map(value) -> value
+      _other -> %{}
+    end
+  end
+
+  defp runtime_processes(value) when is_list(value) do
+    value
+    |> Enum.map(&to_string/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp runtime_processes(_value), do: []
+
+  defp runtime_env_map(value) when is_map(value) do
+    Map.new(value, fn {key, val} ->
+      {to_string(key), to_string(val)}
+    end)
+  end
+
+  defp runtime_env_map(_value), do: %{}
+
+  defp runtime_ports_map(value) when is_map(value) do
+    Enum.reduce(value, %{}, fn {key, val}, acc ->
+      case positive_integer(val, nil) do
+        parsed when is_integer(parsed) and parsed > 0 -> Map.put(acc, to_string(key), parsed)
+        _other -> acc
+      end
+    end)
+  end
+
+  defp runtime_ports_map(_value), do: %{}
+
+  defp runtime_port_offset(workspace_key, modulus) do
+    max_modulus = positive_integer(modulus, 1000)
+    :erlang.phash2(to_string(workspace_key), max(max_modulus, 1))
   end
 
   defp run_review_turn(state, config, prompt) do
@@ -934,6 +1283,17 @@ defmodule Kollywood.AgentRunner do
 
   defp combine_errors(nil, stop_reason), do: stop_reason
   defp combine_errors(run_reason, _stop_reason), do: run_reason
+
+  defp merge_error_messages(primary, secondary) do
+    cond do
+      blank_error?(primary) -> secondary
+      blank_error?(secondary) -> primary
+      primary == secondary -> primary
+      true -> "#{primary}; #{secondary}"
+    end
+  end
+
+  defp blank_error?(value), do: not (is_binary(value) and String.trim(value) != "")
 
   defp optional_string(value) when is_binary(value) and value != "", do: value
   defp optional_string(_value), do: nil

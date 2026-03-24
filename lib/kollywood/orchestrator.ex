@@ -186,6 +186,10 @@ defmodule Kollywood.Orchestrator do
     end
   end
 
+  def handle_info({:runner_event, issue_id, event}, state) do
+    {:noreply, track_runner_event(state, issue_id, event)}
+  end
+
   def handle_info({ref, result}, state) when is_reference(ref) do
     Process.demonitor(ref, [:flush])
 
@@ -340,19 +344,32 @@ defmodule Kollywood.Orchestrator do
     identifier = issue_identifier(issue)
 
     with :ok <- tracker_prepare_issue_for_run(tracker, config, issue_id) do
-      run_opts = [workflow_store: state.workflow_store, attempt: attempt] ++ state.runner_opts
+      orchestrator_pid = self()
+      {user_on_event, runner_opts} = Keyword.pop(state.runner_opts, :on_event)
+
+      run_opts =
+        [
+          workflow_store: state.workflow_store,
+          attempt: attempt,
+          on_event: runner_on_event(orchestrator_pid, issue_id, user_on_event)
+        ] ++ runner_opts
 
       task =
         Task.Supervisor.async_nolink(state.task_supervisor, fn ->
           invoke_runner(state.runner, issue, run_opts)
         end)
 
+      runtime_profile = runtime_profile(config)
+
       run_entry = %{
         issue: issue,
         attempt: attempt,
         task_ref: task.ref,
         task_pid: task.pid,
-        started_at: DateTime.utc_now()
+        started_at: DateTime.utc_now(),
+        runtime_profile: runtime_profile,
+        runtime_process_state: initial_runtime_process_state(runtime_profile),
+        runtime_last_event: nil
       }
 
       Logger.info(
@@ -621,6 +638,79 @@ defmodule Kollywood.Orchestrator do
     end
   end
 
+  defp track_runner_event(state, issue_id, event) do
+    if not is_map(event) do
+      state
+    else
+      case Map.get(state.running, issue_id) do
+        nil ->
+          state
+
+        run_entry ->
+          {runtime_process_state, runtime_last_event} =
+            runtime_state_from_event(run_entry, event)
+
+          updated_entry =
+            run_entry
+            |> Map.put(:runtime_process_state, runtime_process_state)
+            |> Map.put(:runtime_last_event, runtime_last_event)
+
+          put_running(state, issue_id, updated_entry)
+      end
+    end
+  end
+
+  defp runtime_state_from_event(run_entry, event) do
+    event_type = Map.get(event, :type) || Map.get(event, "type")
+    timestamp = Map.get(event, :timestamp) || Map.get(event, "timestamp")
+
+    runtime_process_state =
+      case event_type do
+        :runtime_starting -> :starting
+        :runtime_started -> :running
+        :runtime_start_failed -> :start_failed
+        :runtime_stopping -> :stopping
+        :runtime_stopped -> :stopped
+        :runtime_stop_failed -> :stop_failed
+        "runtime_starting" -> :starting
+        "runtime_started" -> :running
+        "runtime_start_failed" -> :start_failed
+        "runtime_stopping" -> :stopping
+        "runtime_stopped" -> :stopped
+        "runtime_stop_failed" -> :stop_failed
+        _other -> Map.get(run_entry, :runtime_process_state, :unknown)
+      end
+
+    runtime_last_event =
+      if runtime_event_type?(event_type) do
+        %{
+          type: event_type,
+          timestamp: timestamp
+        }
+      else
+        Map.get(run_entry, :runtime_last_event)
+      end
+
+    {runtime_process_state, runtime_last_event}
+  end
+
+  defp runtime_event_type?(event_type) do
+    event_type in [
+      :runtime_starting,
+      :runtime_started,
+      :runtime_start_failed,
+      :runtime_stopping,
+      :runtime_stopped,
+      :runtime_stop_failed,
+      "runtime_starting",
+      "runtime_started",
+      "runtime_start_failed",
+      "runtime_stopping",
+      "runtime_stopped",
+      "runtime_stop_failed"
+    ]
+  end
+
   # --- Config and integration ---
 
   defp fetch_config(%Config{} = config), do: {:ok, config}
@@ -779,6 +869,39 @@ defmodule Kollywood.Orchestrator do
        }}
   end
 
+  defp runner_on_event(orchestrator_pid, issue_id, user_on_event)
+       when is_function(user_on_event, 1) do
+    fn event ->
+      send(orchestrator_pid, {:runner_event, issue_id, event})
+      user_on_event.(event)
+    end
+  end
+
+  defp runner_on_event(orchestrator_pid, issue_id, nil) do
+    fn event ->
+      send(orchestrator_pid, {:runner_event, issue_id, event})
+      :ok
+    end
+  end
+
+  defp runner_on_event(orchestrator_pid, issue_id, _other) do
+    fn event ->
+      send(orchestrator_pid, {:runner_event, issue_id, event})
+      :ok
+    end
+  end
+
+  defp runtime_profile(config) do
+    case get_in(config, [Access.key(:runtime, %{}), Access.key(:profile)]) do
+      :full_stack -> :full_stack
+      "full_stack" -> :full_stack
+      _other -> :checks_only
+    end
+  end
+
+  defp initial_runtime_process_state(:full_stack), do: :pending
+  defp initial_runtime_process_state(_profile), do: :not_required
+
   defp apply_runtime_limits(state, config) do
     poll_interval_ms =
       positive_integer(
@@ -914,11 +1037,17 @@ defmodule Kollywood.Orchestrator do
     running =
       state.running
       |> Enum.map(fn {issue_id, entry} ->
+        runtime_last_event = Map.get(entry, :runtime_last_event)
+
         %{
           issue_id: issue_id,
           identifier: issue_identifier(entry.issue),
           attempt: entry.attempt,
-          started_at: entry.started_at
+          started_at: entry.started_at,
+          runtime_profile: Map.get(entry, :runtime_profile, :checks_only),
+          runtime_process_state: Map.get(entry, :runtime_process_state, :unknown),
+          runtime_last_event_type: runtime_last_event_type(runtime_last_event),
+          runtime_last_event_at: runtime_last_event_at(runtime_last_event)
         }
       end)
       |> Enum.sort_by(& &1.issue_id)
@@ -954,6 +1083,12 @@ defmodule Kollywood.Orchestrator do
       last_poll_at: state.last_poll_at
     }
   end
+
+  defp runtime_last_event_type(%{} = event), do: Map.get(event, :type)
+  defp runtime_last_event_type(_event), do: nil
+
+  defp runtime_last_event_at(%{} = event), do: Map.get(event, :timestamp)
+  defp runtime_last_event_at(_event), do: nil
 
   defp maybe_cleanup_terminal_workspace(state, _run_entry, _config), do: state
 
