@@ -181,7 +181,7 @@ defmodule KollywoodWeb.DashboardLive do
 
   # -- Navigation Link Component --
 
-  attr :active, :boolean, default: false
+  attr :is_active, :boolean, default: false
   attr :navigate, :string, default: nil
   attr :patch, :string, default: nil
   slot :inner_block, required: true
@@ -194,8 +194,8 @@ defmodule KollywoodWeb.DashboardLive do
       class={[
         "flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap",
         "hover:text-base-content",
-        @active && "border-primary text-primary",
-        !@active && "border-transparent text-base-content/70 hover:border-base-300"
+        @is_active && "border-primary text-primary",
+        !@is_active && "border-transparent text-base-content/70 hover:border-base-300"
       ]}
     >
       {render_slot(@inner_block)}
