@@ -123,6 +123,102 @@ defmodule Mix.Tasks.Kollywood.PrdTest do
     end
   end
 
+  test "reset reopens story and clears previous run metadata", %{root: root} do
+    path = Path.join(root, "prd.json")
+    workspace_root = Path.join(root, "workspaces")
+    workspace_path = Path.join(workspace_root, "US-200")
+    File.mkdir_p!(workspace_path)
+
+    write_prd!(path, [
+      %{
+        "id" => "US-200",
+        "title" => "Retry story",
+        "priority" => 1,
+        "status" => "failed",
+        "passes" => false,
+        "startedAt" => "2026-03-24T00:00:00Z",
+        "completedAt" => "2026-03-24T00:10:00Z",
+        "lastAttempt" => 4,
+        "lastError" => "timeout",
+        "lastRun" => %{"status" => "failed"},
+        "notes" => "older note"
+      }
+    ])
+
+    _output = capture_io(fn -> Prd.run(["reset", "US-200", "--path", path]) end)
+
+    story = find_story!(path, "US-200")
+    assert story["status"] == "open"
+    assert story["passes"] == false
+    refute Map.has_key?(story, "startedAt")
+    refute Map.has_key?(story, "completedAt")
+    refute Map.has_key?(story, "lastAttempt")
+    refute Map.has_key?(story, "lastError")
+    refute Map.has_key?(story, "lastRun")
+    assert String.contains?(story["notes"], "reset for rerun")
+    assert File.exists?(workspace_path)
+  end
+
+  test "rerun alias supports clearing notes", %{root: root} do
+    path = Path.join(root, "prd.json")
+
+    write_prd!(path, [
+      %{
+        "id" => "US-201",
+        "title" => "Retry with clear notes",
+        "priority" => 1,
+        "status" => "failed",
+        "notes" => "note to clear"
+      }
+    ])
+
+    _output =
+      capture_io(fn ->
+        Prd.run(["rerun", "US-201", "--path", path, "--clear-notes"])
+      end)
+
+    story = find_story!(path, "US-201")
+    assert story["status"] == "open"
+    assert story["notes"] == ""
+  end
+
+  test "reset can remove worktree when fresh-worktree is requested", %{root: root} do
+    path = Path.join(root, "prd.json")
+    workspace_root = Path.join(root, "workspaces")
+    workspace_path = Path.join(workspace_root, "US-202")
+
+    File.mkdir_p!(workspace_path)
+    File.write!(Path.join(workspace_path, "temp.txt"), "temp")
+
+    write_prd!(path, [
+      %{
+        "id" => "US-202",
+        "title" => "Fresh worktree story",
+        "priority" => 1,
+        "status" => "failed"
+      }
+    ])
+
+    _output =
+      capture_io(fn ->
+        Prd.run([
+          "reset",
+          "US-202",
+          "--path",
+          path,
+          "--fresh-worktree",
+          "--workspace-root",
+          workspace_root
+        ])
+      end)
+
+    refute File.exists?(workspace_path)
+
+    story = find_story!(path, "US-202")
+    assert story["status"] == "open"
+    assert story["passes"] == false
+  end
+
   test "validate succeeds for valid PRD and prints summary", %{root: root} do
     path = Path.join(root, "prd.json")
 

@@ -14,6 +14,8 @@ defmodule Mix.Tasks.Kollywood.Prd do
       mix kollywood.prd add --title "Story title" --acceptance "Criterion A" --acceptance "Criterion B"
 
       mix kollywood.prd set-status STORY_ID STATUS [--path PATH]
+      mix kollywood.prd reset STORY_ID [--path PATH] [--clear-notes] [--fresh-worktree]
+      mix kollywood.prd rerun STORY_ID [--path PATH] [--clear-notes] [--fresh-worktree]
       mix kollywood.prd validate [--path PATH]
 
   ## Status values
@@ -24,6 +26,7 @@ defmodule Mix.Tasks.Kollywood.Prd do
   use Mix.Task
 
   @default_path "prd.json"
+  @default_workspace_root "~/kollywood-workspaces"
   @valid_statuses ["open", "in_progress", "done", "failed", "cancelled"]
 
   @impl Mix.Task
@@ -32,6 +35,8 @@ defmodule Mix.Tasks.Kollywood.Prd do
       ["list" | rest] -> list_command(rest)
       ["add" | rest] -> add_command(rest)
       ["set-status", story_id, status | rest] -> set_status_command(story_id, status, rest)
+      ["reset", story_id | rest] -> reset_command(story_id, rest)
+      ["rerun", story_id | rest] -> reset_command(story_id, rest)
       ["validate" | rest] -> validate_command(rest)
       _other -> raise_usage_error()
     end
@@ -195,6 +200,56 @@ defmodule Mix.Tasks.Kollywood.Prd do
       Mix.shell().info(
         "PRD is valid: #{path} (total_stories=#{total_stories}, active_stories=#{active_stories})"
       )
+    else
+      {:error, reason} -> Mix.raise(reason)
+    end
+  end
+
+  defp reset_command(story_id, args) do
+    {opts, positional, invalid} =
+      OptionParser.parse(args,
+        strict: [
+          path: :string,
+          clear_notes: :boolean,
+          fresh_worktree: :boolean,
+          workspace_root: :string
+        ],
+        aliases: [p: :path]
+      )
+
+    ensure_no_invalid_options!(invalid)
+    ensure_no_positional_args!(positional)
+
+    story_id = String.trim(story_id)
+
+    if story_id == "" do
+      Mix.raise("Story ID cannot be empty")
+    end
+
+    path = resolved_path(Keyword.get(opts, :path))
+    clear_notes? = Keyword.get(opts, :clear_notes, false)
+    fresh_worktree? = Keyword.get(opts, :fresh_worktree, false)
+    workspace_root = resolved_workspace_root(Keyword.get(opts, :workspace_root))
+
+    with {:ok, prd} <- read_prd(path),
+         {:ok, stories} <- user_stories(prd),
+         {:ok, updated_stories} <- reset_story(stories, story_id, clear_notes?) do
+      updated_prd = Map.put(prd, "userStories", updated_stories)
+
+      case write_prd(path, updated_prd) do
+        :ok ->
+          if fresh_worktree? do
+            case remove_story_worktree(workspace_root, story_id) do
+              :ok -> :ok
+              {:error, reason} -> Mix.raise(reason)
+            end
+          end
+
+          Mix.shell().info("Reset #{story_id} for rerun in #{path}")
+
+        {:error, reason} ->
+          Mix.raise(reason)
+      end
     else
       {:error, reason} -> Mix.raise(reason)
     end
@@ -365,6 +420,34 @@ defmodule Mix.Tasks.Kollywood.Prd do
             |> put_story_field(:passes, status == "done")
 
           {updated_story, true}
+        else
+          {story, found}
+        end
+      end)
+
+    if found? do
+      {:ok, updated_stories}
+    else
+      {:error, "Story not found: #{target_story_id}"}
+    end
+  end
+
+  defp reset_story(stories, target_story_id, clear_notes?) do
+    {updated_stories, found?} =
+      Enum.map_reduce(stories, false, fn story, found ->
+        if story_id(story) == target_story_id do
+          reset_story =
+            story
+            |> put_story_field(:status, "open")
+            |> put_story_field(:passes, false)
+            |> delete_story_field(:startedAt)
+            |> delete_story_field(:completedAt)
+            |> delete_story_field(:lastAttempt)
+            |> delete_story_field(:lastError)
+            |> delete_story_field(:lastRun)
+            |> reset_notes(clear_notes?)
+
+          {reset_story, true}
         else
           {story, found}
         end
@@ -603,6 +686,44 @@ defmodule Mix.Tasks.Kollywood.Prd do
   defp resolved_path(nil), do: Path.expand(@default_path)
   defp resolved_path(path), do: Path.expand(path)
 
+  defp resolved_workspace_root(nil), do: expand_user_path(@default_workspace_root)
+  defp resolved_workspace_root(path), do: expand_user_path(path)
+
+  defp expand_user_path(path) when is_binary(path) do
+    trimmed = String.trim(path)
+
+    case trimmed do
+      "~" ->
+        System.user_home!()
+
+      <<"~/", rest::binary>> ->
+        Path.join(System.user_home!(), rest)
+
+      _other ->
+        Path.expand(trimmed)
+    end
+  end
+
+  defp expand_user_path(_path), do: Path.expand(@default_workspace_root)
+
+  defp remove_story_worktree(workspace_root, story_id) do
+    workspace_path = Path.join(workspace_root, story_id)
+
+    if File.exists?(workspace_path) do
+      case File.rm_rf(workspace_path) do
+        {:ok, _entries} ->
+          Mix.shell().info("Removed worktree workspace #{workspace_path}")
+          :ok
+
+        {:error, reason, _path} ->
+          {:error, "Failed to remove workspace #{workspace_path}: #{inspect(reason)}"}
+      end
+    else
+      Mix.shell().info("No worktree workspace found at #{workspace_path}")
+      :ok
+    end
+  end
+
   defp story_id(story) do
     story
     |> field(:id)
@@ -620,6 +741,27 @@ defmodule Mix.Tasks.Kollywood.Prd do
     end
   end
 
+  defp delete_story_field(story, key) when is_map(story) do
+    story
+    |> Map.delete(key)
+    |> Map.delete(Atom.to_string(key))
+  end
+
+  defp reset_notes(story, true), do: put_story_field(story, :notes, "")
+
+  defp reset_notes(story, false) do
+    current_notes = optional_string(field(story, :notes))
+    line = "[#{now_iso8601()}] reset for rerun"
+
+    notes =
+      case current_notes do
+        nil -> line
+        existing -> "#{existing}\n#{line}"
+      end
+
+    put_story_field(story, :notes, notes)
+  end
+
   defp field(map, key) when is_map(map),
     do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
 
@@ -634,6 +776,8 @@ defmodule Mix.Tasks.Kollywood.Prd do
   end
 
   defp optional_string(_value), do: nil
+
+  defp now_iso8601, do: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
 
   defp ensure_no_invalid_options!([]), do: :ok
 
@@ -665,6 +809,8 @@ defmodule Mix.Tasks.Kollywood.Prd do
         [--priority N] [--status open|in_progress|done|failed|cancelled] [--depends-on US-001,US-002]\
         [--acceptance TEXT] [--notes TEXT]
       mix kollywood.prd set-status STORY_ID STATUS [--path PATH]
+      mix kollywood.prd reset STORY_ID [--path PATH] [--clear-notes] [--fresh-worktree] [--workspace-root PATH]
+      mix kollywood.prd rerun STORY_ID [--path PATH] [--clear-notes] [--fresh-worktree] [--workspace-root PATH]
       mix kollywood.prd validate [--path PATH]
     """)
   end

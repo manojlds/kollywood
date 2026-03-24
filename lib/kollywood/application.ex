@@ -12,6 +12,8 @@ defmodule Kollywood.Application do
 
     children =
       [
+        Kollywood.Repo,
+        Kollywood.Store.Bootstrap,
         KollywoodWeb.Telemetry,
         {DNSCluster, query: Application.get_env(:kollywood, :dns_cluster_query) || :ignore},
         {Phoenix.PubSub, name: Kollywood.PubSub},
