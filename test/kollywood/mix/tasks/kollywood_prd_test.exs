@@ -139,6 +139,36 @@ defmodule Mix.Tasks.Kollywood.PrdTest do
     assert output =~ "active_stories=2"
   end
 
+  test "validate rejects non-object top-level JSON", %{root: root} do
+    path = Path.join(root, "prd.json")
+
+    File.write!(path, Jason.encode!([%{"id" => "US-001"}]))
+
+    assert_raise Mix.Error, ~r/must contain a JSON object/i, fn ->
+      capture_io(fn -> Prd.run(["validate", "--path", path]) end)
+    end
+  end
+
+  test "validate rejects missing userStories array", %{root: root} do
+    path = Path.join(root, "prd.json")
+
+    File.write!(
+      path,
+      Jason.encode!(
+        %{
+          "project" => "kollywood",
+          "branchName" => "test",
+          "description" => "test fixture"
+        },
+        pretty: true
+      )
+    )
+
+    assert_raise Mix.Error, ~r/missing a valid userStories array/i, fn ->
+      capture_io(fn -> Prd.run(["validate", "--path", path]) end)
+    end
+  end
+
   test "validate rejects invalid statuses", %{root: root} do
     path = Path.join(root, "prd.json")
 
