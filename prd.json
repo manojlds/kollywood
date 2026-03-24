@@ -5,222 +5,24 @@
   "userStories": [
     {
       "acceptanceCriteria": [
-        "mix kollywood.prd validate succeeds for valid prd.json",
-        "mix kollywood.prd validate raises Mix.Error for invalid statuses or broken dependencies",
-        "tests cover success and failure paths"
+        "Recent activity rows on overview are readable on mobile without overflow",
+        "Clicking a recent activity row navigates to the correct run detail page",
+        "Clicking a story ID or title in the Stories view opens a slide-over with full story details",
+        "Slide-over can be closed with a button or backdrop click",
+        "Each story card has a status change control that updates prd.json on disk",
+        "Run detail page auto-expands run.log and worker.log panels if they have content",
+        "Settings section shows workflow_path and tracker_path",
+        "Tests cover show_story and update_story_status events"
       ],
       "dependsOn": [],
-      "description": "Implement a new subcommand: mix kollywood.prd validate. It must validate prd.json structure and fail with clear errors when invalid. Validate: top-level JSON object, userStories array, unique non-empty story IDs, valid status values (open/in_progress/done), dependsOn references existing IDs, and no self-dependencies. On success, print a short summary with total stories and active stories. Add focused tests under test/kollywood/mix/tasks and update README with usage.",
-      "id": "US-101",
-      "notes": "Completed via dogfood run on branch kollywood/US-101",
-      "passes": true,
-      "priority": 1,
-      "status": "done",
-      "title": "Add PRD validate command"
-    },
-    {
-      "acceptanceCriteria": [
-        "review.max_cycles is parsed from workflow config with sane default",
-        "worker-review loop passes when reviewer fails first then passes within max_cycles",
-        "run fails with clear reason when review keeps failing through max_cycles"
-      ],
-      "dependsOn": [
-        "US-101"
-      ],
-      "description": "When review is enabled, let worker and reviewer iterate for configurable review cycles before final failure. Add review.max_cycles config (default 1). On REVIEW_FAIL verdict, run a remediation worker turn using reviewer feedback, rerun required checks, and re-run reviewer until pass or max cycles reached. Keep checks and review token behavior strict. Add tests for pass-after-feedback and fail-after-max-cycles behavior, and update docs/workflow examples.",
-      "id": "US-102",
-      "notes": "",
-      "passes": true,
-      "priority": 1,
-      "status": "done",
-      "title": "Add multi-cycle worker-review loop"
-    },
-    {
-      "acceptanceCriteria": [
-        "config parser supports publish and git policy defaults with validation",
-        "workflow docs include publish policy examples and safe defaults",
-        "tests cover valid and invalid publish policy values"
-      ],
-      "completedAt": "2026-03-24T02:55:02Z",
-      "dependsOn": [
-        "US-102"
-      ],
-      "description": "Introduce publish policy configuration so successful runs can optionally push branches and create pull requests. Add config section with defaults: publish.provider (github/gitlab), publish.auto_push (never/on_pass), publish.auto_create_pr (never/draft/ready), and git.require_commit (true/false). Parse and validate config, document in WORKFLOW.md/README, and add tests for defaults and explicit values. Keep default behavior conservative (no push, no PR).",
-      "id": "US-103",
-      "lastAttempt": 6,
-      "lastError": null,
-      "lastRun": {
-        "ended_at": "2026-03-24T02:55:02.189062Z",
-        "status": "ok",
-        "turn_count": 1,
-        "workspace_path": "/home/manojlds/kollywood-workspaces/US-103"
-      },
-      "notes": "[2026-03-24T02:22:54Z] attempt 1: Agent command timed out after 300000ms\n[2026-03-24T02:28:04Z] attempt 2: Agent command timed out after 300000ms\n[2026-03-24T02:33:24Z] attempt 3: Agent command timed out after 300000ms\n[2026-03-24T02:37:25Z] attempt 4: required checks failed:\n- check #2 failed (mix test): exit code 1 | output: \"[info] WorkflowStore loaded /home/manojlds/kollywood-workspaces/US-103/WORKFLOW.md\\nRunning ExUnit with seed: 181638, max_cases: 24\\n\\n    error: module KollywoodWeb.ConnCase is not loaded and could not be found\\n    │\\n  2 │   use KollywoodWeb.ConnCase, async: true\\n    │   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n    │\\n    └─ test/kollywood_web/controllers/error_html_test.exs:2: KollywoodWeb.ErrorHTMLTest (module)\\n\\n    error: module KollywoodWeb.ConnCase is not loaded and could not be found\\n    │\\n  2 │   use KollywoodWeb.ConnCase\\n    │   ^^^^^^^^^^^^^^^^^^^^^^^^^\\n    │\\n    └─ test/kollywood_web/cont\"\n[2026-03-24T02:38:55Z] attempt 5: Agent command failed with exit code 1: You have hit your ChatGPT usage limit (plus plan). Try again in ~7 min.\n[2026-03-24T02:41:46Z] attempt 6: Agent command failed with exit code 1: You have hit your ChatGPT usage limit (plus plan). Try again in ~4 min.",
-      "passes": true,
-      "priority": 1,
-      "startedAt": "2026-03-24T02:17:54Z",
-      "status": "done",
-      "title": "Add publish policy config for push and PR creation"
-    },
-    {
-      "acceptanceCriteria": [
-        "runtime profile config parses with defaults and validation",
-        "checks_only runs without starting processes",
-        "full_stack starts per-worktree processes and runs checks in that isolated runtime",
-        "runtime processes are stopped on run completion/failure"
-      ],
-      "completedAt": "2026-03-24T08:37:37Z",
-      "dependsOn": [
-        "US-103"
-      ],
-      "description": "Implement runtime orchestration profiles so each issue worktree can run isolated processes when needed. Add workflow config for runtime profiles with strict isolation support: checks_only (no processes) and full_stack (per-worktree processes + per-worktree env vars/ports). Wire AgentRunner/Orchestrator lifecycle to start/stop per-worktree runtime via devenv before checks when profile requires it. Ensure checks can run inside devenv shell in the worktree. Include status visibility for runtime process state in orchestrator status output. Keep defaults lightweight so small stories run checks_only.",
-      "id": "US-104",
-      "lastError": null,
-      "lastRun": {
-        "ended_at": "2026-03-24T08:37:37.197079Z",
-        "status": "ok",
-        "turn_count": 2,
-        "workspace_path": "/home/manojlds/kollywood-workspaces/US-104"
-      },
-      "notes": "[2026-03-24T03:00:04Z] attempt 1: Agent command timed out after 300000ms\n[2026-03-24T03:05:14Z] attempt 2: Agent command timed out after 300000ms\n[2026-03-24T03:10:34Z] attempt 3: Agent command timed out after 300000ms\n[2026-03-24T03:16:04Z] attempt 1: Agent command timed out after 300000ms\n[2026-03-24T08:01:01Z] reset for rerun",
-      "passes": true,
-      "priority": 2,
-      "startedAt": "2026-03-24T08:02:07Z",
-      "status": "done",
-      "title": "Add per-worktree devenv runtime isolation profiles"
-    },
-    {
-      "acceptanceCriteria": [
-        "worker/reviewer/check/runtime outputs are persisted per run attempt",
-        "mix kollywood.orch.logs can print latest and specific attempt logs",
-        "follow mode streams appended log lines"
-      ],
-      "dependsOn": [
-        "US-104"
-      ],
-      "description": "Implement persistent run logs for worker, reviewer, checks, and runtime lifecycle per issue attempt. Store structured run metadata for UI use and write append-only log files under a project-scoped path. Add mix command mix kollywood.orch.logs STORY_ID [--follow] [--attempt N] to inspect logs. Include tests for log file creation, metadata capture, and follow mode output.",
-      "id": "US-105",
-      "lastAttempt": 1,
-      "lastError": "review failed: reviewer turn failed: Agent command failed with exit code 1: You have hit your ChatGPT usage limit (plus plan). Try again in ~7120 min.",
-      "notes": "[2026-03-24T13:54:16Z] attempt 1: review failed: reviewer turn failed: Agent command failed with exit code 1: You have hit your ChatGPT usage limit (plus plan). Try again in ~7120 min.",
-      "passes": true,
-      "priority": 1,
-      "startedAt": "2026-03-24T13:31:08Z",
-      "status": "done",
-      "title": "Add run log persistence and live tail command"
-    },
-    {
-      "acceptanceCriteria": [
-        "dashboard renders with project selector and persists selected project in URL",
-        "overview counters and active work reflect selected project only",
-        "navigation stays within selected project context"
-      ],
-      "dependsOn": [
-        "US-105"
-      ],
-      "description": "Add a LiveView dashboard shell with a top-right project selector and project-scoped navigation for Overview, Stories, Runs, and Settings. Projects must come from the SQLite store and route state must remain in selected project context. Show core counters (open/in_progress/done/failed), active workers, and last errors for selected project. Keep design clean and responsive for desktop/mobile.",
-      "id": "US-106",
-      "lastAttempt": 1,
-      "lastError": "Agent command timed out after 1800000ms",
-      "notes": "[2026-03-24T13:54:29Z] attempt 1: Agent command failed with exit code 1: You have hit your ChatGPT usage limit (plus plan). Try again in ~7119 min.\n[2026-03-24T15:10:15Z] attempt 1: Failed to prepare workspace: Failed to create worktree: Preparing worktree (new branch 'kollywood/US-106')\nfatal: a branch named 'kollywood/US-106' already exists\n[2026-03-24T15:11:23Z] reset for rerun\n[2026-03-24T15:23:43Z] reset for rerun\n[2026-03-24T15:55:22Z] attempt 1: Agent command timed out after 1800000ms",
-      "passes": false,
-      "priority": 2,
-      "startedAt": "2026-03-24T15:25:22Z",
-      "status": "failed",
-      "title": "Build project-scoped dashboard shell with selector"
-    },
-    {
-      "acceptanceCriteria": [
-        "stories board groups and filters by status within selected project",
-        "run detail shows timeline and logs for a selected story attempt",
-        "control actions invoke orchestrator/PRD commands correctly"
-      ],
-      "dependsOn": [
-        "US-106"
-      ],
-      "description": "Implement project-scoped Stories board and Run detail views. Stories board should group by status and show dependency badges, attempt count, and runtime profile. Run detail should include timeline/events, latest error, and live log panel from persisted logs. Add control actions: poll now, stop story, reset, rerun, rerun fresh worktree, mark failed/cancelled. Add tests for UI rendering and control event wiring.",
-      "id": "US-107",
-      "lastAttempt": 1,
-      "lastError": "Failed to prepare workspace: Failed to create worktree: Preparing worktree (new branch 'kollywood/US-107')\nfatal: a branch named 'kollywood/US-107' already exists",
-      "notes": "[2026-03-24T13:54:44Z] attempt 1: Agent command failed with exit code 1: You have hit your ChatGPT usage limit (plus plan). Try again in ~7119 min.\n[2026-03-24T15:10:20Z] attempt 1: Failed to prepare workspace: Failed to create worktree: Preparing worktree (new branch 'kollywood/US-107')\nfatal: a branch named 'kollywood/US-107' already exists",
-      "passes": false,
-      "priority": 3,
-      "startedAt": "2026-03-24T13:54:33Z",
-      "status": "failed",
-      "title": "Add stories board and run detail UI with controls"
-    },
-    {
-      "acceptanceCriteria": [
-        "project.max_concurrent_agents config parsed and stored with default of 1",
-        "orchestrator respects per-project agent limit when dispatching",
-        "dashboard shows per-project agent utilization vs limit"
-      ],
-      "dependsOn": [
-        "US-106"
-      ],
-      "description": "Add a per-project configuration setting to control how many agents can run concurrently within a single project. Add project.max_concurrent_agents to the projects table with default value of 1. Update the orchestrator to respect this limit when dispatching stories for a project, ensuring only one story runs at a time per project by default. Include project-level status visibility showing current utilization vs limit. This prevents resource contention and keeps costs predictable when multiple stories are queued.",
-      "id": "US-108",
+      "description": "Polish the project dashboard across all sections. Key changes:\n\n1. **Overview - Recent Activity (mobile fix):** The activity row `flex` layout overflows on small screens. Change to a stacked layout on mobile: status badge + ID/title on top row, error (if any) on second row beneath. Use `flex-col sm:flex-row` or similar.\n\n2. **Overview - Clickable items:** Each recent activity row should navigate to the run detail for that story's latest attempt. Use `navigate` to `/projects/:slug/runs/:story_id/:attempt` where attempt = `story[\"lastAttempt\"]`. Wrap each row in a `<.link>`.\n\n3. **Stories - Story detail slide-over:** Clicking a story ID badge or card title should open a slide-over panel (right side, overlay) showing: title, status badge, description (full), acceptance criteria (bulleted list), notes, dependsOn badges, priority, lastError if any. Add a close button. Implement as a new `story_detail` component toggled by a `selected_story` assign (set via `handle_event(\"show_story\", %{\"id\" => id}, socket)`). No new route needed - use socket assigns.\n\n4. **Stories - Status quick-change:** Add a small dropdown or set of buttons on each story card to change its status (open / in_progress / done / failed / cancelled). On change, update prd.json on disk and reassign `@stories`. Wire a `handle_event(\"update_story_status\", %{\"id\" => id, \"status\" => status}, socket)`. Read current prd.json, find the story, update status, write back, reload stories.\n\n5. **Runs - Log visibility:** In the run detail view, the log collapse panels exist but may be hard to find. Ensure the run detail is accessible: from the Runs list, each row should have a clear 'View' link. In the run detail, auto-expand the `run.log` panel. If `worker.log` has content, show it expanded too. If all logs are empty strings, show a 'No logs available' message instead of nothing.\n\n6. **Settings - show workflow path and tracker path:** Add two read-only fields showing `workflow_path` and `tracker_path` from the project record, so users know which files are being used.\n\nImplementation notes:\n- Stories are read from `project.tracker_path` (a prd.json file on disk). Writes should use `File.write!/2` with `Jason.encode!(..., pretty: true)`.\n- The slide-over should use a fixed overlay div with `z-50`, a backdrop click to close, and slide in from the right with a Tailwind `translate-x` transition.\n- Add `id` attributes to key elements per Phoenix LiveView best practices.\n- Keep existing DaisyUI styling consistent.\n- Add tests for the new `show_story` and `update_story_status` events in `dashboard_live_test.exs`.",
+      "id": "US-112",
       "notes": "",
       "passes": false,
       "priority": 1,
-      "startedAt": "2026-03-24T15:55:22Z",
+      "startedAt": "2026-03-24T21:06:01Z",
       "status": "in_progress",
-      "title": "Add per-project max concurrent agents setting"
-    },
-    {
-      "acceptanceCriteria": [
-        "reset automatically cleans up orphaned branches and worktrees",
-        "worktree creation succeeds even when branch exists from previous failed run",
-        "no manual git branch deletion needed between reset and rerun",
-        "stories are immediately dispatchable after reset"
-      ],
-      "dependsOn": [
-        "US-106"
-      ],
-      "description": "Fix worktree and branch cleanup so that reset/rerun commands always leave stories in a pristine state. Auto-detect and remove orphaned branches and worktree registrations when they block new worktree creation. Handle 'branch already exists' gracefully by checking for existing branches and either reusing or cleaning them up before creating new worktrees. Add proper worktree pruning on reset commands. Ensure that after reset, a story can immediately be dispatched without manual intervention for branch/worktree cleanup.",
-      "id": "US-109",
-      "notes": "",
-      "passes": false,
-      "priority": 1,
-      "startedAt": "2026-03-24T15:55:22Z",
-      "status": "in_progress",
-      "title": "Fix worktree cleanup to leave stories in pristine state for rerun"
-    },
-    {
-      "acceptanceCriteria": [
-        "agent stdout/stderr streams to log files in real-time during execution",
-        "mix kollywood.orch.tail shows live agent output with timestamps",
-        "stdout and stderr are captured in separate streams"
-      ],
-      "dependsOn": [
-        "US-106"
-      ],
-      "description": "Add real-time capture and streaming of agent stdout and stderr to enable debugging of long-running or stuck agents. Stream output to project-scoped log files as the agent runs (not just at completion). Add mix command mix kollywood.orch.tail US-106 [--stream] to view live agent output. Include timestamps and separate stdout/stderr streams. This enables seeing what files the agent is creating, what errors it hits, and whether it's making progress during long turns.",
-      "id": "US-110",
-      "notes": "",
-      "passes": false,
-      "priority": 1,
-      "startedAt": "2026-03-24T15:59:07Z",
-      "status": "in_progress",
-      "title": "Capture and stream agent stdout/stderr in real-time"
-    },
-    {
-      "acceptanceCriteria": [
-        "system detects files created during timed-out turns",
-        "resume prompt includes summary of partial work completed",
-        "agent continues from checkpoint rather than restarting"
-      ],
-      "dependsOn": [
-        "US-106"
-      ],
-      "description": "Enable resuming work when agent turns timeout after partial progress. Detect files created/modified during the turn before timeout. On retry, inject a resume prompt that informs the agent what work was already done (files created, tests passing/failing, etc.) and asks it to continue rather than start fresh. Add checkpoint events during long turns to track progress. Include acceptance criteria for detecting partial work, generating resume prompts, and validating resumed work completes successfully.",
-      "id": "US-111",
-      "notes": "",
-      "passes": false,
-      "priority": 1,
-      "startedAt": "2026-03-24T16:00:42Z",
-      "status": "in_progress",
-      "title": "Add resume capability for timed-out agent turns"
+      "title": "Improve dashboard UI: story details, run logs, and mobile layout"
     }
   ]
 }
