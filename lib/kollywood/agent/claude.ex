@@ -13,7 +13,7 @@ defmodule Kollywood.Agent.Claude do
 
   @defaults %{
     command: "claude",
-    args: ["--print"],
+    args: ["--print", "--dangerously-skip-permissions"],
     prompt_mode: :argv,
     timeout_ms: 7_200_000,
     env: %{}
