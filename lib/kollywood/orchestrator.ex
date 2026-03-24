@@ -39,6 +39,7 @@ defmodule Kollywood.Orchestrator do
           max_concurrent_agents: pos_integer(),
           max_retry_backoff_ms: pos_integer(),
           retries_enabled: boolean(),
+          max_attempts: pos_integer() | nil,
           retry_base_delay_ms: pos_integer(),
           continuation_delay_ms: pos_integer(),
           running: %{optional(String.t()) => map()},
@@ -62,6 +63,7 @@ defmodule Kollywood.Orchestrator do
     :max_concurrent_agents,
     :max_retry_backoff_ms,
     :retries_enabled,
+    :max_attempts,
     :retry_base_delay_ms,
     :continuation_delay_ms,
     :last_error,
@@ -125,6 +127,7 @@ defmodule Kollywood.Orchestrator do
             @default_max_retry_backoff_ms
           ),
         retries_enabled: Keyword.get(opts, :retries_enabled, true),
+        max_attempts: positive_integer(Keyword.get(opts, :max_attempts), nil),
         retry_base_delay_ms:
           positive_integer(Keyword.get(opts, :retry_base_delay_ms), @default_retry_base_delay_ms),
         continuation_delay_ms:
@@ -250,25 +253,35 @@ defmodule Kollywood.Orchestrator do
       state = apply_runtime_limits(state, config)
       issue = find_issue(issues, issue_id)
 
-      cond do
-        is_nil(issue) ->
-          release_claim(state, issue_id)
+      if not is_nil(state.max_attempts) and retry_entry.attempt >= state.max_attempts do
+        Logger.warning(
+          "Max attempts (#{state.max_attempts}) reached for issue_id=#{issue_id} on retry dispatch; stopping"
+        )
 
-        not issue_dispatchable?(issue, config) ->
-          release_claim(state, issue_id)
+        state
+        |> release_claim(issue_id)
+        |> Map.update!(:completed, &MapSet.put(&1, issue_id))
+      else
+        cond do
+          is_nil(issue) ->
+            release_claim(state, issue_id)
 
-        map_size(state.running) >= state.max_concurrent_agents ->
-          schedule_retry(
-            state,
-            issue_id,
-            issue,
-            retry_entry.attempt,
-            "no available orchestrator slots",
-            retry_backoff_delay_ms(state, retry_entry.attempt)
-          )
+          not issue_dispatchable?(issue, config) ->
+            release_claim(state, issue_id)
 
-        true ->
-          start_issue_run(state, issue, retry_entry.attempt, config, tracker)
+          map_size(state.running) >= state.max_concurrent_agents ->
+            schedule_retry(
+              state,
+              issue_id,
+              issue,
+              retry_entry.attempt,
+              "no available orchestrator slots",
+              retry_backoff_delay_ms(state, retry_entry.attempt)
+            )
+
+          true ->
+            start_issue_run(state, issue, retry_entry.attempt, config, tracker)
+        end
       end
     else
       {:error, reason} ->
@@ -432,8 +445,12 @@ defmodule Kollywood.Orchestrator do
     |> list_value()
     |> Enum.any?(fn blocker ->
       blocker_state = field(blocker, :state)
-      not terminal_state?(blocker_state, config)
+      not success_terminal_state?(blocker_state, config)
     end)
+  end
+
+  defp success_terminal_state?(state_name, config) do
+    terminal_state?(state_name, config) and normalize_state(state_name) == "done"
   end
 
   defp sort_issues_for_dispatch(issues) do
@@ -500,24 +517,36 @@ defmodule Kollywood.Orchestrator do
   # --- Retry and claim management ---
 
   defp maybe_schedule_retry(state, issue_id, issue, attempt, reason) do
-    if state.retries_enabled do
-      schedule_retry(
-        state,
-        issue_id,
-        issue,
-        attempt,
-        reason,
-        retry_backoff_delay_ms(state, attempt)
-      )
-    else
-      Logger.warning(
-        "Retries disabled for issue_id=#{issue_id}; stopping retries after failure: #{reason}"
-      )
+    cond do
+      not is_nil(state.max_attempts) and attempt >= state.max_attempts ->
+        Logger.warning(
+          "Max attempts (#{state.max_attempts}) reached for issue_id=#{issue_id}; stopping: #{reason}"
+        )
 
-      state
-      |> cancel_retry(issue_id)
-      |> release_claim(issue_id)
-      |> Map.update!(:completed, &MapSet.put(&1, issue_id))
+        state
+        |> cancel_retry(issue_id)
+        |> release_claim(issue_id)
+        |> Map.update!(:completed, &MapSet.put(&1, issue_id))
+
+      state.retries_enabled ->
+        schedule_retry(
+          state,
+          issue_id,
+          issue,
+          attempt,
+          reason,
+          retry_backoff_delay_ms(state, attempt)
+        )
+
+      true ->
+        Logger.warning(
+          "Retries disabled for issue_id=#{issue_id}; stopping retries after failure: #{reason}"
+        )
+
+        state
+        |> cancel_retry(issue_id)
+        |> release_claim(issue_id)
+        |> Map.update!(:completed, &MapSet.put(&1, issue_id))
     end
   end
 
@@ -1013,12 +1042,19 @@ defmodule Kollywood.Orchestrator do
         _other -> state.retries_enabled
       end
 
+    max_attempts =
+      positive_integer(
+        get_in(config, [Access.key(:agent, %{}), Access.key(:max_attempts)]),
+        state.max_attempts
+      )
+
     %{
       state
       | poll_interval_ms: poll_interval_ms,
         max_concurrent_agents: max_concurrent_agents,
         max_retry_backoff_ms: max_retry_backoff_ms,
-        retries_enabled: retries_enabled
+        retries_enabled: retries_enabled,
+        max_attempts: max_attempts
     }
   end
 
@@ -1159,6 +1195,7 @@ defmodule Kollywood.Orchestrator do
       poll_interval_ms: state.poll_interval_ms,
       max_concurrent_agents: state.max_concurrent_agents,
       retries_enabled: state.retries_enabled,
+      max_attempts: state.max_attempts,
       max_retry_backoff_ms: state.max_retry_backoff_ms,
       retry_base_delay_ms: state.retry_base_delay_ms,
       continuation_delay_ms: state.continuation_delay_ms,

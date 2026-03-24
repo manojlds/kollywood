@@ -15,8 +15,8 @@ polling:
 
 checks:
   required:
-    - mix format --check-formatted
-    - mix test
+    - devenv shell -- mix format --check-formatted
+    - devenv shell -- mix test
   timeout_ms: 1800000
   fail_fast: true
 
