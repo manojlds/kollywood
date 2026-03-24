@@ -1,6 +1,22 @@
 {
-  "project": "kollywood",
   "branchName": "main",
   "description": "Local PRD tracker stories for Kollywood dogfooding.",
-  "userStories": []
+  "project": "kollywood",
+  "userStories": [
+    {
+      "acceptanceCriteria": [
+        "mix kollywood.prd validate succeeds for valid prd.json",
+        "mix kollywood.prd validate raises Mix.Error for invalid statuses or broken dependencies",
+        "tests cover success and failure paths"
+      ],
+      "dependsOn": [],
+      "description": "Implement a new subcommand: mix kollywood.prd validate. It must validate prd.json structure and fail with clear errors when invalid. Validate: top-level JSON object, userStories array, unique non-empty story IDs, valid status values (open/in_progress/done), dependsOn references existing IDs, and no self-dependencies. On success, print a short summary with total stories and active stories. Add focused tests under test/kollywood/mix/tasks and update README with usage.",
+      "id": "US-101",
+      "notes": "Completed via dogfood run on branch kollywood/US-101",
+      "passes": true,
+      "priority": 1,
+      "status": "done",
+      "title": "Add PRD validate command"
+    }
+  ]
 }

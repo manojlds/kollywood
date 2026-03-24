@@ -22,6 +22,7 @@ defmodule Kollywood.AgentRunnerTest do
 
     workspace_root = Path.join(root, "workspaces")
     cli_path = Path.join(root, "fake_runner_cli.sh")
+    review_cli_path = Path.join(root, "fake_review_cli.sh")
     prompt_log = Path.join(root, "prompts.log")
 
     File.mkdir_p!(root)
@@ -50,11 +51,34 @@ defmodule Kollywood.AgentRunnerTest do
 
     File.chmod!(cli_path, 0o755)
 
+    File.write!(review_cli_path, """
+    #!/usr/bin/env bash
+    set -eu
+
+    prompt="$(cat)"
+
+    if [ -n "${REVIEW_PROMPT_LOG_FILE:-}" ]; then
+      printf "REVIEW_PROMPT<<%s>>\n" "$prompt" >> "$REVIEW_PROMPT_LOG_FILE"
+    fi
+
+    verdict="${REVIEW_VERDICT:-REVIEW_PASS}"
+    echo "$verdict"
+    echo "reviewed:$prompt"
+    """)
+
+    File.chmod!(review_cli_path, 0o755)
+
     on_exit(fn ->
       File.rm_rf!(root)
     end)
 
-    %{root: root, workspace_root: workspace_root, cli_path: cli_path, prompt_log: prompt_log}
+    %{
+      root: root,
+      workspace_root: workspace_root,
+      cli_path: cli_path,
+      review_cli_path: review_cli_path,
+      prompt_log: prompt_log
+    }
   end
 
   test "runs a single turn and emits events in order", %{
@@ -179,6 +203,132 @@ defmodule Kollywood.AgentRunnerTest do
     assert Enum.take(Enum.map(result.events, & &1.type), -2) == [:session_stopped, :run_finished]
   end
 
+  test "fails when a required check command fails", %{
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    prompt_log: prompt_log
+  } do
+    config =
+      runner_config(workspace_root, cli_path, prompt_log)
+      |> Map.put(:checks, %{
+        required: ["echo preflight", "exit 7"],
+        timeout_ms: 10_000,
+        fail_fast: true
+      })
+
+    template = "Work on {{ issue.identifier }}"
+
+    assert {:error, result} =
+             AgentRunner.run_issue(@issue,
+               config: config,
+               prompt_template: template,
+               mode: :single_turn
+             )
+
+    assert result.error =~ "required checks failed"
+    assert result.error =~ "exit code 7"
+    assert :check_failed in Enum.map(result.events, & &1.type)
+    assert :checks_failed in Enum.map(result.events, & &1.type)
+  end
+
+  test "passes required check commands on successful turn", %{
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    prompt_log: prompt_log
+  } do
+    config =
+      runner_config(workspace_root, cli_path, prompt_log)
+      |> Map.put(:checks, %{
+        required: ["test -d .", "pwd >/dev/null"],
+        timeout_ms: 10_000,
+        fail_fast: true
+      })
+
+    template = "Work on {{ issue.identifier }}"
+
+    assert {:ok, result} =
+             AgentRunner.run_issue(@issue,
+               config: config,
+               prompt_template: template,
+               mode: :single_turn
+             )
+
+    assert result.status == :ok
+    assert :checks_started in Enum.map(result.events, & &1.type)
+    assert :check_passed in Enum.map(result.events, & &1.type)
+    assert :checks_passed in Enum.map(result.events, & &1.type)
+  end
+
+  test "runs config-enabled review round and passes on REVIEW_PASS", %{
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    review_cli_path: review_cli_path,
+    prompt_log: prompt_log
+  } do
+    config =
+      runner_config(workspace_root, cli_path, prompt_log)
+      |> Map.put(:review, %{
+        enabled: true,
+        pass_token: "REVIEW_PASS",
+        fail_token: "REVIEW_FAIL",
+        agent: %{
+          kind: :pi,
+          command: review_cli_path,
+          args: [],
+          env: %{"REVIEW_VERDICT" => "REVIEW_PASS"},
+          timeout_ms: 10_000
+        }
+      })
+
+    template = "Work on {{ issue.identifier }}"
+
+    assert {:ok, result} =
+             AgentRunner.run_issue(@issue,
+               config: config,
+               prompt_template: template,
+               mode: :single_turn
+             )
+
+    assert result.status == :ok
+    assert :review_started in Enum.map(result.events, & &1.type)
+    assert :review_passed in Enum.map(result.events, & &1.type)
+  end
+
+  test "fails run when review verdict is REVIEW_FAIL", %{
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    review_cli_path: review_cli_path,
+    prompt_log: prompt_log
+  } do
+    config =
+      runner_config(workspace_root, cli_path, prompt_log)
+      |> Map.put(:review, %{
+        enabled: true,
+        pass_token: "REVIEW_PASS",
+        fail_token: "REVIEW_FAIL",
+        agent: %{
+          kind: :pi,
+          command: review_cli_path,
+          args: [],
+          env: %{"REVIEW_VERDICT" => "REVIEW_FAIL: missing regression test"},
+          timeout_ms: 10_000
+        }
+      })
+
+    template = "Work on {{ issue.identifier }}"
+
+    assert {:error, result} =
+             AgentRunner.run_issue(@issue,
+               config: config,
+               prompt_template: template,
+               mode: :single_turn
+             )
+
+    assert result.error =~ "review failed"
+    assert result.error =~ "missing regression test"
+    assert :review_failed in Enum.map(result.events, & &1.type)
+  end
+
   defp runner_config(workspace_root, cli_path, prompt_log, hooks \\ %{}, agent_overrides \\ %{}) do
     hooks = Map.merge(@no_hooks, hooks)
 
@@ -202,6 +352,8 @@ defmodule Kollywood.AgentRunnerTest do
       polling: %{},
       workspace: %{root: workspace_root, strategy: :clone},
       hooks: hooks,
+      checks: %{required: [], timeout_ms: 10_000, fail_fast: true},
+      review: %{enabled: false, agent: %{kind: agent.kind}},
       agent: agent,
       raw: %{}
     }

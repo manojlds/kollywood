@@ -179,4 +179,93 @@ defmodule Kollywood.ConfigTest do
     assert config.tracker.active_states == ["open", "in_progress"]
     assert config.tracker.terminal_states == ["done"]
   end
+
+  test "uses defaults for checks and review" do
+    content = """
+    ---
+    workspace:
+      root: /tmp
+    agent:
+      kind: pi
+    ---
+    prompt
+    """
+
+    assert {:ok, config, _} = Config.parse(content)
+
+    assert config.checks.required == []
+    assert config.checks.timeout_ms == 300_000
+    assert config.checks.fail_fast == true
+
+    assert config.review.enabled == false
+    assert config.review.pass_token == "REVIEW_PASS"
+    assert config.review.fail_token == "REVIEW_FAIL"
+    assert config.review.agent.kind == :pi
+  end
+
+  test "parses checks and review settings" do
+    content = """
+    ---
+    checks:
+      required:
+        - mix format --check-formatted
+        - mix test
+      timeout_ms: 600000
+      fail_fast: false
+    review:
+      enabled: true
+      pass_token: OK_TO_MERGE
+      fail_token: NEEDS_WORK
+      prompt_template: "Review {{ issue.identifier }}"
+      agent:
+        kind: claude
+        command: /usr/local/bin/claude
+        args:
+          - --print
+        env:
+          REVIEW_MODE: strict
+        timeout_ms: 120000
+    workspace:
+      root: /tmp
+    agent:
+      kind: pi
+    ---
+    prompt
+    """
+
+    assert {:ok, config, _} = Config.parse(content)
+
+    assert config.checks.required == ["mix format --check-formatted", "mix test"]
+    assert config.checks.timeout_ms == 600_000
+    assert config.checks.fail_fast == false
+
+    assert config.review.enabled == true
+    assert config.review.pass_token == "OK_TO_MERGE"
+    assert config.review.fail_token == "NEEDS_WORK"
+    assert config.review.prompt_template == "Review {{ issue.identifier }}"
+    assert config.review.agent.kind == :claude
+    assert config.review.agent.command == "/usr/local/bin/claude"
+    assert config.review.agent.args == ["--print"]
+    assert config.review.agent.env == %{"REVIEW_MODE" => "strict"}
+    assert config.review.agent.timeout_ms == 120_000
+  end
+
+  test "rejects invalid review.agent.kind" do
+    content = """
+    ---
+    review:
+      enabled: true
+      agent:
+        kind: invalid
+    workspace:
+      root: /tmp
+    agent:
+      kind: pi
+    ---
+    prompt
+    """
+
+    assert {:error, msg} = Config.parse(content)
+    assert msg =~ "Invalid agent.kind"
+  end
 end

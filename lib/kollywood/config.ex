@@ -13,6 +13,8 @@ defmodule Kollywood.Config do
           polling: map(),
           workspace: map(),
           hooks: map(),
+          checks: map(),
+          review: map(),
           agent: map(),
           raw: map()
         }
@@ -22,6 +24,8 @@ defmodule Kollywood.Config do
     :polling,
     :workspace,
     :hooks,
+    :checks,
+    :review,
     :agent,
     :raw
   ]
@@ -55,12 +59,15 @@ defmodule Kollywood.Config do
 
   defp build_config(raw) do
     with :ok <- validate_required_sections(raw),
-         {:ok, agent_kind} <- parse_agent_kind(raw) do
+         {:ok, agent_kind} <- parse_agent_kind(raw),
+         {:ok, review_agent_kind} <- parse_review_agent_kind(raw, agent_kind) do
       config = %__MODULE__{
         tracker: parse_tracker(raw),
         polling: parse_polling(raw),
         workspace: parse_workspace(raw),
         hooks: parse_hooks(raw),
+        checks: parse_checks(raw),
+        review: parse_review(raw, review_agent_kind),
         agent: parse_agent(raw, agent_kind),
         raw: raw
       }
@@ -87,17 +94,41 @@ defmodule Kollywood.Config do
       is_nil(kind_str) ->
         {:error, "agent.kind is required (amp, claude, opencode, or pi)"}
 
-      String.to_existing_atom(kind_str) in @valid_agent_kinds ->
-        {:ok, String.to_existing_atom(kind_str)}
-
       true ->
-        {:error,
-         "Invalid agent.kind: #{kind_str}. Must be one of: #{Enum.join(@valid_agent_kinds, ", ")}"}
+        parse_agent_kind_value(kind_str)
     end
-  rescue
-    ArgumentError ->
-      {:error,
-       "Invalid agent.kind: #{get_in(raw, ["agent", "kind"])}. Must be one of: #{Enum.join(@valid_agent_kinds, ", ")}"}
+  end
+
+  defp parse_review_agent_kind(raw, fallback_kind) do
+    case get_in(raw, ["review", "agent", "kind"]) do
+      nil -> {:ok, fallback_kind}
+      kind -> parse_agent_kind_value(kind)
+    end
+  end
+
+  defp parse_agent_kind_value(kind) when is_binary(kind) do
+    case String.trim(kind) do
+      "amp" ->
+        {:ok, :amp}
+
+      "claude" ->
+        {:ok, :claude}
+
+      "opencode" ->
+        {:ok, :opencode}
+
+      "pi" ->
+        {:ok, :pi}
+
+      other ->
+        {:error,
+         "Invalid agent.kind: #{other}. Must be one of: #{Enum.join(@valid_agent_kinds, ", ")}"}
+    end
+  end
+
+  defp parse_agent_kind_value(kind) do
+    {:error,
+     "Invalid agent.kind: #{inspect(kind)}. Must be one of: #{Enum.join(@valid_agent_kinds, ", ")}"}
   end
 
   defp parse_tracker(raw) do
@@ -182,6 +213,35 @@ defmodule Kollywood.Config do
     }
   end
 
+  defp parse_checks(raw) do
+    checks = Map.get(raw, "checks", %{})
+
+    %{
+      required: command_list(Map.get(checks, "required", [])),
+      timeout_ms: positive_integer(Map.get(checks, "timeout_ms", 300_000), 300_000),
+      fail_fast: boolean(Map.get(checks, "fail_fast", true), true)
+    }
+  end
+
+  defp parse_review(raw, review_agent_kind) do
+    review = Map.get(raw, "review", %{})
+    review_agent = Map.get(review, "agent", %{})
+
+    %{
+      enabled: boolean(Map.get(review, "enabled", false), false),
+      pass_token: optional_string(Map.get(review, "pass_token")) || "REVIEW_PASS",
+      fail_token: optional_string(Map.get(review, "fail_token")) || "REVIEW_FAIL",
+      prompt_template: optional_string(Map.get(review, "prompt_template")),
+      agent: %{
+        kind: review_agent_kind,
+        command: optional_string(Map.get(review_agent, "command")),
+        args: string_list(Map.get(review_agent, "args", [])),
+        env: string_map(Map.get(review_agent, "env", %{})),
+        timeout_ms: positive_integer(Map.get(review_agent, "timeout_ms", 300_000), 300_000)
+      }
+    }
+  end
+
   defp parse_agent(raw, kind) do
     agent = Map.get(raw, "agent", %{})
 
@@ -201,6 +261,15 @@ defmodule Kollywood.Config do
   defp optional_string(value) when is_binary(value) and value != "", do: value
   defp optional_string(_value), do: nil
 
+  defp command_list(values) when is_list(values) do
+    values
+    |> Enum.map(&to_string/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp command_list(_values), do: []
+
   defp string_list(values) when is_list(values) do
     Enum.map(values, &to_string/1)
   end
@@ -214,6 +283,18 @@ defmodule Kollywood.Config do
   end
 
   defp string_map(_values), do: %{}
+
+  defp boolean(value, _default) when is_boolean(value), do: value
+
+  defp boolean(value, default) when is_binary(value) do
+    case String.downcase(String.trim(value)) do
+      "true" -> true
+      "false" -> false
+      _ -> default
+    end
+  end
+
+  defp boolean(_value, default), do: default
 
   defp positive_integer(value, _default) when is_integer(value) and value > 0, do: value
 

@@ -19,6 +19,7 @@ defmodule Kollywood.AgentTest do
     set -eu
 
     prompt="$(cat)"
+    echo "args:$*"
     echo "pwd:$PWD"
     echo "prompt:$prompt"
     echo "token:${KOLLYWOOD_TOKEN:-missing}"
@@ -67,6 +68,35 @@ defmodule Kollywood.AgentTest do
     assert result.output =~ "prompt:finish stage 3"
     assert result.output =~ "token:abc123"
 
+    assert :ok = Agent.stop_session(session)
+  end
+
+  test "keeps adapter default args when config args is empty", %{
+    workspace: workspace,
+    cli_path: cli_path
+  } do
+    config = %Config{
+      tracker: %{},
+      polling: %{},
+      workspace: %{},
+      hooks: %{},
+      raw: %{},
+      agent: %{
+        kind: :pi,
+        command: cli_path,
+        env: %{},
+        timeout_ms: 10_000,
+        args: []
+      }
+    }
+
+    assert {:ok, %Session{} = session} = Agent.start_session(config, workspace)
+    assert session.adapter == Kollywood.Agent.Pi
+    assert session.args == ["--print"]
+
+    assert {:ok, result} = Agent.run_turn(session, "quick check")
+    assert result.output =~ "args:--print"
+    assert result.output =~ "prompt:quick check"
     assert :ok = Agent.stop_session(session)
   end
 end
