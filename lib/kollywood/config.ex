@@ -14,6 +14,7 @@ defmodule Kollywood.Config do
   @valid_publish_providers ~w(github gitlab)a
   @valid_auto_push_policies ~w(never on_pass)a
   @valid_auto_create_pr_policies ~w(never draft ready)a
+  @default_timeout_ms 1_800_000
 
   @type t :: %__MODULE__{
           tracker: map(),
@@ -233,7 +234,8 @@ defmodule Kollywood.Config do
 
     %{
       required: command_list(Map.get(checks, "required", [])),
-      timeout_ms: positive_integer(Map.get(checks, "timeout_ms", 300_000), 300_000),
+      timeout_ms:
+        positive_integer(Map.get(checks, "timeout_ms", @default_timeout_ms), @default_timeout_ms),
       fail_fast: boolean(Map.get(checks, "fail_fast", true), true)
     }
   end
@@ -253,7 +255,11 @@ defmodule Kollywood.Config do
         command: optional_string(Map.get(review_agent, "command")),
         args: string_list(Map.get(review_agent, "args", [])),
         env: string_map(Map.get(review_agent, "env", %{})),
-        timeout_ms: positive_integer(Map.get(review_agent, "timeout_ms", 300_000), 300_000)
+        timeout_ms:
+          positive_integer(
+            Map.get(review_agent, "timeout_ms", @default_timeout_ms),
+            @default_timeout_ms
+          )
       }
     }
   end
@@ -271,7 +277,8 @@ defmodule Kollywood.Config do
       command: optional_string(Map.get(agent, "command")),
       args: string_list(Map.get(agent, "args", [])),
       env: string_map(Map.get(agent, "env", %{})),
-      timeout_ms: positive_integer(Map.get(agent, "timeout_ms", 300_000), 300_000)
+      timeout_ms:
+        positive_integer(Map.get(agent, "timeout_ms", @default_timeout_ms), @default_timeout_ms)
     }
   end
 

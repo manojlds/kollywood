@@ -15,7 +15,7 @@ defmodule Kollywood.Agent.Claude do
     command: "claude",
     args: ["--print"],
     prompt_mode: :argv,
-    timeout_ms: 300_000,
+    timeout_ms: 1_800_000,
     env: %{}
   }
 

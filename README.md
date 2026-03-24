@@ -80,6 +80,7 @@ Quality gates are configured in `WORKFLOW.md`:
 - `review.enabled`: when true, runs a reviewer agent round and requires verdict tokens
 - `review.max_cycles`: maximum worker/reviewer feedback cycles before failing the run
 - `review.agent`: reviewer adapter settings (kind/command/args/env/timeout)
+- default command timeouts are 30 minutes unless overridden in workflow config
 
 Publish policy controls whether successful runs can publish branches and open pull requests.
 Defaults are conservative so nothing is pushed remotely unless explicitly enabled.

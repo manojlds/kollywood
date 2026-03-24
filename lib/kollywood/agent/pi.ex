@@ -14,7 +14,7 @@ defmodule Kollywood.Agent.Pi do
     command: "pi",
     args: ["--print"],
     prompt_mode: :stdin,
-    timeout_ms: 300_000,
+    timeout_ms: 1_800_000,
     env: %{}
   }
 
