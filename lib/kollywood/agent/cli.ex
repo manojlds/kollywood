@@ -100,11 +100,9 @@ defmodule Kollywood.Agent.CLI do
     File.write!(prompt_file, prompt)
 
     wrapper_args =
-      ["-lc", "cat \"$KOLLYWOOD_PROMPT_FILE\" | \"$@\"", "--", session.command] ++ args
+      ["-lc", "exec \"$2\" \"${@:3}\" < \"$1\"", "--", prompt_file, session.command] ++ args
 
-    wrapper_env = Map.put(env, "KOLLYWOOD_PROMPT_FILE", prompt_file)
-
-    {"bash", wrapper_args, command_opts(session.workspace_path, wrapper_env),
+    {"bash", wrapper_args, command_opts(session.workspace_path, env),
      fn -> File.rm(prompt_file) end}
   end
 

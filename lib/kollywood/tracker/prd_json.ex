@@ -65,9 +65,11 @@ defmodule Kollywood.Tracker.PrdJson do
           :ok | {:error, String.t()}
   def mark_failed(%Config{} = config, issue_id, reason, attempt)
       when is_binary(issue_id) and is_binary(reason) and is_integer(attempt) and attempt > 0 do
+    failed_status = if(retries_enabled?(config), do: "in_progress", else: "failed")
+
     update_story(config, issue_id, fn story ->
       story
-      |> set_story_status("in_progress")
+      |> set_story_status(failed_status)
       |> Map.put("lastError", reason)
       |> Map.put("lastAttempt", attempt)
       |> append_note("attempt #{attempt}: #{reason}")
@@ -241,6 +243,16 @@ defmodule Kollywood.Tracker.PrdJson do
     |> string_list()
     |> Enum.map(&normalize_state/1)
     |> MapSet.new()
+  end
+
+  defp retries_enabled?(config) do
+    config
+    |> get_in([Access.key(:agent, %{}), Access.key(:retries_enabled)])
+    |> case do
+      value when is_boolean(value) -> value
+      value when is_binary(value) -> String.downcase(String.trim(value)) in ["true", "1", "yes"]
+      _other -> true
+    end
   end
 
   defp tracker_path(config) do

@@ -109,8 +109,43 @@ defmodule Kollywood.OrchestratorTest do
     assert_receive {:runner_attempt, 1, nil}
     assert_receive {:runner_attempt, 2, 1}, 1_000
 
+    _ = :sys.get_state(orchestrator)
+
     status = Orchestrator.status(orchestrator)
     assert status.completed_count == 1
+  end
+
+  test "does not retry failed runs when retries are disabled", %{root: root} do
+    %{store: workflow_store} = start_workflow_store!(root, %{retries_enabled: false})
+    issue = issue("ISS-6", "ABC-6", 1)
+    test_pid = self()
+    issues_agent = start_agent!(fn -> [issue] end)
+
+    tracker = fn _config -> {:ok, Agent.get(issues_agent, & &1)} end
+
+    runner = fn issue, opts ->
+      send(test_pid, {:runner_attempt, issue.id, Keyword.get(opts, :attempt)})
+      {:error, failed_result(issue, "forced failure no retry")}
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: tracker,
+         runner: runner,
+         auto_poll: false,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_attempt, "ISS-6", nil}
+    refute_receive {:runner_attempt, "ISS-6", 1}, 200
+
+    status = Orchestrator.status(orchestrator)
+    assert status.retries_enabled == false
+    assert status.retry_count == 0
   end
 
   test "stops ineligible running issue during reconciliation", %{root: root} do
@@ -313,7 +348,8 @@ defmodule Kollywood.OrchestratorTest do
         tracker_active_states: Map.get(opts, :tracker_active_states, ["Todo", "In Progress"]),
         tracker_terminal_states: Map.get(opts, :tracker_terminal_states, ["Done", "Cancelled"]),
         max_concurrent_agents: Map.get(opts, :max_concurrent_agents, 2),
-        max_retry_backoff_ms: Map.get(opts, :max_retry_backoff_ms, 300_000)
+        max_retry_backoff_ms: Map.get(opts, :max_retry_backoff_ms, 300_000),
+        retries_enabled: Map.get(opts, :retries_enabled, true)
       })
 
     path = Path.join(root, "workflow_#{System.unique_integer([:positive])}.md")
@@ -360,6 +396,7 @@ defmodule Kollywood.OrchestratorTest do
       max_concurrent_agents: #{Map.get(opts, :max_concurrent_agents, 2)}
       max_turns: 5
       max_retry_backoff_ms: #{Map.get(opts, :max_retry_backoff_ms, 300_000)}
+      retries_enabled: #{Map.get(opts, :retries_enabled, true)}
     ---
     Work on {{ issue.identifier }}
     """

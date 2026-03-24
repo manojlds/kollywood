@@ -106,6 +106,7 @@ defmodule Kollywood.ConfigTest do
     assert config.polling.interval_ms == 5000
     assert config.agent.max_concurrent_agents == 5
     assert config.agent.max_turns == 20
+    assert config.agent.retries_enabled == true
     assert config.agent.max_retry_backoff_ms == 300_000
     assert config.agent.command == nil
     assert config.agent.args == []
@@ -164,7 +165,7 @@ defmodule Kollywood.ConfigTest do
     assert config.tracker.kind == "prd_json"
     assert config.tracker.path == "prd.json"
     assert config.tracker.active_states == ["open", "in_progress"]
-    assert config.tracker.terminal_states == ["done"]
+    assert config.tracker.terminal_states == ["done", "failed", "cancelled"]
   end
 
   test "supports local tracker alias defaults" do
@@ -183,7 +184,23 @@ defmodule Kollywood.ConfigTest do
     assert {:ok, config, _} = Config.parse(content)
     assert config.tracker.path == "prd.json"
     assert config.tracker.active_states == ["open", "in_progress"]
-    assert config.tracker.terminal_states == ["done"]
+    assert config.tracker.terminal_states == ["done", "failed", "cancelled"]
+  end
+
+  test "parses agent retries_enabled setting" do
+    content = """
+    ---
+    workspace:
+      root: /tmp
+    agent:
+      kind: pi
+      retries_enabled: false
+    ---
+    prompt
+    """
+
+    assert {:ok, config, _} = Config.parse(content)
+    assert config.agent.retries_enabled == false
   end
 
   test "uses defaults for checks and review" do

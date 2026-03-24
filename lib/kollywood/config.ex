@@ -166,10 +166,10 @@ defmodule Kollywood.Config do
 
   defp tracker_default_states(kind) do
     case String.downcase(kind) do
-      "prd_json" -> {["open", "in_progress"], ["done"]}
-      "prd-json" -> {["open", "in_progress"], ["done"]}
-      "prd" -> {["open", "in_progress"], ["done"]}
-      "local" -> {["open", "in_progress"], ["done"]}
+      "prd_json" -> {["open", "in_progress"], ["done", "failed", "cancelled"]}
+      "prd-json" -> {["open", "in_progress"], ["done", "failed", "cancelled"]}
+      "prd" -> {["open", "in_progress"], ["done", "failed", "cancelled"]}
+      "local" -> {["open", "in_progress"], ["done", "failed", "cancelled"]}
       _other -> {["Todo", "In Progress"], ["Done", "Cancelled"]}
     end
   end
@@ -265,6 +265,7 @@ defmodule Kollywood.Config do
       kind: kind,
       max_concurrent_agents: positive_integer(Map.get(agent, "max_concurrent_agents", 5), 5),
       max_turns: positive_integer(Map.get(agent, "max_turns", 20), 20),
+      retries_enabled: boolean(Map.get(agent, "retries_enabled", true), true),
       max_retry_backoff_ms:
         positive_integer(Map.get(agent, "max_retry_backoff_ms", 300_000), 300_000),
       command: optional_string(Map.get(agent, "command")),

@@ -103,6 +103,12 @@ defmodule Mix.Tasks.Kollywood.PrdTest do
     story = find_story!(path, "US-010")
     assert story["status"] == "open"
     assert story["passes"] == false
+
+    _output = capture_io(fn -> Prd.run(["set-status", "US-010", "failed", "--path", path]) end)
+
+    story = find_story!(path, "US-010")
+    assert story["status"] == "failed"
+    assert story["passes"] == false
   end
 
   test "set-status rejects invalid status", %{root: root} do
