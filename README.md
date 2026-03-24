@@ -63,6 +63,7 @@ mix kollywood.prd validate --path ./some/other/prd.json
 - dependency integrity (`dependsOn` must reference known IDs and cannot self-reference)
 
 On success it prints a short summary with total and active story counts.
+On invalid input it raises `Mix.Error` with clear, itemized validation failures.
 
 Orchestrator controls:
 
