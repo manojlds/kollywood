@@ -123,7 +123,8 @@
       "notes": "[2026-03-24T13:54:29Z] attempt 1: Agent command failed with exit code 1: You have hit your ChatGPT usage limit (plus plan). Try again in ~7119 min.\n[2026-03-24T15:10:15Z] attempt 1: Failed to prepare workspace: Failed to create worktree: Preparing worktree (new branch 'kollywood/US-106')\nfatal: a branch named 'kollywood/US-106' already exists\n[2026-03-24T15:11:23Z] reset for rerun\n[2026-03-24T15:23:43Z] reset for rerun",
       "passes": false,
       "priority": 2,
-      "status": "open",
+      "startedAt": "2026-03-24T15:25:22Z",
+      "status": "in_progress",
       "title": "Build project-scoped dashboard shell with selector"
     },
     {
@@ -162,6 +163,24 @@
       "priority": 1,
       "status": "open",
       "title": "Add per-project max concurrent agents setting"
+    },
+    {
+      "acceptanceCriteria": [
+        "reset automatically cleans up orphaned branches and worktrees",
+        "worktree creation succeeds even when branch exists from previous failed run",
+        "no manual git branch deletion needed between reset and rerun",
+        "stories are immediately dispatchable after reset"
+      ],
+      "dependsOn": [
+        "US-106"
+      ],
+      "description": "Fix worktree and branch cleanup so that reset/rerun commands always leave stories in a pristine state. Auto-detect and remove orphaned branches and worktree registrations when they block new worktree creation. Handle 'branch already exists' gracefully by checking for existing branches and either reusing or cleaning them up before creating new worktrees. Add proper worktree pruning on reset commands. Ensure that after reset, a story can immediately be dispatched without manual intervention for branch/worktree cleanup.",
+      "id": "US-109",
+      "notes": "",
+      "passes": false,
+      "priority": 1,
+      "status": "open",
+      "title": "Fix worktree cleanup to leave stories in pristine state for rerun"
     }
   ]
 }
