@@ -81,20 +81,33 @@ Quality gates are configured in `WORKFLOW.md`:
 - `review.max_cycles`: maximum worker/reviewer feedback cycles before failing the run
 - `review.agent`: reviewer adapter settings (kind/command/args/env/timeout)
 
-Publish policy is also configurable (safe defaults keep publishing disabled):
+Publish policy controls whether successful runs can publish branches and open pull requests.
+Defaults are conservative so nothing is pushed remotely unless explicitly enabled.
 
 - `publish.provider`: `github` or `gitlab` (default: `github`)
 - `publish.auto_push`: `never` or `on_pass` (default: `never`)
 - `publish.auto_create_pr`: `never`, `draft`, or `ready` (default: `never`)
 - `git.require_commit`: `true` or `false` (default: `true`)
 
-Example:
+Safe default policy (no push, no PR):
 
 ```yaml
 publish:
   provider: github
   auto_push: never
   auto_create_pr: never
+
+git:
+  require_commit: true
+```
+
+Enable publish on successful runs with draft PRs:
+
+```yaml
+publish:
+  provider: github
+  auto_push: on_pass
+  auto_create_pr: draft
 
 git:
   require_commit: true
