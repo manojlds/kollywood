@@ -10,6 +10,7 @@ defmodule Kollywood.AgentRunner do
 
   alias Kollywood.Agent
   alias Kollywood.AgentRunner.ContinuationPrompt
+  alias Kollywood.AgentRunner.ResumeContext
   alias Kollywood.AgentRunner.Result
   alias Kollywood.Config
   alias Kollywood.PromptBuilder
