@@ -417,9 +417,11 @@ defmodule Kollywood.Orchestrator do
 
   defp eligible_for_new_dispatch?(issue, state, config) do
     issue_id = issue_id(issue)
+    issue_state = field(issue, :state)
 
     issue_dispatchable?(issue, config) and
       not is_nil(issue_id) and
+      normalize_state(issue_state) == "open" and
       not Map.has_key?(state.running, issue_id) and
       not MapSet.member?(state.claimed, issue_id) and
       not MapSet.member?(state.completed, issue_id)
