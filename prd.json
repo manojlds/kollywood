@@ -24,5 +24,29 @@
       "status": "in_progress",
       "title": "Improve dashboard UI: story details, run logs, and mobile layout"
     }
+  ,
+    {
+      "id": "US-113",
+      "title": "Live log streaming and agent log separation in run detail view",
+      "description": "Two related improvements to run log visibility:\n\n## Part 1: Separate agent.log from lifecycle events\n\nCurrently `worker.log` and `run.log` contain only orchestrator lifecycle events (`turn_started`, `turn_succeeded`, etc.). The actual Claude agent output is embedded inside the `output` field of `turn_succeeded` events and never written to a dedicated file.\n\nAdd a dedicated `agent.log` file to the run attempt directory that contains only the raw agent stdout — the actual Claude conversation, tool calls, and code output.\n\n**Backend changes in `lib/kollywood/orchestrator/run_logs.ex`:**\n- Add `agent: Path.join(attempt_dir, \"agent.log\")` to `build_attempt_files/2`\n- Add `files.agent` to `ensure_append_files/1`\n- Add `files.agent` to `initial_metadata/8` files map\n- Add `files.agent` to `tracker_metadata/1` return\n- In `append_event/2`: when event type is `turn_succeeded` or `review_passed` or `review_failed`, extract the `output` field value and append it to `files.agent` as raw text (not a structured log line). Prepend a separator line `\\n--- Turn N ---\\n` using the turn number from the event before each block.\n\n**No changes needed to `cli.ex` or `agent_runner.ex`** — the output is already captured in the event payload.\n\n## Part 2: Real-time log streaming in the UI\n\nAdd a GitHub Actions / GitLab CI style live log viewer in `DashboardLive` run detail.\n\n**LiveView changes in `lib/kollywood_web/live/dashboard_live.ex`:**\n\n1. **Log tab layout:** Replace the current collapse panels in `run_detail_section` with a tab bar: `Agent` | `Run` | `Checks` | `Reviewer` | `Runtime`. Default to the `Agent` tab. Each tab shows the content of the corresponding log file in a `<pre>` block with `id=\"log-output\"` and class `font-mono text-xs leading-relaxed bg-base-300 p-4 rounded-lg overflow-auto max-h-[70vh] whitespace-pre-wrap`.\n\n2. **Active run polling:** When mounting/handling params for `:run_detail`, check if the run's metadata status is `\"running\"`. If so, start a 1-second interval timer via `:timer.send_interval(1000, self(), :poll_logs)`. Store the current log content length in `@log_poll_offset` and which tab is active in `@active_log_tab` (default `\"agent\"`).\n\n3. **`handle_info(:poll_logs, socket)`:** Re-read the active log file from disk, assign updated content to `@run_detail`. Stop polling (cancel timer stored in `@log_poll_timer`) when metadata status is no longer `\"running\"`. Re-read metadata.json each poll cycle to check status.\n\n4. **Tab switching:** Add `handle_event(\"set_log_tab\", %{\"tab\" => tab}, socket)` that sets `@active_log_tab` and re-reads the corresponding log file.\n\n5. **Auto-scroll JS hook:** Add a colocated JS hook named `.LogScroll` on the `<pre id=\"log-output\">` element. In `updated()`, scroll the element to its `scrollHeight`. This makes it follow new output like a terminal.\n\n6. **Empty state:** If the selected log file is empty or missing, show `<p class=\"text-base-content/50 text-sm\">No output yet.</p>` instead of an empty pre block.\n\n**The polling reads the log file directly from disk** using `File.read/1` on the path stored in `run_detail[\"files\"][tab_key]` (e.g. `run_detail[\"files\"][\"agent\"]`). The `load_run_detail/3` function already builds this map — extend it to include the raw file contents for the active tab.\n\n## Implementation notes\n- The `run_detail` assign in DashboardLive currently holds a map from `load_run_detail/3`. Extend it to include `\"active_log_content\"` key populated from the active tab's log file.\n- Timer refs: store poll timer ref in socket assigns as `@log_poll_timer` (a reference from `:timer.send_interval`). Cancel it with `:timer.cancel/1` when navigating away (`handle_params`) or when status is no longer running.\n- Add `handle_event(\"set_log_tab\", ...)` and `handle_info(:poll_logs, ...)` to `DashboardLive`.\n- Add tests: verify `agent.log` file is created and contains turn output after `append_event` with a `turn_succeeded` event; verify `handle_info(:poll_logs)` updates log content; verify tab switching changes active content.",
+      "acceptanceCriteria": [
+        "agent.log file is created in each attempt directory alongside worker.log and run.log",
+        "agent.log contains only raw Claude output text, one block per turn separated by '--- Turn N ---'",
+        "worker.log and run.log continue to contain only orchestrator lifecycle events (no change to existing behaviour)",
+        "Run detail view shows Agent | Run | Checks | Reviewer | Runtime tab bar",
+        "Agent tab is selected by default and shows agent.log content",
+        "Each tab shows the corresponding log file content in a monospace pre block",
+        "When the run status is 'running', log content refreshes every 1 second",
+        "Log pre block auto-scrolls to the bottom as new content arrives",
+        "Polling stops automatically when run status changes from 'running'",
+        "Empty log files show 'No output yet' placeholder instead of blank space",
+        "Tests cover agent.log population and live polling behaviour"
+      ],
+      "dependsOn": ["US-112"],
+      "notes": "",
+      "passes": false,
+      "priority": 1,
+      "status": "open"
+    }
   ]
 }
