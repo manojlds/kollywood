@@ -29,7 +29,7 @@ defmodule Mix.Tasks.Kollywood.Orch.Status do
     )
 
     Mix.shell().info(
-      "- poll_interval_ms=#{status.poll_interval_ms} max_concurrent_agents=#{status.max_concurrent_agents}"
+      "- poll_interval_ms=#{status.poll_interval_ms} max_concurrent_agents=#{status.max_concurrent_agents} retries_enabled=#{status.retries_enabled}"
     )
 
     Mix.shell().info("- last_poll_at=#{Shared.format_datetime(status.last_poll_at)}")

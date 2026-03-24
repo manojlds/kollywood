@@ -34,6 +34,54 @@
       "priority": 1,
       "status": "done",
       "title": "Add multi-cycle worker-review loop"
+    },
+    {
+      "acceptanceCriteria": [
+        "config parser supports publish and git policy defaults with validation",
+        "workflow docs include publish policy examples and safe defaults",
+        "tests cover valid and invalid publish policy values"
+      ],
+      "completedAt": "2026-03-24T02:55:02Z",
+      "dependsOn": [
+        "US-102"
+      ],
+      "description": "Introduce publish policy configuration so successful runs can optionally push branches and create pull requests. Add config section with defaults: publish.provider (github/gitlab), publish.auto_push (never/on_pass), publish.auto_create_pr (never/draft/ready), and git.require_commit (true/false). Parse and validate config, document in WORKFLOW.md/README, and add tests for defaults and explicit values. Keep default behavior conservative (no push, no PR).",
+      "id": "US-103",
+      "lastAttempt": 6,
+      "lastError": null,
+      "lastRun": {
+        "ended_at": "2026-03-24T02:55:02.189062Z",
+        "status": "ok",
+        "turn_count": 1,
+        "workspace_path": "/home/manojlds/kollywood-workspaces/US-103"
+      },
+      "notes": "[2026-03-24T02:22:54Z] attempt 1: Agent command timed out after 300000ms\n[2026-03-24T02:28:04Z] attempt 2: Agent command timed out after 300000ms\n[2026-03-24T02:33:24Z] attempt 3: Agent command timed out after 300000ms\n[2026-03-24T02:37:25Z] attempt 4: required checks failed:\n- check #2 failed (mix test): exit code 1 | output: \"[info] WorkflowStore loaded /home/manojlds/kollywood-workspaces/US-103/WORKFLOW.md\\nRunning ExUnit with seed: 181638, max_cases: 24\\n\\n    error: module KollywoodWeb.ConnCase is not loaded and could not be found\\n    │\\n  2 │   use KollywoodWeb.ConnCase, async: true\\n    │   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n    │\\n    └─ test/kollywood_web/controllers/error_html_test.exs:2: KollywoodWeb.ErrorHTMLTest (module)\\n\\n    error: module KollywoodWeb.ConnCase is not loaded and could not be found\\n    │\\n  2 │   use KollywoodWeb.ConnCase\\n    │   ^^^^^^^^^^^^^^^^^^^^^^^^^\\n    │\\n    └─ test/kollywood_web/cont\"\n[2026-03-24T02:38:55Z] attempt 5: Agent command failed with exit code 1: You have hit your ChatGPT usage limit (plus plan). Try again in ~7 min.\n[2026-03-24T02:41:46Z] attempt 6: Agent command failed with exit code 1: You have hit your ChatGPT usage limit (plus plan). Try again in ~4 min.",
+      "passes": true,
+      "priority": 1,
+      "startedAt": "2026-03-24T02:17:54Z",
+      "status": "done",
+      "title": "Add publish policy config for push and PR creation"
+    },
+    {
+      "acceptanceCriteria": [
+        "runtime profile config parses with defaults and validation",
+        "checks_only runs without starting processes",
+        "full_stack starts per-worktree processes and runs checks in that isolated runtime",
+        "runtime processes are stopped on run completion/failure"
+      ],
+      "dependsOn": [
+        "US-103"
+      ],
+      "description": "Implement runtime orchestration profiles so each issue worktree can run isolated processes when needed. Add workflow config for runtime profiles with strict isolation support: checks_only (no processes) and full_stack (per-worktree processes + per-worktree env vars/ports). Wire AgentRunner/Orchestrator lifecycle to start/stop per-worktree runtime via devenv before checks when profile requires it. Ensure checks can run inside devenv shell in the worktree. Include status visibility for runtime process state in orchestrator status output. Keep defaults lightweight so small stories run checks_only.",
+      "id": "US-104",
+      "lastAttempt": 1,
+      "lastError": "Agent command timed out after 300000ms",
+      "notes": "[2026-03-24T03:00:04Z] attempt 1: Agent command timed out after 300000ms\n[2026-03-24T03:05:14Z] attempt 2: Agent command timed out after 300000ms\n[2026-03-24T03:10:34Z] attempt 3: Agent command timed out after 300000ms\n[2026-03-24T03:16:04Z] attempt 1: Agent command timed out after 300000ms",
+      "passes": false,
+      "priority": 2,
+      "startedAt": "2026-03-24T02:55:04Z",
+      "status": "failed",
+      "title": "Add per-worktree devenv runtime isolation profiles"
     }
   ]
 }

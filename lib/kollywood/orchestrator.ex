@@ -37,6 +37,7 @@ defmodule Kollywood.Orchestrator do
           poll_interval_ms: pos_integer(),
           max_concurrent_agents: pos_integer(),
           max_retry_backoff_ms: pos_integer(),
+          retries_enabled: boolean(),
           retry_base_delay_ms: pos_integer(),
           continuation_delay_ms: pos_integer(),
           running: %{optional(String.t()) => map()},
@@ -59,6 +60,7 @@ defmodule Kollywood.Orchestrator do
     :poll_interval_ms,
     :max_concurrent_agents,
     :max_retry_backoff_ms,
+    :retries_enabled,
     :retry_base_delay_ms,
     :continuation_delay_ms,
     :last_error,
@@ -121,6 +123,7 @@ defmodule Kollywood.Orchestrator do
             Keyword.get(opts, :max_retry_backoff_ms),
             @default_max_retry_backoff_ms
           ),
+        retries_enabled: Keyword.get(opts, :retries_enabled, true),
         retry_base_delay_ms:
           positive_integer(Keyword.get(opts, :retry_base_delay_ms), @default_retry_base_delay_ms),
         continuation_delay_ms:
@@ -205,9 +208,7 @@ defmodule Kollywood.Orchestrator do
 
         state = tracker_mark_failed(state, issue_id, reason, next_attempt)
 
-        delay = retry_backoff_delay_ms(state, next_attempt)
-
-        state = schedule_retry(state, issue_id, run_entry.issue, next_attempt, reason, delay)
+        state = maybe_schedule_retry(state, issue_id, run_entry.issue, next_attempt, reason)
         {:noreply, state}
 
       :error ->
@@ -434,13 +435,12 @@ defmodule Kollywood.Orchestrator do
         {:error, reason, state} ->
           next_attempt = next_retry_attempt(run_entry.attempt)
 
-          schedule_retry(
+          maybe_schedule_retry(
             state,
             issue_id,
             run_entry.issue,
             next_attempt,
-            "failed to mark issue done: #{reason}",
-            retry_backoff_delay_ms(state, next_attempt)
+            "failed to mark issue done: #{reason}"
           )
       end
     else
@@ -448,14 +448,7 @@ defmodule Kollywood.Orchestrator do
       reason = "runner returned non-success status: #{inspect(result.status)}"
       state = tracker_mark_failed(state, issue_id, reason, next_attempt)
 
-      schedule_retry(
-        state,
-        issue_id,
-        run_entry.issue,
-        next_attempt,
-        reason,
-        retry_backoff_delay_ms(state, next_attempt)
-      )
+      maybe_schedule_retry(state, issue_id, run_entry.issue, next_attempt, reason)
     end
   end
 
@@ -464,14 +457,7 @@ defmodule Kollywood.Orchestrator do
     reason = result.error || "runner returned error"
     state = tracker_mark_failed(state, issue_id, reason, next_attempt)
 
-    schedule_retry(
-      state,
-      issue_id,
-      run_entry.issue,
-      next_attempt,
-      reason,
-      retry_backoff_delay_ms(state, next_attempt)
-    )
+    maybe_schedule_retry(state, issue_id, run_entry.issue, next_attempt, reason)
   end
 
   defp handle_runner_result(state, issue_id, run_entry, other_result) do
@@ -479,41 +465,66 @@ defmodule Kollywood.Orchestrator do
     reason = "runner returned unexpected result: #{inspect(other_result)}"
     state = tracker_mark_failed(state, issue_id, reason, next_attempt)
 
-    schedule_retry(
-      state,
-      issue_id,
-      run_entry.issue,
-      next_attempt,
-      reason,
-      retry_backoff_delay_ms(state, next_attempt)
-    )
+    maybe_schedule_retry(state, issue_id, run_entry.issue, next_attempt, reason)
   end
 
   # --- Retry and claim management ---
 
-  defp schedule_retry(state, issue_id, issue, attempt, reason, delay_ms) do
-    state = cancel_retry(state, issue_id)
-    due_at_ms = System.monotonic_time(:millisecond) + delay_ms
-    timer_ref = Process.send_after(self(), {:retry_due, issue_id}, delay_ms)
-
-    if reason do
-      Logger.warning(
-        "Scheduling retry issue_id=#{issue_id} attempt=#{attempt} delay_ms=#{delay_ms} reason=#{reason}"
+  defp maybe_schedule_retry(state, issue_id, issue, attempt, reason) do
+    if state.retries_enabled do
+      schedule_retry(
+        state,
+        issue_id,
+        issue,
+        attempt,
+        reason,
+        retry_backoff_delay_ms(state, attempt)
       )
     else
-      Logger.info("Scheduling continuation issue_id=#{issue_id} delay_ms=#{delay_ms}")
+      Logger.warning(
+        "Retries disabled for issue_id=#{issue_id}; stopping retries after failure: #{reason}"
+      )
+
+      state
+      |> cancel_retry(issue_id)
+      |> release_claim(issue_id)
+      |> Map.update!(:completed, &MapSet.put(&1, issue_id))
     end
+  end
 
-    retry_entry = %{
-      issue: issue,
-      attempt: attempt,
-      reason: reason,
-      timer_ref: timer_ref,
-      due_at_ms: due_at_ms
-    }
+  defp schedule_retry(state, issue_id, issue, attempt, reason, delay_ms) do
+    if state.retries_enabled do
+      state = cancel_retry(state, issue_id)
+      due_at_ms = System.monotonic_time(:millisecond) + delay_ms
+      timer_ref = Process.send_after(self(), {:retry_due, issue_id}, delay_ms)
 
-    %{state | retry_attempts: Map.put(state.retry_attempts, issue_id, retry_entry)}
-    |> claim(issue_id)
+      if reason do
+        Logger.warning(
+          "Scheduling retry issue_id=#{issue_id} attempt=#{attempt} delay_ms=#{delay_ms} reason=#{reason}"
+        )
+      else
+        Logger.info("Scheduling continuation issue_id=#{issue_id} delay_ms=#{delay_ms}")
+      end
+
+      retry_entry = %{
+        issue: issue,
+        attempt: attempt,
+        reason: reason,
+        timer_ref: timer_ref,
+        due_at_ms: due_at_ms
+      }
+
+      %{state | retry_attempts: Map.put(state.retry_attempts, issue_id, retry_entry)}
+      |> claim(issue_id)
+    else
+      Logger.warning(
+        "Retries disabled for issue_id=#{issue_id}; not scheduling retry#{if reason, do: " reason=#{reason}", else: ""}"
+      )
+
+      state
+      |> cancel_retry(issue_id)
+      |> release_claim(issue_id)
+    end
   end
 
   defp retry_backoff_delay_ms(state, attempt) do
@@ -787,11 +798,21 @@ defmodule Kollywood.Orchestrator do
         state.max_retry_backoff_ms
       )
 
+    retries_enabled =
+      config
+      |> get_in([Access.key(:agent, %{}), Access.key(:retries_enabled)])
+      |> case do
+        value when is_boolean(value) -> value
+        value when is_binary(value) -> String.downcase(String.trim(value)) in ["true", "1", "yes"]
+        _other -> state.retries_enabled
+      end
+
     %{
       state
       | poll_interval_ms: poll_interval_ms,
         max_concurrent_agents: max_concurrent_agents,
-        max_retry_backoff_ms: max_retry_backoff_ms
+        max_retry_backoff_ms: max_retry_backoff_ms,
+        retries_enabled: retries_enabled
     }
   end
 
@@ -925,6 +946,7 @@ defmodule Kollywood.Orchestrator do
       completed_count: MapSet.size(state.completed),
       poll_interval_ms: state.poll_interval_ms,
       max_concurrent_agents: state.max_concurrent_agents,
+      retries_enabled: state.retries_enabled,
       max_retry_backoff_ms: state.max_retry_backoff_ms,
       retry_base_delay_ms: state.retry_base_delay_ms,
       continuation_delay_ms: state.continuation_delay_ms,

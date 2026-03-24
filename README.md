@@ -42,7 +42,7 @@ Kollywood can run against a local PRD tracker file.
 
 - Default tracker config is in `WORKFLOW.md` (`tracker.kind: prd_json`)
 - Default tracker path is `prd.json`
-- Stories use `status` values: `open`, `in_progress`, `done`
+- Stories use `status` values: `open`, `in_progress`, `done`, `failed`, `cancelled`
 - Default agent kind in `WORKFLOW.md` is `pi`
 
 CLI helpers:

@@ -18,13 +18,13 @@ defmodule Mix.Tasks.Kollywood.Prd do
 
   ## Status values
 
-  Supported statuses are `open`, `in_progress`, and `done`.
+  Supported statuses are `open`, `in_progress`, `done`, `failed`, and `cancelled`.
   """
 
   use Mix.Task
 
   @default_path "prd.json"
-  @valid_statuses ["open", "in_progress", "done"]
+  @valid_statuses ["open", "in_progress", "done", "failed", "cancelled"]
 
   @impl Mix.Task
   def run(args) do
@@ -662,7 +662,7 @@ defmodule Mix.Tasks.Kollywood.Prd do
     Usage:
       mix kollywood.prd list [--path PATH] [--all]
       mix kollywood.prd add --title \"Story title\" [--path PATH] [--id US-001] [--description TEXT]\
-        [--priority N] [--status open|in_progress|done] [--depends-on US-001,US-002]\
+        [--priority N] [--status open|in_progress|done|failed|cancelled] [--depends-on US-001,US-002]\
         [--acceptance TEXT] [--notes TEXT]
       mix kollywood.prd set-status STORY_ID STATUS [--path PATH]
       mix kollywood.prd validate [--path PATH]

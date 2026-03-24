@@ -7,6 +7,8 @@ tracker:
     - in_progress
   terminal_states:
     - done
+    - failed
+    - cancelled
 
 polling:
   interval_ms: 5000
@@ -19,10 +21,19 @@ checks:
   fail_fast: true
 
 review:
-  enabled: false
-  max_cycles: 1
+  enabled: true
+  max_cycles: 2
   pass_token: REVIEW_PASS
   fail_token: REVIEW_FAIL
+  prompt_template: |
+    Review issue {{ issue.identifier }}: {{ issue.title }}.
+    You are a strict reviewer.
+
+    First line must be EXACTLY one of:
+    REVIEW_PASS
+    REVIEW_FAIL: <short reason>
+
+    Verify tests and implementation quality. If anything is missing, return REVIEW_FAIL.
   agent:
     kind: pi
 
@@ -44,6 +55,7 @@ workspace:
 
 agent:
   kind: pi
+  retries_enabled: false
   max_concurrent_agents: 5
   max_turns: 20
 ---
