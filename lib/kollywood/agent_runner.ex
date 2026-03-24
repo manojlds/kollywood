@@ -205,10 +205,18 @@ defmodule Kollywood.AgentRunner do
 
       case turn_result do
         {:ok, result} ->
+          turn_output = Map.get(result, :raw_output) || Map.get(result, :output)
+
           state =
             state
             |> Map.put(:last_output, result.output)
-            |> emit(:turn_succeeded, %{turn: turn_number, duration_ms: result.duration_ms})
+            |> emit(:turn_succeeded, %{
+              turn: turn_number,
+              duration_ms: result.duration_ms,
+              output: turn_output,
+              command: Map.get(result, :command),
+              args: Map.get(result, :args, [])
+            })
 
           continue_or_finish(state, config, prompt_template, mode, turn_limit, turn_opts)
 
@@ -382,17 +390,20 @@ defmodule Kollywood.AgentRunner do
                          timeout_ms,
                          acc_state.runtime
                        ) do
-                    {:ok, duration_ms} ->
+                    {:ok, duration_ms, output} ->
                       {
                         emit(acc_state, :check_passed, %{
                           check_index: index,
                           command: command,
-                          duration_ms: duration_ms
+                          duration_ms: duration_ms,
+                          output: output
                         }),
                         acc_errors
                       }
 
-                    {:error, reason, duration_ms, output_preview} ->
+                    {:error, reason, duration_ms, output} ->
+                      output_preview = output_preview(output)
+
                       error_message =
                         "check ##{index} failed (#{command}): #{reason}#{preview_suffix(output_preview)}"
 
@@ -402,6 +413,7 @@ defmodule Kollywood.AgentRunner do
                           command: command,
                           reason: reason,
                           duration_ms: duration_ms,
+                          output: output,
                           output_preview: output_preview
                         }),
                         acc_errors ++ [error_message]
@@ -434,14 +446,20 @@ defmodule Kollywood.AgentRunner do
            {:ok, verdict} <- validate_review_output(output, config) do
         case verdict do
           :pass ->
-            {:ok, emit(state, :review_passed, %{agent_kind: review_agent_kind, cycle: cycle})}
+            {:ok,
+             emit(state, :review_passed, %{
+               agent_kind: review_agent_kind,
+               cycle: cycle,
+               output: output
+             })}
 
           {:fail, reason} ->
             {:review_failed, reason,
              emit(state, :review_failed, %{
                agent_kind: review_agent_kind,
                cycle: cycle,
-               reason: reason
+               reason: reason,
+               output: output
              })}
         end
       else
@@ -494,6 +512,8 @@ defmodule Kollywood.AgentRunner do
 
           case turn_result do
             {:ok, result} ->
+              turn_output = Map.get(result, :raw_output) || Map.get(result, :output)
+
               {:ok,
                state
                |> Map.put(:last_output, result.output)
@@ -501,7 +521,10 @@ defmodule Kollywood.AgentRunner do
                  turn: turn_number,
                  duration_ms: result.duration_ms,
                  remediation: true,
-                 review_cycle: cycle
+                 review_cycle: cycle,
+                 output: turn_output,
+                 command: Map.get(result, :command),
+                 args: Map.get(result, :args, [])
                })}
 
             {:error, reason} ->
@@ -554,11 +577,11 @@ defmodule Kollywood.AgentRunner do
     {executable, args, env} = check_command_invocation(command, runtime)
 
     case execute_command(executable, args, workspace_path, env, timeout_ms) do
-      {:ok, _output, duration_ms} ->
-        {:ok, duration_ms}
+      {:ok, output, duration_ms} ->
+        {:ok, duration_ms, output}
 
-      {:error, reason, output_preview, duration_ms} ->
-        {:error, reason, duration_ms, output_preview}
+      {:error, reason, output, duration_ms} ->
+        {:error, reason, duration_ms, output}
     end
   end
 
@@ -591,7 +614,7 @@ defmodule Kollywood.AgentRunner do
                    runtime.env,
                    runtime.start_timeout_ms
                  ) do
-              {:ok, _output, duration_ms} ->
+              {:ok, output, duration_ms} ->
                 runtime = %{runtime | started?: true, process_state: :running}
 
                 state =
@@ -604,12 +627,14 @@ defmodule Kollywood.AgentRunner do
                     command: runtime.command,
                     process_count: length(runtime.processes),
                     port_offset: runtime.port_offset,
-                    resolved_ports: runtime.resolved_ports
+                    resolved_ports: runtime.resolved_ports,
+                    output: output
                   })
 
                 {:ok, state}
 
-              {:error, reason, output_preview, duration_ms} ->
+              {:error, reason, output, duration_ms} ->
+                output_preview = output_preview(output)
                 runtime = %{runtime | process_state: :start_failed}
 
                 state =
@@ -621,6 +646,7 @@ defmodule Kollywood.AgentRunner do
                     workspace_path: runtime.workspace_path,
                     command: runtime.command,
                     reason: reason,
+                    output: output,
                     output_preview: output_preview
                   })
 
@@ -676,7 +702,7 @@ defmodule Kollywood.AgentRunner do
                runtime.env,
                runtime.stop_timeout_ms
              ) do
-          {:ok, _output, duration_ms} ->
+          {:ok, output, duration_ms} ->
             runtime =
               runtime
               |> Map.put(:started?, false)
@@ -690,12 +716,15 @@ defmodule Kollywood.AgentRunner do
                 runtime_profile: :full_stack,
                 duration_ms: duration_ms,
                 workspace_path: runtime.workspace_path,
-                command: runtime.command
+                command: runtime.command,
+                output: output
               })
 
             {:ok, state}
 
-          {:error, reason, output_preview, duration_ms} ->
+          {:error, reason, output, duration_ms} ->
+            output_preview = output_preview(output)
+
             runtime =
               runtime
               |> Map.put(:process_state, :stop_failed)
@@ -710,6 +739,7 @@ defmodule Kollywood.AgentRunner do
                 workspace_path: runtime.workspace_path,
                 command: runtime.command,
                 reason: reason,
+                output: output,
                 output_preview: output_preview
               })
 
@@ -848,7 +878,7 @@ defmodule Kollywood.AgentRunner do
           {:ok, output, elapsed_ms(started_at_ms)}
 
         {:ok, {output, exit_code}} ->
-          {:error, "exit code #{exit_code}", output_preview(output), elapsed_ms(started_at_ms)}
+          {:error, "exit code #{exit_code}", output, elapsed_ms(started_at_ms)}
 
         nil ->
           {:error, "timed out after #{timeout_ms}ms", "", elapsed_ms(started_at_ms)}

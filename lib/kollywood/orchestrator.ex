@@ -17,6 +17,7 @@ defmodule Kollywood.Orchestrator do
   alias Kollywood.AgentRunner
   alias Kollywood.AgentRunner.Result
   alias Kollywood.Config
+  alias Kollywood.Orchestrator.RunLogs
   alias Kollywood.Tracker
   alias Kollywood.WorkflowStore
 
@@ -210,6 +211,8 @@ defmodule Kollywood.Orchestrator do
         reason =
           "Runner task exited before returning a result: #{inspect(reason)}"
 
+        maybe_complete_run_logs(run_entry, %{status: :failed, error: reason})
+
         state = tracker_mark_failed(state, issue_id, reason, next_attempt)
 
         state = maybe_schedule_retry(state, issue_id, run_entry.issue, next_attempt, reason)
@@ -295,6 +298,8 @@ defmodule Kollywood.Orchestrator do
       else
         Logger.info("Stopping ineligible run issue_id=#{issue_id}")
 
+        maybe_complete_run_logs(run_entry, %{status: :stopped, error: "issue is no longer active"})
+
         acc
         |> stop_run_task(run_entry)
         |> drop_running(issue_id, run_entry.task_ref)
@@ -346,12 +351,13 @@ defmodule Kollywood.Orchestrator do
     with :ok <- tracker_prepare_issue_for_run(tracker, config, issue_id) do
       orchestrator_pid = self()
       {user_on_event, runner_opts} = Keyword.pop(state.runner_opts, :on_event)
+      run_log_context = prepare_run_log_context(config, issue, attempt)
 
       run_opts =
         [
           workflow_store: state.workflow_store,
           attempt: attempt,
-          on_event: runner_on_event(orchestrator_pid, issue_id, user_on_event)
+          on_event: runner_on_event(orchestrator_pid, issue_id, run_log_context, user_on_event)
         ] ++ runner_opts
 
       task =
@@ -369,7 +375,8 @@ defmodule Kollywood.Orchestrator do
         started_at: DateTime.utc_now(),
         runtime_profile: runtime_profile,
         runtime_process_state: initial_runtime_process_state(runtime_profile),
-        runtime_last_event: nil
+        runtime_last_event: nil,
+        run_log_context: run_log_context
       }
 
       Logger.info(
@@ -442,6 +449,7 @@ defmodule Kollywood.Orchestrator do
   # --- Runner result handling ---
 
   defp handle_runner_result(state, issue_id, run_entry, {:ok, %Result{} = result}) do
+    maybe_complete_run_logs(run_entry, result)
     state = %{state | completed: MapSet.put(state.completed, issue_id)}
 
     if result.status in [:ok, :max_turns_reached] do
@@ -470,6 +478,7 @@ defmodule Kollywood.Orchestrator do
   end
 
   defp handle_runner_result(state, issue_id, run_entry, {:error, %Result{} = result}) do
+    maybe_complete_run_logs(run_entry, result)
     next_attempt = next_retry_attempt(run_entry.attempt)
     reason = result.error || "runner returned error"
     state = tracker_mark_failed(state, issue_id, reason, next_attempt)
@@ -478,8 +487,11 @@ defmodule Kollywood.Orchestrator do
   end
 
   defp handle_runner_result(state, issue_id, run_entry, other_result) do
-    next_attempt = next_retry_attempt(run_entry.attempt)
     reason = "runner returned unexpected result: #{inspect(other_result)}"
+
+    maybe_complete_run_logs(run_entry, %{status: :failed, error: reason})
+
+    next_attempt = next_retry_attempt(run_entry.attempt)
     state = tracker_mark_failed(state, issue_id, reason, next_attempt)
 
     maybe_schedule_retry(state, issue_id, run_entry.issue, next_attempt, reason)
@@ -631,6 +643,8 @@ defmodule Kollywood.Orchestrator do
         release_claim(state, issue_id)
 
       run_entry ->
+        maybe_complete_run_logs(run_entry, %{status: :stopped, error: "run stopped by operator"})
+
         state
         |> stop_run_task(run_entry)
         |> drop_running(issue_id, run_entry.task_ref)
@@ -746,7 +760,11 @@ defmodule Kollywood.Orchestrator do
     with {:ok, config} <- fetch_config(state.workflow_store),
          tracker <- resolve_tracker(state.tracker, config),
          :ok <-
-           tracker_call(tracker, :mark_done, [config, issue_id, tracker_done_metadata(result)]) do
+           tracker_call(tracker, :mark_done, [
+             config,
+             issue_id,
+             tracker_done_metadata(result, run_entry)
+           ]) do
       state = release_claim(state, issue_id)
       {:ok, maybe_cleanup_terminal_workspace(state, run_entry, config)}
     else
@@ -802,13 +820,23 @@ defmodule Kollywood.Orchestrator do
      "tracker module #{inspect(tracker)} returned #{inspect(response)} for #{function_name}/#{arity}"}
   end
 
-  defp tracker_done_metadata(%Result{} = result) do
-    %{
+  defp tracker_done_metadata(%Result{} = result, run_entry) do
+    base = %{
       status: result.status,
       turn_count: result.turn_count,
       ended_at: result.ended_at,
       workspace_path: result.workspace_path
     }
+
+    run_log_metadata =
+      run_entry
+      |> Map.get(:run_log_context)
+      |> case do
+        nil -> %{}
+        context -> RunLogs.tracker_metadata(context)
+      end
+
+    Map.merge(base, run_log_metadata)
   end
 
   defp list_active_issues(tracker, config) when is_function(tracker, 1) do
@@ -869,27 +897,82 @@ defmodule Kollywood.Orchestrator do
        }}
   end
 
-  defp runner_on_event(orchestrator_pid, issue_id, user_on_event)
+  defp runner_on_event(orchestrator_pid, issue_id, run_log_context, user_on_event)
        when is_function(user_on_event, 1) do
     fn event ->
       send(orchestrator_pid, {:runner_event, issue_id, event})
+      persist_run_log_event(run_log_context, event)
       user_on_event.(event)
     end
   end
 
-  defp runner_on_event(orchestrator_pid, issue_id, nil) do
+  defp runner_on_event(orchestrator_pid, issue_id, run_log_context, nil) do
     fn event ->
       send(orchestrator_pid, {:runner_event, issue_id, event})
+      persist_run_log_event(run_log_context, event)
       :ok
     end
   end
 
-  defp runner_on_event(orchestrator_pid, issue_id, _other) do
+  defp runner_on_event(orchestrator_pid, issue_id, run_log_context, _other) do
     fn event ->
       send(orchestrator_pid, {:runner_event, issue_id, event})
+      persist_run_log_event(run_log_context, event)
       :ok
     end
   end
+
+  defp prepare_run_log_context(config, issue, attempt) do
+    case RunLogs.prepare_attempt(config, issue, attempt) do
+      {:ok, context} ->
+        context
+
+      {:error, reason} ->
+        Logger.warning(
+          "Failed to initialize run logs issue_id=#{issue_id(issue) || "-"} identifier=#{issue_identifier(issue) || "-"}: #{reason}"
+        )
+
+        nil
+    end
+  end
+
+  defp persist_run_log_event(nil, _event), do: :ok
+
+  defp persist_run_log_event(run_log_context, event) do
+    case RunLogs.append_event(run_log_context, event) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "Failed to append run log event issue_id=#{run_log_context[:issue_id] || "-"} attempt=#{run_log_context[:attempt] || "-"}: #{reason}"
+        )
+
+        :ok
+    end
+  end
+
+  defp maybe_complete_run_logs(run_entry, completion) when is_map(run_entry) do
+    case Map.get(run_entry, :run_log_context) do
+      nil ->
+        :ok
+
+      run_log_context ->
+        case RunLogs.complete_attempt(run_log_context, completion) do
+          :ok ->
+            :ok
+
+          {:error, reason} ->
+            Logger.warning(
+              "Failed to finalize run logs issue_id=#{issue_id(run_entry.issue) || "-"} attempt=#{run_log_context[:attempt] || "-"}: #{reason}"
+            )
+
+            :ok
+        end
+    end
+  end
+
+  defp maybe_complete_run_logs(_run_entry, _completion), do: :ok
 
   defp runtime_profile(config) do
     case get_in(config, [Access.key(:runtime, %{}), Access.key(:profile)]) do

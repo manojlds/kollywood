@@ -16,18 +16,22 @@ defmodule Mix.Tasks.Kollywood.OrchTasksTest do
     File.mkdir_p!(root)
 
     server = :kollywood_orch_task_server
+    workflow_path = write_workflow!(root)
 
     previous_server_env = Application.get_env(:kollywood, :orchestrator_server)
+    previous_workflow_path_env = Application.get_env(:kollywood, :workflow_path)
+    previous_follow_poll_ms = Application.get_env(:kollywood, :orch_logs_follow_poll_ms)
+
     Application.put_env(:kollywood, :orchestrator_server, server)
+    Application.put_env(:kollywood, :workflow_path, workflow_path)
+    Application.put_env(:kollywood, :orch_logs_follow_poll_ms, 25)
 
     on_exit(fn ->
       File.rm_rf!(root)
 
-      if is_nil(previous_server_env) do
-        Application.delete_env(:kollywood, :orchestrator_server)
-      else
-        Application.put_env(:kollywood, :orchestrator_server, previous_server_env)
-      end
+      restore_env(:orchestrator_server, previous_server_env)
+      restore_env(:workflow_path, previous_workflow_path_env)
+      restore_env(:orch_logs_follow_poll_ms, previous_follow_poll_ms)
     end)
 
     %{root: root, server: server}
@@ -155,10 +159,113 @@ defmodule Mix.Tasks.Kollywood.OrchTasksTest do
     assert status.claimed_count == 0
   end
 
+  test "kollywood.orch.logs prints latest and specific attempt logs", %{root: root} do
+    _run_log_one =
+      write_attempt_log_fixture(root, "US-900", 1, "[first] worker output\n", "failed")
+
+    _run_log_two =
+      write_attempt_log_fixture(root, "US-900", 2, "[second] worker output\n", "ok")
+
+    latest_output = run_task("kollywood.orch.logs", ["US-900"])
+
+    assert latest_output =~ "attempt #2"
+    assert latest_output =~ "[second] worker output"
+    refute latest_output =~ "[first] worker output"
+
+    specific_output = run_task("kollywood.orch.logs", ["US-900", "--attempt", "1"])
+
+    assert specific_output =~ "attempt #1"
+    assert specific_output =~ "[first] worker output"
+  end
+
+  test "kollywood.orch.logs follow mode streams appended lines", %{root: root} do
+    run_log_path =
+      write_attempt_log_fixture(root, "US-901", 1, "[seed] line\n", "running")
+
+    output =
+      capture_io(fn ->
+        follower_pid =
+          spawn(fn ->
+            Mix.Task.reenable("kollywood.orch.logs")
+            Mix.Task.run("kollywood.orch.logs", ["US-901", "--attempt", "1", "--follow"])
+          end)
+
+        Process.sleep(120)
+        File.write!(run_log_path, "[tail] line\n", [:append])
+        Process.sleep(220)
+        Process.exit(follower_pid, :kill)
+        Process.sleep(80)
+      end)
+
+    assert output =~ "[seed] line"
+    assert output =~ "[tail] line"
+  end
+
   defp run_task(task_name, args) do
     Mix.Task.reenable(task_name)
     capture_io(fn -> Mix.Task.run(task_name, args) end)
   end
+
+  defp write_workflow!(root) do
+    tracker_path = Path.join(root, "prd.json")
+
+    File.write!(tracker_path, Jason.encode!(%{"project" => "kollywood", "userStories" => []}))
+
+    workflow_path = Path.join(root, "WORKFLOW.md")
+
+    File.write!(workflow_path, """
+    ---
+    tracker:
+      kind: prd_json
+      path: #{tracker_path}
+    workspace:
+      root: #{Path.join(root, "workspaces")}
+      strategy: clone
+    agent:
+      kind: amp
+    ---
+    Work on {{ issue.identifier }}
+    """)
+
+    workflow_path
+  end
+
+  defp write_attempt_log_fixture(root, story_id, attempt, run_log_content, status) do
+    attempt_dir =
+      Path.join([
+        root,
+        ".kollywood",
+        "run_logs",
+        story_id,
+        "attempt-" <> String.pad_leading(Integer.to_string(attempt), 4, "0")
+      ])
+
+    File.mkdir_p!(attempt_dir)
+
+    run_log_path = Path.join(attempt_dir, "run.log")
+    File.write!(run_log_path, run_log_content)
+
+    File.write!(Path.join(attempt_dir, "worker.log"), run_log_content)
+    File.write!(Path.join(attempt_dir, "reviewer.log"), "")
+    File.write!(Path.join(attempt_dir, "checks.log"), "")
+    File.write!(Path.join(attempt_dir, "runtime.log"), "")
+    File.write!(Path.join(attempt_dir, "events.jsonl"), "")
+
+    metadata = %{
+      "story_id" => story_id,
+      "attempt" => attempt,
+      "status" => status,
+      "started_at" => "2026-03-24T00:00:00Z",
+      "ended_at" => "2026-03-24T00:00:10Z"
+    }
+
+    File.write!(Path.join(attempt_dir, "metadata.json"), Jason.encode!(metadata, pretty: true))
+
+    run_log_path
+  end
+
+  defp restore_env(key, nil), do: Application.delete_env(:kollywood, key)
+  defp restore_env(key, value), do: Application.put_env(:kollywood, key, value)
 
   defp workflow_config(root) do
     %Config{
