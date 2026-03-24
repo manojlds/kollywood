@@ -36,6 +36,19 @@ process checks, so no per-project metadata file is required.
 
 Now you can visit [`localhost:4000`](http://localhost:4000) from your browser.
 
+## Projects
+
+Kollywood now tracks onboarded projects in a SQLite control store.
+
+No project is auto-seeded; onboard projects explicitly.
+
+```bash
+mix kollywood.projects list
+mix kollywood.projects add-local --name "Kollywood" --path ~/projects/kollywood
+mix kollywood.projects add-github --name "Backend" --repo org/backend
+mix kollywood.projects add-gitlab --name "Payments" --repo group/payments
+```
+
 ## Local Dogfood Tracker (`prd.json`)
 
 Kollywood can run against a local PRD tracker file.
@@ -52,9 +65,15 @@ mix kollywood.prd list
 mix kollywood.prd add --title "Implement dogfood status page"
 mix kollywood.prd set-status US-001 in_progress
 mix kollywood.prd set-status US-001 done
+mix kollywood.prd reset US-001
+mix kollywood.prd rerun US-001 --clear-notes
+mix kollywood.prd reset US-001 --fresh-worktree
 mix kollywood.prd validate
 mix kollywood.prd validate --path ./some/other/prd.json
 ```
+
+`reset`/`rerun` keep the existing worktree by default; pass `--fresh-worktree`
+to remove `<workspace-root>/<story-id>` before retrying.
 
 `mix kollywood.prd validate` checks:
 - top-level JSON object shape

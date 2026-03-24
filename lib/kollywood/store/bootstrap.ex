@@ -1,0 +1,36 @@
+defmodule Kollywood.Store.Bootstrap do
+  @moduledoc """
+  Boots the SQLite-backed control store by running migrations.
+  """
+
+  use GenServer
+  require Logger
+
+  alias Kollywood.Repo
+
+  @spec start_link(keyword()) :: GenServer.on_start()
+  def start_link(opts) do
+    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  end
+
+  @impl true
+  def init(_opts) do
+    if Application.get_env(:kollywood, :store_bootstrap_enabled, true) do
+      run_bootstrap!()
+    end
+
+    {:ok, %{}}
+  end
+
+  defp run_bootstrap! do
+    migrations_path = Application.app_dir(:kollywood, "priv/repo/migrations")
+
+    Ecto.Migrator.with_repo(Repo, fn repo ->
+      Ecto.Migrator.run(repo, migrations_path, :up, all: true)
+    end)
+  rescue
+    error ->
+      Logger.error("Store bootstrap failed: #{Exception.message(error)}")
+      reraise(error, __STACKTRACE__)
+  end
+end

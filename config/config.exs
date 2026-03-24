@@ -12,6 +12,17 @@ config :kollywood,
   orchestrator_enabled: true,
   orchestrator: []
 
+config :kollywood,
+  ecto_repos: [Kollywood.Repo]
+
+config :kollywood, Kollywood.Repo,
+  adapter: Ecto.Adapters.SQLite3,
+  database: ".kollywood.db",
+  pool_size: 5,
+  busy_timeout: 5_000,
+  stacktrace: true,
+  show_sensitive_data_on_connection_error: true
+
 # Configure the endpoint
 config :kollywood, KollywoodWeb.Endpoint,
   url: [host: "localhost"],

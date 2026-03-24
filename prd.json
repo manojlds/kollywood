@@ -69,18 +69,24 @@
         "full_stack starts per-worktree processes and runs checks in that isolated runtime",
         "runtime processes are stopped on run completion/failure"
       ],
+      "completedAt": "2026-03-24T08:37:37Z",
       "dependsOn": [
         "US-103"
       ],
       "description": "Implement runtime orchestration profiles so each issue worktree can run isolated processes when needed. Add workflow config for runtime profiles with strict isolation support: checks_only (no processes) and full_stack (per-worktree processes + per-worktree env vars/ports). Wire AgentRunner/Orchestrator lifecycle to start/stop per-worktree runtime via devenv before checks when profile requires it. Ensure checks can run inside devenv shell in the worktree. Include status visibility for runtime process state in orchestrator status output. Keep defaults lightweight so small stories run checks_only.",
       "id": "US-104",
-      "lastAttempt": 1,
-      "lastError": "Agent command timed out after 300000ms",
-      "notes": "[2026-03-24T03:00:04Z] attempt 1: Agent command timed out after 300000ms\n[2026-03-24T03:05:14Z] attempt 2: Agent command timed out after 300000ms\n[2026-03-24T03:10:34Z] attempt 3: Agent command timed out after 300000ms\n[2026-03-24T03:16:04Z] attempt 1: Agent command timed out after 300000ms",
-      "passes": false,
+      "lastError": null,
+      "lastRun": {
+        "ended_at": "2026-03-24T08:37:37.197079Z",
+        "status": "ok",
+        "turn_count": 2,
+        "workspace_path": "/home/manojlds/kollywood-workspaces/US-104"
+      },
+      "notes": "[2026-03-24T03:00:04Z] attempt 1: Agent command timed out after 300000ms\n[2026-03-24T03:05:14Z] attempt 2: Agent command timed out after 300000ms\n[2026-03-24T03:10:34Z] attempt 3: Agent command timed out after 300000ms\n[2026-03-24T03:16:04Z] attempt 1: Agent command timed out after 300000ms\n[2026-03-24T08:01:01Z] reset for rerun",
+      "passes": true,
       "priority": 2,
-      "startedAt": "2026-03-24T02:55:04Z",
-      "status": "failed",
+      "startedAt": "2026-03-24T08:02:07Z",
+      "status": "done",
       "title": "Add per-worktree devenv runtime isolation profiles"
     }
   ]
