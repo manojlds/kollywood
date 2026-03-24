@@ -198,6 +198,7 @@ defmodule Kollywood.ConfigTest do
     assert config.checks.fail_fast == true
 
     assert config.review.enabled == false
+    assert config.review.max_cycles == 1
     assert config.review.pass_token == "REVIEW_PASS"
     assert config.review.fail_token == "REVIEW_FAIL"
     assert config.review.agent.kind == :pi
@@ -214,6 +215,7 @@ defmodule Kollywood.ConfigTest do
       fail_fast: false
     review:
       enabled: true
+      max_cycles: 3
       pass_token: OK_TO_MERGE
       fail_token: NEEDS_WORK
       prompt_template: "Review {{ issue.identifier }}"
@@ -240,6 +242,7 @@ defmodule Kollywood.ConfigTest do
     assert config.checks.fail_fast == false
 
     assert config.review.enabled == true
+    assert config.review.max_cycles == 3
     assert config.review.pass_token == "OK_TO_MERGE"
     assert config.review.fail_token == "NEEDS_WORK"
     assert config.review.prompt_template == "Review {{ issue.identifier }}"

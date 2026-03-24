@@ -20,6 +20,7 @@ checks:
 
 review:
   enabled: false
+  max_cycles: 1
   pass_token: REVIEW_PASS
   fail_token: REVIEW_FAIL
   agent:

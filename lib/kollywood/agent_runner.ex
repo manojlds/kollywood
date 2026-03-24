@@ -130,7 +130,14 @@ defmodule Kollywood.AgentRunner do
         case stop_session(run_state, session) do
           {:ok, stopped_state} ->
             if is_nil(reason) do
-              case finalize_with_quality_gates(stopped_state, config, status) do
+              case finalize_with_quality_gates(
+                     stopped_state,
+                     config,
+                     status,
+                     session_opts,
+                     turn_opts,
+                     prompt_template
+                   ) do
                 {:ok, qualified_state} ->
                   succeed(qualified_state, status)
 
@@ -238,10 +245,71 @@ defmodule Kollywood.AgentRunner do
     {:error, result_from_state(state, :failed, reason)}
   end
 
-  defp finalize_with_quality_gates(state, config, _status) do
+  defp finalize_with_quality_gates(
+         state,
+         config,
+         _status,
+         session_opts,
+         turn_opts,
+         prompt_template
+       ) do
+    max_cycles = review_max_cycles(config)
+
+    run_quality_cycle(state, config, session_opts, turn_opts, prompt_template, 1, max_cycles)
+  end
+
+  defp run_quality_cycle(
+         state,
+         config,
+         session_opts,
+         turn_opts,
+         prompt_template,
+         cycle,
+         max_cycles
+       ) do
+    state = emit(state, :quality_cycle_started, %{cycle: cycle, max_cycles: max_cycles})
+
     with {:ok, state} <- run_required_checks(state, config),
-         {:ok, state} <- run_review_if_enabled(state, config) do
-      {:ok, state}
+         {:ok, state} <- run_review_if_enabled(state, config, cycle) do
+      {:ok, emit(state, :quality_cycle_passed, %{cycle: cycle})}
+    else
+      {:review_failed, reason, state} when cycle < max_cycles ->
+        state =
+          emit(state, :quality_cycle_retrying, %{
+            cycle: cycle,
+            max_cycles: max_cycles,
+            reason: reason
+          })
+
+        case run_review_remediation_turn(
+               state,
+               config,
+               reason,
+               cycle,
+               session_opts,
+               turn_opts,
+               prompt_template
+             ) do
+          {:ok, state} ->
+            run_quality_cycle(
+              state,
+              config,
+              session_opts,
+              turn_opts,
+              prompt_template,
+              cycle + 1,
+              max_cycles
+            )
+
+          {:error, remediation_reason, state} ->
+            {:error, "review remediation failed: #{remediation_reason}", state}
+        end
+
+      {:review_failed, reason, state} ->
+        {:error, "review failed after #{max_cycles} cycle(s): #{reason}", state}
+
+      {:error, reason, state} ->
+        {:error, reason, state}
     end
   end
 
@@ -315,21 +383,129 @@ defmodule Kollywood.AgentRunner do
     end
   end
 
-  defp run_review_if_enabled(state, config) do
+  defp run_review_if_enabled(state, config, cycle) do
     if review_enabled?(config) do
       review_agent_kind = review_agent_kind(config)
-      state = emit(state, :review_started, %{agent_kind: review_agent_kind})
+      state = emit(state, :review_started, %{agent_kind: review_agent_kind, cycle: cycle})
 
-      with {:ok, prompt} <- build_review_prompt(state, config),
+      with {:ok, prompt} <- build_review_prompt(state, config, cycle),
            {:ok, output} <- run_review_turn(state, config, prompt),
-           :ok <- validate_review_output(output, config) do
-        {:ok, emit(state, :review_passed, %{agent_kind: review_agent_kind})}
+           {:ok, verdict} <- validate_review_output(output, config) do
+        case verdict do
+          :pass ->
+            {:ok, emit(state, :review_passed, %{agent_kind: review_agent_kind, cycle: cycle})}
+
+          {:fail, reason} ->
+            {:review_failed, reason,
+             emit(state, :review_failed, %{
+               agent_kind: review_agent_kind,
+               cycle: cycle,
+               reason: reason
+             })}
+        end
       else
         {:error, reason} ->
-          {:error, "review failed: #{reason}", emit(state, :review_failed, %{reason: reason})}
+          {:error, "review failed: #{reason}",
+           emit(state, :review_error, %{
+             agent_kind: review_agent_kind,
+             cycle: cycle,
+             reason: reason
+           })}
       end
     else
       {:ok, state}
+    end
+  end
+
+  defp run_review_remediation_turn(
+         state,
+         config,
+         review_feedback,
+         cycle,
+         session_opts,
+         turn_opts,
+         prompt_template
+       ) do
+    with {:ok, prompt} <-
+           build_review_remediation_prompt(state, review_feedback, cycle, prompt_template),
+         {:ok, session} <- Agent.start_session(config, state.workspace, session_opts) do
+      state =
+        state
+        |> Map.put(:session, session)
+        |> emit(:session_started, %{
+          session_id: session.id,
+          adapter: session.adapter,
+          remediation: true,
+          review_cycle: cycle
+        })
+
+      turn_number = state.turn_count + 1
+
+      run_result =
+        with :ok <- Workspace.before_run(state.workspace, config.hooks) do
+          state =
+            state
+            |> Map.put(:turn_count, turn_number)
+            |> emit(:turn_started, %{turn: turn_number, remediation: true, review_cycle: cycle})
+
+          turn_result = Agent.run_turn(session, prompt, turn_opts)
+          Workspace.after_run(state.workspace, config.hooks)
+
+          case turn_result do
+            {:ok, result} ->
+              {:ok,
+               state
+               |> Map.put(:last_output, result.output)
+               |> emit(:turn_succeeded, %{
+                 turn: turn_number,
+                 duration_ms: result.duration_ms,
+                 remediation: true,
+                 review_cycle: cycle
+               })}
+
+            {:error, reason} ->
+              {:error, reason,
+               emit(state, :turn_failed, %{
+                 turn: turn_number,
+                 reason: reason,
+                 remediation: true,
+                 review_cycle: cycle
+               })}
+          end
+        else
+          {:error, reason} ->
+            {:error, reason,
+             emit(state, :turn_failed, %{
+               turn: turn_number,
+               reason: reason,
+               remediation: true,
+               review_cycle: cycle
+             })}
+        end
+
+      case run_result do
+        {:ok, run_state} ->
+          case stop_session(run_state, session) do
+            {:ok, stopped_state} ->
+              {:ok, stopped_state}
+
+            {:error, stop_reason, stopped_state} ->
+              {:error, "Failed to stop agent session: #{stop_reason}", stopped_state}
+          end
+
+        {:error, reason, run_state} ->
+          case stop_session(run_state, session) do
+            {:ok, stopped_state} ->
+              {:error, reason, stopped_state}
+
+            {:error, stop_reason, stopped_state} ->
+              {:error, combine_errors(reason, "Failed to stop agent session: #{stop_reason}"),
+               stopped_state}
+          end
+      end
+    else
+      {:error, reason} ->
+        {:error, "failed to run review remediation turn: #{reason}", state}
     end
   end
 
@@ -407,7 +583,7 @@ defmodule Kollywood.AgentRunner do
 
     cond do
       String.starts_with?(first_line, pass_token) ->
-        :ok
+        {:ok, :pass}
 
       String.starts_with?(first_line, fail_token) ->
         reason =
@@ -418,9 +594,9 @@ defmodule Kollywood.AgentRunner do
           |> String.trim()
 
         if reason == "" do
-          {:error, "reviewer rejected changes"}
+          {:ok, {:fail, "reviewer rejected changes"}}
         else
-          {:error, reason}
+          {:ok, {:fail, reason}}
         end
 
       true ->
@@ -429,7 +605,7 @@ defmodule Kollywood.AgentRunner do
     end
   end
 
-  defp build_review_prompt(state, config) do
+  defp build_review_prompt(state, config, cycle) do
     pass_token = review_pass_token(config)
     fail_token = review_fail_token(config)
     template = review_prompt_template(config)
@@ -439,10 +615,45 @@ defmodule Kollywood.AgentRunner do
       |> Map.put("pass_token", pass_token)
       |> Map.put("fail_token", fail_token)
       |> Map.put("agent_output", state.last_output || "")
+      |> Map.put("cycle", cycle)
 
     case PromptBuilder.render(template, variables) do
       {:ok, prompt} -> {:ok, prompt}
       {:error, reason} -> {:error, "failed to render review prompt: #{reason}"}
+    end
+  end
+
+  defp build_review_remediation_prompt(state, review_feedback, cycle, prompt_template) do
+    base_variables = PromptBuilder.build_variables(state.issue, state.attempt)
+
+    base_prompt =
+      case PromptBuilder.render(prompt_template, base_variables) do
+        {:ok, prompt} -> prompt
+        {:error, _reason} -> ""
+      end
+
+    remediation_template =
+      """
+      Continue working on issue {{ issue.identifier }}: {{ issue.title }}.
+
+      Previous assignment:
+      {{ base_prompt }}
+
+      Reviewer feedback from cycle {{ cycle }}:
+      {{ review_feedback }}
+
+      Fix the issues raised by the reviewer, update code/tests as needed, and provide a concise summary.
+      """
+
+    variables =
+      base_variables
+      |> Map.put("review_feedback", review_feedback)
+      |> Map.put("cycle", cycle)
+      |> Map.put("base_prompt", base_prompt)
+
+    case PromptBuilder.render(remediation_template, variables) do
+      {:ok, prompt} -> {:ok, prompt}
+      {:error, reason} -> {:error, "failed to render remediation prompt: #{reason}"}
     end
   end
 
@@ -494,6 +705,13 @@ defmodule Kollywood.AgentRunner do
     |> review_config()
     |> Map.get(:enabled, false)
     |> truthy?()
+  end
+
+  defp review_max_cycles(config) do
+    config
+    |> review_config()
+    |> Map.get(:max_cycles, 1)
+    |> positive_integer(1)
   end
 
   defp review_pass_token(config) do

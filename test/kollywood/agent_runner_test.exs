@@ -61,6 +61,15 @@ defmodule Kollywood.AgentRunnerTest do
       printf "REVIEW_PROMPT<<%s>>\n" "$prompt" >> "$REVIEW_PROMPT_LOG_FILE"
     fi
 
+    if [ -n "${REVIEW_FAIL_ONCE_FILE:-}" ]; then
+      if [ ! -f "$REVIEW_FAIL_ONCE_FILE" ]; then
+        touch "$REVIEW_FAIL_ONCE_FILE"
+        echo "REVIEW_FAIL: address review feedback"
+        echo "reviewed:$prompt"
+        exit 0
+      fi
+    fi
+
     verdict="${REVIEW_VERDICT:-REVIEW_PASS}"
     echo "$verdict"
     echo "reviewed:$prompt"
@@ -108,6 +117,8 @@ defmodule Kollywood.AgentRunnerTest do
              :turn_started,
              :turn_succeeded,
              :session_stopped,
+             :quality_cycle_started,
+             :quality_cycle_passed,
              :run_finished
            ]
   end
@@ -290,8 +301,55 @@ defmodule Kollywood.AgentRunnerTest do
              )
 
     assert result.status == :ok
+    assert :quality_cycle_started in Enum.map(result.events, & &1.type)
+    assert :quality_cycle_passed in Enum.map(result.events, & &1.type)
     assert :review_started in Enum.map(result.events, & &1.type)
     assert :review_passed in Enum.map(result.events, & &1.type)
+  end
+
+  test "retries with remediation turn when review fails before max cycles", %{
+    root: root,
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    review_cli_path: review_cli_path,
+    prompt_log: prompt_log
+  } do
+    fail_once_file = Path.join(root, "review_fail_once.marker")
+
+    config =
+      runner_config(workspace_root, cli_path, prompt_log)
+      |> Map.put(:review, %{
+        enabled: true,
+        max_cycles: 2,
+        pass_token: "REVIEW_PASS",
+        fail_token: "REVIEW_FAIL",
+        agent: %{
+          kind: :pi,
+          command: review_cli_path,
+          args: [],
+          env: %{"REVIEW_FAIL_ONCE_FILE" => fail_once_file},
+          timeout_ms: 10_000
+        }
+      })
+
+    template = "Work on {{ issue.identifier }}"
+
+    assert {:ok, result} =
+             AgentRunner.run_issue(@issue,
+               config: config,
+               prompt_template: template,
+               mode: :single_turn
+             )
+
+    assert result.status == :ok
+    assert result.turn_count == 2
+    assert :quality_cycle_retrying in Enum.map(result.events, & &1.type)
+    assert :review_failed in Enum.map(result.events, & &1.type)
+    assert :review_passed in Enum.map(result.events, & &1.type)
+
+    prompt_history = File.read!(prompt_log)
+    assert prompt_history =~ "Work on ABC-123"
+    assert prompt_history =~ "Reviewer feedback from cycle 1"
   end
 
   test "fails run when review verdict is REVIEW_FAIL", %{
@@ -324,7 +382,7 @@ defmodule Kollywood.AgentRunnerTest do
                mode: :single_turn
              )
 
-    assert result.error =~ "review failed"
+    assert result.error =~ "review failed after 1 cycle"
     assert result.error =~ "missing regression test"
     assert :review_failed in Enum.map(result.events, & &1.type)
   end
@@ -353,7 +411,7 @@ defmodule Kollywood.AgentRunnerTest do
       workspace: %{root: workspace_root, strategy: :clone},
       hooks: hooks,
       checks: %{required: [], timeout_ms: 10_000, fail_fast: true},
-      review: %{enabled: false, agent: %{kind: agent.kind}},
+      review: %{enabled: false, max_cycles: 1, agent: %{kind: agent.kind}},
       agent: agent,
       raw: %{}
     }
