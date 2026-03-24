@@ -6,7 +6,14 @@ defmodule Kollywood.Config do
   """
 
   @type agent_kind :: :amp | :claude | :opencode | :pi
+  @type publish_provider :: :github | :gitlab
+  @type auto_push_policy :: :never | :on_pass
+  @type auto_create_pr_policy :: :never | :draft | :ready
+
   @valid_agent_kinds ~w(amp claude opencode pi)a
+  @valid_publish_providers ~w(github gitlab)a
+  @valid_auto_push_policies ~w(never on_pass)a
+  @valid_auto_create_pr_policies ~w(never draft ready)a
 
   @type t :: %__MODULE__{
           tracker: map(),
@@ -16,6 +23,8 @@ defmodule Kollywood.Config do
           checks: map(),
           review: map(),
           agent: map(),
+          publish: map(),
+          git: map(),
           raw: map()
         }
 
@@ -27,6 +36,8 @@ defmodule Kollywood.Config do
     :checks,
     :review,
     :agent,
+    :publish,
+    :git,
     :raw
   ]
 
@@ -60,7 +71,9 @@ defmodule Kollywood.Config do
   defp build_config(raw) do
     with :ok <- validate_required_sections(raw),
          {:ok, agent_kind} <- parse_agent_kind(raw),
-         {:ok, review_agent_kind} <- parse_review_agent_kind(raw, agent_kind) do
+         {:ok, review_agent_kind} <- parse_review_agent_kind(raw, agent_kind),
+         {:ok, publish} <- parse_publish(raw),
+         {:ok, git_policy} <- parse_git(raw) do
       config = %__MODULE__{
         tracker: parse_tracker(raw),
         polling: parse_polling(raw),
@@ -69,6 +82,8 @@ defmodule Kollywood.Config do
         checks: parse_checks(raw),
         review: parse_review(raw, review_agent_kind),
         agent: parse_agent(raw, agent_kind),
+        publish: publish,
+        git: git_policy,
         raw: raw
       }
 
@@ -257,6 +272,85 @@ defmodule Kollywood.Config do
       env: string_map(Map.get(agent, "env", %{})),
       timeout_ms: positive_integer(Map.get(agent, "timeout_ms", 300_000), 300_000)
     }
+  end
+
+  defp parse_publish(raw) do
+    publish = Map.get(raw, "publish", %{})
+
+    with {:ok, provider} <-
+           parse_enum_value(
+             Map.get(publish, "provider", "github"),
+             @valid_publish_providers,
+             "publish.provider"
+           ),
+         {:ok, auto_push} <-
+           parse_enum_value(
+             Map.get(publish, "auto_push", "never"),
+             @valid_auto_push_policies,
+             "publish.auto_push"
+           ),
+         {:ok, auto_create_pr} <-
+           parse_enum_value(
+             Map.get(publish, "auto_create_pr", "never"),
+             @valid_auto_create_pr_policies,
+             "publish.auto_create_pr"
+           ) do
+      {:ok,
+       %{
+         provider: provider,
+         auto_push: auto_push,
+         auto_create_pr: auto_create_pr
+       }}
+    end
+  end
+
+  defp parse_git(raw) do
+    git = Map.get(raw, "git", %{})
+
+    with {:ok, require_commit} <-
+           parse_boolean_value(Map.get(git, "require_commit", true), "git.require_commit") do
+      {:ok, %{require_commit: require_commit}}
+    end
+  end
+
+  defp parse_enum_value(value, valid_values, path) when is_binary(value) do
+    normalized = value |> String.trim() |> String.downcase()
+
+    case Enum.find(valid_values, &(Atom.to_string(&1) == normalized)) do
+      nil ->
+        {:error, "Invalid #{path}: #{value}. Must be one of: #{Enum.join(valid_values, ", ")}"}
+
+      parsed_value ->
+        {:ok, parsed_value}
+    end
+  end
+
+  defp parse_enum_value(value, valid_values, path) when is_atom(value) do
+    if value in valid_values do
+      {:ok, value}
+    else
+      {:error,
+       "Invalid #{path}: #{inspect(value)}. Must be one of: #{Enum.join(valid_values, ", ")}"}
+    end
+  end
+
+  defp parse_enum_value(value, valid_values, path) do
+    {:error,
+     "Invalid #{path}: #{inspect(value)}. Must be one of: #{Enum.join(valid_values, ", ")}"}
+  end
+
+  defp parse_boolean_value(value, _path) when is_boolean(value), do: {:ok, value}
+
+  defp parse_boolean_value(value, path) when is_binary(value) do
+    case String.downcase(String.trim(value)) do
+      "true" -> {:ok, true}
+      "false" -> {:ok, false}
+      _ -> {:error, "Invalid #{path}: #{inspect(value)}. Must be true or false"}
+    end
+  end
+
+  defp parse_boolean_value(value, path) do
+    {:error, "Invalid #{path}: #{inspect(value)}. Must be true or false"}
   end
 
   defp optional_string(value) when is_binary(value) and value != "", do: value

@@ -81,6 +81,25 @@ Quality gates are configured in `WORKFLOW.md`:
 - `review.max_cycles`: maximum worker/reviewer feedback cycles before failing the run
 - `review.agent`: reviewer adapter settings (kind/command/args/env/timeout)
 
+Publish policy is also configurable (safe defaults keep publishing disabled):
+
+- `publish.provider`: `github` or `gitlab` (default: `github`)
+- `publish.auto_push`: `never` or `on_pass` (default: `never`)
+- `publish.auto_create_pr`: `never`, `draft`, or `ready` (default: `never`)
+- `git.require_commit`: `true` or `false` (default: `true`)
+
+Example:
+
+```yaml
+publish:
+  provider: github
+  auto_push: never
+  auto_create_pr: never
+
+git:
+  require_commit: true
+```
+
 Minimal story shape:
 
 ```json
