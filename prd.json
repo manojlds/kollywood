@@ -18,12 +18,12 @@
       "description": "Polish the project dashboard across all sections. Key changes:\n\n1. **Overview - Recent Activity (mobile fix):** The activity row `flex` layout overflows on small screens. Change to a stacked layout on mobile: status badge + ID/title on top row, error (if any) on second row beneath. Use `flex-col sm:flex-row` or similar.\n\n2. **Overview - Clickable items:** Each recent activity row should navigate to the run detail for that story's latest attempt. Use `navigate` to `/projects/:slug/runs/:story_id/:attempt` where attempt = `story[\"lastAttempt\"]`. Wrap each row in a `<.link>`.\n\n3. **Stories - Story detail slide-over:** Clicking a story ID badge or card title should open a slide-over panel (right side, overlay) showing: title, status badge, description (full), acceptance criteria (bulleted list), notes, dependsOn badges, priority, lastError if any. Add a close button. Implement as a new `story_detail` component toggled by a `selected_story` assign (set via `handle_event(\"show_story\", %{\"id\" => id}, socket)`). No new route needed - use socket assigns.\n\n4. **Stories - Status quick-change:** Add a small dropdown or set of buttons on each story card to change its status (open / in_progress / done / failed / cancelled). On change, update prd.json on disk and reassign `@stories`. Wire a `handle_event(\"update_story_status\", %{\"id\" => id, \"status\" => status}, socket)`. Read current prd.json, find the story, update status, write back, reload stories.\n\n5. **Runs - Log visibility:** In the run detail view, the log collapse panels exist but may be hard to find. Ensure the run detail is accessible: from the Runs list, each row should have a clear 'View' link. In the run detail, auto-expand the `run.log` panel. If `worker.log` has content, show it expanded too. If all logs are empty strings, show a 'No logs available' message instead of nothing.\n\n6. **Settings - show workflow path and tracker path:** Add two read-only fields showing `workflow_path` and `tracker_path` from the project record, so users know which files are being used.\n\nImplementation notes:\n- Stories are read from `project.tracker_path` (a prd.json file on disk). Writes should use `File.write!/2` with `Jason.encode!(..., pretty: true)`.\n- The slide-over should use a fixed overlay div with `z-50`, a backdrop click to close, and slide in from the right with a Tailwind `translate-x` transition.\n- Add `id` attributes to key elements per Phoenix LiveView best practices.\n- Keep existing DaisyUI styling consistent.\n- Add tests for the new `show_story` and `update_story_status` events in `dashboard_live_test.exs`.",
       "id": "US-112",
       "lastAttempt": 1,
-      "lastError": null,
-      "notes": "[2026-03-24T21:14:30Z] attempt 1: failed due to mise trust issue in worktree — fixed by switching checks to devenv shell",
+      "lastError": "required checks failed:\n- check #1 failed (devenv shell -- mix format --check-formatted): exit code 1 | output: \"Configuring shell\\nConfiguring shell in 2.18s\\nLoading tasks\\nLoading tasks in 1.05s\\nRunning tasks     devenv:enterShell\\n\\nRunning tasks\\nRunning           devenv:files:cleanup\\nSucceeded         devenv:files:cleanup (3.06ms)\\nRunning           devenv:enterShell\\nSucceeded         devenv:enterShell (5.40ms)\\nRunning           devenv:enterTest\\nNo command        devenv:enterTest\\nRunning tasks in 8.61ms\\n1 Skipped, 2 Succeeded\\nConfiguring shell\\nConfiguring shell in 1.15ms\\n** (Mix) Unknown dependency :phoenix given to :import_deps in the formatter configuration. Make sure the dependency is listed in your mi\"",
+      "notes": "[2026-03-24T21:14:30Z] attempt 1: failed due to mise trust issue in worktree — fixed by switching checks to devenv shell\n[2026-03-24T22:13:38Z] attempt 1: required checks failed:\n- check #1 failed (devenv shell -- mix format --check-formatted): exit code 1 | output: \"Configuring shell\\nConfiguring shell in 2.18s\\nLoading tasks\\nLoading tasks in 1.05s\\nRunning tasks     devenv:enterShell\\n\\nRunning tasks\\nRunning           devenv:files:cleanup\\nSucceeded         devenv:files:cleanup (3.06ms)\\nRunning           devenv:enterShell\\nSucceeded         devenv:enterShell (5.40ms)\\nRunning           devenv:enterTest\\nNo command        devenv:enterTest\\nRunning tasks in 8.61ms\\n1 Skipped, 2 Succeeded\\nConfiguring shell\\nConfiguring shell in 1.15ms\\n** (Mix) Unknown dependency :phoenix given to :import_deps in the formatter configuration. Make sure the dependency is listed in your mi\"",
       "passes": false,
       "priority": 1,
       "startedAt": "2026-03-24T21:06:01Z",
-      "status": "open",
+      "status": "in_progress",
       "title": "Improve dashboard UI: story details, run logs, and mobile layout"
     },
     {
@@ -53,6 +53,44 @@
       "startedAt": "2026-03-24T21:14:31Z",
       "status": "open",
       "title": "Live log streaming and agent log separation in run detail view"
+    },
+    {
+      "acceptanceCriteria": [
+        "Draft stories appear in the Stories view under a 'Draft' section, visually distinct from active stories",
+        "Draft badge uses a neutral/ghost style to distinguish from active statuses",
+        "Draft stories are excluded from the Overview stat cards (open/in_progress/done/failed counts)",
+        "Status change control includes 'draft' as an option alongside open/in_progress/done/failed/cancelled",
+        "Promoting a draft story to open via the status control makes it immediately eligible for dispatch",
+        "WORKFLOW.md active_states and terminal_states do not include draft — orchestrator continues to ignore draft stories"
+      ],
+      "dependsOn": [
+        "US-112"
+      ],
+      "description": "Add `draft` as a first-class story status in the dashboard UI.\n\nDraft stories exist in prd.json but are intentionally not dispatched — they are ideas or planned work that isn't ready yet. The orchestrator already ignores them (draft is not in active_states or terminal_states). The UI should show them clearly.\n\n## Changes in `dashboard_live.ex`\n\n1. **Stories section:** Add a `Draft` group below the existing status groups. Show draft stories with a ghost/neutral badge and slightly muted card styling to make clear they are not active.\n\n2. **Stat cards:** Keep the four overview cards as open/in_progress/done/failed. Do NOT add a draft counter there — draft is not actionable work.\n\n3. **Status badge:** Add a `draft` case to `status_badge/1` using `badge-ghost` or similar neutral DaisyUI class.\n\n4. **Status change control (from US-112):** Include `draft` as an option so stories can be demoted back to draft or promoted from draft to open.\n\n## No backend changes needed\n- The orchestrator already ignores draft (not in active_states)\n- prd.json writes already handle arbitrary status strings via `update_story_status` event from US-112",
+      "id": "US-115",
+      "notes": "",
+      "passes": false,
+      "priority": 2,
+      "status": "open",
+      "title": "Show draft stories in dashboard UI as a distinct non-active group"
+    },
+    {
+      "acceptanceCriteria": [
+        "Orchestrator claim/running/completed state survives a server restart without re-dispatching stories",
+        "Resetting a story to open in the UI causes the orchestrator to re-dispatch it on next poll without a restart",
+        "A new Ecto migration adds an orchestrator_runs table with story_id, attempt, status, started_at, ended_at",
+        "On startup, the orchestrator reads active runs from SQLite to restore running/completed state",
+        "On dispatch, a run row is inserted; on completion/failure, the row is updated",
+        "Tests cover restart recovery and reset-then-redispatch behaviour"
+      ],
+      "dependsOn": [],
+      "description": "The orchestrator currently tracks `running`, `completed`, and `claimed` state in in-memory MapSets. This is lost on every server restart, causing stories to be re-dispatched unexpectedly.\n\nPersist orchestrator run state to SQLite so restarts are safe.\n\n## Schema\n\nAdd a migration for an `orchestrator_runs` table:\n- `story_id` string (indexed)\n- `attempt` integer\n- `status` string — `running | done | failed | stopped`\n- `started_at` utc_datetime\n- `ended_at` utc_datetime (nullable)\n- `error` text (nullable)\n\n## Behaviour changes\n\n**On startup:** query `orchestrator_runs` for rows with `status = running`. For each, check the current story status in the tracker. If the story is still `in_progress`, add it to `completed` (treat as orphaned — do not re-dispatch). If the story has been reset to `open`, leave it out of `completed` so it gets re-dispatched normally.\n\n**On dispatch:** insert a row with `status = running`.\n\n**On completion/failure:** update the row to `done` or `failed` with `ended_at`.\n\n**On reset to open:** the existing `clear_completed_for_open_issues/2` poll-cycle hook already handles the in-memory side. The SQLite row for the previous run is left as historical record — do not delete it.\n\n## Implementation notes\n- Add `Kollywood.OrchestratorRun` Ecto schema and migration.\n- Keep the in-memory MapSets — SQLite is only consulted on startup and written on state transitions. Hot path stays fast.\n- No changes needed to `prd_json.ex` or tracker adapters.",
+      "id": "US-114",
+      "notes": "",
+      "passes": false,
+      "priority": 2,
+      "status": "draft",
+      "title": "Persist orchestrator run state to SQLite for restart safety"
     }
   ]
 }

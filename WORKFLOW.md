@@ -13,6 +13,9 @@ tracker:
 polling:
   interval_ms: 5000
 
+hooks:
+  before_run: devenv shell -- mix deps.get
+
 checks:
   required:
     - devenv shell -- mix format --check-formatted
