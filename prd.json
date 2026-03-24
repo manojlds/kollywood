@@ -88,6 +88,57 @@
       "startedAt": "2026-03-24T08:02:07Z",
       "status": "done",
       "title": "Add per-worktree devenv runtime isolation profiles"
+    },
+    {
+      "acceptanceCriteria": [
+        "worker/reviewer/check/runtime outputs are persisted per run attempt",
+        "mix kollywood.orch.logs can print latest and specific attempt logs",
+        "follow mode streams appended log lines"
+      ],
+      "dependsOn": [
+        "US-104"
+      ],
+      "description": "Implement persistent run logs for worker, reviewer, checks, and runtime lifecycle per issue attempt. Store structured run metadata for UI use and write append-only log files under a project-scoped path. Add mix command mix kollywood.orch.logs STORY_ID [--follow] [--attempt N] to inspect logs. Include tests for log file creation, metadata capture, and follow mode output.",
+      "id": "US-105",
+      "notes": "",
+      "passes": false,
+      "priority": 1,
+      "status": "open",
+      "title": "Add run log persistence and live tail command"
+    },
+    {
+      "acceptanceCriteria": [
+        "dashboard renders with project selector and persists selected project in URL",
+        "overview counters and active work reflect selected project only",
+        "navigation stays within selected project context"
+      ],
+      "dependsOn": [
+        "US-105"
+      ],
+      "description": "Add a LiveView dashboard shell with a top-right project selector and project-scoped navigation for Overview, Stories, Runs, and Settings. Projects must come from the SQLite store and route state must remain in selected project context. Show core counters (open/in_progress/done/failed), active workers, and last errors for selected project. Keep design clean and responsive for desktop/mobile.",
+      "id": "US-106",
+      "notes": "",
+      "passes": false,
+      "priority": 2,
+      "status": "open",
+      "title": "Build project-scoped dashboard shell with selector"
+    },
+    {
+      "acceptanceCriteria": [
+        "stories board groups and filters by status within selected project",
+        "run detail shows timeline and logs for a selected story attempt",
+        "control actions invoke orchestrator/PRD commands correctly"
+      ],
+      "dependsOn": [
+        "US-106"
+      ],
+      "description": "Implement project-scoped Stories board and Run detail views. Stories board should group by status and show dependency badges, attempt count, and runtime profile. Run detail should include timeline/events, latest error, and live log panel from persisted logs. Add control actions: poll now, stop story, reset, rerun, rerun fresh worktree, mark failed/cancelled. Add tests for UI rendering and control event wiring.",
+      "id": "US-107",
+      "notes": "",
+      "passes": false,
+      "priority": 3,
+      "status": "open",
+      "title": "Add stories board and run detail UI with controls"
     }
   ]
 }
