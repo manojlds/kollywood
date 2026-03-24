@@ -1,0 +1,4 @@
+{"attempt":"nil","identifier":"US-106","issue_id":"US-106","mode":"single_turn","story_id":"US-106","timestamp":"2026-03-24T16:37:03.158448Z","turn_limit":20,"type":"run_started"}
+{"attempt":16,"identifier":"US-106","issue_id":"US-106","runtime_profile":"checks_only","story_id":"US-106","timestamp":"2026-03-24T16:37:03.163315Z","type":"workspace_ready","workspace_path":"/home/manojlds/kollywood-workspaces/US-106"}
+{"adapter":"Elixir.Kollywood.Agent.Pi","attempt":16,"identifier":"US-106","issue_id":"US-106","session_id":1,"story_id":"US-106","timestamp":"2026-03-24T16:37:03.168874Z","type":"session_started"}
+{"attempt":16,"identifier":"US-106","issue_id":"US-106","story_id":"US-106","timestamp":"2026-03-24T16:37:03.403791Z","turn":1,"type":"turn_started"}
