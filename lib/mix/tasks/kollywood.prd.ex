@@ -546,13 +546,25 @@ defmodule Mix.Tasks.Kollywood.Prd do
 
   defp read_prd(path) do
     with {:ok, content} <- read_prd_content(path),
-         {:ok, decoded} <- Jason.decode(content),
+         {:ok, decoded} <- decode_prd_json(content, path),
          true <- is_map(decoded) do
       {:ok, decoded}
     else
       {:error, reason} -> {:error, reason}
       false -> {:error, "PRD file must contain a JSON object: #{path}"}
-      _other -> {:error, "Failed to parse PRD JSON: #{path}"}
+    end
+  end
+
+  defp decode_prd_json(content, path) do
+    case Jason.decode(content) do
+      {:ok, decoded} ->
+        {:ok, decoded}
+
+      {:error, %Jason.DecodeError{} = error} ->
+        {:error, "Failed to parse PRD JSON: #{path} (#{Exception.message(error)})"}
+
+      {:error, reason} ->
+        {:error, "Failed to parse PRD JSON: #{path} (#{inspect(reason)})"}
     end
   end
 

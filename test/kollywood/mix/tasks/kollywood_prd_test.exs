@@ -169,6 +169,16 @@ defmodule Mix.Tasks.Kollywood.PrdTest do
     end
   end
 
+  test "validate rejects malformed JSON with a parse error", %{root: root} do
+    path = Path.join(root, "prd.json")
+
+    File.write!(path, "{\"userStories\": [}\n")
+
+    assert_raise Mix.Error, ~r/Failed to parse PRD JSON:/, fn ->
+      capture_io(fn -> Prd.run(["validate", "--path", path]) end)
+    end
+  end
+
   test "validate rejects invalid statuses", %{root: root} do
     path = Path.join(root, "prd.json")
 
