@@ -235,6 +235,7 @@ defmodule Kollywood.Orchestrator do
       state
       |> apply_runtime_limits(config)
       |> Map.put(:last_poll_at, DateTime.utc_now())
+      |> clear_completed_for_open_issues(issues)
       |> reconcile_running(issues, config)
       |> prune_ineligible_retries(issues, config)
       |> dispatch_available(issues, config, tracker)
@@ -297,6 +298,17 @@ defmodule Kollywood.Orchestrator do
   end
 
   # --- Dispatch and reconciliation ---
+
+  defp clear_completed_for_open_issues(state, issues) do
+    open_ids =
+      issues
+      |> Enum.filter(fn issue -> normalize_state(field(issue, :state)) == "open" end)
+      |> Enum.map(&issue_id/1)
+      |> Enum.reject(&is_nil/1)
+      |> MapSet.new()
+
+    %{state | completed: MapSet.difference(state.completed, open_ids)}
+  end
 
   defp reconcile_running(state, issues, config) do
     active_ids =
