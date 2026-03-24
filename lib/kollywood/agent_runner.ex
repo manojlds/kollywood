@@ -581,49 +581,70 @@ defmodule Kollywood.AgentRunner do
               process_count: length(runtime.processes)
             })
 
-          case execute_command(
-                 runtime.command,
-                 runtime_start_args(runtime),
-                 runtime.workspace_path,
-                 runtime.env,
-                 runtime.start_timeout_ms
-               ) do
-            {:ok, _output, duration_ms} ->
-              runtime = %{runtime | started?: true, process_state: :running}
+          with {:ok, runtime} <- ensure_runtime_isolation(runtime) do
+            state = Map.put(state, :runtime, runtime)
 
-              state =
-                state
-                |> Map.put(:runtime, runtime)
-                |> emit(:runtime_started, %{
-                  runtime_profile: :full_stack,
-                  duration_ms: duration_ms,
-                  workspace_path: runtime.workspace_path,
-                  command: runtime.command,
-                  process_count: length(runtime.processes),
-                  port_offset: runtime.port_offset,
-                  resolved_ports: runtime.resolved_ports
-                })
+            case execute_command(
+                   runtime.command,
+                   runtime_start_args(runtime),
+                   runtime.workspace_path,
+                   runtime.env,
+                   runtime.start_timeout_ms
+                 ) do
+              {:ok, _output, duration_ms} ->
+                runtime = %{runtime | started?: true, process_state: :running}
 
-              {:ok, state}
+                state =
+                  state
+                  |> Map.put(:runtime, runtime)
+                  |> emit(:runtime_started, %{
+                    runtime_profile: :full_stack,
+                    duration_ms: duration_ms,
+                    workspace_path: runtime.workspace_path,
+                    command: runtime.command,
+                    process_count: length(runtime.processes),
+                    port_offset: runtime.port_offset,
+                    resolved_ports: runtime.resolved_ports
+                  })
 
-            {:error, reason, output_preview, duration_ms} ->
-              runtime = %{runtime | process_state: :start_failed}
+                {:ok, state}
+
+              {:error, reason, output_preview, duration_ms} ->
+                runtime = %{runtime | process_state: :start_failed}
+
+                state =
+                  state
+                  |> Map.put(:runtime, runtime)
+                  |> emit(:runtime_start_failed, %{
+                    runtime_profile: :full_stack,
+                    duration_ms: duration_ms,
+                    workspace_path: runtime.workspace_path,
+                    command: runtime.command,
+                    reason: reason,
+                    output_preview: output_preview
+                  })
+
+                {:error,
+                 "failed to start runtime processes: #{reason}#{preview_suffix(output_preview)}",
+                 state}
+            end
+          else
+            {:error, reason} ->
+              runtime = %{runtime | process_state: :isolation_failed}
 
               state =
                 state
                 |> Map.put(:runtime, runtime)
                 |> emit(:runtime_start_failed, %{
                   runtime_profile: :full_stack,
-                  duration_ms: duration_ms,
+                  duration_ms: 0,
                   workspace_path: runtime.workspace_path,
                   command: runtime.command,
                   reason: reason,
-                  output_preview: output_preview
+                  output_preview: ""
                 })
 
-              {:error,
-               "failed to start runtime processes: #{reason}#{preview_suffix(output_preview)}",
-               state}
+              {:error, "failed to start runtime processes: #{reason}", state}
           end
         end
     end
@@ -637,7 +658,8 @@ defmodule Kollywood.AgentRunner do
         {:ok, state}
 
       not runtime_stop_required?(runtime) ->
-        {:ok, state}
+        runtime = release_runtime_offset(runtime)
+        {:ok, Map.put(state, :runtime, runtime)}
 
       true ->
         state =
@@ -655,7 +677,11 @@ defmodule Kollywood.AgentRunner do
                runtime.stop_timeout_ms
              ) do
           {:ok, _output, duration_ms} ->
-            runtime = %{runtime | started?: false, process_state: :stopped}
+            runtime =
+              runtime
+              |> Map.put(:started?, false)
+              |> Map.put(:process_state, :stopped)
+              |> release_runtime_offset()
 
             state =
               state
@@ -670,7 +696,10 @@ defmodule Kollywood.AgentRunner do
             {:ok, state}
 
           {:error, reason, output_preview, duration_ms} ->
-            runtime = %{runtime | process_state: :stop_failed}
+            runtime =
+              runtime
+              |> Map.put(:process_state, :stop_failed)
+              |> release_runtime_offset()
 
             state =
               state
@@ -693,6 +722,95 @@ defmodule Kollywood.AgentRunner do
 
   defp runtime_stop_required?(runtime) do
     runtime.started? == true or runtime.process_state == :start_failed
+  end
+
+  defp ensure_runtime_isolation(runtime) do
+    case Map.get(runtime, :offset_lease_name) do
+      lease_name when not is_nil(lease_name) ->
+        {:ok, runtime}
+
+      _other ->
+        reserve_runtime_offset(runtime)
+    end
+  end
+
+  defp reserve_runtime_offset(runtime) do
+    modulus = positive_integer(Map.get(runtime, :port_offset_mod), 1000)
+
+    workspace_identity =
+      Map.get(runtime, :workspace_identity) || Map.get(runtime, :workspace_path) ||
+        Map.get(runtime, :workspace_key)
+
+    seed_offset = runtime_port_offset_seed(workspace_identity, modulus)
+
+    case runtime_offset_lease(modulus, seed_offset) do
+      {:ok, port_offset, lease_name} ->
+        port_bases = Map.get(runtime, :port_bases, %{})
+        user_env = Map.get(runtime, :user_env, %{})
+        workspace_key = Map.get(runtime, :workspace_key)
+        workspace_path = Map.get(runtime, :workspace_path)
+        resolved_ports = runtime_resolved_ports(port_bases, port_offset)
+        env = runtime_env(workspace_key, workspace_path, user_env, port_offset, resolved_ports)
+
+        {:ok,
+         runtime
+         |> Map.put(:port_offset_seed, seed_offset)
+         |> Map.put(:port_offset, port_offset)
+         |> Map.put(:resolved_ports, resolved_ports)
+         |> Map.put(:env, env)
+         |> Map.put(:offset_lease_name, lease_name)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp runtime_offset_lease(modulus, seed_offset) do
+    0..(modulus - 1)
+    |> Enum.reduce_while(:none, fn probe, _acc ->
+      offset = rem(seed_offset + probe, modulus)
+      lease_name = runtime_offset_lease_name(modulus, offset)
+
+      case :global.register_name(lease_name, self()) do
+        :yes -> {:halt, {:ok, offset, lease_name}}
+        :no -> {:cont, :none}
+      end
+    end)
+    |> case do
+      {:ok, _offset, _lease_name} = ok ->
+        ok
+
+      :none ->
+        {:error,
+         "no available runtime port offsets within modulus #{modulus}; increase runtime.full_stack.port_offset_mod or reduce concurrent full_stack runs"}
+    end
+  end
+
+  defp release_runtime_offset(runtime) do
+    case Map.get(runtime, :offset_lease_name) do
+      lease_name when is_nil(lease_name) ->
+        runtime
+
+      lease_name ->
+        release_runtime_offset_lease(lease_name)
+        Map.put(runtime, :offset_lease_name, nil)
+    end
+  end
+
+  defp release_runtime_offset_lease(lease_name) do
+    case :global.whereis_name(lease_name) do
+      pid when pid == self() ->
+        :global.unregister_name(lease_name)
+
+      _other ->
+        :ok
+    end
+
+    :ok
+  end
+
+  defp runtime_offset_lease_name(modulus, offset) do
+    {:kollywood, :runtime_port_offset, modulus, offset}
   end
 
   defp check_command_invocation(command, %{profile: :full_stack} = runtime) do
@@ -763,10 +881,17 @@ defmodule Kollywood.AgentRunner do
           command: "devenv",
           processes: [],
           env: %{},
+          user_env: %{},
+          port_bases: %{},
           resolved_ports: %{},
           port_offset: 0,
+          port_offset_mod: 1000,
+          port_offset_seed: 0,
+          offset_lease_name: nil,
           start_timeout_ms: 120_000,
           stop_timeout_ms: 60_000,
+          workspace_key: nil,
+          workspace_identity: nil,
           workspace_path: nil
         }
 
@@ -778,10 +903,17 @@ defmodule Kollywood.AgentRunner do
           command: nil,
           processes: [],
           env: %{},
+          user_env: %{},
+          port_bases: %{},
           resolved_ports: %{},
           port_offset: 0,
+          port_offset_mod: 1000,
+          port_offset_seed: 0,
+          offset_lease_name: nil,
           start_timeout_ms: 120_000,
           stop_timeout_ms: 60_000,
+          workspace_key: nil,
+          workspace_identity: nil,
           workspace_path: nil
         }
     end
@@ -789,37 +921,25 @@ defmodule Kollywood.AgentRunner do
 
   defp runtime_for_workspace(config, workspace) do
     workspace_key = Map.get(workspace, :key) || Path.basename(workspace.path)
+    workspace_path = workspace.path
+    workspace_identity = runtime_workspace_identity(workspace_key, workspace_path)
 
     case runtime_profile(config) do
       :checks_only ->
         %{
           default_runtime_state(config)
-          | workspace_path: workspace.path
+          | workspace_key: workspace_key,
+            workspace_identity: workspace_identity,
+            workspace_path: workspace_path
         }
 
       :full_stack ->
         full_stack = runtime_full_stack_config(config)
         user_env = runtime_env_map(field(full_stack, :env))
-        ports = runtime_ports_map(field(full_stack, :ports))
-        offset_mod = positive_integer(field(full_stack, :port_offset_mod), 1000)
-        port_offset = runtime_port_offset(workspace_key, offset_mod)
-
-        resolved_ports =
-          Map.new(ports, fn {key, base_port} ->
-            {key, base_port + port_offset}
-          end)
-
-        builtins = %{
-          "KOLLYWOOD_RUNTIME_PROFILE" => "full_stack",
-          "KOLLYWOOD_RUNTIME_WORKTREE_KEY" => to_string(workspace_key),
-          "KOLLYWOOD_RUNTIME_WORKTREE_PATH" => workspace.path,
-          "KOLLYWOOD_RUNTIME_PORT_OFFSET" => Integer.to_string(port_offset)
-        }
-
-        port_env =
-          Map.new(resolved_ports, fn {key, value} ->
-            {key, Integer.to_string(value)}
-          end)
+        port_bases = runtime_ports_map(field(full_stack, :ports))
+        port_offset_mod = positive_integer(field(full_stack, :port_offset_mod), 1000)
+        port_offset_seed = runtime_port_offset_seed(workspace_identity, port_offset_mod)
+        resolved_ports = runtime_resolved_ports(port_bases, port_offset_seed)
 
         %{
           profile: :full_stack,
@@ -827,12 +947,20 @@ defmodule Kollywood.AgentRunner do
           started?: false,
           command: optional_string(field(full_stack, :command)) || "devenv",
           processes: runtime_processes(field(full_stack, :processes)),
-          env: builtins |> Map.merge(user_env) |> Map.merge(port_env),
+          env:
+            runtime_env(workspace_key, workspace_path, user_env, port_offset_seed, resolved_ports),
+          user_env: user_env,
+          port_bases: port_bases,
           resolved_ports: resolved_ports,
-          port_offset: port_offset,
+          port_offset: port_offset_seed,
+          port_offset_mod: port_offset_mod,
+          port_offset_seed: port_offset_seed,
+          offset_lease_name: nil,
           start_timeout_ms: positive_integer(field(full_stack, :start_timeout_ms), 120_000),
           stop_timeout_ms: positive_integer(field(full_stack, :stop_timeout_ms), 60_000),
-          workspace_path: workspace.path
+          workspace_key: workspace_key,
+          workspace_identity: workspace_identity,
+          workspace_path: workspace_path
         }
     end
   end
@@ -882,9 +1010,37 @@ defmodule Kollywood.AgentRunner do
 
   defp runtime_ports_map(_value), do: %{}
 
-  defp runtime_port_offset(workspace_key, modulus) do
+  defp runtime_workspace_identity(workspace_key, workspace_path) do
+    optional_string(workspace_path) || optional_string(workspace_key) || "unknown-worktree"
+  end
+
+  defp runtime_resolved_ports(port_bases, port_offset) do
+    Map.new(port_bases, fn {key, base_port} ->
+      {key, base_port + port_offset}
+    end)
+  end
+
+  defp runtime_env(workspace_key, workspace_path, user_env, port_offset, resolved_ports) do
+    builtins = %{
+      "KOLLYWOOD_RUNTIME_PROFILE" => "full_stack",
+      "KOLLYWOOD_RUNTIME_WORKTREE_KEY" => to_string(workspace_key),
+      "KOLLYWOOD_RUNTIME_WORKTREE_PATH" => to_string(workspace_path),
+      "KOLLYWOOD_RUNTIME_PORT_OFFSET" => Integer.to_string(port_offset)
+    }
+
+    port_env =
+      Map.new(resolved_ports, fn {key, value} ->
+        {key, Integer.to_string(value)}
+      end)
+
+    user_env
+    |> Map.merge(builtins)
+    |> Map.merge(port_env)
+  end
+
+  defp runtime_port_offset_seed(workspace_identity, modulus) do
     max_modulus = positive_integer(modulus, 1000)
-    :erlang.phash2(to_string(workspace_key), max(max_modulus, 1))
+    :erlang.phash2(to_string(workspace_identity), max(max_modulus, 1))
   end
 
   defp run_review_turn(state, config, prompt) do

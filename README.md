@@ -98,6 +98,7 @@ Quality gates are configured in `WORKFLOW.md`:
 - `checks.required`: shell commands that must pass before a story can be marked done
 - `runtime.profile`: runtime isolation profile (`checks_only` or `full_stack`)
 - `runtime.full_stack`: per-worktree devenv process/env/port settings used for isolated checks
+- `runtime.full_stack.port_offset_mod`: offset pool size for concurrent `full_stack` runs (offsets are leased strictly; exhaustion fails fast)
 - `review.enabled`: when true, runs a reviewer agent round and requires verdict tokens
 - `review.max_cycles`: maximum worker/reviewer feedback cycles before failing the run
 - `review.agent`: reviewer adapter settings (kind/command/args/env/timeout)
