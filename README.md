@@ -52,10 +52,17 @@ mix kollywood.prd add --title "Implement dogfood status page"
 mix kollywood.prd set-status US-001 in_progress
 mix kollywood.prd set-status US-001 done
 mix kollywood.prd validate
+mix kollywood.prd validate --path ./some/other/prd.json
 ```
 
-`mix kollywood.prd validate` checks story IDs, statuses, and dependency integrity,
-then prints a short summary with total and active story counts.
+`mix kollywood.prd validate` checks:
+- top-level JSON object shape
+- `userStories` array presence
+- unique/non-empty story IDs
+- status values (`open`, `in_progress`, `done`)
+- dependency integrity (`dependsOn` must reference known IDs and cannot self-reference)
+
+On success it prints a short summary with total and active story counts.
 
 Orchestrator controls:
 
