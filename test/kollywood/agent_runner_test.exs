@@ -375,6 +375,45 @@ defmodule Kollywood.AgentRunnerTest do
     assert log =~ "processes down"
   end
 
+  test "full_stack runtime attempts shutdown after startup failure", %{
+    root: root,
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    prompt_log: prompt_log
+  } do
+    fake_devenv_log = Path.join(root, "fake_devenv_start_fail.log")
+    fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+
+    runtime =
+      full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log)
+      |> put_in([:full_stack, :env, "FAKE_DEVENV_FAIL_UP"], "1")
+
+    config =
+      runner_config(workspace_root, cli_path, prompt_log)
+      |> Map.put(:checks, %{required: ["test -d ."], timeout_ms: 10_000, fail_fast: true})
+      |> Map.put(:runtime, runtime)
+
+    template = "Work on {{ issue.identifier }}"
+
+    assert {:error, result} =
+             AgentRunner.run_issue(@issue,
+               config: config,
+               prompt_template: template,
+               mode: :single_turn
+             )
+
+    assert result.error =~ "failed to start runtime processes"
+
+    event_types = Enum.map(result.events, & &1.type)
+    assert :runtime_start_failed in event_types
+    assert :runtime_stopping in event_types
+    assert :runtime_stopped in event_types
+
+    log = File.read!(fake_devenv_log)
+    assert log =~ "processes up --detach --strict-ports server"
+    assert log =~ "processes down"
+  end
+
   test "runs config-enabled review round and passes on REVIEW_PASS", %{
     workspace_root: workspace_root,
     cli_path: cli_path,
@@ -575,6 +614,11 @@ defmodule Kollywood.AgentRunnerTest do
     fi
 
     if [ "${1:-}" = "processes" ] && [ "${2:-}" = "up" ]; then
+      if [ "${FAKE_DEVENV_FAIL_UP:-}" = "1" ]; then
+        echo "forced up failure" >&2
+        exit 52
+      fi
+
       exit 0
     fi
 

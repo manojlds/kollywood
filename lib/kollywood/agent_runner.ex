@@ -636,7 +636,7 @@ defmodule Kollywood.AgentRunner do
       runtime.profile != :full_stack ->
         {:ok, state}
 
-      runtime.started? != true ->
+      not runtime_stop_required?(runtime) ->
         {:ok, state}
 
       true ->
@@ -689,6 +689,10 @@ defmodule Kollywood.AgentRunner do
              state}
         end
     end
+  end
+
+  defp runtime_stop_required?(runtime) do
+    runtime.started? == true or runtime.process_state == :start_failed
   end
 
   defp check_command_invocation(command, %{profile: :full_stack} = runtime) do
