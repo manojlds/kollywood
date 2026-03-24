@@ -671,8 +671,8 @@ defmodule Kollywood.AgentRunner do
       env: Map.merge(Map.get(base_agent, :env, %{}), Map.get(review_agent, :env, %{})),
       timeout_ms:
         positive_integer(
-          Map.get(review_agent, :timeout_ms, Map.get(base_agent, :timeout_ms, 300_000)),
-          300_000
+          Map.get(review_agent, :timeout_ms, Map.get(base_agent, :timeout_ms, 1_800_000)),
+          1_800_000
         )
     }
 
@@ -689,8 +689,8 @@ defmodule Kollywood.AgentRunner do
   defp checks_timeout_ms(config) do
     config
     |> checks_config()
-    |> Map.get(:timeout_ms, 300_000)
-    |> positive_integer(300_000)
+    |> Map.get(:timeout_ms, 1_800_000)
+    |> positive_integer(1_800_000)
   end
 
   defp checks_fail_fast?(config) do

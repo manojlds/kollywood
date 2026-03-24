@@ -111,7 +111,7 @@ defmodule Kollywood.ConfigTest do
     assert config.agent.command == nil
     assert config.agent.args == []
     assert config.agent.env == %{}
-    assert config.agent.timeout_ms == 300_000
+    assert config.agent.timeout_ms == 1_800_000
     assert config.tracker.active_states == ["Todo", "In Progress"]
 
     assert config.publish.provider == :github
@@ -217,7 +217,7 @@ defmodule Kollywood.ConfigTest do
     assert {:ok, config, _} = Config.parse(content)
 
     assert config.checks.required == []
-    assert config.checks.timeout_ms == 300_000
+    assert config.checks.timeout_ms == 1_800_000
     assert config.checks.fail_fast == true
 
     assert config.review.enabled == false

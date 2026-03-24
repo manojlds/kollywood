@@ -17,7 +17,7 @@ checks:
   required:
     - mix format --check-formatted
     - mix test
-  timeout_ms: 600000
+  timeout_ms: 1800000
   fail_fast: true
 
 review:
