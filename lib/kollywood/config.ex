@@ -22,6 +22,7 @@ defmodule Kollywood.Config do
           workspace: map(),
           hooks: map(),
           checks: map(),
+          runtime: map(),
           review: map(),
           agent: map(),
           publish: map(),
@@ -35,6 +36,7 @@ defmodule Kollywood.Config do
     :workspace,
     :hooks,
     :checks,
+    :runtime,
     :review,
     :agent,
     :publish,
@@ -73,6 +75,7 @@ defmodule Kollywood.Config do
     with :ok <- validate_required_sections(raw),
          {:ok, agent_kind} <- parse_agent_kind(raw),
          {:ok, review_agent_kind} <- parse_review_agent_kind(raw, agent_kind),
+         {:ok, runtime} <- parse_runtime(raw),
          {:ok, publish} <- parse_publish(raw),
          {:ok, git_policy} <- parse_git(raw) do
       config = %__MODULE__{
@@ -81,6 +84,7 @@ defmodule Kollywood.Config do
         workspace: parse_workspace(raw),
         hooks: parse_hooks(raw),
         checks: parse_checks(raw),
+        runtime: runtime,
         review: parse_review(raw, review_agent_kind),
         agent: parse_agent(raw, agent_kind),
         publish: publish,
@@ -238,6 +242,78 @@ defmodule Kollywood.Config do
         positive_integer(Map.get(checks, "timeout_ms", @default_timeout_ms), @default_timeout_ms),
       fail_fast: boolean(Map.get(checks, "fail_fast", true), true)
     }
+  end
+
+  defp parse_runtime(raw) do
+    case Map.get(raw, "runtime", %{}) do
+      runtime when is_map(runtime) ->
+        with {:ok, profile} <- parse_runtime_profile(Map.get(runtime, "profile", "checks_only")),
+             {:ok, full_stack} <- parse_runtime_full_stack(Map.get(runtime, "full_stack", %{})) do
+          {:ok,
+           %{
+             profile: profile,
+             full_stack: full_stack
+           }}
+        end
+
+      other ->
+        {:error, "runtime must be a map (got: #{inspect(other)})"}
+    end
+  end
+
+  defp parse_runtime_profile(nil), do: {:ok, :checks_only}
+
+  defp parse_runtime_profile(value) when is_binary(value) do
+    case String.trim(value) do
+      "checks_only" -> {:ok, :checks_only}
+      "full_stack" -> {:ok, :full_stack}
+      other -> {:error, "runtime.profile must be one of: checks_only, full_stack (got: #{other})"}
+    end
+  end
+
+  defp parse_runtime_profile(value) when value in [:checks_only, :full_stack], do: {:ok, value}
+
+  defp parse_runtime_profile(value) do
+    {:error, "runtime.profile must be one of: checks_only, full_stack (got: #{inspect(value)})"}
+  end
+
+  defp parse_runtime_full_stack(full_stack) when is_map(full_stack) do
+    with {:ok, ports} <- parse_runtime_ports(Map.get(full_stack, "ports", %{})) do
+      {:ok,
+       %{
+         command: optional_string(Map.get(full_stack, "command")) || "devenv",
+         processes: command_list(Map.get(full_stack, "processes", [])),
+         env: string_map(Map.get(full_stack, "env", %{})),
+         ports: ports,
+         port_offset_mod: positive_integer(Map.get(full_stack, "port_offset_mod", 1000), 1000),
+         start_timeout_ms:
+           positive_integer(Map.get(full_stack, "start_timeout_ms", 120_000), 120_000),
+         stop_timeout_ms: positive_integer(Map.get(full_stack, "stop_timeout_ms", 60_000), 60_000)
+       }}
+    end
+  end
+
+  defp parse_runtime_full_stack(value) do
+    {:error, "runtime.full_stack must be a map (got: #{inspect(value)})"}
+  end
+
+  defp parse_runtime_ports(values) when is_map(values) do
+    values
+    |> Enum.reduce_while({:ok, %{}}, fn {key, value}, {:ok, acc} ->
+      case positive_integer(value, nil) do
+        port when is_integer(port) and port > 0 ->
+          {:cont, {:ok, Map.put(acc, to_string(key), port)}}
+
+        _other ->
+          {:halt,
+           {:error,
+            "runtime.full_stack.ports.#{to_string(key)} must be a positive integer (got: #{inspect(value)})"}}
+      end
+    end)
+  end
+
+  defp parse_runtime_ports(values) do
+    {:error, "runtime.full_stack.ports must be a map (got: #{inspect(values)})"}
   end
 
   defp parse_review(raw, review_agent_kind) do

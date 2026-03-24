@@ -64,14 +64,91 @@ defmodule Kollywood.OrchestratorTest do
     assert status.running_count == 1
     assert status.claimed_issue_ids == ["ISS-1"]
 
+    first_runner_ref = Process.monitor(first_runner_pid)
     send(first_runner_pid, {:complete_runner, "ISS-1", {:ok, success_result(issue_one)}})
     assert_receive {:runner_finished, "ISS-1"}
+    assert_receive {:DOWN, ^first_runner_ref, :process, ^first_runner_pid, reason}
+    assert reason in [:normal, :noproc]
+
+    # ensure the orchestrator handled the task result before dispatching next issue
+    _ = :sys.get_state(orchestrator)
 
     assert :ok = Orchestrator.poll_now(orchestrator)
     assert_receive {:runner_started, "ISS-2", second_runner_pid, nil}
 
     send(second_runner_pid, {:complete_runner, "ISS-2", {:ok, success_result(issue_two)}})
     assert_receive {:runner_finished, "ISS-2"}
+  end
+
+  test "status shows runtime process state for running issues", %{root: root} do
+    %{store: workflow_store} = start_workflow_store!(root, %{runtime_profile: "full_stack"})
+    issue = issue("ISS-RT", "ABC-RT", 1)
+    test_pid = self()
+    issues_agent = start_agent!(fn -> [issue] end)
+
+    tracker = fn _config -> {:ok, Agent.get(issues_agent, & &1)} end
+
+    runner = fn issue, opts ->
+      issue_id = issue.id
+      on_event = Keyword.fetch!(opts, :on_event)
+      send(test_pid, {:runner_started, issue_id, self(), Keyword.get(opts, :attempt)})
+
+      on_event.(%{
+        type: :runtime_starting,
+        timestamp: DateTime.utc_now(),
+        issue_id: issue_id,
+        identifier: issue.identifier
+      })
+
+      on_event.(%{
+        type: :runtime_started,
+        timestamp: DateTime.utc_now(),
+        issue_id: issue_id,
+        identifier: issue.identifier
+      })
+
+      send(test_pid, {:runner_runtime_started, issue_id})
+
+      receive do
+        {:complete_runner, ^issue_id, result} ->
+          result
+      after
+        5_000 -> {:error, failed_result(issue, "test timed out waiting for completion")}
+      end
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: tracker,
+         runner: runner,
+         auto_poll: false,
+         continuation_delay_ms: 60_000,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_started, "ISS-RT", runner_pid, nil}
+    assert_receive {:runner_runtime_started, "ISS-RT"}
+
+    _ = :sys.get_state(orchestrator)
+
+    status = Orchestrator.status(orchestrator)
+    assert status.running_count == 1
+
+    [running_entry] = status.running
+    assert running_entry.issue_id == "ISS-RT"
+    assert running_entry.runtime_profile == :full_stack
+    assert running_entry.runtime_process_state == :running
+    assert running_entry.runtime_last_event_type == :runtime_started
+    assert %DateTime{} = running_entry.runtime_last_event_at
+
+    runner_ref = Process.monitor(runner_pid)
+    send(runner_pid, {:complete_runner, "ISS-RT", {:ok, success_result(issue)}})
+    assert_receive {:DOWN, ^runner_ref, :process, ^runner_pid, reason}
+    assert reason in [:normal, :noproc]
   end
 
   test "retries failed runs with backoff and increments attempt", %{root: root} do
@@ -349,7 +426,8 @@ defmodule Kollywood.OrchestratorTest do
         tracker_terminal_states: Map.get(opts, :tracker_terminal_states, ["Done", "Cancelled"]),
         max_concurrent_agents: Map.get(opts, :max_concurrent_agents, 2),
         max_retry_backoff_ms: Map.get(opts, :max_retry_backoff_ms, 300_000),
-        retries_enabled: Map.get(opts, :retries_enabled, true)
+        retries_enabled: Map.get(opts, :retries_enabled, true),
+        runtime_profile: Map.get(opts, :runtime_profile, "checks_only")
       })
 
     path = Path.join(root, "workflow_#{System.unique_integer([:positive])}.md")
@@ -388,6 +466,8 @@ defmodule Kollywood.OrchestratorTest do
     #{tracker_terminal_states}
     polling:
       interval_ms: #{Map.get(opts, :poll_interval_ms, 1000)}
+    runtime:
+      profile: #{Map.get(opts, :runtime_profile, "checks_only")}
     workspace:
       root: #{workspace_root}
       strategy: clone

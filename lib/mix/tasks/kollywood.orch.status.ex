@@ -48,7 +48,7 @@ defmodule Mix.Tasks.Kollywood.Orch.Status do
 
     Enum.each(running, fn item ->
       Mix.shell().info(
-        "  #{item.issue_id} (#{item.identifier || "-"}) attempt=#{inspect(item.attempt)} started_at=#{Shared.format_datetime(item.started_at)}"
+        "  #{item.issue_id} (#{item.identifier || "-"}) attempt=#{inspect(item.attempt)} started_at=#{Shared.format_datetime(item.started_at)} runtime_profile=#{item.runtime_profile} runtime_state=#{item.runtime_process_state} runtime_event=#{item.runtime_last_event_type || "-"}"
       )
     end)
   end

@@ -203,7 +203,7 @@ defmodule Kollywood.ConfigTest do
     assert config.agent.retries_enabled == false
   end
 
-  test "uses defaults for checks and review" do
+  test "uses defaults for checks, runtime, and review" do
     content = """
     ---
     workspace:
@@ -219,6 +219,15 @@ defmodule Kollywood.ConfigTest do
     assert config.checks.required == []
     assert config.checks.timeout_ms == 1_800_000
     assert config.checks.fail_fast == true
+
+    assert config.runtime.profile == :checks_only
+    assert config.runtime.full_stack.command == "devenv"
+    assert config.runtime.full_stack.processes == []
+    assert config.runtime.full_stack.env == %{}
+    assert config.runtime.full_stack.ports == %{}
+    assert config.runtime.full_stack.port_offset_mod == 1000
+    assert config.runtime.full_stack.start_timeout_ms == 120_000
+    assert config.runtime.full_stack.stop_timeout_ms == 60_000
 
     assert config.review.enabled == false
     assert config.review.max_cycles == 1
@@ -294,11 +303,9 @@ defmodule Kollywood.ConfigTest do
     """
 
     assert {:ok, config, _} = Config.parse(content)
-
     assert config.publish.provider == :gitlab
     assert config.publish.auto_push == :on_pass
     assert config.publish.auto_create_pr == :draft
-
     assert config.git.require_commit == false
   end
 
@@ -320,7 +327,6 @@ defmodule Kollywood.ConfigTest do
     """
 
     assert {:ok, config, _} = Config.parse(content)
-
     assert config.publish.provider == :github
     assert config.publish.auto_push == :never
     assert config.publish.auto_create_pr == :ready
@@ -393,6 +399,96 @@ defmodule Kollywood.ConfigTest do
 
     assert {:error, msg} = Config.parse(content)
     assert msg =~ "Invalid git.require_commit"
+  end
+
+  test "parses full_stack runtime settings" do
+    content = """
+    ---
+    runtime:
+      profile: full_stack
+      full_stack:
+        command: /usr/local/bin/devenv
+        processes:
+          - server
+          - worker
+        env:
+          MIX_ENV: test
+        ports:
+          PORT: "4000"
+          LIVEBOOK_PORT: 8080
+        port_offset_mod: 250
+        start_timeout_ms: 30000
+        stop_timeout_ms: 15000
+    workspace:
+      root: /tmp
+    agent:
+      kind: pi
+    ---
+    prompt
+    """
+
+    assert {:ok, config, _} = Config.parse(content)
+    assert config.runtime.profile == :full_stack
+    assert config.runtime.full_stack.command == "/usr/local/bin/devenv"
+    assert config.runtime.full_stack.processes == ["server", "worker"]
+    assert config.runtime.full_stack.env == %{"MIX_ENV" => "test"}
+    assert config.runtime.full_stack.ports == %{"PORT" => 4000, "LIVEBOOK_PORT" => 8080}
+    assert config.runtime.full_stack.port_offset_mod == 250
+    assert config.runtime.full_stack.start_timeout_ms == 30_000
+    assert config.runtime.full_stack.stop_timeout_ms == 15_000
+  end
+
+  test "rejects invalid runtime profile" do
+    content = """
+    ---
+    runtime:
+      profile: invalid
+    workspace:
+      root: /tmp
+    agent:
+      kind: pi
+    ---
+    prompt
+    """
+
+    assert {:error, msg} = Config.parse(content)
+    assert msg =~ "runtime.profile"
+  end
+
+  test "rejects invalid runtime.full_stack port value" do
+    content = """
+    ---
+    runtime:
+      profile: full_stack
+      full_stack:
+        ports:
+          PORT: not-a-number
+    workspace:
+      root: /tmp
+    agent:
+      kind: pi
+    ---
+    prompt
+    """
+
+    assert {:error, msg} = Config.parse(content)
+    assert msg =~ "runtime.full_stack.ports.PORT"
+  end
+
+  test "rejects non-map runtime section" do
+    content = """
+    ---
+    runtime: full_stack
+    workspace:
+      root: /tmp
+    agent:
+      kind: pi
+    ---
+    prompt
+    """
+
+    assert {:error, msg} = Config.parse(content)
+    assert msg =~ "runtime must be a map"
   end
 
   test "rejects invalid review.agent.kind" do

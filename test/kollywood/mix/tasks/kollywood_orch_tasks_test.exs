@@ -50,6 +50,56 @@ defmodule Mix.Tasks.Kollywood.OrchTasksTest do
     assert output =~ "retrying=0"
   end
 
+  test "kollywood.orch.status shows runtime state for running issue", %{
+    root: root,
+    server: server
+  } do
+    issue = issue("US-777")
+    issues_agent = start_list_agent([issue])
+    test_pid = self()
+
+    config =
+      workflow_config(root)
+      |> put_in([Access.key(:runtime), Access.key(:profile)], :full_stack)
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: server,
+         workflow_store: config,
+         tracker: fn _config -> {:ok, Agent.get(issues_agent, & &1)} end,
+         runner: fn issue, opts ->
+           issue_id = issue.id
+           on_event = Keyword.fetch!(opts, :on_event)
+
+           send(test_pid, {:runner_started, issue_id, self()})
+
+           on_event.(%{type: :runtime_starting, timestamp: DateTime.utc_now()})
+           on_event.(%{type: :runtime_started, timestamp: DateTime.utc_now()})
+
+           receive do
+             {:complete_runner, ^issue_id, result} -> result
+           end
+         end,
+         auto_poll: false}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_started, "US-777", runner_pid}
+
+    _ = :sys.get_state(orchestrator)
+
+    output = run_task("kollywood.orch.status", [])
+
+    assert output =~ "runtime_profile=full_stack"
+    assert output =~ "runtime_state=running"
+    assert output =~ "runtime_event=runtime_started"
+
+    runner_ref = Process.monitor(runner_pid)
+    assert :ok = Orchestrator.stop_issue(orchestrator, "US-777")
+    assert_receive {:DOWN, ^runner_ref, :process, ^runner_pid, :killed}
+  end
+
   test "kollywood.orch.poll triggers a poll cycle", %{root: root, server: server} do
     orchestrator =
       start_supervised!(
@@ -126,6 +176,20 @@ defmodule Mix.Tasks.Kollywood.OrchTasksTest do
         after_run: nil,
         before_remove: nil
       },
+      checks: %{required: [], timeout_ms: 10_000, fail_fast: true},
+      runtime: %{
+        profile: :checks_only,
+        full_stack: %{
+          command: "devenv",
+          processes: [],
+          env: %{},
+          ports: %{},
+          port_offset_mod: 1000,
+          start_timeout_ms: 120_000,
+          stop_timeout_ms: 60_000
+        }
+      },
+      review: %{enabled: false, max_cycles: 1, agent: %{kind: :amp}},
       agent: %{
         kind: :amp,
         max_concurrent_agents: 1,
