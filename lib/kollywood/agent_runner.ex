@@ -10,7 +10,6 @@ defmodule Kollywood.AgentRunner do
 
   alias Kollywood.Agent
   alias Kollywood.AgentRunner.ContinuationPrompt
-  alias Kollywood.AgentRunner.ResumeContext
   alias Kollywood.AgentRunner.Result
   alias Kollywood.Config
   alias Kollywood.PromptBuilder
@@ -248,6 +247,17 @@ defmodule Kollywood.AgentRunner do
   defp build_prompt(state, prompt_template, 1) do
     variables = PromptBuilder.build_variables(state.issue, state.attempt)
 
+    # Check for existing work in workspace
+    resume_context = detect_resume_context(state.workspace)
+
+    # Add resume context to variables if work exists
+    variables =
+      if resume_context != "" do
+        Map.put(variables, "resume_context", resume_context)
+      else
+        variables
+      end
+
     case PromptBuilder.render(prompt_template, variables) do
       {:ok, prompt} -> {:ok, prompt}
       {:error, reason} -> {:error, "Failed to render initial prompt: #{reason}"}
@@ -256,6 +266,65 @@ defmodule Kollywood.AgentRunner do
 
   defp build_prompt(state, _prompt_template, turn_number) do
     {:ok, ContinuationPrompt.build(state.issue, turn_number)}
+  end
+
+  # Detect if there's existing work in the workspace to resume from
+  defp detect_resume_context(nil), do: ""
+
+  defp detect_resume_context(workspace) do
+    workspace_path = Map.get(workspace, :path)
+
+    if is_nil(workspace_path) or not File.dir?(workspace_path) do
+      ""
+    else
+      # Check if worktree has commits ahead of main
+      case System.cmd("git", ["-C", workspace_path, "rev-list", "--count", "main..HEAD"],
+             stderr_to_stdout: true
+           ) do
+        {"0\n", 0} ->
+          # No commits ahead of main
+          ""
+
+        {count_str, 0} ->
+          count = String.trim(count_str) |> String.to_integer()
+
+          if count > 0 do
+            # Get list of changed files
+            case System.cmd("git", ["-C", workspace_path, "diff", "--name-only", "main..HEAD"],
+                   stderr_to_stdout: true
+                 ) do
+              {files_str, 0} ->
+                files =
+                  files_str |> String.trim() |> String.split("\n") |> Enum.reject(&(&1 == ""))
+
+                if files != [] do
+                  file_list = Enum.join(files, "\n  - ")
+
+                  """
+
+                  RESUME CONTEXT: You are continuing previous work. #{count} commit(s) ahead of main with the following changes:
+
+                  Files created/modified:
+                  - #{file_list}
+
+                  DO NOT start over. Continue implementation from this checkpoint and complete the remaining work.
+                  """
+                else
+                  ""
+                end
+
+              _ ->
+                ""
+            end
+          else
+            ""
+          end
+
+        _ ->
+          # Not a git repo or other error
+          ""
+      end
+    end
   end
 
   defp stop_session(state, session) do

@@ -76,6 +76,10 @@ You are working on issue `{{ issue.identifier }}`: **{{ issue.title }}**
 
 {{ issue.description }}
 
+{% if resume_context %}
+{{ resume_context }}
+{% endif %}
+
 ## Instructions
 
 {% if attempt %}
