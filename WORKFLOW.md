@@ -27,12 +27,14 @@ review:
     kind: pi
 
 publish:
-  provider: github
-  auto_push: never
-  auto_create_pr: never
+  # Conservative defaults: do not publish anything automatically.
+  provider: github # github | gitlab
+  auto_push: never # never | on_pass
+  auto_create_pr: never # never | draft | ready
 
 git:
-  require_commit: true
+  # Keep this true to require agent commits before any publish action.
+  require_commit: true # true | false
 
 workspace:
   root: ~/kollywood-workspaces
