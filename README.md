@@ -78,6 +78,7 @@ Quality gates are configured in `WORKFLOW.md`:
 
 - `checks.required`: shell commands that must pass before a story can be marked done
 - `review.enabled`: when true, runs a reviewer agent round and requires verdict tokens
+- `review.max_cycles`: maximum worker/reviewer feedback cycles before failing the run
 - `review.agent`: reviewer adapter settings (kind/command/args/env/timeout)
 
 Minimal story shape:

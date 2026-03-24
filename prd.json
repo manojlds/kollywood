@@ -17,6 +17,23 @@
       "priority": 1,
       "status": "done",
       "title": "Add PRD validate command"
+    },
+    {
+      "acceptanceCriteria": [
+        "review.max_cycles is parsed from workflow config with sane default",
+        "worker-review loop passes when reviewer fails first then passes within max_cycles",
+        "run fails with clear reason when review keeps failing through max_cycles"
+      ],
+      "dependsOn": [
+        "US-101"
+      ],
+      "description": "When review is enabled, let worker and reviewer iterate for configurable review cycles before final failure. Add review.max_cycles config (default 1). On REVIEW_FAIL verdict, run a remediation worker turn using reviewer feedback, rerun required checks, and re-run reviewer until pass or max cycles reached. Keep checks and review token behavior strict. Add tests for pass-after-feedback and fail-after-max-cycles behavior, and update docs/workflow examples.",
+      "id": "US-102",
+      "notes": "",
+      "passes": true,
+      "priority": 1,
+      "status": "done",
+      "title": "Add multi-cycle worker-review loop"
     }
   ]
 }
