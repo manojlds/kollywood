@@ -318,7 +318,8 @@ defmodule Kollywood.Config do
 
     case Enum.find(valid_values, &(Atom.to_string(&1) == normalized)) do
       nil ->
-        {:error, "Invalid #{path}: #{value}. Must be one of: #{Enum.join(valid_values, ", ")}"}
+        {:error,
+         "Invalid #{path}: #{inspect(value)}. Must be one of: #{Enum.join(valid_values, ", ")}"}
 
       parsed_value ->
         {:ok, parsed_value}

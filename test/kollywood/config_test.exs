@@ -285,6 +285,31 @@ defmodule Kollywood.ConfigTest do
     assert config.git.require_commit == false
   end
 
+  test "parses ready PR policy and string git.require_commit" do
+    content = """
+    ---
+    publish:
+      provider: github
+      auto_push: never
+      auto_create_pr: ready
+    git:
+      require_commit: "false"
+    workspace:
+      root: /tmp
+    agent:
+      kind: pi
+    ---
+    prompt
+    """
+
+    assert {:ok, config, _} = Config.parse(content)
+
+    assert config.publish.provider == :github
+    assert config.publish.auto_push == :never
+    assert config.publish.auto_create_pr == :ready
+    assert config.git.require_commit == false
+  end
+
   test "rejects invalid publish.provider" do
     content = """
     ---
