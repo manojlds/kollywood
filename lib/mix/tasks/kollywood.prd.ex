@@ -14,6 +14,7 @@ defmodule Mix.Tasks.Kollywood.Prd do
       mix kollywood.prd add --title "Story title" --acceptance "Criterion A" --acceptance "Criterion B"
 
       mix kollywood.prd set-status STORY_ID STATUS [--path PATH]
+      mix kollywood.prd validate [--path PATH]
 
   ## Status values
 
@@ -31,6 +32,7 @@ defmodule Mix.Tasks.Kollywood.Prd do
       ["list" | rest] -> list_command(rest)
       ["add" | rest] -> add_command(rest)
       ["set-status", story_id, status | rest] -> set_status_command(story_id, status, rest)
+      ["validate" | rest] -> validate_command(rest)
       _other -> raise_usage_error()
     end
   end
@@ -169,6 +171,187 @@ defmodule Mix.Tasks.Kollywood.Prd do
       end
     else
       {:error, reason} -> Mix.raise(reason)
+    end
+  end
+
+  defp validate_command(args) do
+    {opts, positional, invalid} =
+      OptionParser.parse(args,
+        strict: [path: :string],
+        aliases: [p: :path]
+      )
+
+    ensure_no_invalid_options!(invalid)
+    ensure_no_positional_args!(positional)
+
+    path = resolved_path(Keyword.get(opts, :path))
+
+    with {:ok, prd} <- read_prd(path),
+         {:ok, stories} <- user_stories(prd),
+         :ok <- validate_story_structure(stories) do
+      total_stories = length(stories)
+      active_stories = Enum.count(stories, &active_story?/1)
+
+      Mix.shell().info(
+        "PRD is valid: #{path} (total_stories=#{total_stories}, active_stories=#{active_stories})"
+      )
+    else
+      {:error, reason} -> Mix.raise(reason)
+    end
+  end
+
+  defp validate_story_structure(stories) do
+    {id_indexes, id_errors} = collect_story_ids(stories)
+    id_set = MapSet.new(Map.keys(id_indexes))
+
+    dependency_and_status_errors =
+      stories
+      |> Enum.with_index(1)
+      |> Enum.flat_map(fn {story, index} ->
+        validate_story_status(story, index) ++ validate_story_dependencies(story, index, id_set)
+      end)
+
+    errors = id_errors ++ dependency_and_status_errors
+
+    if errors == [] do
+      :ok
+    else
+      {:error, format_validation_errors(errors)}
+    end
+  end
+
+  defp collect_story_ids(stories) do
+    stories
+    |> Enum.with_index(1)
+    |> Enum.reduce({%{}, []}, fn {story, index}, {id_indexes, errors} ->
+      cond do
+        not is_map(story) ->
+          {id_indexes, errors ++ ["userStories[#{index}] must be a JSON object"]}
+
+        true ->
+          case story_id(story) do
+            nil ->
+              {id_indexes, errors ++ ["userStories[#{index}] id must be a non-empty string"]}
+
+            id ->
+              case Map.fetch(id_indexes, id) do
+                {:ok, first_index} ->
+                  error =
+                    "userStories[#{index}] has duplicate id #{inspect(id)} (already used at userStories[#{first_index}])"
+
+                  {id_indexes, errors ++ [error]}
+
+                :error ->
+                  {Map.put(id_indexes, id, index), errors}
+              end
+          end
+      end
+    end)
+  end
+
+  defp validate_story_status(story, index) when is_map(story) do
+    story_ref = story_reference(story, index)
+
+    case field(story, :status) do
+      status when is_binary(status) ->
+        status = String.trim(status)
+
+        if status in @valid_statuses do
+          []
+        else
+          [
+            "#{story_ref} has invalid status #{inspect(status)}; expected one of: #{Enum.join(@valid_statuses, ", ")}"
+          ]
+        end
+
+      _other ->
+        [
+          "#{story_ref} has invalid status; expected one of: #{Enum.join(@valid_statuses, ", ")}"
+        ]
+    end
+  end
+
+  defp validate_story_status(_story, index) do
+    ["userStories[#{index}] must be a JSON object"]
+  end
+
+  defp validate_story_dependencies(story, index, id_set) when is_map(story) do
+    story_ref = story_reference(story, index)
+    current_story_id = story_id(story)
+
+    case field(story, :dependsOn) do
+      nil ->
+        []
+
+      depends_on when is_list(depends_on) ->
+        depends_on
+        |> Enum.with_index(1)
+        |> Enum.flat_map(fn {dependency_id, dependency_index} ->
+          validate_dependency_id(
+            dependency_id,
+            dependency_index,
+            current_story_id,
+            story_ref,
+            id_set
+          )
+        end)
+
+      _other ->
+        ["#{story_ref} has invalid dependsOn; expected an array of story IDs"]
+    end
+  end
+
+  defp validate_story_dependencies(_story, index, _id_set) do
+    ["userStories[#{index}] must be a JSON object"]
+  end
+
+  defp validate_dependency_id(
+         dependency_id,
+         dependency_index,
+         current_story_id,
+         story_ref,
+         id_set
+       ) do
+    case optional_string(dependency_id) do
+      nil ->
+        ["#{story_ref} has invalid dependsOn[#{dependency_index}]; expected a non-empty story ID"]
+
+      normalized_dependency_id ->
+        cond do
+          not is_nil(current_story_id) and normalized_dependency_id == current_story_id ->
+            ["#{story_ref} cannot depend on itself (#{normalized_dependency_id})"]
+
+          not MapSet.member?(id_set, normalized_dependency_id) ->
+            [
+              "#{story_ref} depends on unknown story #{inspect(normalized_dependency_id)} (dependsOn[#{dependency_index}])"
+            ]
+
+          true ->
+            []
+        end
+    end
+  end
+
+  defp format_validation_errors(errors) do
+    details =
+      errors
+      |> Enum.uniq()
+      |> Enum.map_join("\n", &"  - #{&1}")
+
+    "PRD validation failed:\n#{details}"
+  end
+
+  defp story_reference(story, index) do
+    case story_id(story) do
+      nil -> "userStories[#{index}]"
+      id -> "story #{id} (userStories[#{index}])"
+    end
+  end
+
+  defp active_story?(story) do
+    case field(story, :status) do
+      status when is_binary(status) -> String.trim(status) in ["open", "in_progress"]
+      _other -> false
     end
   end
 
@@ -470,6 +653,7 @@ defmodule Mix.Tasks.Kollywood.Prd do
         [--priority N] [--status open|in_progress|done] [--depends-on US-001,US-002]\
         [--acceptance TEXT] [--notes TEXT]
       mix kollywood.prd set-status STORY_ID STATUS [--path PATH]
+      mix kollywood.prd validate [--path PATH]
     """)
   end
 end

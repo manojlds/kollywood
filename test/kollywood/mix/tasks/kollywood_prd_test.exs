@@ -117,6 +117,101 @@ defmodule Mix.Tasks.Kollywood.PrdTest do
     end
   end
 
+  test "validate succeeds for valid PRD and prints summary", %{root: root} do
+    path = Path.join(root, "prd.json")
+
+    write_prd!(path, [
+      %{"id" => "US-001", "title" => "Story A", "priority" => 1, "status" => "open"},
+      %{
+        "id" => "US-002",
+        "title" => "Story B",
+        "priority" => 2,
+        "status" => "in_progress",
+        "dependsOn" => ["US-001"]
+      },
+      %{"id" => "US-003", "title" => "Story C", "priority" => 3, "status" => "done"}
+    ])
+
+    output = capture_io(fn -> Prd.run(["validate", "--path", path]) end)
+
+    assert output =~ "PRD is valid"
+    assert output =~ "total_stories=3"
+    assert output =~ "active_stories=2"
+  end
+
+  test "validate rejects invalid statuses", %{root: root} do
+    path = Path.join(root, "prd.json")
+
+    write_prd!(path, [
+      %{"id" => "US-001", "title" => "Story A", "priority" => 1, "status" => "blocked"}
+    ])
+
+    assert_raise Mix.Error, ~r/invalid status/i, fn ->
+      capture_io(fn -> Prd.run(["validate", "--path", path]) end)
+    end
+  end
+
+  test "validate rejects broken dependencies", %{root: root} do
+    path = Path.join(root, "prd.json")
+
+    write_prd!(path, [
+      %{
+        "id" => "US-010",
+        "title" => "Story with bad dependency",
+        "priority" => 1,
+        "status" => "open",
+        "dependsOn" => ["US-999"]
+      }
+    ])
+
+    assert_raise Mix.Error, ~r/depends on unknown story "US-999"/, fn ->
+      capture_io(fn -> Prd.run(["validate", "--path", path]) end)
+    end
+  end
+
+  test "validate rejects duplicate story ids", %{root: root} do
+    path = Path.join(root, "prd.json")
+
+    write_prd!(path, [
+      %{"id" => "US-001", "title" => "Story A", "priority" => 1, "status" => "open"},
+      %{"id" => "US-001", "title" => "Story B", "priority" => 2, "status" => "done"}
+    ])
+
+    assert_raise Mix.Error, ~r/duplicate id/i, fn ->
+      capture_io(fn -> Prd.run(["validate", "--path", path]) end)
+    end
+  end
+
+  test "validate rejects empty story ids", %{root: root} do
+    path = Path.join(root, "prd.json")
+
+    write_prd!(path, [
+      %{"id" => " ", "title" => "Story A", "priority" => 1, "status" => "open"}
+    ])
+
+    assert_raise Mix.Error, ~r/id must be a non-empty string/i, fn ->
+      capture_io(fn -> Prd.run(["validate", "--path", path]) end)
+    end
+  end
+
+  test "validate rejects self dependencies", %{root: root} do
+    path = Path.join(root, "prd.json")
+
+    write_prd!(path, [
+      %{
+        "id" => "US-020",
+        "title" => "Self dependency",
+        "priority" => 1,
+        "status" => "open",
+        "dependsOn" => ["US-020"]
+      }
+    ])
+
+    assert_raise Mix.Error, ~r/cannot depend on itself/, fn ->
+      capture_io(fn -> Prd.run(["validate", "--path", path]) end)
+    end
+  end
+
   defp write_prd!(path, stories) do
     payload = %{
       "project" => "kollywood",

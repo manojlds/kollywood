@@ -51,7 +51,11 @@ mix kollywood.prd list
 mix kollywood.prd add --title "Implement dogfood status page"
 mix kollywood.prd set-status US-001 in_progress
 mix kollywood.prd set-status US-001 done
+mix kollywood.prd validate
 ```
+
+`mix kollywood.prd validate` checks story IDs, statuses, and dependency integrity,
+then prints a short summary with total and active story counts.
 
 Orchestrator controls:
 
