@@ -103,28 +103,28 @@ defmodule KollywoodWeb.DashboardLive do
           <nav class="bg-base-100 border-b border-base-300 px-4 sm:px-6 lg:px-8">
             <div class="flex gap-1 overflow-x-auto">
               <.nav_link
-                active={@live_action == :overview}
+                is_active={@live_action == :overview}
                 patch={~p"/projects/#{@current_project.slug}"}
               >
                 <.icon name="hero-squares-2x2" class="size-4" /> Overview
               </.nav_link>
 
               <.nav_link
-                active={@live_action == :stories}
+                is_active={@live_action == :stories}
                 navigate={~p"/projects/#{@current_project.slug}/stories"}
               >
                 <.icon name="hero-list-bullet" class="size-4" /> Stories
               </.nav_link>
 
               <.nav_link
-                active={@live_action == :runs}
+                is_active={@live_action == :runs}
                 navigate={~p"/projects/#{@current_project.slug}/runs"}
               >
                 <.icon name="hero-play" class="size-4" /> Runs
               </.nav_link>
 
               <.nav_link
-                active={@live_action == :settings}
+                is_active={@live_action == :settings}
                 navigate={~p"/projects/#{@current_project.slug}/settings"}
               >
                 <.icon name="hero-cog-6-tooth" class="size-4" /> Settings
@@ -194,8 +194,8 @@ defmodule KollywoodWeb.DashboardLive do
       class={[
         "flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap",
         "hover:text-base-content",
-        assigns[:active] && "border-primary text-primary",
-        !assigns[:active] && "border-transparent text-base-content/70 hover:border-base-300"
+        @active && "border-primary text-primary",
+        !@active && "border-transparent text-base-content/70 hover:border-base-300"
       ]}
     >
       {render_slot(@inner_block)}
