@@ -45,7 +45,7 @@ review:
 
     Verify tests and implementation quality. If anything is missing, return REVIEW_FAIL.
   agent:
-    kind: pi
+    kind: claude
 
 publish:
   # Conservative defaults: do not publish anything automatically.
@@ -64,9 +64,10 @@ workspace:
   branch_prefix: kollywood/
 
 agent:
-  kind: pi
+  kind: claude
   retries_enabled: false
-  max_concurrent_agents: 5
+  max_attempts: 1
+  max_concurrent_agents: 1
   max_turns: 20
 ---
 

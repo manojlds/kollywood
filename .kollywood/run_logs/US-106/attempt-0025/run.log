@@ -1,4 +1,0 @@
-[2026-03-24T16:37:22.645809Z] [worker] run_started mode=single_turn turn_limit=20
-[2026-03-24T16:37:22.651015Z] [worker] workspace_ready runtime_profile=checks_only workspace_path=/home/manojlds/kollywood-workspaces/US-106
-[2026-03-24T16:37:22.656804Z] [worker] session_started adapter=Elixir.Kollywood.Agent.Pi session_id=1
-[2026-03-24T16:37:22.727996Z] [worker] turn_started turn=1

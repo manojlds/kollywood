@@ -1,0 +1,4 @@
+{"attempt":"nil","identifier":"US-112","issue_id":"US-112","mode":"single_turn","story_id":"US-112","timestamp":"2026-03-24T21:06:01.330747Z","turn_limit":20,"type":"run_started"}
+{"attempt":1,"identifier":"US-112","issue_id":"US-112","runtime_profile":"checks_only","story_id":"US-112","timestamp":"2026-03-24T21:06:01.363384Z","type":"workspace_ready","workspace_path":"/home/manojlds/kollywood-workspaces/US-112"}
+{"adapter":"Elixir.Kollywood.Agent.Claude","attempt":1,"identifier":"US-112","issue_id":"US-112","session_id":30,"story_id":"US-112","timestamp":"2026-03-24T21:06:01.364675Z","type":"session_started"}
+{"attempt":1,"identifier":"US-112","issue_id":"US-112","story_id":"US-112","timestamp":"2026-03-24T21:06:01.367882Z","turn":1,"type":"turn_started"}
