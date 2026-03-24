@@ -14,7 +14,7 @@ defmodule Kollywood.Agent.OpenCode do
     command: "opencode",
     args: [],
     prompt_mode: :stdin,
-    timeout_ms: 1_800_000,
+    timeout_ms: 7_200_000,
     env: %{}
   }
 

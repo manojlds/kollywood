@@ -14,7 +14,7 @@ defmodule Kollywood.Config do
   @valid_publish_providers ~w(github gitlab)a
   @valid_auto_push_policies ~w(never on_pass)a
   @valid_auto_create_pr_policies ~w(never draft ready)a
-  @default_timeout_ms 1_800_000
+  @default_timeout_ms 7_200_000
 
   @type t :: %__MODULE__{
           tracker: map(),

@@ -14,7 +14,7 @@ defmodule Kollywood.Agent.Amp do
     command: "amp",
     args: [],
     prompt_mode: :stdin,
-    timeout_ms: 1_800_000,
+    timeout_ms: 7_200_000,
     env: %{}
   }
 

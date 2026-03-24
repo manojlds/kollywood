@@ -120,11 +120,13 @@
       ],
       "description": "Add a LiveView dashboard shell with a top-right project selector and project-scoped navigation for Overview, Stories, Runs, and Settings. Projects must come from the SQLite store and route state must remain in selected project context. Show core counters (open/in_progress/done/failed), active workers, and last errors for selected project. Keep design clean and responsive for desktop/mobile.",
       "id": "US-106",
-      "notes": "[2026-03-24T13:54:29Z] attempt 1: Agent command failed with exit code 1: You have hit your ChatGPT usage limit (plus plan). Try again in ~7119 min.\n[2026-03-24T15:10:15Z] attempt 1: Failed to prepare workspace: Failed to create worktree: Preparing worktree (new branch 'kollywood/US-106')\nfatal: a branch named 'kollywood/US-106' already exists\n[2026-03-24T15:11:23Z] reset for rerun\n[2026-03-24T15:23:43Z] reset for rerun",
+      "lastAttempt": 1,
+      "lastError": "Agent command timed out after 1800000ms",
+      "notes": "[2026-03-24T13:54:29Z] attempt 1: Agent command failed with exit code 1: You have hit your ChatGPT usage limit (plus plan). Try again in ~7119 min.\n[2026-03-24T15:10:15Z] attempt 1: Failed to prepare workspace: Failed to create worktree: Preparing worktree (new branch 'kollywood/US-106')\nfatal: a branch named 'kollywood/US-106' already exists\n[2026-03-24T15:11:23Z] reset for rerun\n[2026-03-24T15:23:43Z] reset for rerun\n[2026-03-24T15:55:22Z] attempt 1: Agent command timed out after 1800000ms",
       "passes": false,
       "priority": 2,
       "startedAt": "2026-03-24T15:25:22Z",
-      "status": "in_progress",
+      "status": "failed",
       "title": "Build project-scoped dashboard shell with selector"
     },
     {
@@ -161,7 +163,8 @@
       "notes": "",
       "passes": false,
       "priority": 1,
-      "status": "open",
+      "startedAt": "2026-03-24T15:55:22Z",
+      "status": "in_progress",
       "title": "Add per-project max concurrent agents setting"
     },
     {
@@ -179,8 +182,45 @@
       "notes": "",
       "passes": false,
       "priority": 1,
-      "status": "open",
+      "startedAt": "2026-03-24T15:55:22Z",
+      "status": "in_progress",
       "title": "Fix worktree cleanup to leave stories in pristine state for rerun"
+    },
+    {
+      "acceptanceCriteria": [
+        "agent stdout/stderr streams to log files in real-time during execution",
+        "mix kollywood.orch.tail shows live agent output with timestamps",
+        "stdout and stderr are captured in separate streams"
+      ],
+      "dependsOn": [
+        "US-106"
+      ],
+      "description": "Add real-time capture and streaming of agent stdout and stderr to enable debugging of long-running or stuck agents. Stream output to project-scoped log files as the agent runs (not just at completion). Add mix command mix kollywood.orch.tail US-106 [--stream] to view live agent output. Include timestamps and separate stdout/stderr streams. This enables seeing what files the agent is creating, what errors it hits, and whether it's making progress during long turns.",
+      "id": "US-110",
+      "notes": "",
+      "passes": false,
+      "priority": 1,
+      "startedAt": "2026-03-24T15:59:07Z",
+      "status": "in_progress",
+      "title": "Capture and stream agent stdout/stderr in real-time"
+    },
+    {
+      "acceptanceCriteria": [
+        "system detects files created during timed-out turns",
+        "resume prompt includes summary of partial work completed",
+        "agent continues from checkpoint rather than restarting"
+      ],
+      "dependsOn": [
+        "US-106"
+      ],
+      "description": "Enable resuming work when agent turns timeout after partial progress. Detect files created/modified during the turn before timeout. On retry, inject a resume prompt that informs the agent what work was already done (files created, tests passing/failing, etc.) and asks it to continue rather than start fresh. Add checkpoint events during long turns to track progress. Include acceptance criteria for detecting partial work, generating resume prompts, and validating resumed work completes successfully.",
+      "id": "US-111",
+      "notes": "",
+      "passes": false,
+      "priority": 1,
+      "startedAt": "2026-03-24T16:00:42Z",
+      "status": "in_progress",
+      "title": "Add resume capability for timed-out agent turns"
     }
   ]
 }
