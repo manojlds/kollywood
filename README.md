@@ -53,6 +53,14 @@ mix kollywood.prd set-status US-001 in_progress
 mix kollywood.prd set-status US-001 done
 ```
 
+Orchestrator controls:
+
+```bash
+mix kollywood.orch.status
+mix kollywood.orch.poll
+mix kollywood.orch.stop US-001
+```
+
 Minimal story shape:
 
 ```json
