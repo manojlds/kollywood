@@ -43,6 +43,7 @@ Kollywood can run against a local PRD tracker file.
 - Default tracker config is in `WORKFLOW.md` (`tracker.kind: prd_json`)
 - Default tracker path is `prd.json`
 - Stories use `status` values: `open`, `in_progress`, `done`
+- Default agent kind in `WORKFLOW.md` is `pi`
 
 CLI helpers:
 
@@ -72,6 +73,12 @@ mix kollywood.orch.status
 mix kollywood.orch.poll
 mix kollywood.orch.stop US-001
 ```
+
+Quality gates are configured in `WORKFLOW.md`:
+
+- `checks.required`: shell commands that must pass before a story can be marked done
+- `review.enabled`: when true, runs a reviewer agent round and requires verdict tokens
+- `review.agent`: reviewer adapter settings (kind/command/args/env/timeout)
 
 Minimal story shape:
 

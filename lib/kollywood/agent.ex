@@ -44,7 +44,10 @@ defmodule Kollywood.Agent do
     config_opts =
       config.agent
       |> Map.take([:command, :args, :env, :timeout_ms])
-      |> Map.reject(fn {_key, value} -> is_nil(value) end)
+      |> Map.reject(fn
+        {:args, []} -> true
+        {_key, value} -> is_nil(value)
+      end)
 
     adapter.start_session(workspace, Map.merge(config_opts, normalize_opts(opts)))
   end

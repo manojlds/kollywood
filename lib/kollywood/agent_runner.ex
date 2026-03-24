@@ -130,7 +130,13 @@ defmodule Kollywood.AgentRunner do
         case stop_session(run_state, session) do
           {:ok, stopped_state} ->
             if is_nil(reason) do
-              succeed(stopped_state, status)
+              case finalize_with_quality_gates(stopped_state, config, status) do
+                {:ok, qualified_state} ->
+                  succeed(qualified_state, status)
+
+                {:error, gate_reason, qualified_state} ->
+                  fail(qualified_state, gate_reason)
+              end
             else
               fail(stopped_state, reason)
             end
@@ -231,6 +237,372 @@ defmodule Kollywood.AgentRunner do
     state = emit(state, :run_finished, %{status: :failed, reason: reason})
     {:error, result_from_state(state, :failed, reason)}
   end
+
+  defp finalize_with_quality_gates(state, config, _status) do
+    with {:ok, state} <- run_required_checks(state, config),
+         {:ok, state} <- run_review_if_enabled(state, config) do
+      {:ok, state}
+    end
+  end
+
+  defp run_required_checks(state, config) do
+    commands = required_check_commands(config)
+
+    if commands == [] do
+      {:ok, state}
+    else
+      case workspace_path(state.workspace) do
+        nil ->
+          {:error, "required checks failed: workspace path is unavailable", state}
+
+        workspace_path ->
+          timeout_ms = checks_timeout_ms(config)
+          fail_fast = checks_fail_fast?(config)
+
+          state =
+            emit(state, :checks_started, %{
+              check_count: length(commands),
+              timeout_ms: timeout_ms,
+              fail_fast: fail_fast
+            })
+
+          {state, errors} =
+            commands
+            |> Enum.with_index(1)
+            |> Enum.reduce({state, []}, fn {command, index}, {acc_state, acc_errors} ->
+              if fail_fast and acc_errors != [] do
+                {acc_state, acc_errors}
+              else
+                acc_state =
+                  emit(acc_state, :check_started, %{check_index: index, command: command})
+
+                case execute_check_command(workspace_path, command, timeout_ms) do
+                  {:ok, duration_ms} ->
+                    {
+                      emit(acc_state, :check_passed, %{
+                        check_index: index,
+                        command: command,
+                        duration_ms: duration_ms
+                      }),
+                      acc_errors
+                    }
+
+                  {:error, reason, duration_ms, output_preview} ->
+                    error_message =
+                      "check ##{index} failed (#{command}): #{reason}#{preview_suffix(output_preview)}"
+
+                    {
+                      emit(acc_state, :check_failed, %{
+                        check_index: index,
+                        command: command,
+                        reason: reason,
+                        duration_ms: duration_ms,
+                        output_preview: output_preview
+                      }),
+                      acc_errors ++ [error_message]
+                    }
+                end
+              end
+            end)
+
+          if errors == [] do
+            {:ok, emit(state, :checks_passed, %{check_count: length(commands)})}
+          else
+            reason = "required checks failed:\n#{Enum.map_join(errors, "\n", &"- #{&1}")}"
+            {:error, reason, emit(state, :checks_failed, %{error_count: length(errors)})}
+          end
+      end
+    end
+  end
+
+  defp run_review_if_enabled(state, config) do
+    if review_enabled?(config) do
+      review_agent_kind = review_agent_kind(config)
+      state = emit(state, :review_started, %{agent_kind: review_agent_kind})
+
+      with {:ok, prompt} <- build_review_prompt(state, config),
+           {:ok, output} <- run_review_turn(state, config, prompt),
+           :ok <- validate_review_output(output, config) do
+        {:ok, emit(state, :review_passed, %{agent_kind: review_agent_kind})}
+      else
+        {:error, reason} ->
+          {:error, "review failed: #{reason}", emit(state, :review_failed, %{reason: reason})}
+      end
+    else
+      {:ok, state}
+    end
+  end
+
+  defp execute_check_command(workspace_path, command, timeout_ms) do
+    started_at_ms = System.monotonic_time(:millisecond)
+
+    try do
+      task =
+        Task.async(fn ->
+          System.cmd("bash", ["-lc", command], cd: workspace_path, stderr_to_stdout: true)
+        end)
+
+      case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
+        {:ok, {_output, 0}} ->
+          {:ok, elapsed_ms(started_at_ms)}
+
+        {:ok, {output, exit_code}} ->
+          {:error, "exit code #{exit_code}", elapsed_ms(started_at_ms), output_preview(output)}
+
+        nil ->
+          {:error, "timed out after #{timeout_ms}ms", elapsed_ms(started_at_ms), ""}
+      end
+    rescue
+      error ->
+        {:error, Exception.message(error), elapsed_ms(started_at_ms), ""}
+    end
+  end
+
+  defp run_review_turn(state, config, prompt) do
+    review_config = reviewer_config(config)
+
+    case Agent.start_session(review_config, state.workspace, %{}) do
+      {:ok, session} ->
+        turn_result = Agent.run_turn(session, prompt, %{})
+        stop_result = Agent.stop_session(session)
+        normalize_review_turn_result(turn_result, stop_result)
+
+      {:error, reason} ->
+        {:error, "failed to start reviewer session: #{reason}"}
+    end
+  end
+
+  defp normalize_review_turn_result({:ok, result}, :ok) when is_map(result) do
+    case Map.get(result, :output) do
+      output when is_binary(output) -> {:ok, output}
+      _other -> {:error, "reviewer returned result without output"}
+    end
+  end
+
+  defp normalize_review_turn_result({:error, reason}, :ok),
+    do: {:error, "reviewer turn failed: #{reason}"}
+
+  defp normalize_review_turn_result({:ok, _result}, {:error, stop_reason}),
+    do: {:error, "failed to stop reviewer session: #{stop_reason}"}
+
+  defp normalize_review_turn_result({:error, reason}, {:error, stop_reason}),
+    do:
+      {:error, "reviewer turn failed: #{reason}; failed to stop reviewer session: #{stop_reason}"}
+
+  defp normalize_review_turn_result(other_result, other_stop_result) do
+    {:error,
+     "reviewer returned unexpected results: turn=#{inspect(other_result)} stop=#{inspect(other_stop_result)}"}
+  end
+
+  defp validate_review_output(output, config) do
+    pass_token = review_pass_token(config)
+    fail_token = review_fail_token(config)
+
+    first_line =
+      output
+      |> String.split("\n", parts: 2)
+      |> List.first()
+      |> to_string()
+      |> String.trim()
+
+    cond do
+      String.starts_with?(first_line, pass_token) ->
+        :ok
+
+      String.starts_with?(first_line, fail_token) ->
+        reason =
+          first_line
+          |> String.replace_prefix(fail_token, "")
+          |> String.trim()
+          |> String.trim_leading(":")
+          |> String.trim()
+
+        if reason == "" do
+          {:error, "reviewer rejected changes"}
+        else
+          {:error, reason}
+        end
+
+      true ->
+        {:error,
+         "reviewer must start first line with #{pass_token} or #{fail_token}; got: #{inspect(first_line)}"}
+    end
+  end
+
+  defp build_review_prompt(state, config) do
+    pass_token = review_pass_token(config)
+    fail_token = review_fail_token(config)
+    template = review_prompt_template(config)
+
+    variables =
+      PromptBuilder.build_variables(state.issue, state.attempt)
+      |> Map.put("pass_token", pass_token)
+      |> Map.put("fail_token", fail_token)
+      |> Map.put("agent_output", state.last_output || "")
+
+    case PromptBuilder.render(template, variables) do
+      {:ok, prompt} -> {:ok, prompt}
+      {:error, reason} -> {:error, "failed to render review prompt: #{reason}"}
+    end
+  end
+
+  defp reviewer_config(config) do
+    review_agent = get_in(config, [Access.key(:review, %{}), Access.key(:agent, %{})]) || %{}
+    base_agent = Map.get(config, :agent, %{})
+
+    merged_agent = %{
+      kind: Map.get(review_agent, :kind, Map.get(base_agent, :kind)),
+      max_concurrent_agents: Map.get(base_agent, :max_concurrent_agents, 1),
+      max_turns: 1,
+      max_retry_backoff_ms: Map.get(base_agent, :max_retry_backoff_ms, 300_000),
+      command: Map.get(review_agent, :command, Map.get(base_agent, :command)),
+      args: Map.get(review_agent, :args, Map.get(base_agent, :args, [])),
+      env: Map.merge(Map.get(base_agent, :env, %{}), Map.get(review_agent, :env, %{})),
+      timeout_ms:
+        positive_integer(
+          Map.get(review_agent, :timeout_ms, Map.get(base_agent, :timeout_ms, 300_000)),
+          300_000
+        )
+    }
+
+    %Config{config | agent: merged_agent}
+  end
+
+  defp required_check_commands(config) do
+    config
+    |> checks_config()
+    |> Map.get(:required, [])
+    |> Enum.filter(&(is_binary(&1) and String.trim(&1) != ""))
+  end
+
+  defp checks_timeout_ms(config) do
+    config
+    |> checks_config()
+    |> Map.get(:timeout_ms, 300_000)
+    |> positive_integer(300_000)
+  end
+
+  defp checks_fail_fast?(config) do
+    config
+    |> checks_config()
+    |> Map.get(:fail_fast, true)
+    |> truthy?()
+  end
+
+  defp review_enabled?(config) do
+    config
+    |> review_config()
+    |> Map.get(:enabled, false)
+    |> truthy?()
+  end
+
+  defp review_pass_token(config) do
+    config
+    |> review_config()
+    |> Map.get(:pass_token, "REVIEW_PASS")
+    |> to_string()
+    |> String.trim()
+    |> case do
+      "" -> "REVIEW_PASS"
+      value -> value
+    end
+  end
+
+  defp review_fail_token(config) do
+    config
+    |> review_config()
+    |> Map.get(:fail_token, "REVIEW_FAIL")
+    |> to_string()
+    |> String.trim()
+    |> case do
+      "" -> "REVIEW_FAIL"
+      value -> value
+    end
+  end
+
+  defp review_agent_kind(config) do
+    config
+    |> review_config()
+    |> get_in([Access.key(:agent, %{}), Access.key(:kind)])
+    |> case do
+      value when value in [:amp, :claude, :opencode, :pi] -> value
+      _other -> Map.get(config.agent, :kind)
+    end
+  end
+
+  defp review_prompt_template(config) do
+    case get_in(config, [Access.key(:review, %{}), Access.key(:prompt_template)]) do
+      value when is_binary(value) and value != "" ->
+        value
+
+      _other ->
+        """
+        You are reviewing work for issue {{ issue.identifier }}: {{ issue.title }}.
+
+        Issue description:
+        {{ issue.description }}
+
+        Prior implementation output (may be empty):
+        {{ agent_output }}
+
+        Review the current workspace changes. You may run commands for validation.
+        Do not modify files, do not commit, and do not push.
+
+        On the FIRST line, return exactly one verdict:
+        {{ pass_token }}
+        or
+        {{ fail_token }}: <short reason>
+
+        After the first line, include a concise review summary.
+        """
+    end
+  end
+
+  defp checks_config(config), do: Map.get(config, :checks) || %{}
+  defp review_config(config), do: Map.get(config, :review) || %{}
+
+  defp truthy?(value) when is_boolean(value), do: value
+
+  defp truthy?(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> String.downcase()
+    |> case do
+      "true" -> true
+      "1" -> true
+      "yes" -> true
+      "on" -> true
+      _ -> false
+    end
+  end
+
+  defp truthy?(_value), do: false
+
+  defp elapsed_ms(started_at_ms) do
+    max(System.monotonic_time(:millisecond) - started_at_ms, 0)
+  end
+
+  defp output_preview(output) when is_binary(output) do
+    output
+    |> String.trim()
+    |> String.slice(0, 600)
+  end
+
+  defp output_preview(_output), do: ""
+
+  defp preview_suffix(""), do: ""
+  defp preview_suffix(preview), do: " | output: #{inspect(preview)}"
+
+  defp positive_integer(value, _fallback) when is_integer(value) and value > 0, do: value
+
+  defp positive_integer(value, fallback) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {parsed, ""} when parsed > 0 -> parsed
+      _ -> fallback
+    end
+  end
+
+  defp positive_integer(_value, fallback), do: fallback
 
   defp result_from_state(state, status, error) do
     %Result{

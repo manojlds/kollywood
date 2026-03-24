@@ -11,6 +11,20 @@ tracker:
 polling:
   interval_ms: 5000
 
+checks:
+  required:
+    - mix format --check-formatted
+    - mix test
+  timeout_ms: 600000
+  fail_fast: true
+
+review:
+  enabled: false
+  pass_token: REVIEW_PASS
+  fail_token: REVIEW_FAIL
+  agent:
+    kind: pi
+
 workspace:
   root: ~/kollywood-workspaces
   strategy: worktree
@@ -18,7 +32,7 @@ workspace:
   branch_prefix: kollywood/
 
 agent:
-  kind: amp
+  kind: pi
   max_concurrent_agents: 5
   max_turns: 20
 ---
