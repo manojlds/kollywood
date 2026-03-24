@@ -1,0 +1,20 @@
+{
+  "attempt": 22,
+  "attempt_dir": "/home/manojlds/kollywood-workspaces/US-106/.kollywood/run_logs/US-106/attempt-0022",
+  "ended_at": null,
+  "files": {
+    "checks": "/home/manojlds/kollywood-workspaces/US-106/.kollywood/run_logs/US-106/attempt-0022/checks.log",
+    "events": "/home/manojlds/kollywood-workspaces/US-106/.kollywood/run_logs/US-106/attempt-0022/events.jsonl",
+    "reviewer": "/home/manojlds/kollywood-workspaces/US-106/.kollywood/run_logs/US-106/attempt-0022/reviewer.log",
+    "run": "/home/manojlds/kollywood-workspaces/US-106/.kollywood/run_logs/US-106/attempt-0022/run.log",
+    "runtime": "/home/manojlds/kollywood-workspaces/US-106/.kollywood/run_logs/US-106/attempt-0022/runtime.log",
+    "worker": "/home/manojlds/kollywood-workspaces/US-106/.kollywood/run_logs/US-106/attempt-0022/worker.log"
+  },
+  "identifier": "US-106",
+  "issue_id": "US-106",
+  "project_root": "/home/manojlds/kollywood-workspaces/US-106",
+  "runner_attempt": null,
+  "started_at": "2026-03-24T16:37:17.635687Z",
+  "status": "running",
+  "story_id": "US-106"
+}
