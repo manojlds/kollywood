@@ -44,6 +44,7 @@ defmodule Kollywood.Tracker.PrdJson do
       story
       |> set_story_status("in_progress")
       |> Map.put_new("startedAt", now_iso8601())
+      |> Map.put("lastError", nil)
     end)
   end
 
