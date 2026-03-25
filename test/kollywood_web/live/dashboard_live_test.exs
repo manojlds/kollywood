@@ -159,6 +159,35 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "Frontmatter"
       assert html =~ "Prompt Template"
       assert html =~ "Save WORKFLOW.md"
+      assert html =~ "Review Prompt Template"
+      assert html =~ "Save Review Template"
+    end
+
+    test "saves review template into WORKFLOW.md", %{
+      conn: conn,
+      project: project,
+      tmp_dir: tmp_dir
+    } do
+      File.write!(Path.join(tmp_dir, "WORKFLOW.md"), """
+      ---
+      review:
+        enabled: true
+        prompt_template: |
+          old template content
+      ---
+
+      Body here.
+      """)
+
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/settings")
+
+      view
+      |> element("form[phx-submit='save_review_template']")
+      |> render_submit(%{review_template: "new review template"})
+
+      {:ok, content} = File.read(Path.join(tmp_dir, "WORKFLOW.md"))
+      assert content =~ "new review template"
+      refute content =~ "old template content"
     end
   end
 

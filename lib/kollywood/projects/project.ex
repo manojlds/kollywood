@@ -63,9 +63,7 @@ defmodule Kollywood.Projects.Project do
         |> maybe_clear_field(:repository)
 
       provider when provider in [:github, :gitlab] ->
-        changeset
-        |> validate_required([:repository])
-        |> maybe_clear_field(:local_path)
+        validate_required(changeset, [:repository])
 
       _other ->
         changeset

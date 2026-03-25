@@ -96,6 +96,43 @@ defmodule Kollywood.Workspace do
   end
 
   @doc """
+  Returns the number of commits on this workspace's branch that are not in the source repo HEAD.
+  Only meaningful for the `:worktree` strategy — returns `{:ok, :not_applicable}` otherwise.
+  """
+  @spec commits_ahead(t()) :: {:ok, non_neg_integer() | :not_applicable} | {:error, String.t()}
+  def commits_ahead(%__MODULE__{strategy: :worktree} = workspace) do
+    with {:ok, source} <- source_repo(workspace),
+         {sha, 0} <- git(["rev-parse", "HEAD"], source),
+         {count_str, 0} <-
+           git(["rev-list", "--count", "#{String.trim(sha)}..HEAD"], workspace.path) do
+      {:ok, String.trim(count_str) |> String.to_integer()}
+    else
+      {output, _code} -> {:error, "git error: #{String.trim(output)}"}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def commits_ahead(%__MODULE__{}), do: {:ok, :not_applicable}
+
+  @doc """
+  Pushes the workspace branch to origin. Only applicable for the `:worktree` strategy.
+  """
+  @spec push_branch(t()) :: :ok | {:error, String.t()}
+  def push_branch(%__MODULE__{strategy: :worktree, branch: branch} = workspace)
+      when is_binary(branch) do
+    case git(["push", "-u", "origin", branch], workspace.path) do
+      {_output, 0} ->
+        Logger.info("Pushed branch #{branch} to origin")
+        :ok
+
+      {output, code} ->
+        {:error, "git push exited #{code}: #{String.trim(output)}"}
+    end
+  end
+
+  def push_branch(%__MODULE__{}), do: {:error, "push_branch only supported for worktree strategy"}
+
+  @doc """
   Sanitizes an issue identifier to a safe directory name.
   Only allows `[A-Za-z0-9._-]`, replaces everything else with `_`.
   """
@@ -253,6 +290,26 @@ defmodule Kollywood.Workspace do
     end
   rescue
     e -> {:error, "#{name} hook failed: #{Exception.message(e)}"}
+  end
+
+  defp source_repo(%__MODULE__{strategy: :worktree} = workspace) do
+    git_file = Path.join(workspace.path, ".git")
+
+    case File.read(git_file) do
+      {:ok, content} ->
+        source =
+          content
+          |> String.trim()
+          |> String.replace_prefix("gitdir: ", "")
+          |> Path.dirname()
+          |> Path.dirname()
+          |> Path.dirname()
+
+        {:ok, source}
+
+      {:error, reason} ->
+        {:error, "could not read worktree .git file: #{inspect(reason)}"}
+    end
   end
 
   defp git(args, cwd) do

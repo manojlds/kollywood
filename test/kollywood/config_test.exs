@@ -114,11 +114,15 @@ defmodule Kollywood.ConfigTest do
     assert config.agent.timeout_ms == 7_200_000
     assert config.tracker.active_states == ["Todo", "In Progress"]
 
-    assert config.publish.provider == :github
+    assert config.publish.provider == nil
     assert config.publish.auto_push == :never
     assert config.publish.auto_create_pr == :never
 
     assert config.git.require_commit == true
+    assert config.git.base_branch == "main"
+
+    assert config.project_provider == nil
+    assert Config.effective_publish_provider(config) == nil
   end
 
   test "parses optional agent runtime settings" do

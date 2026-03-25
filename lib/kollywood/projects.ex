@@ -110,11 +110,10 @@ defmodule Kollywood.Projects do
   defp put_default_branch(attrs), do: Map.put(attrs, "default_branch", "main")
 
   defp put_default_workflow_and_tracker_paths(attrs) do
-    provider = Map.get(attrs, :provider) || Map.get(attrs, "provider")
     local_path = Map.get(attrs, :local_path) || Map.get(attrs, "local_path")
 
-    if provider in [:local, "local"] and is_binary(local_path) and String.trim(local_path) != "" do
-      local_path = Path.expand(String.trim(local_path))
+    if is_binary(local_path) and String.trim(local_path) != "" do
+      local_path = local_path |> String.trim() |> Path.expand()
 
       attrs
       |> Map.put_new("workflow_path", Path.join(local_path, "WORKFLOW.md"))
@@ -124,4 +123,14 @@ defmodule Kollywood.Projects do
       attrs
     end
   end
+
+  @doc """
+  Returns the suggested default local clone path for a repository string.
+  """
+  @spec default_clone_path(String.t()) :: String.t()
+  def default_clone_path(repository) when is_binary(repository) do
+    Kollywood.Projects.Cloner.default_path(repository)
+  end
+
+  def default_clone_path(_), do: "~/kollywood-repos/repo"
 end

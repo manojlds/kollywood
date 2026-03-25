@@ -27,6 +27,7 @@ defmodule Kollywood.Config do
           agent: map(),
           publish: map(),
           git: map(),
+          project_provider: publish_provider() | :local | nil,
           raw: map()
         }
 
@@ -41,8 +42,19 @@ defmodule Kollywood.Config do
     :agent,
     :publish,
     :git,
-    :raw
+    :raw,
+    project_provider: nil
   ]
+
+  @doc """
+  Returns the effective publish provider — `publish.provider` from WORKFLOW.md if explicitly set,
+  otherwise the project-level provider injected at runtime.
+  """
+  @spec effective_publish_provider(t()) :: publish_provider() | :local | nil
+  def effective_publish_provider(%__MODULE__{} = config) do
+    get_in(config, [Access.key(:publish, %{}), Access.key(:provider)]) ||
+      config.project_provider
+  end
 
   @doc """
   Parses WORKFLOW.md content into a `%Config{}` struct.
@@ -362,12 +374,7 @@ defmodule Kollywood.Config do
   defp parse_publish(raw) do
     publish = Map.get(raw, "publish", %{})
 
-    with {:ok, provider} <-
-           parse_enum_value(
-             Map.get(publish, "provider", "github"),
-             @valid_publish_providers,
-             "publish.provider"
-           ),
+    with {:ok, provider} <- parse_optional_publish_provider(Map.get(publish, "provider")),
          {:ok, auto_push} <-
            parse_enum_value(
              Map.get(publish, "auto_push", "never"),
@@ -389,12 +396,22 @@ defmodule Kollywood.Config do
     end
   end
 
+  # nil means "not set in WORKFLOW.md — derive from project_provider at runtime"
+  defp parse_optional_publish_provider(nil), do: {:ok, nil}
+  defp parse_optional_publish_provider(""), do: {:ok, nil}
+
+  defp parse_optional_publish_provider(value),
+    do: parse_enum_value(value, @valid_publish_providers, "publish.provider")
+
   defp parse_git(raw) do
     git = Map.get(raw, "git", %{})
 
+    base_branch =
+      git |> Map.get("base_branch", "main") |> to_string() |> String.trim()
+
     with {:ok, require_commit} <-
            parse_boolean_value(Map.get(git, "require_commit", true), "git.require_commit") do
-      {:ok, %{require_commit: require_commit}}
+      {:ok, %{require_commit: require_commit, base_branch: base_branch}}
     end
   end
 

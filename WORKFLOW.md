@@ -39,21 +39,45 @@ review:
   pass_token: REVIEW_PASS
   fail_token: REVIEW_FAIL
   prompt_template: |
-    Review issue {{ issue.identifier }}: {{ issue.title }}.
-    You are a strict reviewer.
+    You are reviewing work for issue {{ issue.identifier }}: {{ issue.title }}.
 
-    First line must be EXACTLY one of:
+    Issue description:
+    {{ issue.description }}
+
+    Prior implementation output (may be empty):
+    {{ agent_output }}
+
+    Review the current workspace changes. You may run commands for validation.
+    Do not modify files, do not commit, and do not push.
+
+    On the FIRST line, return exactly one verdict:
     REVIEW_PASS
-    REVIEW_FAIL: <short reason>
+    or
+    REVIEW_FAIL: <one-line summary of the most critical issue>
 
-    Verify tests and implementation quality. If anything is missing, return REVIEW_FAIL.
+    After the first line, provide a structured review report with the following sections
+    (omit sections with no findings):
+
+    ## Critical
+    Issues that must be fixed before merging (bugs, broken tests, security issues, missing required functionality).
+    List each as: - [description of issue and where to find it]
+
+    ## Major
+    Significant quality issues that should be fixed (poor design, missing error handling, test coverage gaps).
+    List each as: - [description of issue and where to find it]
+
+    ## Minor
+    Nice-to-haves and style issues (naming, code clarity, optional improvements).
+    List each as: - [description of issue and where to find it]
+
+    ## Summary
+    One or two sentences summarising the overall quality of the changes.
   agent:
     kind: claude
 
 publish:
-  # Conservative defaults: do not publish anything automatically.
-  provider: github # github | gitlab
-  auto_push: never # never | on_pass
+  provider: github
+  auto_push: on_pass
   auto_create_pr: never # never | draft | ready
 
 git:
