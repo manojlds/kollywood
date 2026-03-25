@@ -149,8 +149,9 @@ defmodule KollywoodWeb.DashboardLive do
     {:noreply, socket}
   end
 
-  def handle_event("save_workflow", %{"yaml" => yaml, "body" => body}, socket) do
+  def handle_event("save_workflow", %{"body" => body}, socket) do
     project = socket.assigns.current_project
+    yaml = socket.assigns.workflow.yaml
 
     socket =
       case workflow_path(project) do
@@ -195,6 +196,36 @@ defmodule KollywoodWeb.DashboardLive do
                 socket,
                 :workflow,
                 Map.put(socket.assigns.workflow, :error, "Save failed: #{inspect(reason)}")
+              )
+          end
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("save_settings", %{"settings" => settings}, socket) do
+    project = socket.assigns.current_project
+
+    socket =
+      case workflow_path(project) do
+        nil ->
+          socket
+
+        path ->
+          workflow = socket.assigns.workflow
+          new_parsed = apply_settings(workflow.parsed, settings)
+          new_yaml = to_workflow_yaml(new_parsed)
+          content = "---\n#{new_yaml}\n---\n\n#{workflow.body}\n"
+
+          case File.write(path, content) do
+            :ok ->
+              assign(socket, :workflow, load_workflow(project))
+
+            {:error, reason} ->
+              assign(
+                socket,
+                :workflow,
+                Map.put(workflow, :error, "Save failed: #{inspect(reason)}")
               )
           end
       end
@@ -926,15 +957,15 @@ defmodule KollywoodWeb.DashboardLive do
             <%= if @project.local_path do %>
               <div class="sm:col-span-2">
                 <span class="text-sm text-base-content/60">Local Path</span>
-                <p class="font-medium font-mono text-sm">{@project.local_path}</p>
+                <p class="font-medium font-mono text-sm break-all">{@project.local_path}</p>
               </div>
             <% end %>
           </div>
         </div>
       </div>
 
-      <%!-- Workflow editor --%>
       <%= if @workflow.path do %>
+        <%!-- Workflow settings form --%>
         <div class="card bg-base-200 border border-base-300">
           <div class="card-body gap-4">
             <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
@@ -946,46 +977,314 @@ defmodule KollywoodWeb.DashboardLive do
               <div class="alert alert-error text-sm">{@workflow.error}</div>
             <% end %>
 
-            <%!-- Parsed frontmatter summary --%>
-            <%= if @workflow.parsed != %{} do %>
-              <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 p-4 bg-base-100 rounded-lg">
-                <%= for {label, value} <- workflow_summary(@workflow.parsed) do %>
-                  <div>
-                    <span class="text-xs text-base-content/50 uppercase tracking-wide">{label}</span>
-                    <p class="font-mono text-sm mt-0.5 break-all">{value}</p>
+            <form phx-submit="save_settings" class="space-y-6">
+              <%!-- Workspace --%>
+              <div>
+                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">Workspace</p>
+                <div class="grid sm:grid-cols-2 gap-4">
+                  <div class="sm:col-span-2">
+                    <label class="label pb-1"><span class="label-text text-sm">Root</span></label>
+                    <input
+                      type="text"
+                      name="settings[workspace][root]"
+                      value={get_in(@workflow.parsed, ["workspace", "root"]) || ""}
+                      class="input input-bordered input-sm w-full font-mono"
+                    />
                   </div>
-                <% end %>
+                  <div>
+                    <label class="label pb-1"><span class="label-text text-sm">Strategy</span></label>
+                    <select name="settings[workspace][strategy]" class="select select-bordered select-sm w-full">
+                      <%= for s <- ["clone", "worktree"] do %>
+                        <option value={s} selected={get_in(@workflow.parsed, ["workspace", "strategy"]) == s}>{s}</option>
+                      <% end %>
+                    </select>
+                  </div>
+                </div>
               </div>
-            <% end %>
 
-            <%!-- Editor form --%>
-            <form phx-submit="save_workflow" class="space-y-4">
+              <div class="divider my-0"></div>
+
+              <%!-- Agent --%>
               <div>
-                <label class="label">
-                  <span class="label-text font-medium">Frontmatter</span>
-                  <span class="label-text-alt text-base-content/50">YAML configuration</span>
-                </label>
-                <textarea
-                  name="yaml"
-                  rows="20"
-                  spellcheck="false"
-                  class="textarea textarea-bordered w-full font-mono text-xs leading-relaxed bg-base-100"
-                >{@workflow.yaml}</textarea>
+                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">Agent</p>
+                <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  <div>
+                    <label class="label pb-1"><span class="label-text text-sm">Kind</span></label>
+                    <select name="settings[agent][kind]" class="select select-bordered select-sm w-full">
+                      <%= for k <- ["amp", "claude", "opencode", "pi"] do %>
+                        <option value={k} selected={get_in(@workflow.parsed, ["agent", "kind"]) == k}>{k}</option>
+                      <% end %>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="label pb-1"><span class="label-text text-sm">Max Turns</span></label>
+                    <input
+                      type="number"
+                      min="1"
+                      name="settings[agent][max_turns]"
+                      value={get_in(@workflow.parsed, ["agent", "max_turns"]) || 20}
+                      class="input input-bordered input-sm w-full"
+                    />
+                  </div>
+                  <div>
+                    <label class="label pb-1"><span class="label-text text-sm">Max Concurrent</span></label>
+                    <input
+                      type="number"
+                      min="1"
+                      name="settings[agent][max_concurrent_agents]"
+                      value={get_in(@workflow.parsed, ["agent", "max_concurrent_agents"]) || 5}
+                      class="input input-bordered input-sm w-full"
+                    />
+                  </div>
+                  <div>
+                    <label class="label pb-1"><span class="label-text text-sm">Max Attempts</span></label>
+                    <input
+                      type="number"
+                      min="1"
+                      name="settings[agent][max_attempts]"
+                      value={get_in(@workflow.parsed, ["agent", "max_attempts"]) || 1}
+                      class="input input-bordered input-sm w-full"
+                    />
+                  </div>
+                  <div>
+                    <label class="label pb-1"><span class="label-text text-sm">Timeout (ms)</span></label>
+                    <input
+                      type="number"
+                      min="1000"
+                      step="1000"
+                      name="settings[agent][timeout_ms]"
+                      value={get_in(@workflow.parsed, ["agent", "timeout_ms"]) || 7_200_000}
+                      class="input input-bordered input-sm w-full"
+                    />
+                  </div>
+                  <div class="flex items-center gap-2 pt-5">
+                    <input
+                      type="hidden"
+                      name="settings[agent][retries_enabled]"
+                      value="false"
+                    />
+                    <input
+                      type="checkbox"
+                      name="settings[agent][retries_enabled]"
+                      value="true"
+                      checked={get_in(@workflow.parsed, ["agent", "retries_enabled"]) != false}
+                      class="toggle toggle-sm"
+                    />
+                    <span class="text-sm">Retries enabled</span>
+                  </div>
+                  <div class="sm:col-span-2 lg:col-span-3">
+                    <label class="label pb-1">
+                      <span class="label-text text-sm">Custom command <span class="text-base-content/40 text-xs">(optional override)</span></span>
+                    </label>
+                    <input
+                      type="text"
+                      name="settings[agent][command]"
+                      value={get_in(@workflow.parsed, ["agent", "command"]) || ""}
+                      placeholder="e.g. /usr/local/bin/amp"
+                      class="input input-bordered input-sm w-full font-mono"
+                    />
+                  </div>
+                </div>
               </div>
+
+              <div class="divider my-0"></div>
+
+              <%!-- Polling --%>
               <div>
-                <label class="label">
-                  <span class="label-text font-medium">Prompt Template</span>
-                  <span class="label-text-alt text-base-content/50">Liquid/Markdown body</span>
-                </label>
-                <textarea
-                  name="body"
-                  rows="16"
-                  spellcheck="false"
-                  class="textarea textarea-bordered w-full font-mono text-xs leading-relaxed bg-base-100"
-                >{@workflow.body}</textarea>
+                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">Polling</p>
+                <div class="max-w-xs">
+                  <label class="label pb-1"><span class="label-text text-sm">Interval (ms)</span></label>
+                  <input
+                    type="number"
+                    min="1000"
+                    step="1000"
+                    name="settings[polling][interval_ms]"
+                    value={get_in(@workflow.parsed, ["polling", "interval_ms"]) || 5000}
+                    class="input input-bordered input-sm w-full"
+                  />
+                </div>
               </div>
+
+              <div class="divider my-0"></div>
+
+              <%!-- Checks --%>
+              <div>
+                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">Checks</p>
+                <div class="space-y-4">
+                  <div>
+                    <label class="label pb-1">
+                      <span class="label-text text-sm">Required checks</span>
+                      <span class="label-text-alt text-base-content/40">one per line</span>
+                    </label>
+                    <textarea
+                      name="settings[checks][required]"
+                      rows="4"
+                      spellcheck="false"
+                      class="textarea textarea-bordered textarea-sm w-full font-mono text-xs"
+                    >{(get_in(@workflow.parsed, ["checks", "required"]) || []) |> Enum.join("\n")}</textarea>
+                  </div>
+                  <div class="grid sm:grid-cols-2 gap-4">
+                    <div>
+                      <label class="label pb-1"><span class="label-text text-sm">Timeout (ms)</span></label>
+                      <input
+                        type="number"
+                        min="1000"
+                        step="1000"
+                        name="settings[checks][timeout_ms]"
+                        value={get_in(@workflow.parsed, ["checks", "timeout_ms"]) || 7_200_000}
+                        class="input input-bordered input-sm w-full"
+                      />
+                    </div>
+                    <div class="flex items-center gap-2 pt-5">
+                      <input type="hidden" name="settings[checks][fail_fast]" value="false" />
+                      <input
+                        type="checkbox"
+                        name="settings[checks][fail_fast]"
+                        value="true"
+                        checked={get_in(@workflow.parsed, ["checks", "fail_fast"]) != false}
+                        class="toggle toggle-sm"
+                      />
+                      <span class="text-sm">Fail fast</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="divider my-0"></div>
+
+              <%!-- Review --%>
+              <div>
+                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">Review</p>
+                <div class="grid sm:grid-cols-2 gap-4">
+                  <div class="sm:col-span-2 flex items-center gap-2">
+                    <input type="hidden" name="settings[review][enabled]" value="false" />
+                    <input
+                      type="checkbox"
+                      name="settings[review][enabled]"
+                      value="true"
+                      checked={get_in(@workflow.parsed, ["review", "enabled"]) == true}
+                      class="toggle toggle-sm toggle-primary"
+                    />
+                    <span class="text-sm">Enable review</span>
+                  </div>
+                  <div>
+                    <label class="label pb-1"><span class="label-text text-sm">Max Cycles</span></label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="10"
+                      name="settings[review][max_cycles]"
+                      value={get_in(@workflow.parsed, ["review", "max_cycles"]) || 1}
+                      class="input input-bordered input-sm w-full"
+                    />
+                  </div>
+                  <div></div>
+                  <div>
+                    <label class="label pb-1"><span class="label-text text-sm">Pass Token</span></label>
+                    <input
+                      type="text"
+                      name="settings[review][pass_token]"
+                      value={get_in(@workflow.parsed, ["review", "pass_token"]) || "REVIEW_PASS"}
+                      class="input input-bordered input-sm w-full font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label class="label pb-1"><span class="label-text text-sm">Fail Token</span></label>
+                    <input
+                      type="text"
+                      name="settings[review][fail_token]"
+                      value={get_in(@workflow.parsed, ["review", "fail_token"]) || "REVIEW_FAIL"}
+                      class="input input-bordered input-sm w-full font-mono"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div class="divider my-0"></div>
+
+              <%!-- Publish --%>
+              <div>
+                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">Publish</p>
+                <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  <div>
+                    <label class="label pb-1"><span class="label-text text-sm">Provider</span></label>
+                    <select name="settings[publish][provider]" class="select select-bordered select-sm w-full">
+                      <option value="" selected={is_nil(get_in(@workflow.parsed, ["publish", "provider"]))}>
+                        Auto (from project)
+                      </option>
+                      <%= for v <- ["github", "gitlab"] do %>
+                        <option value={v} selected={get_in(@workflow.parsed, ["publish", "provider"]) == v}>{v}</option>
+                      <% end %>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="label pb-1"><span class="label-text text-sm">Auto Push</span></label>
+                    <select name="settings[publish][auto_push]" class="select select-bordered select-sm w-full">
+                      <%= for v <- ["never", "on_pass"] do %>
+                        <option value={v} selected={to_string(get_in(@workflow.parsed, ["publish", "auto_push"])) == v}>{v}</option>
+                      <% end %>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="label pb-1"><span class="label-text text-sm">Auto Create PR</span></label>
+                    <select name="settings[publish][auto_create_pr]" class="select select-bordered select-sm w-full">
+                      <%= for v <- ["never", "draft", "ready"] do %>
+                        <option value={v} selected={to_string(get_in(@workflow.parsed, ["publish", "auto_create_pr"])) == v}>{v}</option>
+                      <% end %>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div class="divider my-0"></div>
+
+              <%!-- Git --%>
+              <div>
+                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">Git</p>
+                <div class="grid sm:grid-cols-2 gap-4">
+                  <div>
+                    <label class="label pb-1"><span class="label-text text-sm">Base Branch</span></label>
+                    <input
+                      type="text"
+                      name="settings[git][base_branch]"
+                      value={get_in(@workflow.parsed, ["git", "base_branch"]) || "main"}
+                      class="input input-bordered input-sm w-full font-mono"
+                    />
+                  </div>
+                  <div class="flex items-center gap-2 pt-5">
+                    <input type="hidden" name="settings[git][require_commit]" value="false" />
+                    <input
+                      type="checkbox"
+                      name="settings[git][require_commit]"
+                      value="true"
+                      checked={get_in(@workflow.parsed, ["git", "require_commit"]) != false}
+                      class="toggle toggle-sm"
+                    />
+                    <span class="text-sm">Require commit before publish</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="pt-2 flex justify-end">
+                <button type="submit" class="btn btn-primary btn-sm">Save Settings</button>
+              </div>
+            </form>
+          </div>
+        </div>
+
+        <%!-- Prompt template editor --%>
+        <div class="card bg-base-200 border border-base-300">
+          <div class="card-body gap-4">
+            <h3 class="card-title text-lg">Prompt Template</h3>
+            <form phx-submit="save_workflow" class="space-y-3">
+              <textarea
+                name="body"
+                rows="16"
+                spellcheck="false"
+                class="textarea textarea-bordered w-full font-mono text-xs leading-relaxed bg-base-100"
+              >{@workflow.body}</textarea>
               <div class="flex justify-end">
-                <button type="submit" class="btn btn-primary btn-sm">Save WORKFLOW.md</button>
+                <button type="submit" class="btn btn-primary btn-sm">Save Template</button>
               </div>
             </form>
           </div>
@@ -1037,42 +1336,6 @@ defmodule KollywoodWeb.DashboardLive do
     </div>
     """
   end
-
-  defp workflow_summary(parsed) when is_map(parsed) do
-    get = fn keys ->
-      Enum.reduce_while(keys, parsed, fn key, acc ->
-        case Map.get(acc, key) do
-          nil -> {:halt, nil}
-          val -> {:cont, val}
-        end
-      end)
-    end
-
-    to_s = fn
-      nil -> nil
-      true -> "true"
-      false -> "false"
-      list when is_list(list) -> Enum.join(list, ", ")
-      val -> to_string(val)
-    end
-
-    [
-      {"agent", get.(["agent", "kind"])},
-      {"retries", get.(["agent", "retries_enabled"])},
-      {"max attempts", get.(["agent", "max_attempts"])},
-      {"max turns", get.(["agent", "max_turns"])},
-      {"poll interval", get.(["polling", "interval_ms"])},
-      {"before_run", get.(["hooks", "before_run"])},
-      {"checks", get.(["checks", "required"])},
-      {"review", get.(["review", "enabled"])},
-      {"workspace", get.(["workspace", "root"])},
-      {"strategy", get.(["workspace", "strategy"])}
-    ]
-    |> Enum.reject(fn {_label, val} -> is_nil(val) end)
-    |> Enum.map(fn {label, val} -> {label, to_s.(val)} end)
-  end
-
-  defp workflow_summary(_), do: []
 
   # -- Small Components --
 
@@ -1392,6 +1655,178 @@ defmodule KollywoodWeb.DashboardLive do
       end
     else
       nil
+    end
+  end
+
+  # -- Settings Helpers --
+
+  @workflow_yaml_key_order ~w(tracker polling workspace agent checks runtime hooks review publish git)
+
+  defp apply_settings(parsed, settings) do
+    agent_p = Map.get(settings, "agent", %{})
+    polling_p = Map.get(settings, "polling", %{})
+    workspace_p = Map.get(settings, "workspace", %{})
+    checks_p = Map.get(settings, "checks", %{})
+    review_p = Map.get(settings, "review", %{})
+    publish_p = Map.get(settings, "publish", %{})
+    git_p = Map.get(settings, "git", %{})
+
+    existing_agent = Map.get(parsed, "agent", %{})
+    existing_checks = Map.get(parsed, "checks", %{})
+    existing_review = Map.get(parsed, "review", %{})
+
+    command = String.trim(Map.get(agent_p, "command", ""))
+
+    new_agent =
+      existing_agent
+      |> Map.put("kind", Map.get(agent_p, "kind", Map.get(existing_agent, "kind", "amp")))
+      |> Map.put("max_turns", parse_form_int(agent_p, "max_turns", Map.get(existing_agent, "max_turns", 20)))
+      |> Map.put("max_concurrent_agents", parse_form_int(agent_p, "max_concurrent_agents", Map.get(existing_agent, "max_concurrent_agents", 5)))
+      |> Map.put("retries_enabled", Map.get(agent_p, "retries_enabled") == "true")
+      |> Map.put("max_attempts", parse_form_int(agent_p, "max_attempts", Map.get(existing_agent, "max_attempts", 1)))
+      |> Map.put("timeout_ms", parse_form_int(agent_p, "timeout_ms", Map.get(existing_agent, "timeout_ms", 7_200_000)))
+      |> then(fn a ->
+        if command != "", do: Map.put(a, "command", command), else: Map.delete(a, "command")
+      end)
+
+    checks_required =
+      case String.trim(Map.get(checks_p, "required", "")) do
+        "" -> []
+        raw -> raw |> String.split("\n") |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
+      end
+
+    new_checks = %{
+      "required" => checks_required,
+      "fail_fast" => Map.get(checks_p, "fail_fast") == "true",
+      "timeout_ms" => parse_form_int(checks_p, "timeout_ms", Map.get(existing_checks, "timeout_ms", 7_200_000))
+    }
+
+    existing_prompt_template = get_in(parsed, ["review", "prompt_template"])
+
+    new_review =
+      %{
+        "enabled" => Map.get(review_p, "enabled") == "true",
+        "max_cycles" => parse_form_int(review_p, "max_cycles", Map.get(existing_review, "max_cycles", 1)),
+        "pass_token" => Map.get(review_p, "pass_token", "REVIEW_PASS") |> String.trim() |> then(&(if &1 == "", do: "REVIEW_PASS", else: &1)),
+        "fail_token" => Map.get(review_p, "fail_token", "REVIEW_FAIL") |> String.trim() |> then(&(if &1 == "", do: "REVIEW_FAIL", else: &1))
+      }
+      |> then(fn r ->
+        if is_binary(existing_prompt_template) and existing_prompt_template != "",
+          do: Map.put(r, "prompt_template", existing_prompt_template),
+          else: r
+      end)
+
+    provider_val = Map.get(publish_p, "provider", "")
+
+    new_publish =
+      %{
+        "auto_push" => Map.get(publish_p, "auto_push", "never"),
+        "auto_create_pr" => Map.get(publish_p, "auto_create_pr", "never")
+      }
+      |> then(fn p ->
+        if provider_val != "", do: Map.put(p, "provider", provider_val), else: p
+      end)
+
+    base_branch = Map.get(git_p, "base_branch", get_in(parsed, ["git", "base_branch"]) || "main") |> String.trim()
+
+    parsed
+    |> Map.put("agent", new_agent)
+    |> Map.put("polling", %{"interval_ms" => parse_form_int(polling_p, "interval_ms", get_in(parsed, ["polling", "interval_ms"]) || 5000)})
+    |> Map.put("workspace", %{
+      "root" => Map.get(workspace_p, "root", get_in(parsed, ["workspace", "root"]) || "~/workspaces"),
+      "strategy" => Map.get(workspace_p, "strategy", get_in(parsed, ["workspace", "strategy"]) || "clone")
+    })
+    |> Map.put("checks", new_checks)
+    |> Map.put("review", new_review)
+    |> Map.put("publish", new_publish)
+    |> Map.put("git", %{
+      "require_commit" => Map.get(git_p, "require_commit") == "true",
+      "base_branch" => if(base_branch == "", do: "main", else: base_branch)
+    })
+  end
+
+  defp to_workflow_yaml(map) do
+    ordered_keys =
+      map
+      |> Map.keys()
+      |> Enum.sort_by(fn k -> Enum.find_index(@workflow_yaml_key_order, &(&1 == k)) || 999 end)
+
+    ordered_keys
+    |> Enum.map(fn k -> yaml_entry(k, Map.get(map, k), 0) end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
+  end
+
+  defp yaml_entry(_key, nil, _indent), do: nil
+
+  defp yaml_entry(key, value, indent) do
+    prefix = String.duplicate("  ", indent)
+
+    case value do
+      v when is_map(v) and map_size(v) == 0 ->
+        "#{prefix}#{key}: {}"
+
+      v when is_map(v) ->
+        inner =
+          v
+          |> Enum.sort_by(fn {k, _} -> k end)
+          |> Enum.map(fn {k, subv} -> yaml_entry(k, subv, indent + 1) end)
+          |> Enum.reject(&is_nil/1)
+          |> Enum.join("\n")
+
+        "#{prefix}#{key}:\n#{inner}"
+
+      v when is_list(v) and v == [] ->
+        "#{prefix}#{key}: []"
+
+      v when is_list(v) ->
+        items = Enum.map_join(v, "\n", fn item -> "#{prefix}  - #{yaml_scalar(to_string(item))}" end)
+        "#{prefix}#{key}:\n#{items}"
+
+      v when is_boolean(v) ->
+        "#{prefix}#{key}: #{v}"
+
+      v when is_integer(v) or is_float(v) ->
+        "#{prefix}#{key}: #{v}"
+
+      v when is_atom(v) ->
+        "#{prefix}#{key}: #{v}"
+
+      v when is_binary(v) ->
+        if String.contains?(v, "\n") do
+          indented =
+            v
+            |> String.trim()
+            |> String.split("\n")
+            |> Enum.map_join("\n", &("#{prefix}  " <> &1))
+
+          "#{prefix}#{key}: |\n#{indented}"
+        else
+          "#{prefix}#{key}: #{yaml_scalar(v)}"
+        end
+    end
+  end
+
+  defp yaml_scalar(v) when is_binary(v) do
+    if Regex.match?(~r/^[a-zA-Z0-9_\-\/\.:~]+$/, v) do
+      v
+    else
+      escaped = v |> String.replace("\\", "\\\\") |> String.replace("\"", "\\\"")
+      "\"#{escaped}\""
+    end
+  end
+
+  defp yaml_scalar(v), do: to_string(v)
+
+  defp parse_form_int(params, key, default) do
+    case Map.get(params, key) do
+      nil -> default
+      "" -> default
+      v ->
+        case Integer.parse(to_string(v)) do
+          {n, _} when n > 0 -> n
+          _ -> default
+        end
     end
   end
 

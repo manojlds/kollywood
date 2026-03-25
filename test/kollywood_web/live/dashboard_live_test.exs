@@ -156,9 +156,9 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/settings")
 
-      assert html =~ "Frontmatter"
       assert html =~ "Prompt Template"
-      assert html =~ "Save WORKFLOW.md"
+      assert html =~ "Save Settings"
+      assert html =~ "Save Template"
       assert html =~ "Review Prompt Template"
       assert html =~ "Save Review Template"
     end
