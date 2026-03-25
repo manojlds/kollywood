@@ -22,6 +22,11 @@ defmodule KollywoodWeb.DashboardLiveTest do
       "status" => "in_progress",
       "lastAttempt" => "20240101_120000",
       "lastError" => "Something went wrong"
+    },
+    %{
+      "id" => "US-003",
+      "title" => "Draft Story",
+      "status" => "draft"
     }
   ]
 
@@ -215,6 +220,80 @@ defmodule KollywoodWeb.DashboardLiveTest do
         |> render_click()
 
       assert html =~ "done"
+    end
+  end
+
+  describe "draft stories" do
+    test "draft stories appear in stories view under Draft section", %{
+      conn: conn,
+      project: project
+    } do
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/stories")
+
+      assert html =~ "US-003"
+      assert html =~ "Draft Story"
+      assert html =~ "Draft"
+    end
+
+    test "draft stories are excluded from overview stat counters", %{
+      conn: conn,
+      project: project
+    } do
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}")
+
+      refute html =~ "US-003"
+    end
+
+    test "draft stories have dashed border styling", %{conn: conn, project: project} do
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/stories")
+
+      assert html =~ "border-dashed"
+    end
+
+    test "draft stories can be promoted to open via status dropdown", %{
+      conn: conn,
+      project: project,
+      tmp_dir: tmp_dir
+    } do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories")
+
+      view
+      |> element(
+        "button[phx-click='update_story_status'][phx-value-id='US-003'][phx-value-status='open']"
+      )
+      |> render_click()
+
+      {:ok, content} = File.read(Path.join(tmp_dir, "prd.json"))
+      {:ok, data} = Jason.decode(content)
+      story = Enum.find(data["userStories"], &(&1["id"] == "US-003"))
+      assert story["status"] == "open"
+    end
+  end
+
+  describe "reset_story event" do
+    test "reset button appears for non-open stories", %{conn: conn, project: project} do
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/stories")
+
+      assert html =~ "phx-click=\"reset_story\""
+    end
+
+    test "resets story to open and clears lastAttempt/lastError in tracker file", %{
+      conn: conn,
+      project: project,
+      tmp_dir: tmp_dir
+    } do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories")
+
+      view
+      |> element("button[phx-click='reset_story'][phx-value-id='US-002']")
+      |> render_click()
+
+      {:ok, content} = File.read(Path.join(tmp_dir, "prd.json"))
+      {:ok, data} = Jason.decode(content)
+      story = Enum.find(data["userStories"], &(&1["id"] == "US-002"))
+      assert story["status"] == "open"
+      assert story["lastAttempt"] == nil
+      assert story["lastError"] == nil
     end
   end
 
