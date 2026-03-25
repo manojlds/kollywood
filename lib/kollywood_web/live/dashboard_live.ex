@@ -107,8 +107,27 @@ defmodule KollywoodWeb.DashboardLive do
             if story["id"] == id, do: Map.put(story, "status", status), else: story
           end)
 
-        updated_data = Map.put(data, "userStories", updated_stories)
-        File.write!(path, Jason.encode!(updated_data, pretty: true))
+        File.write!(
+          path,
+          Jason.encode!(Map.put(data, "userStories", updated_stories), pretty: true)
+        )
+
+        assign(socket, :stories, read_stories(project))
+      else
+        _ -> socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("reset_story", %{"id" => id}, socket) do
+    project = socket.assigns.current_project
+
+    socket =
+      with %{tracker_path: path} when is_binary(path) <- project,
+           true <- File.exists?(path),
+           :ok <- Kollywood.Tracker.PrdJson.reset_story(path, id) do
+        cleanup_worktree(project, id)
         assign(socket, :stories, read_stories(project))
       else
         _ -> socket
@@ -447,7 +466,8 @@ defmodule KollywoodWeb.DashboardLive do
         Enum.filter(assigns.stories, &(normalize_status(&1["status"]) == "in_progress")),
       "open" => Enum.filter(assigns.stories, &(normalize_status(&1["status"]) == "open")),
       "done" => Enum.filter(assigns.stories, &(normalize_status(&1["status"]) == "done")),
-      "failed" => Enum.filter(assigns.stories, &(normalize_status(&1["status"]) == "failed"))
+      "failed" => Enum.filter(assigns.stories, &(normalize_status(&1["status"]) == "failed")),
+      "draft" => Enum.filter(assigns.stories, &(normalize_status(&1["status"]) == "draft"))
     }
 
     assigns = assign(assigns, :groups, groups)
@@ -468,6 +488,7 @@ defmodule KollywoodWeb.DashboardLive do
             <div class="space-y-2">
               <%= for story <- stories do %>
                 <div id={"story-card-#{story["id"]}"} class="card bg-base-200 border border-base-300">
+
                   <div class="card-body p-4">
                     <div class="flex items-start justify-between gap-4">
                       <div class="flex-1 min-w-0">
@@ -505,6 +526,16 @@ defmodule KollywoodWeb.DashboardLive do
                             attempt {story["lastAttempt"]}
                           </span>
                         <% end %>
+                        <%= if normalize_status(story["status"]) != "open" do %>
+                          <button
+                            phx-click="reset_story"
+                            phx-value-id={story["id"]}
+                            phx-confirm={"Reset #{story["id"]}? This will clear run data and remove the worktree."}
+                            class="btn btn-ghost btn-xs text-warning"
+                          >
+                            Reset
+                          </button>
+                        <% end %>
                         <div class="dropdown dropdown-end">
                           <label tabindex="0" class="btn btn-ghost btn-xs">
                             <.icon name="hero-pencil-square" class="size-4" />
@@ -513,7 +544,7 @@ defmodule KollywoodWeb.DashboardLive do
                             tabindex="0"
                             class="dropdown-content menu menu-xs bg-base-100 rounded-box shadow-lg border border-base-300 z-50 w-36 p-1"
                           >
-                            <%= for s <- ["open", "in_progress", "done", "failed", "cancelled"] do %>
+                            <%= for s <- ["open", "in_progress", "done", "failed", "cancelled", "draft"] do %>
                               <li>
                                 <button
                                   phx-click="update_story_status"
@@ -541,6 +572,76 @@ defmodule KollywoodWeb.DashboardLive do
             </div>
           </div>
         <% end %>
+      <% end %>
+
+      <%= if @groups["draft"] != [] do %>
+        <div class="opacity-60">
+          <h3 class="text-lg font-semibold mb-3 flex items-center gap-2">
+            <.status_badge status="draft" />
+            Draft
+            <span class="badge badge-sm badge-ghost">{length(@groups["draft"])}</span>
+          </h3>
+          <div class="space-y-2">
+            <%= for story <- @groups["draft"] do %>
+              <div id={"story-card-#{story["id"]}"} class="card bg-base-200 border border-base-300 border-dashed">
+                <div class="card-body p-4">
+                  <div class="flex items-start justify-between gap-4">
+                    <div class="flex-1 min-w-0">
+                      <div class="flex items-center gap-2">
+                        <button
+                          phx-click="show_story"
+                          phx-value-id={story["id"]}
+                          class="font-mono text-sm font-semibold text-primary hover:underline cursor-pointer"
+                        >
+                          {story["id"]}
+                        </button>
+                        <button
+                          phx-click="show_story"
+                          phx-value-id={story["id"]}
+                          class="font-medium hover:text-primary cursor-pointer text-left"
+                        >
+                          {story["title"]}
+                        </button>
+                      </div>
+                      <%= if story["dependsOn"] && story["dependsOn"] != [] do %>
+                        <div class="flex items-center gap-1 mt-1">
+                          <span class="text-xs text-base-content/50">depends on:</span>
+                          <%= for dep <- story["dependsOn"] do %>
+                            <span class="badge badge-xs badge-outline">{dep}</span>
+                          <% end %>
+                        </div>
+                      <% end %>
+                    </div>
+                    <div class="flex items-center gap-2 shrink-0">
+                      <div class="dropdown dropdown-end">
+                        <label tabindex="0" class="btn btn-ghost btn-xs">
+                          <.icon name="hero-pencil-square" class="size-4" />
+                        </label>
+                        <ul
+                          tabindex="0"
+                          class="dropdown-content menu menu-xs bg-base-100 rounded-box shadow-lg border border-base-300 z-50 w-36 p-1"
+                        >
+                          <%= for s <- ["open", "in_progress", "done", "failed", "cancelled", "draft"] do %>
+                            <li>
+                              <button
+                                phx-click="update_story_status"
+                                phx-value-id={story["id"]}
+                                phx-value-status={s}
+                                class="text-xs"
+                              >
+                                {s}
+                              </button>
+                            </li>
+                          <% end %>
+                        </ul>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            <% end %>
+          </div>
+        </div>
       <% end %>
     </div>
     """
@@ -795,6 +896,7 @@ defmodule KollywoodWeb.DashboardLive do
         "done" -> "badge-success"
         "failed" -> "badge-error"
         "cancelled" -> "badge-ghost"
+        "draft" -> "badge-ghost badge-outline"
         _ -> "badge-ghost"
       end
 
@@ -1105,6 +1207,25 @@ defmodule KollywoodWeb.DashboardLive do
       {:ok, content} -> content
       _ -> nil
     end
+  end
+
+  defp cleanup_worktree(project, story_id) do
+    with {:ok, config} <- Kollywood.WorkflowStore.get_config(),
+         {:ok, workspace} <- Kollywood.Workspace.create_for_issue(story_id, config) do
+      Kollywood.Workspace.remove(workspace, config.hooks)
+    else
+      _ -> :ok
+    end
+
+    story_logs_dir = Path.join(run_logs_dir(project), story_id)
+
+    if File.dir?(story_logs_dir) do
+      File.rm_rf!(story_logs_dir)
+    end
+
+    :ok
+  rescue
+    _ -> :ok
   end
 
   # -- Helpers --

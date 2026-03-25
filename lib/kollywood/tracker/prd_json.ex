@@ -69,6 +69,24 @@ defmodule Kollywood.Tracker.PrdJson do
     end)
   end
 
+  @spec reset_story(String.t(), String.t(), keyword()) :: :ok | {:error, String.t()}
+  def reset_story(tracker_path, issue_id, opts \\ [])
+      when is_binary(tracker_path) and is_binary(issue_id) do
+    config = %Config{tracker: %{path: tracker_path}}
+    clear_notes? = Keyword.get(opts, :clear_notes, false)
+
+    update_story(config, issue_id, fn story ->
+      story
+      |> set_story_status("open")
+      |> Map.delete("startedAt")
+      |> Map.delete("completedAt")
+      |> Map.delete("lastAttempt")
+      |> Map.delete("lastError")
+      |> Map.delete("lastRun")
+      |> reset_notes(clear_notes?)
+    end)
+  end
+
   @impl true
   @spec mark_failed(Config.t(), String.t(), String.t(), pos_integer()) ::
           :ok | {:error, String.t()}
@@ -234,6 +252,9 @@ defmodule Kollywood.Tracker.PrdJson do
     |> Map.put("status", status)
     |> Map.put("passes", status == "done")
   end
+
+  defp reset_notes(story, true), do: Map.put(story, "notes", "")
+  defp reset_notes(story, false), do: append_note(story, "reset for rerun")
 
   defp append_note(story, line) do
     prefix = "[#{now_iso8601()}]"
