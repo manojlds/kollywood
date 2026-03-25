@@ -25,5 +25,4 @@ config :kollywood, orchestrator_enabled: false
 
 config :kollywood, Kollywood.Repo,
   database: Path.join(System.tmp_dir!(), "kollywood_test.db"),
-  pool: DBConnection.ConnectionPool,
-  pool_size: 1
+  pool: Ecto.Adapters.SQL.Sandbox

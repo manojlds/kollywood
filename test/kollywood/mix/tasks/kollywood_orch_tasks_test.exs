@@ -91,6 +91,9 @@ defmodule Mix.Tasks.Kollywood.OrchTasksTest do
     assert :ok = Orchestrator.poll_now(orchestrator)
     assert_receive {:runner_started, "US-777", runner_pid}
 
+    # Sync twice: runner sends on_event after the runner_started message,
+    # so we need to yield then flush the orchestrator's mailbox.
+    Process.sleep(10)
     _ = :sys.get_state(orchestrator)
 
     output = run_task("kollywood.orch.status", [])

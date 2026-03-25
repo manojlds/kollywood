@@ -552,6 +552,7 @@ defmodule Kollywood.OrchestratorTest do
       max_turns: 5
       max_retry_backoff_ms: #{Map.get(opts, :max_retry_backoff_ms, 300_000)}
       retries_enabled: #{Map.get(opts, :retries_enabled, true)}
+      max_attempts: #{Map.get(opts, :max_attempts, 10)}
     ---
     Work on {{ issue.identifier }}
     """
