@@ -413,9 +413,7 @@ defmodule KollywoodWeb.DashboardLive do
             <div class="space-y-1 mt-2">
               <%= for story <- recent_activity do %>
                 <.link
-                  navigate={
-                    ~p"/projects/#{@project.slug}/runs/#{story["id"]}/#{story["lastAttempt"]}"
-                  }
+                  navigate={~p"/projects/#{@project.slug}/runs/#{story["id"]}"}
                   class="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3 p-3 bg-base-100 rounded-lg hover:bg-base-300 transition-colors"
                 >
                   <div class="flex items-center gap-2 min-w-0">
@@ -596,7 +594,7 @@ defmodule KollywoodWeb.DashboardLive do
                   <td class="text-sm text-base-content/70">{format_time(run.ended_at)}</td>
                   <td>
                     <.link
-                      patch={~p"/projects/#{@project.slug}/runs/#{run.story_id}/#{run.attempt}"}
+                      patch={~p"/projects/#{@project.slug}/runs/#{run.story_id}"}
                       class="btn btn-ghost btn-xs"
                     >
                       View →
@@ -635,9 +633,7 @@ defmodule KollywoodWeb.DashboardLive do
                     <td class="text-sm text-base-content/60">{story["lastAttempt"]}</td>
                     <td>
                       <.link
-                        navigate={
-                          ~p"/projects/#{@project.slug}/runs/#{story["id"]}/#{story["lastAttempt"]}"
-                        }
+                        navigate={~p"/projects/#{@project.slug}/runs/#{story["id"]}"}
                         class="btn btn-xs btn-outline"
                       >
                         View
@@ -664,106 +660,52 @@ defmodule KollywoodWeb.DashboardLive do
 
   defp run_detail_section(assigns) do
     ~H"""
-    <div class="space-y-6">
+    <div class="flex flex-col gap-4 h-full">
       <div class="flex items-center gap-4">
         <.link patch={~p"/projects/#{@project.slug}/runs"} class="btn btn-ghost btn-sm gap-2">
           <.icon name="hero-arrow-left" class="size-4" /> Back to Runs
         </.link>
-        <h2 class="text-2xl font-bold">Run Detail</h2>
-        <span class="badge badge-outline font-mono">{@story_id}</span>
-        <%= if @attempt do %>
-          <span class="text-sm text-base-content/60">Attempt: {@attempt}</span>
+        <span class="badge badge-outline font-mono text-sm">{@story_id}</span>
+        <%= if @run_detail do %>
+          <.run_status_badge status={@run_detail["metadata"]["status"] || "unknown"} />
         <% end %>
       </div>
 
-      <%= if is_nil(@attempt) do %>
-        <%!-- Tabbed log view for latest-attempt route --%>
-        <%= if @run_detail do %>
-          <div class="flex gap-1 border-b border-base-300">
-            <%= for {tab, label} <- [
-              {"agent", "Agent"},
-              {"run", "Run"},
-              {"checks", "Checks"},
-              {"reviewer", "Reviewer"},
-              {"runtime", "Runtime"}
-            ] do %>
-              <button
-                phx-click="set_log_tab"
-                phx-value-tab={tab}
-                class={[
-                  "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
-                  @active_log_tab == tab && "border-primary text-primary",
-                  @active_log_tab != tab &&
-                    "border-transparent text-base-content/70 hover:text-base-content"
-                ]}
-              >
-                {label}
-              </button>
-            <% end %>
-          </div>
-
-          <%= if @run_detail["active_log_content"] do %>
-            <pre
-              id="log-output"
-              phx-hook=".LogScroll"
-              class="font-mono text-xs leading-relaxed bg-base-300 p-4 rounded-lg overflow-auto max-h-[70vh] whitespace-pre-wrap"
-            >{@run_detail["active_log_content"]}</pre>
-          <% else %>
-            <p class="text-base-content/50 text-sm">No output yet.</p>
+      <%= if @run_detail do %>
+        <div class="flex gap-0 border-b border-base-300">
+          <%= for {tab, label} <- [
+            {"agent", "Agent"},
+            {"worker", "Worker"},
+            {"checks", "Checks"},
+            {"reviewer", "Reviewer"},
+            {"runtime", "Runtime"}
+          ] do %>
+            <button
+              phx-click="set_log_tab"
+              phx-value-tab={tab}
+              class={[
+                "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
+                @active_log_tab == tab && "border-primary text-primary",
+                @active_log_tab != tab &&
+                  "border-transparent text-base-content/60 hover:text-base-content"
+              ]}
+            >
+              {label}
+            </button>
           <% end %>
+        </div>
+
+        <%= if @run_detail["active_log_content"] do %>
+          <pre
+            id="log-output"
+            phx-hook=".LogScroll"
+            class="font-mono text-xs leading-relaxed bg-base-300 p-4 rounded-lg overflow-auto max-h-[75vh] whitespace-pre-wrap"
+          >{@run_detail["active_log_content"]}</pre>
         <% else %>
-          <p class="text-base-content/50 text-sm">No run logs found for this story.</p>
+          <p class="text-base-content/50 text-sm italic">No output yet.</p>
         <% end %>
       <% else %>
-        <%!-- Legacy collapse-panel view for specific attempt route --%>
-        <%= if @run_detail do %>
-          <div class="card bg-base-200 border border-base-300">
-            <div class="card-body">
-              <%= if @run_detail["status"] do %>
-                <.run_status_badge status={@run_detail["status"]} />
-              <% end %>
-              <%= if @run_detail["error"] do %>
-                <p class="text-sm text-error mt-2">{@run_detail["error"]}</p>
-              <% end %>
-            </div>
-          </div>
-          <% has_any_log =
-            Enum.any?(
-              ["run_log", "worker_log", "reviewer_log", "checks_log"],
-              &(@run_detail[&1] && @run_detail[&1] != "")
-            ) %>
-          <%= if has_any_log do %>
-            <div class="space-y-4">
-              <%= for {label, key} <- [{"Run Log", "run_log"}, {"Worker Log", "worker_log"}, {"Reviewer Log", "reviewer_log"}, {"Checks Log", "checks_log"}] do %>
-                <% content = @run_detail[key] %>
-                <%= if content && content != "" do %>
-                  <details
-                    id={"#{key}-panel"}
-                    open
-                    class="collapse collapse-arrow bg-base-200 border border-base-300"
-                  >
-                    <summary class="collapse-title font-medium">{label}</summary>
-                    <div class="collapse-content">
-                      <pre class="text-xs leading-relaxed overflow-x-auto whitespace-pre-wrap bg-base-300 p-4 rounded-lg max-h-96 overflow-y-auto">{content}</pre>
-                    </div>
-                  </details>
-                <% end %>
-              <% end %>
-            </div>
-          <% else %>
-            <div class="card bg-base-200 border border-base-300">
-              <div class="card-body">
-                <p class="text-base-content/60">No logs available</p>
-              </div>
-            </div>
-          <% end %>
-        <% else %>
-          <div class="card bg-base-200 border border-base-300">
-            <div class="card-body">
-              <p class="text-base-content/60">No logs available</p>
-            </div>
-          </div>
-        <% end %>
+        <p class="text-base-content/50 text-sm italic">No run logs found for this story.</p>
       <% end %>
     </div>
     <script :type={Phoenix.LiveView.ColocatedHook} name=".LogScroll">
