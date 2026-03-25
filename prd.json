@@ -92,6 +92,22 @@
       "priority": 2,
       "status": "draft",
       "title": "Persist orchestrator run state to SQLite for restart safety"
+    },
+    {
+      "acceptanceCriteria": [
+        "lastAttempt in prd.json is updated to the new attempt number when mark_in_progress is called",
+        "Overview recent activity links navigate to the correct (current) attempt",
+        "Stories page shows the correct attempt number badge for in_progress stories",
+        "lastAttempt is consistent with the actual attempt directories in .kollywood/run_logs"
+      ],
+      "dependsOn": [],
+      "description": "The `lastAttempt` field in prd.json is only written on failure or completion, never when a new attempt starts. This causes the overview and stories pages to show a stale attempt number while a run is active.\n\n## Fix\n\nIn `mark_in_progress/2` in `prd_json.ex`, increment and write `lastAttempt` atomically with the status change. The attempt number should come from the orchestrator — thread it through `Tracker.mark_in_progress/3` (add an `attempt` argument) and update the behaviour spec and all callers in `orchestrator.ex`.\n\nAlternatively, derive the attempt count from the run_logs directory in `list_run_attempts/1` and pass it to `mark_in_progress`. Either approach is fine as long as prd.json reflects the actual current attempt when status is `in_progress`.",
+      "id": "US-116",
+      "notes": "",
+      "passes": false,
+      "priority": 3,
+      "status": "open",
+      "title": "Fix lastAttempt tracking: update prd.json when a new attempt starts"
     }
   ]
 }
