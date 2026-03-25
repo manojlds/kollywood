@@ -5,14 +5,31 @@ defmodule Kollywood.WorkflowStore do
   Polls the file every second by comparing {mtime, size}. On change, re-parses
   and caches the config + prompt template. If a reload fails, the previous
   "last known good" config is kept and an error is logged.
+
+  At parse time, injects runtime context into the config that cannot come from
+  the WORKFLOW.md file itself:
+    - `project_provider`    — from the DB project record
+    - `workspace.root`      — from ServiceConfig + project slug (unless set in YAML)
+    - `workspace.source`    — the project's managed clone path (unless set in YAML)
   """
 
   use GenServer
   require Logger
 
+  alias Kollywood.ServiceConfig
+
   @poll_interval_ms 1_000
 
-  defstruct [:path, :project_provider, :config, :prompt_template, :file_stamp, :last_error]
+  defstruct [
+    :path,
+    :project_provider,
+    :project_slug,
+    :project_local_path,
+    :config,
+    :prompt_template,
+    :file_stamp,
+    :last_error
+  ]
 
   # --- Public API ---
 
@@ -20,7 +37,14 @@ defmodule Kollywood.WorkflowStore do
     path = Keyword.fetch!(opts, :path)
     name = Keyword.get(opts, :name, __MODULE__)
     project_provider = Keyword.get(opts, :project_provider)
-    GenServer.start_link(__MODULE__, {path, project_provider}, name: name)
+    project_slug = Keyword.get(opts, :project_slug)
+    project_local_path = Keyword.get(opts, :project_local_path)
+
+    GenServer.start_link(
+      __MODULE__,
+      {path, project_provider, project_slug, project_local_path},
+      name: name
+    )
   end
 
   @doc "Returns the current config, or nil if not yet loaded."
@@ -44,8 +68,13 @@ defmodule Kollywood.WorkflowStore do
   # --- GenServer callbacks ---
 
   @impl true
-  def init({path, project_provider}) do
-    state = %__MODULE__{path: path, project_provider: project_provider}
+  def init({path, project_provider, project_slug, project_local_path}) do
+    state = %__MODULE__{
+      path: path,
+      project_provider: project_provider,
+      project_slug: project_slug,
+      project_local_path: project_local_path
+    }
 
     case load_file(state) do
       {:ok, new_state} ->
@@ -115,7 +144,10 @@ defmodule Kollywood.WorkflowStore do
     with {:ok, content} <- File.read(state.path),
          {:ok, stamp} <- file_stamp(state.path),
          {:ok, config, prompt_template} <- Kollywood.Config.parse(content) do
-      config = %{config | project_provider: state.project_provider}
+      config =
+        config
+        |> Map.put(:project_provider, state.project_provider)
+        |> inject_workspace(state)
 
       {:ok,
        %{
@@ -132,6 +164,36 @@ defmodule Kollywood.WorkflowStore do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  # Fills in workspace.root and workspace.source if not explicitly set in WORKFLOW.md.
+  # root  → ServiceConfig.project_workspace_root(slug) when slug is known
+  # source → project_local_path (the managed clone path)
+  defp inject_workspace(config, state) do
+    workspace = config.workspace || %{}
+
+    workspace =
+      if is_nil(Map.get(workspace, :root)) do
+        root =
+          if is_binary(state.project_slug) and state.project_slug != "" do
+            ServiceConfig.project_workspace_root(state.project_slug)
+          else
+            ServiceConfig.workspaces_dir()
+          end
+
+        Map.put(workspace, :root, root)
+      else
+        workspace
+      end
+
+    workspace =
+      if is_nil(Map.get(workspace, :source)) and is_binary(state.project_local_path) do
+        Map.put(workspace, :source, state.project_local_path)
+      else
+        workspace
+      end
+
+    %{config | workspace: workspace}
   end
 
   defp file_stamp(path) do

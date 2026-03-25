@@ -32,7 +32,7 @@ defmodule Kollywood.Workspace do
   """
   @spec create_for_issue(String.t(), map()) :: {:ok, t()} | {:error, String.t()}
   def create_for_issue(identifier, config) do
-    root = expand_root(config.workspace.root)
+    root = expand_root(config.workspace.root || Kollywood.ServiceConfig.workspaces_dir())
     key = sanitize_key(identifier)
     path = Path.join(root, key)
     strategy = Map.get(config.workspace, :strategy, :directory)
