@@ -12,14 +12,15 @@ defmodule Kollywood.WorkflowStore do
 
   @poll_interval_ms 1_000
 
-  defstruct [:path, :config, :prompt_template, :file_stamp, :last_error]
+  defstruct [:path, :project_provider, :config, :prompt_template, :file_stamp, :last_error]
 
   # --- Public API ---
 
   def start_link(opts) do
     path = Keyword.fetch!(opts, :path)
     name = Keyword.get(opts, :name, __MODULE__)
-    GenServer.start_link(__MODULE__, path, name: name)
+    project_provider = Keyword.get(opts, :project_provider)
+    GenServer.start_link(__MODULE__, {path, project_provider}, name: name)
   end
 
   @doc "Returns the current config, or nil if not yet loaded."
@@ -43,8 +44,8 @@ defmodule Kollywood.WorkflowStore do
   # --- GenServer callbacks ---
 
   @impl true
-  def init(path) do
-    state = %__MODULE__{path: path}
+  def init({path, project_provider}) do
+    state = %__MODULE__{path: path, project_provider: project_provider}
 
     case load_file(state) do
       {:ok, new_state} ->
@@ -114,6 +115,8 @@ defmodule Kollywood.WorkflowStore do
     with {:ok, content} <- File.read(state.path),
          {:ok, stamp} <- file_stamp(state.path),
          {:ok, config, prompt_template} <- Kollywood.Config.parse(content) do
+      config = %{config | project_provider: state.project_provider}
+
       {:ok,
        %{
          state

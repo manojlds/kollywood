@@ -119,6 +119,7 @@ defmodule Kollywood.AgentRunnerTest do
              :session_stopped,
              :quality_cycle_started,
              :quality_cycle_passed,
+             :publish_skipped,
              :run_finished
            ]
   end

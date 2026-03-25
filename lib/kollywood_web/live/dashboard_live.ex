@@ -24,7 +24,15 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:selected_story, nil)
       |> assign(:active_log_tab, "agent")
       |> assign(:log_poll_timer, nil)
-      |> assign(:workflow, %{yaml: "", body: "", parsed: %{}, error: nil, path: nil})
+      |> assign(:workflow, %{
+        yaml: "",
+        body: "",
+        parsed: %{},
+        review_template: "",
+        review_template_is_default: true,
+        error: nil,
+        path: nil
+      })
       |> assign(:page_title, if(current_project, do: current_project.name, else: "Dashboard"))
       |> assign(:orchestrator_status, fetch_orchestrator_status())
       |> load_project_data(current_project)
@@ -156,6 +164,32 @@ defmodule KollywoodWeb.DashboardLive do
             :ok ->
               assign(socket, :workflow, load_workflow(project))
 
+            {:error, reason} ->
+              assign(
+                socket,
+                :workflow,
+                Map.put(socket.assigns.workflow, :error, "Save failed: #{inspect(reason)}")
+              )
+          end
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("save_review_template", %{"review_template" => template}, socket) do
+    project = socket.assigns.current_project
+
+    socket =
+      case workflow_path(project) do
+        nil ->
+          socket
+
+        path ->
+          with {:ok, content} <- File.read(path),
+               new_yaml <- inject_review_template(content, String.trim(template)),
+               :ok <- File.write(path, new_yaml) do
+            assign(socket, :workflow, load_workflow(project))
+          else
             {:error, reason} ->
               assign(
                 socket,
@@ -903,9 +937,9 @@ defmodule KollywoodWeb.DashboardLive do
       <%= if @workflow.path do %>
         <div class="card bg-base-200 border border-base-300">
           <div class="card-body gap-4">
-            <div class="flex items-center justify-between">
-              <h3 class="card-title text-lg">WORKFLOW.md</h3>
-              <span class="font-mono text-xs text-base-content/50">{@workflow.path}</span>
+            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
+              <h3 class="card-title text-lg shrink-0">WORKFLOW.md</h3>
+              <span class="font-mono text-xs text-base-content/50 break-all">{@workflow.path}</span>
             </div>
 
             <%= if @workflow.error do %>
@@ -952,6 +986,42 @@ defmodule KollywoodWeb.DashboardLive do
               </div>
               <div class="flex justify-end">
                 <button type="submit" class="btn btn-primary btn-sm">Save WORKFLOW.md</button>
+              </div>
+            </form>
+          </div>
+        </div>
+
+        <%!-- Review template editor --%>
+        <div class="card bg-base-200 border border-base-300">
+          <div class="card-body gap-4">
+            <div class="flex items-start justify-between gap-4">
+              <div>
+                <h3 class="card-title text-lg">Review Prompt Template</h3>
+                <p class="text-sm text-base-content/60 mt-1">
+                  Template used to prompt the reviewer agent. Saved as <code class="font-mono text-xs bg-base-100 px-1 rounded">review.prompt_template</code> in WORKFLOW.md.
+                </p>
+              </div>
+              <%= if @workflow.review_template_is_default do %>
+                <span class="badge badge-ghost badge-sm shrink-0 mt-1">default</span>
+              <% else %>
+                <span class="badge badge-primary badge-sm shrink-0 mt-1">custom</span>
+              <% end %>
+            </div>
+
+            <form phx-submit="save_review_template" class="space-y-4">
+              <textarea
+                name="review_template"
+                rows="20"
+                spellcheck="false"
+                class="textarea textarea-bordered w-full font-mono text-xs leading-relaxed bg-base-100"
+              >{@workflow.review_template}</textarea>
+              <div class="flex items-center justify-between">
+                <%= if @workflow.review_template_is_default do %>
+                  <p class="text-xs text-base-content/50">Showing built-in default. Edit and save to override for this project.</p>
+                <% else %>
+                  <p class="text-xs text-base-content/50">Custom template active for this project.</p>
+                <% end %>
+                <button type="submit" class="btn btn-primary btn-sm">Save Review Template</button>
               </div>
             </form>
           </div>
@@ -1345,10 +1415,10 @@ defmodule KollywoodWeb.DashboardLive do
 
     cond do
       is_nil(path) ->
-        %{yaml: "", body: "", parsed: %{}, error: nil, path: nil}
+        %{yaml: "", body: "", parsed: %{}, review_template: "", review_template_is_default: true, error: nil, path: nil}
 
       not File.exists?(path) ->
-        %{yaml: "", body: "", parsed: %{}, error: "File not found: #{path}", path: path}
+        %{yaml: "", body: "", parsed: %{}, review_template: "", review_template_is_default: true, error: "File not found: #{path}", path: path}
 
       true ->
         case File.read(path) do
@@ -1361,16 +1431,28 @@ defmodule KollywoodWeb.DashboardLive do
                     _ -> %{}
                   end
 
+                custom_review_template =
+                  parsed
+                  |> get_in(["review", "prompt_template"])
+                  |> then(fn
+                    v when is_binary(v) and v != "" -> String.trim(v)
+                    _ -> nil
+                  end)
+
                 %{
                   yaml: String.trim(yaml_str),
                   body: String.trim(rest),
                   parsed: parsed,
+                  review_template:
+                    custom_review_template ||
+                      String.trim(Kollywood.AgentRunner.default_review_prompt_template()),
+                  review_template_is_default: is_nil(custom_review_template),
                   error: nil,
                   path: path
                 }
 
               _ ->
-                %{yaml: "", body: String.trim(content), parsed: %{}, error: nil, path: path}
+                %{yaml: "", body: String.trim(content), parsed: %{}, review_template: "", review_template_is_default: true, error: nil, path: path}
             end
 
           {:error, reason} ->
@@ -1378,10 +1460,87 @@ defmodule KollywoodWeb.DashboardLive do
               yaml: "",
               body: "",
               parsed: %{},
+              review_template: "",
+              review_template_is_default: true,
               error: "Read error: #{inspect(reason)}",
               path: path
             }
         end
+    end
+  end
+
+  # Injects or replaces the review.prompt_template block scalar in the full WORKFLOW.md content.
+  # Operates on lines to avoid needing a YAML encoder.
+  defp inject_review_template(content, template) do
+    indented_template =
+      template
+      |> String.trim()
+      |> String.split("\n")
+      |> Enum.map_join("\n", &("    " <> &1))
+
+    new_block_lines = ["  prompt_template: |", indented_template]
+
+    lines = String.split(content, "\n")
+
+    {result, _state, found?} =
+      Enum.reduce(lines, {[], :scanning, false}, fn line, {acc, state, found} ->
+        case state do
+          :scanning ->
+            if String.trim(line) == "review:" do
+              {acc ++ [line], :in_review, found}
+            else
+              {acc ++ [line], :scanning, found}
+            end
+
+          :in_review ->
+            trimmed = String.trim_leading(line)
+
+            cond do
+              String.starts_with?(trimmed, "prompt_template:") ->
+                {acc ++ new_block_lines, :skip_template, true}
+
+              line == "" ->
+                {acc ++ [line], :in_review, found}
+
+              not String.starts_with?(line, " ") ->
+                {acc ++ [line], :scanning, found}
+
+              true ->
+                {acc ++ [line], :in_review, found}
+            end
+
+          :skip_template ->
+            # Skip old template content lines (indented 4+ spaces), resume on 2-space keys or top-level
+            cond do
+              String.starts_with?(line, "    ") ->
+                {acc, :skip_template, found}
+
+              String.starts_with?(line, "  ") and not String.starts_with?(line, "    ") ->
+                {acc ++ [line], :in_review, found}
+
+              not String.starts_with?(line, " ") and line != "" ->
+                {acc ++ [line], :scanning, found}
+
+              true ->
+                {acc, :skip_template, found}
+            end
+        end
+      end)
+
+    result_str = Enum.join(result, "\n")
+
+    if found? do
+      result_str
+    else
+      # prompt_template not found — append it under review: if review: exists, else append section
+      if String.match?(content, ~r/^review:/m) do
+        Regex.replace(~r/^(review:.*?)(\n(?=\S)|\z)/ms, content, fn _, review_block, tail ->
+          "#{String.trim_trailing(review_block)}\n#{Enum.join(new_block_lines, "\n")}#{tail}"
+        end)
+      else
+        String.trim_trailing(content) <>
+          "\nreview:\n" <> Enum.join(new_block_lines, "\n") <> "\n"
+      end
     end
   end
 

@@ -13,6 +13,7 @@ defmodule Kollywood.AgentRunner do
   alias Kollywood.AgentRunner.Result
   alias Kollywood.Config
   alias Kollywood.PromptBuilder
+  alias Kollywood.Publisher
   alias Kollywood.WorkflowStore
   alias Kollywood.Workspace
 
@@ -147,7 +148,10 @@ defmodule Kollywood.AgentRunner do
                        prompt_template
                      ) do
                   {:ok, qualified_state} ->
-                    {:ok, status, qualified_state}
+                    case run_publish(qualified_state, config) do
+                      {:ok, published_state} -> {:ok, status, published_state}
+                      {:error, pub_reason, published_state} -> {:error, pub_reason, published_state}
+                    end
 
                   {:error, gate_reason, qualified_state} ->
                     {:error, gate_reason, qualified_state}
@@ -353,6 +357,79 @@ defmodule Kollywood.AgentRunner do
     {:error, result_from_state(state, :failed, reason)}
   end
 
+  defp run_publish(state, config) do
+    workspace = state.workspace
+    require_commit = get_in(config, [Access.key(:git, %{}), Access.key(:require_commit, true)])
+    auto_push = get_in(config, [Access.key(:publish, %{}), Access.key(:auto_push, :never)])
+
+    with {:ok, ahead} <- Workspace.commits_ahead(workspace),
+         :ok <- check_commit_requirement(require_commit, ahead) do
+      case {auto_push, ahead} do
+        {:on_pass, count} when is_integer(count) and count > 0 ->
+          state = emit(state, :publish_started, %{branch: workspace.branch, auto_push: auto_push})
+
+          case Workspace.push_branch(workspace) do
+            :ok ->
+              state = emit(state, :publish_push_succeeded, %{branch: workspace.branch})
+              run_create_pr(state, config, workspace)
+
+            {:error, reason} ->
+              {:error, "push failed: #{reason}",
+               emit(state, :publish_failed, %{branch: workspace.branch, reason: reason})}
+          end
+
+        _ ->
+          {:ok, emit(state, :publish_skipped, %{branch: workspace.branch, auto_push: auto_push})}
+      end
+    else
+      {:error, reason} ->
+        {:error, reason, emit(state, :publish_failed, %{branch: workspace.branch, reason: reason})}
+    end
+  end
+
+  defp run_create_pr(state, config, workspace) do
+    provider = Config.effective_publish_provider(config)
+    pr_opts = Publisher.pr_opts(config, state.issue, state.last_output)
+
+    cond do
+      is_nil(pr_opts) ->
+        {:ok, emit(state, :publish_succeeded, %{branch: workspace.branch, pr_url: nil})}
+
+      provider in [:local, nil] ->
+        {:ok,
+         emit(state, :publish_succeeded, %{
+           branch: workspace.branch,
+           pr_url: nil,
+           note: "push complete — PR creation skipped (no git provider configured)"
+         })}
+
+      true ->
+        case Publisher.module_for_provider(provider) do
+          {:ok, adapter} ->
+            case adapter.create_pr(workspace, pr_opts) do
+              {:ok, url} ->
+                {:ok,
+                 emit(state, :publish_succeeded, %{branch: workspace.branch, pr_url: url})}
+
+              {:error, reason} ->
+                {:error, "PR creation failed: #{reason}",
+                 emit(state, :publish_failed, %{branch: workspace.branch, reason: reason})}
+            end
+
+          {:error, reason} ->
+            {:error, reason,
+             emit(state, :publish_failed, %{branch: workspace.branch, reason: reason})}
+        end
+    end
+  end
+
+  defp check_commit_requirement(true, 0) do
+    {:error,
+     "no commits found on branch — agent did not commit any changes (git.require_commit: true)"}
+  end
+
+  defp check_commit_requirement(_require, _ahead), do: :ok
+
   defp finalize_with_quality_gates(
          state,
          config,
@@ -381,12 +458,49 @@ defmodule Kollywood.AgentRunner do
          {:ok, state} <- run_review_if_enabled(state, config, cycle) do
       {:ok, emit(state, :quality_cycle_passed, %{cycle: cycle})}
     else
+      {:checks_failed, reason, state} when cycle < max_cycles ->
+        state =
+          emit(state, :quality_cycle_retrying, %{
+            cycle: cycle,
+            max_cycles: max_cycles,
+            retry_reason: reason,
+            retry_type: :checks
+          })
+
+        case run_checks_remediation_turn(
+               state,
+               config,
+               reason,
+               cycle,
+               session_opts,
+               turn_opts,
+               prompt_template
+             ) do
+          {:ok, state} ->
+            run_quality_cycle(
+              state,
+              config,
+              session_opts,
+              turn_opts,
+              prompt_template,
+              cycle + 1,
+              max_cycles
+            )
+
+          {:error, remediation_reason, state} ->
+            {:error, "checks remediation failed: #{remediation_reason}", state}
+        end
+
+      {:checks_failed, reason, state} ->
+        {:error, "checks failed after #{max_cycles} cycle(s): #{reason}", state}
+
       {:review_failed, reason, state} when cycle < max_cycles ->
         state =
           emit(state, :quality_cycle_retrying, %{
             cycle: cycle,
             max_cycles: max_cycles,
-            reason: reason
+            retry_reason: reason,
+            retry_type: :review
           })
 
         case run_review_remediation_turn(
@@ -496,7 +610,7 @@ defmodule Kollywood.AgentRunner do
               {:ok, emit(state, :checks_passed, %{check_count: length(commands)})}
             else
               reason = "required checks failed:\n#{Enum.map_join(errors, "\n", &"- #{&1}")}"
-              {:error, reason, emit(state, :checks_failed, %{error_count: length(errors)})}
+              {:checks_failed, reason, emit(state, :checks_failed, %{error_count: length(errors)})}
             end
           else
             {:error, reason, state} ->
@@ -524,7 +638,9 @@ defmodule Kollywood.AgentRunner do
              })}
 
           {:fail, reason} ->
-            {:review_failed, reason,
+            full_feedback = "#{reason}\n\n#{output}" |> String.trim()
+
+            {:review_failed, full_feedback,
              emit(state, :review_failed, %{
                agent_kind: review_agent_kind,
                cycle: cycle,
@@ -640,6 +756,137 @@ defmodule Kollywood.AgentRunner do
     else
       {:error, reason} ->
         {:error, "failed to run review remediation turn: #{reason}", state}
+    end
+  end
+
+  defp run_checks_remediation_turn(
+         state,
+         config,
+         checks_feedback,
+         cycle,
+         session_opts,
+         turn_opts,
+         prompt_template
+       ) do
+    with {:ok, prompt} <-
+           build_checks_remediation_prompt(state, checks_feedback, cycle, prompt_template),
+         {:ok, session} <- Agent.start_session(config, state.workspace, session_opts) do
+      state =
+        state
+        |> Map.put(:session, session)
+        |> emit(:session_started, %{
+          session_id: session.id,
+          adapter: session.adapter,
+          remediation: true,
+          checks_cycle: cycle
+        })
+
+      turn_number = state.turn_count + 1
+
+      run_result =
+        with :ok <- Workspace.before_run(state.workspace, config.hooks) do
+          state =
+            state
+            |> Map.put(:turn_count, turn_number)
+            |> emit(:turn_started, %{turn: turn_number, remediation: true, checks_cycle: cycle})
+
+          turn_result = Agent.run_turn(session, prompt, turn_opts)
+          Workspace.after_run(state.workspace, config.hooks)
+
+          case turn_result do
+            {:ok, result} ->
+              turn_output = Map.get(result, :raw_output) || Map.get(result, :output)
+
+              {:ok,
+               state
+               |> Map.put(:last_output, result.output)
+               |> emit(:turn_succeeded, %{
+                 turn: turn_number,
+                 duration_ms: result.duration_ms,
+                 remediation: true,
+                 checks_cycle: cycle,
+                 output: turn_output,
+                 command: Map.get(result, :command),
+                 args: Map.get(result, :args, [])
+               })}
+
+            {:error, reason} ->
+              {:error, reason,
+               emit(state, :turn_failed, %{
+                 turn: turn_number,
+                 reason: reason,
+                 remediation: true,
+                 checks_cycle: cycle
+               })}
+          end
+        else
+          {:error, reason} ->
+            {:error, reason,
+             emit(state, :turn_failed, %{
+               turn: turn_number,
+               reason: reason,
+               remediation: true,
+               checks_cycle: cycle
+             })}
+        end
+
+      case run_result do
+        {:ok, run_state} ->
+          case stop_session(run_state, session) do
+            {:ok, stopped_state} ->
+              {:ok, stopped_state}
+
+            {:error, stop_reason, stopped_state} ->
+              {:error, "Failed to stop agent session: #{stop_reason}", stopped_state}
+          end
+
+        {:error, reason, run_state} ->
+          case stop_session(run_state, session) do
+            {:ok, stopped_state} ->
+              {:error, reason, stopped_state}
+
+            {:error, stop_reason, stopped_state} ->
+              {:error, combine_errors(reason, "Failed to stop agent session: #{stop_reason}"),
+               stopped_state}
+          end
+      end
+    else
+      {:error, reason} ->
+        {:error, "failed to run checks remediation turn: #{reason}", state}
+    end
+  end
+
+  defp build_checks_remediation_prompt(state, checks_feedback, cycle, prompt_template) do
+    base_variables = PromptBuilder.build_variables(state.issue, state.attempt)
+
+    base_prompt =
+      case PromptBuilder.render(prompt_template, base_variables) do
+        {:ok, prompt} -> prompt
+        {:error, _reason} -> ""
+      end
+
+    remediation_template =
+      """
+      Continue working on issue {{ issue.identifier }}: {{ issue.title }}.
+
+      Previous assignment:
+      {{ base_prompt }}
+
+      The following required checks failed (cycle {{ cycle }}):
+      {{ checks_feedback }}
+
+      Fix all check failures. Do not modify check configurations or disable checks — fix the underlying code so that all checks pass.
+      """
+
+    variables =
+      base_variables
+      |> Map.put("checks_feedback", checks_feedback)
+      |> Map.put("cycle", cycle)
+      |> Map.put("base_prompt", base_prompt)
+
+    case PromptBuilder.render(remediation_template, variables) do
+      {:ok, prompt} -> {:ok, prompt}
+      {:error, reason} -> {:error, "failed to render checks remediation prompt: #{reason}"}
     end
   end
 
@@ -1357,31 +1604,49 @@ defmodule Kollywood.AgentRunner do
     end
   end
 
+  @default_review_prompt_template """
+  You are reviewing work for issue {{ issue.identifier }}: {{ issue.title }}.
+
+  Issue description:
+  {{ issue.description }}
+
+  Prior implementation output (may be empty):
+  {{ agent_output }}
+
+  Review the current workspace changes. You may run commands for validation.
+  Do not modify files, do not commit, and do not push.
+
+  On the FIRST line, return exactly one verdict:
+  {{ pass_token }}
+  or
+  {{ fail_token }}: <one-line summary of the most critical issue>
+
+  After the first line, provide a structured review report with the following sections
+  (omit sections with no findings):
+
+  ## Critical
+  Issues that must be fixed before merging (bugs, broken tests, security issues, missing required functionality).
+  List each as: - [description of issue and where to find it]
+
+  ## Major
+  Significant quality issues that should be fixed (poor design, missing error handling, test coverage gaps).
+  List each as: - [description of issue and where to find it]
+
+  ## Minor
+  Nice-to-haves and style issues (naming, code clarity, optional improvements).
+  List each as: - [description of issue and where to find it]
+
+  ## Summary
+  One or two sentences summarising the overall quality of the changes.
+  """
+
+  @doc "Returns the default review prompt template used when none is configured in WORKFLOW.md."
+  def default_review_prompt_template, do: @default_review_prompt_template
+
   defp review_prompt_template(config) do
     case get_in(config, [Access.key(:review, %{}), Access.key(:prompt_template)]) do
-      value when is_binary(value) and value != "" ->
-        value
-
-      _other ->
-        """
-        You are reviewing work for issue {{ issue.identifier }}: {{ issue.title }}.
-
-        Issue description:
-        {{ issue.description }}
-
-        Prior implementation output (may be empty):
-        {{ agent_output }}
-
-        Review the current workspace changes. You may run commands for validation.
-        Do not modify files, do not commit, and do not push.
-
-        On the FIRST line, return exactly one verdict:
-        {{ pass_token }}
-        or
-        {{ fail_token }}: <short reason>
-
-        After the first line, include a concise review summary.
-        """
+      value when is_binary(value) and value != "" -> value
+      _other -> @default_review_prompt_template
     end
   end
 
