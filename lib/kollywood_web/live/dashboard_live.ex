@@ -20,6 +20,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:projects, projects)
       |> assign(:current_project, current_project)
       |> assign(:current_scope, nil)
+      |> assign(:selected_story, nil)
       |> assign(:page_title, if(current_project, do: current_project.name, else: "Dashboard"))
       |> assign(:orchestrator_status, fetch_orchestrator_status())
       |> load_project_data(current_project)
@@ -37,7 +38,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:current_project, current_project)
       |> assign(:page_title, if(current_project, do: current_project.name, else: "Dashboard"))
       |> assign(:run_detail_story_id, params["story_id"])
-      |> assign(:run_detail_attempt, parse_attempt(params["attempt"]))
+      |> assign(:run_detail_attempt, params["attempt"])
       |> load_project_data(current_project)
 
     {:noreply, socket}
@@ -50,6 +51,43 @@ defmodule KollywoodWeb.DashboardLive do
       |> load_project_data(socket.assigns.current_project)
       |> assign(:orchestrator_status, fetch_orchestrator_status())
 
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("show_story", %{"id" => id}, socket) do
+    story = Enum.find(socket.assigns.stories, &(&1["id"] == id))
+    {:noreply, assign(socket, :selected_story, story)}
+  end
+
+  def handle_event("close_story", _params, socket) do
+    {:noreply, assign(socket, :selected_story, nil)}
+  end
+
+  def handle_event("update_story_status", %{"id" => id, "status" => status}, socket) do
+    project = socket.assigns.current_project
+
+    socket =
+      with %{tracker_path: path} when is_binary(path) <- project,
+           true <- File.exists?(path),
+           {:ok, content} <- File.read(path),
+           {:ok, data} <- Jason.decode(content) do
+        updated_stories =
+          Enum.map(Map.get(data, "userStories", []), fn story ->
+            if story["id"] == id, do: Map.put(story, "status", status), else: story
+          end)
+
+        updated_data = Map.put(data, "userStories", updated_stories)
+        File.write!(path, Jason.encode!(updated_data, pretty: true))
+        assign(socket, :stories, read_stories(project))
+      else
+        _ -> socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("trigger_run", _params, socket) do
     {:noreply, socket}
   end
 
@@ -133,11 +171,11 @@ defmodule KollywoodWeb.DashboardLive do
           <div class="max-w-7xl mx-auto">
             <%= case @live_action do %>
               <% :overview -> %>
-                <.overview_section counters={@counters} stories={@stories} orchestrator_status={@orchestrator_status} />
+                <.overview_section counters={@counters} stories={@stories} orchestrator_status={@orchestrator_status} project={@current_project} />
               <% :stories -> %>
                 <.stories_section stories={@stories} project={@current_project} />
               <% :runs -> %>
-                <.runs_section run_attempts={@run_attempts} project={@current_project} />
+                <.runs_section run_attempts={@run_attempts} project={@current_project} stories={@stories} />
               <% :run_detail -> %>
                 <.run_detail_section
                   run_detail={@run_detail}
@@ -148,10 +186,120 @@ defmodule KollywoodWeb.DashboardLive do
               <% :settings -> %>
                 <.settings_section project={@current_project} />
               <% _ -> %>
-                <.overview_section counters={@counters} stories={@stories} orchestrator_status={@orchestrator_status} />
+                <.overview_section counters={@counters} stories={@stories} orchestrator_status={@orchestrator_status} project={@current_project} />
             <% end %>
           </div>
         </main>
+
+        <%!-- Story Detail Slide-over --%>
+        <div
+          id="story-backdrop"
+          class={[
+            "fixed inset-0 bg-black/50 z-40 transition-opacity duration-300",
+            if(@selected_story,
+              do: "opacity-100 pointer-events-auto",
+              else: "opacity-0 pointer-events-none"
+            )
+          ]}
+          phx-click="close_story"
+        />
+        <div
+          id="story-slide-over"
+          class={[
+            "fixed inset-y-0 right-0 w-full sm:w-[480px] bg-base-100 shadow-2xl z-50 overflow-y-auto transform transition-transform duration-300",
+            if(@selected_story, do: "translate-x-0", else: "translate-x-full")
+          ]}
+        >
+          <%= if @selected_story do %>
+            <div class="p-6">
+              <div class="flex items-start justify-between mb-6">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="badge badge-outline font-mono text-sm">
+                    {@selected_story["id"]}
+                  </span>
+                  <.status_badge status={@selected_story["status"] || "open"} />
+                </div>
+                <button
+                  id="close-story-btn"
+                  phx-click="close_story"
+                  class="btn btn-ghost btn-sm btn-circle"
+                >
+                  <.icon name="hero-x-mark" class="size-5" />
+                </button>
+              </div>
+
+              <h2 class="text-xl font-bold mb-4">{@selected_story["title"]}</h2>
+
+              <%= if @selected_story["description"] do %>
+                <div class="mb-4">
+                  <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
+                    Description
+                  </h3>
+                  <p class="text-sm">{@selected_story["description"]}</p>
+                </div>
+              <% end %>
+
+              <%= if criteria = @selected_story["acceptanceCriteria"] do %>
+                <%= if criteria != [] do %>
+                  <div class="mb-4">
+                    <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
+                      Acceptance Criteria
+                    </h3>
+                    <ul class="list-disc list-inside space-y-1">
+                      <%= for criterion <- criteria do %>
+                        <li class="text-sm">{criterion}</li>
+                      <% end %>
+                    </ul>
+                  </div>
+                <% end %>
+              <% end %>
+
+              <%= if @selected_story["notes"] do %>
+                <div class="mb-4">
+                  <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
+                    Notes
+                  </h3>
+                  <p class="text-sm text-base-content/70">{@selected_story["notes"]}</p>
+                </div>
+              <% end %>
+
+              <%= if depends_on = @selected_story["dependsOn"] do %>
+                <%= if depends_on != [] do %>
+                  <div class="mb-4">
+                    <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
+                      Depends On
+                    </h3>
+                    <div class="flex flex-wrap gap-2">
+                      <%= for dep <- depends_on do %>
+                        <span class="badge badge-outline font-mono text-xs">{dep}</span>
+                      <% end %>
+                    </div>
+                  </div>
+                <% end %>
+              <% end %>
+
+              <%= if @selected_story["priority"] do %>
+                <div class="mb-4">
+                  <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
+                    Priority
+                  </h3>
+                  <span class="text-sm capitalize">{@selected_story["priority"]}</span>
+                </div>
+              <% end %>
+
+              <%= if @selected_story["lastError"] do %>
+                <div class="mb-4">
+                  <h3 class="text-xs font-semibold text-error uppercase tracking-wide mb-2">
+                    Last Error
+                  </h3>
+                  <p class="text-sm text-error bg-error/10 p-3 rounded-lg">
+                    {@selected_story["lastError"]}
+                  </p>
+                </div>
+              <% end %>
+            </div>
+          <% end %>
+        </div>
       <% else %>
         <main class="flex items-center justify-center px-4 py-32">
           <div class="text-center">
@@ -197,6 +345,7 @@ defmodule KollywoodWeb.DashboardLive do
   attr :counters, :map, required: true
   attr :stories, :list, default: []
   attr :orchestrator_status, :map, default: nil
+  attr :project, Project, default: nil
 
   defp overview_section(assigns) do
     ~H"""
@@ -209,27 +358,35 @@ defmodule KollywoodWeb.DashboardLive do
         <.stat_card title="Failed" value={@counters.failed} color="error" />
       </div>
 
-      <%= if @stories != [] do %>
-        <div class="card bg-base-200 border border-base-300">
-          <div class="card-body">
-            <h3 class="card-title text-lg">Recent Activity</h3>
-            <div class="space-y-2 mt-2">
-              <%= for story <- Enum.take(Enum.filter(@stories, & &1["lastRun"] || &1["lastError"]), 5) do %>
-                <div class="flex items-center gap-3 p-2 rounded-lg bg-base-100">
-                  <.status_badge status={story["status"] || "open"} />
-                  <div class="flex-1 min-w-0">
-                    <span class="font-medium text-sm">{story["id"]}</span>
-                    <span class="text-sm text-base-content/70 ml-2 truncate">{story["title"]}</span>
+      <div class="card bg-base-200 border border-base-300">
+        <div class="card-body">
+          <h3 class="card-title text-lg">Recent Activity</h3>
+          <% recent_activity = @stories |> Enum.filter(&is_binary(&1["lastAttempt"])) |> Enum.take(10) %>
+          <%= if recent_activity == [] do %>
+            <p class="text-base-content/60 py-4">No recent activity</p>
+          <% else %>
+            <div class="space-y-1 mt-2">
+              <%= for story <- recent_activity do %>
+                <.link
+                  navigate={~p"/projects/#{@project.slug}/runs/#{story["id"]}/#{story["lastAttempt"]}"}
+                  class="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3 p-3 bg-base-100 rounded-lg hover:bg-base-300 transition-colors"
+                >
+                  <div class="flex items-center gap-2 min-w-0">
+                    <.status_badge status={story["status"] || "open"} />
+                    <span class="font-mono text-xs text-base-content/60 shrink-0">{story["id"]}</span>
+                    <span class="text-sm truncate">{story["title"]}</span>
                   </div>
                   <%= if story["lastError"] do %>
-                    <span class="text-xs text-error truncate max-w-xs">{truncate(story["lastError"], 60)}</span>
+                    <span class="text-xs text-error truncate sm:ml-auto">
+                      {truncate(story["lastError"], 60)}
+                    </span>
                   <% end %>
-                </div>
+                </.link>
               <% end %>
             </div>
-          </div>
+          <% end %>
         </div>
-      <% end %>
+      </div>
     </div>
     """
   end
@@ -264,13 +421,25 @@ defmodule KollywoodWeb.DashboardLive do
             </h3>
             <div class="space-y-2">
               <%= for story <- stories do %>
-                <div class="card bg-base-200 border border-base-300">
+                <div id={"story-card-#{story["id"]}"} class="card bg-base-200 border border-base-300">
                   <div class="card-body p-4">
                     <div class="flex items-start justify-between gap-4">
                       <div class="flex-1 min-w-0">
                         <div class="flex items-center gap-2">
-                          <span class="font-mono text-sm font-semibold text-primary">{story["id"]}</span>
-                          <span class="font-medium">{story["title"]}</span>
+                          <button
+                            phx-click="show_story"
+                            phx-value-id={story["id"]}
+                            class="font-mono text-sm font-semibold text-primary hover:underline cursor-pointer"
+                          >
+                            {story["id"]}
+                          </button>
+                          <button
+                            phx-click="show_story"
+                            phx-value-id={story["id"]}
+                            class="font-medium hover:text-primary cursor-pointer text-left"
+                          >
+                            {story["title"]}
+                          </button>
                         </div>
                         <%= if story["dependsOn"] && story["dependsOn"] != [] do %>
                           <div class="flex items-center gap-1 mt-1">
@@ -288,6 +457,28 @@ defmodule KollywoodWeb.DashboardLive do
                         <%= if story["lastAttempt"] do %>
                           <span class="badge badge-sm badge-ghost">attempt {story["lastAttempt"]}</span>
                         <% end %>
+                        <div class="dropdown dropdown-end">
+                          <label tabindex="0" class="btn btn-ghost btn-xs">
+                            <.icon name="hero-pencil-square" class="size-4" />
+                          </label>
+                          <ul
+                            tabindex="0"
+                            class="dropdown-content menu menu-xs bg-base-100 rounded-box shadow-lg border border-base-300 z-50 w-36 p-1"
+                          >
+                            <%= for s <- ["open", "in_progress", "done", "failed", "cancelled"] do %>
+                              <li>
+                                <button
+                                  phx-click="update_story_status"
+                                  phx-value-id={story["id"]}
+                                  phx-value-status={s}
+                                  class="text-xs"
+                                >
+                                  {s}
+                                </button>
+                              </li>
+                            <% end %>
+                          </ul>
+                        </div>
                         <.link
                           navigate={~p"/projects/#{@project.slug}/runs"}
                           class="btn btn-ghost btn-xs"
@@ -311,20 +502,26 @@ defmodule KollywoodWeb.DashboardLive do
 
   attr :run_attempts, :list, required: true
   attr :project, Project, required: true
+  attr :stories, :list, default: []
 
   defp runs_section(assigns) do
+    # Fall back to stories with lastAttempt when no run_attempts available from disk
+    story_runs = Enum.filter(assigns.stories, &is_binary(&1["lastAttempt"]))
+    assigns = assign(assigns, :story_runs, story_runs)
+
     ~H"""
     <div class="space-y-6">
       <h2 class="text-2xl font-bold">Runs</h2>
 
-      <%= if @run_attempts == [] do %>
+      <%= if @run_attempts == [] && @story_runs == [] do %>
         <div class="card bg-base-200 border border-base-300">
           <div class="card-body items-center text-center py-12">
             <.icon name="hero-play" class="size-12 text-base-300 mb-2" />
             <p class="text-base-content/60">No runs found. Runs appear here when the orchestrator dispatches stories.</p>
           </div>
         </div>
-      <% else %>
+      <% end %>
+      <%= if @run_attempts != [] do %>
         <div class="overflow-x-auto">
           <table class="table table-zebra">
             <thead>
@@ -359,6 +556,48 @@ defmodule KollywoodWeb.DashboardLive do
           </table>
         </div>
       <% end %>
+      <%= if @run_attempts == [] && @story_runs != [] do %>
+        <div class="card bg-base-200 border border-base-300">
+          <div class="card-body p-0">
+            <table class="table table-zebra">
+              <thead>
+                <tr>
+                  <th>Story</th>
+                  <th>Status</th>
+                  <th>Attempt</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <%= for story <- @story_runs do %>
+                  <tr id={"run-row-#{story["id"]}"}>
+                    <td>
+                      <div class="flex items-center gap-2">
+                        <span class="font-mono text-xs text-base-content/60">{story["id"]}</span>
+                        <span class="text-sm truncate max-w-xs">{story["title"]}</span>
+                      </div>
+                    </td>
+                    <td>
+                      <.status_badge status={story["status"] || "open"} />
+                    </td>
+                    <td class="text-sm text-base-content/60">{story["lastAttempt"]}</td>
+                    <td>
+                      <.link
+                        navigate={
+                          ~p"/projects/#{@project.slug}/runs/#{story["id"]}/#{story["lastAttempt"]}"
+                        }
+                        class="btn btn-xs btn-outline"
+                      >
+                        View
+                      </.link>
+                    </td>
+                  </tr>
+                <% end %>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      <% end %>
     </div>
     """
   end
@@ -367,66 +606,68 @@ defmodule KollywoodWeb.DashboardLive do
 
   attr :run_detail, :map, default: nil
   attr :story_id, :string, default: nil
-  attr :attempt, :integer, default: nil
+  attr :attempt, :string, default: nil
   attr :project, Project, required: true
 
   defp run_detail_section(assigns) do
     ~H"""
     <div class="space-y-6">
       <div class="flex items-center gap-4">
-        <.link patch={~p"/projects/#{@project.slug}/runs"} class="btn btn-ghost btn-sm">
-          ← Back to Runs
+        <.link patch={~p"/projects/#{@project.slug}/runs"} class="btn btn-ghost btn-sm gap-2">
+          <.icon name="hero-arrow-left" class="size-4" /> Back to Runs
         </.link>
-        <h2 class="text-2xl font-bold">{@story_id} · Attempt {@attempt}</h2>
+        <h2 class="text-2xl font-bold">Run Detail</h2>
+      </div>
+
+      <div class="card bg-base-200 border border-base-300">
+        <div class="card-body">
+          <div class="flex items-start gap-3 flex-wrap">
+            <span class="badge badge-outline font-mono">{@story_id}</span>
+            <%= if @attempt do %>
+              <span class="text-sm text-base-content/60 ml-auto">Attempt: {@attempt}</span>
+            <% end %>
+          </div>
+          <%= if @run_detail && @run_detail["status"] do %>
+            <.run_status_badge status={@run_detail["status"]} />
+          <% end %>
+          <%= if @run_detail && @run_detail["error"] do %>
+            <p class="text-sm text-error mt-2">{@run_detail["error"]}</p>
+          <% end %>
+        </div>
       </div>
 
       <%= if @run_detail do %>
-        <div class="grid lg:grid-cols-3 gap-4">
-          <div class="card bg-base-200 border border-base-300">
-            <div class="card-body p-4">
-              <h3 class="font-semibold text-sm text-base-content/60">Status</h3>
-              <.run_status_badge status={@run_detail["status"] || "unknown"} />
-            </div>
+        <% has_any_log = Enum.any?(["run_log", "worker_log", "reviewer_log", "checks_log"], &(@run_detail[&1] && @run_detail[&1] != "")) %>
+        <%= if has_any_log do %>
+          <div class="space-y-4">
+            <%= for {label, key} <- [{"Run Log", "run_log"}, {"Worker Log", "worker_log"}, {"Reviewer Log", "reviewer_log"}, {"Checks Log", "checks_log"}] do %>
+              <% content = @run_detail[key] %>
+              <%= if content && content != "" do %>
+                <details
+                  id={"#{key}-panel"}
+                  open
+                  class="collapse collapse-arrow bg-base-200 border border-base-300"
+                >
+                  <summary class="collapse-title font-medium">{label}</summary>
+                  <div class="collapse-content">
+                    <pre class="text-xs leading-relaxed overflow-x-auto whitespace-pre-wrap bg-base-300 p-4 rounded-lg max-h-96 overflow-y-auto">{content}</pre>
+                  </div>
+                </details>
+              <% end %>
+            <% end %>
           </div>
+        <% else %>
           <div class="card bg-base-200 border border-base-300">
-            <div class="card-body p-4">
-              <h3 class="font-semibold text-sm text-base-content/60">Started</h3>
-              <p class="text-sm">{@run_detail["started_at"] || "—"}</p>
+            <div class="card-body">
+              <p class="text-base-content/60">No logs available</p>
             </div>
-          </div>
-          <div class="card bg-base-200 border border-base-300">
-            <div class="card-body p-4">
-              <h3 class="font-semibold text-sm text-base-content/60">Ended</h3>
-              <p class="text-sm">{@run_detail["ended_at"] || "—"}</p>
-            </div>
-          </div>
-        </div>
-
-        <%= if @run_detail["error"] do %>
-          <div class="alert alert-error">
-            <.icon name="hero-exclamation-circle" class="size-5" />
-            <span>{@run_detail["error"]}</span>
           </div>
         <% end %>
-
-        <div class="space-y-4">
-          <%= for {label, key} <- [{"Run Log", "run_log"}, {"Worker Log", "worker_log"}, {"Reviewer Log", "reviewer_log"}, {"Checks Log", "checks_log"}] do %>
-            <% content = @run_detail[key] %>
-            <%= if content && content != "" do %>
-              <div class="collapse collapse-arrow bg-base-200 border border-base-300">
-                <input type="checkbox" checked={key == "run_log"} />
-                <div class="collapse-title font-medium">{label}</div>
-                <div class="collapse-content">
-                  <pre class="text-xs leading-relaxed overflow-x-auto whitespace-pre-wrap bg-base-300 p-4 rounded-lg max-h-96 overflow-y-auto">{content}</pre>
-                </div>
-              </div>
-            <% end %>
-          <% end %>
-        </div>
       <% else %>
-        <div class="alert alert-warning">
-          <.icon name="hero-exclamation-triangle" class="size-5" />
-          <span>Run not found for {@story_id} attempt {@attempt}.</span>
+        <div class="card bg-base-200 border border-base-300">
+          <div class="card-body">
+            <p class="text-base-content/60">No logs available</p>
+          </div>
         </div>
       <% end %>
     </div>
@@ -464,6 +705,18 @@ defmodule KollywoodWeb.DashboardLive do
               <div class="sm:col-span-2">
                 <span class="text-sm text-base-content/60">Local Path</span>
                 <p class="font-medium font-mono text-sm">{@project.local_path}</p>
+              </div>
+            <% end %>
+            <%= if @project.workflow_path do %>
+              <div class="sm:col-span-2">
+                <span class="text-sm text-base-content/60">Workflow Path</span>
+                <p class="font-medium font-mono text-sm">{@project.workflow_path}</p>
+              </div>
+            <% end %>
+            <%= if @project.tracker_path do %>
+              <div class="sm:col-span-2">
+                <span class="text-sm text-base-content/60">Tracker Path</span>
+                <p class="font-medium font-mono text-sm">{@project.tracker_path}</p>
               </div>
             <% end %>
           </div>
@@ -704,10 +957,29 @@ defmodule KollywoodWeb.DashboardLive do
     _ -> []
   end
 
-  defp load_run_detail(project, story_id, attempt) do
-    attempt_dir = Path.join([run_logs_dir(project), story_id, "attempt-#{pad_attempt(attempt)}"])
+  defp load_run_detail(project, story_id, attempt) when is_binary(attempt) do
+    # Try new string-based path first (local_path/runs/story_id/attempt)
+    # then fall back to old numeric padded path (.kollywood/run_logs/story_id/attempt-NNNN)
+    local_runs_dir =
+      if is_binary(project.local_path) do
+        Path.join([project.local_path, "runs", story_id, attempt])
+      end
 
-    if File.dir?(attempt_dir) do
+    parsed_attempt = parse_attempt(attempt)
+
+    old_attempt_dir =
+      if parsed_attempt do
+        Path.join([run_logs_dir(project), story_id, "attempt-#{pad_attempt(parsed_attempt)}"])
+      end
+
+    attempt_dir =
+      cond do
+        local_runs_dir && File.dir?(local_runs_dir) -> local_runs_dir
+        old_attempt_dir && File.dir?(old_attempt_dir) -> old_attempt_dir
+        true -> nil
+      end
+
+    if attempt_dir do
       metadata_path = Path.join(attempt_dir, "metadata.json")
 
       metadata =
@@ -727,6 +999,40 @@ defmodule KollywoodWeb.DashboardLive do
       |> Map.put("worker_log", safe_read(Path.join(attempt_dir, "worker.log")))
       |> Map.put("reviewer_log", safe_read(Path.join(attempt_dir, "reviewer.log")))
       |> Map.put("checks_log", safe_read(Path.join(attempt_dir, "checks.log")))
+    else
+      nil
+    end
+  end
+
+  defp load_run_detail(project, story_id, attempt) do
+    parsed = parse_attempt(attempt)
+
+    if parsed do
+      attempt_dir = Path.join([run_logs_dir(project), story_id, "attempt-#{pad_attempt(parsed)}"])
+
+      if File.dir?(attempt_dir) do
+        metadata_path = Path.join(attempt_dir, "metadata.json")
+
+        metadata =
+          if File.exists?(metadata_path) do
+            with {:ok, content} <- File.read(metadata_path),
+                 {:ok, decoded} <- Jason.decode(content) do
+              decoded
+            else
+              _ -> %{}
+            end
+          else
+            %{}
+          end
+
+        metadata
+        |> Map.put("run_log", safe_read(Path.join(attempt_dir, "run.log")))
+        |> Map.put("worker_log", safe_read(Path.join(attempt_dir, "worker.log")))
+        |> Map.put("reviewer_log", safe_read(Path.join(attempt_dir, "reviewer.log")))
+        |> Map.put("checks_log", safe_read(Path.join(attempt_dir, "checks.log")))
+      else
+        nil
+      end
     else
       nil
     end

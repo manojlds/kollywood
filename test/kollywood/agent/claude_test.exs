@@ -37,10 +37,10 @@ defmodule Kollywood.Agent.ClaudeTest do
   } do
     assert {:ok, %Session{} = session} = Claude.start_session(workspace, %{command: cli_path})
     assert session.prompt_mode == :argv
-    assert session.args == ["--print"]
+    assert session.args == ["--print", "--dangerously-skip-permissions"]
 
     assert {:ok, result} = Claude.run_turn(session, "review this patch")
-    assert result.output =~ "args:--print review this patch"
+    assert result.output =~ "args:--print --dangerously-skip-permissions review this patch"
     assert result.output =~ "prompt:review this patch"
   end
 end
