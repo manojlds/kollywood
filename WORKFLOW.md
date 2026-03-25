@@ -72,8 +72,6 @@ review:
 
     ## Summary
     One or two sentences summarising the overall quality of the changes.
-  agent:
-    kind: claude
 
 publish:
   provider: github
