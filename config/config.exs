@@ -17,7 +17,7 @@ config :kollywood,
 
 config :kollywood, Kollywood.Repo,
   adapter: Ecto.Adapters.SQLite3,
-  database: ".kollywood.db",
+  database: ".kollywood/kollywood.db",
   pool_size: 5,
   busy_timeout: 5_000,
   stacktrace: true,

@@ -23,6 +23,12 @@ defmodule Kollywood.Store.Bootstrap do
   end
 
   defp run_bootstrap! do
+    db_path = Application.get_env(:kollywood, Repo)[:database]
+
+    if is_binary(db_path) and db_path != ":memory:" do
+      File.mkdir_p!(Path.dirname(Path.expand(db_path)))
+    end
+
     migrations_path = Application.app_dir(:kollywood, "priv/repo/migrations")
 
     Ecto.Migrator.with_repo(Repo, fn repo ->

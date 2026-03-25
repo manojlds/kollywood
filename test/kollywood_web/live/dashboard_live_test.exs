@@ -4,7 +4,6 @@ defmodule KollywoodWeb.DashboardLiveTest do
   alias Kollywood.Config
   alias Kollywood.Orchestrator.RunLogs
   alias Kollywood.Projects
-  alias Kollywood.Repo
 
   @test_stories [
     %{
@@ -27,8 +26,6 @@ defmodule KollywoodWeb.DashboardLiveTest do
   ]
 
   setup do
-    Repo.delete_all(Kollywood.Projects.Project)
-
     tmp_dir =
       Path.join(System.tmp_dir!(), "kollywood_test_#{System.unique_integer([:positive])}")
 
