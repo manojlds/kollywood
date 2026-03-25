@@ -1,14 +1,9 @@
 defmodule Mix.Tasks.Kollywood.ProjectsTest do
-  use ExUnit.Case, async: false
+  use Kollywood.DataCase, async: false
 
   import ExUnit.CaptureIO
 
-  alias Kollywood.Projects.Project
-  alias Kollywood.Repo
-
   setup do
-    Repo.delete_all(Project)
-
     root = Path.join(System.tmp_dir!(), "kollywood_projects_task_test")
     File.mkdir_p!(root)
 

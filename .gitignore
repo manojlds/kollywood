@@ -38,7 +38,5 @@ npm-debug.log
 erl_crash.dump
 .process-compose.log
 .devenv/
-.kollywood.db
-.kollywood.db-shm
-.kollywood.db-wal
 .kollywood/
+*.beam

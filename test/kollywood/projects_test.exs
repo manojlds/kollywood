@@ -1,14 +1,7 @@
 defmodule Kollywood.ProjectsTest do
-  use ExUnit.Case, async: false
+  use Kollywood.DataCase, async: false
 
   alias Kollywood.Projects
-  alias Kollywood.Projects.Project
-  alias Kollywood.Repo
-
-  setup do
-    Repo.delete_all(Project)
-    :ok
-  end
 
   test "creates a local project with generated slug and default paths" do
     local_path = Path.join(System.tmp_dir!(), "kollywood_projects_test_local")
@@ -58,8 +51,6 @@ defmodule Kollywood.ProjectsTest do
     assert errors_on(changeset, :slug) != []
   end
 
-  defp errors_on(changeset, field) do
-    changeset.errors
-    |> Enum.filter(fn {error_field, _details} -> error_field == field end)
-  end
+  defp errors_on(changeset, field),
+    do: Enum.filter(changeset.errors, fn {k, _} -> k == field end)
 end

@@ -23,9 +23,12 @@ end
 config :kollywood, KollywoodWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
-config :kollywood, Kollywood.Repo,
-  database: System.get_env("KOLLYWOOD_DB_PATH", Path.join(File.cwd!(), ".kollywood.db")),
-  pool_size: String.to_integer(System.get_env("POOL_SIZE", "5"))
+if config_env() != :test do
+  config :kollywood, Kollywood.Repo,
+    database:
+      System.get_env("KOLLYWOOD_DB_PATH", Path.join(File.cwd!(), ".kollywood/kollywood.db")),
+    pool_size: String.to_integer(System.get_env("POOL_SIZE", "5"))
+end
 
 if config_env() == :prod do
   # The secret key base is used to sign/encrypt cookies and other secrets.
