@@ -213,15 +213,17 @@ defmodule Kollywood.Config do
     workspace = Map.get(raw, "workspace", %{})
     strategy = Map.get(workspace, "strategy", "clone")
 
+    # root and source are intentionally nil when absent — WorkflowStore injects
+    # them from ServiceConfig + project context at runtime.
     base = %{
-      root: Map.get(workspace, "root", "~/kollywood-workspaces"),
+      root: optional_string(Map.get(workspace, "root")),
       strategy: workspace_strategy(strategy)
     }
 
     case strategy do
       "worktree" ->
         Map.merge(base, %{
-          source: Map.get(workspace, "source"),
+          source: optional_string(Map.get(workspace, "source")),
           branch_prefix: Map.get(workspace, "branch_prefix", "kollywood/")
         })
 

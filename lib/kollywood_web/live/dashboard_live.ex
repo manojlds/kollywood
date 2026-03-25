@@ -983,13 +983,13 @@ defmodule KollywoodWeb.DashboardLive do
                 <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">Workspace</p>
                 <div class="grid sm:grid-cols-2 gap-4">
                   <div class="sm:col-span-2">
-                    <label class="label pb-1"><span class="label-text text-sm">Root</span></label>
-                    <input
-                      type="text"
-                      name="settings[workspace][root]"
-                      value={get_in(@workflow.parsed, ["workspace", "root"]) || ""}
-                      class="input input-bordered input-sm w-full font-mono"
-                    />
+                    <span class="text-xs text-base-content/50">Workspaces directory</span>
+                    <p class="font-mono text-sm mt-0.5 text-base-content/70">
+                      {Kollywood.ServiceConfig.project_workspace_root(@project.slug)}/<em class="not-italic text-base-content/40">issue-id</em>
+                    </p>
+                    <p class="text-xs text-base-content/40 mt-1">
+                      Configured via <code class="font-mono bg-base-100 px-1 rounded">KOLLYWOOD_HOME</code> (default: <code class="font-mono bg-base-100 px-1 rounded">~/.kollywood</code>)
+                    </p>
                   </div>
                   <div>
                     <label class="label pb-1"><span class="label-text text-sm">Strategy</span></label>
@@ -1733,7 +1733,6 @@ defmodule KollywoodWeb.DashboardLive do
     |> Map.put("agent", new_agent)
     |> Map.put("polling", %{"interval_ms" => parse_form_int(polling_p, "interval_ms", get_in(parsed, ["polling", "interval_ms"]) || 5000)})
     |> Map.put("workspace", %{
-      "root" => Map.get(workspace_p, "root", get_in(parsed, ["workspace", "root"]) || "~/workspaces"),
       "strategy" => Map.get(workspace_p, "strategy", get_in(parsed, ["workspace", "strategy"]) || "clone")
     })
     |> Map.put("checks", new_checks)

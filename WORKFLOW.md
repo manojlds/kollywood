@@ -83,9 +83,7 @@ git:
   require_commit: true # true | false
 
 workspace:
-  root: ~/kollywood-workspaces
   strategy: worktree
-  source: ~/projects/kollywood
   branch_prefix: kollywood/
 
 agent:

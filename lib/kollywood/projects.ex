@@ -33,6 +33,12 @@ defmodule Kollywood.Projects do
     Repo.get_by(Project, slug: String.trim(slug))
   end
 
+  @spec get_project_by_workflow_path(String.t()) :: Project.t() | nil
+  def get_project_by_workflow_path(path) when is_binary(path) do
+    expanded = Path.expand(path)
+    Repo.get_by(Project, workflow_path: expanded)
+  end
+
   @spec create_project(create_attrs()) :: {:ok, Project.t()} | {:error, Ecto.Changeset.t()}
   def create_project(attrs) do
     attrs =
