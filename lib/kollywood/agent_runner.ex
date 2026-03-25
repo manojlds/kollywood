@@ -1517,20 +1517,36 @@ defmodule Kollywood.AgentRunner do
     review_agent = get_in(config, [Access.key(:review, %{}), Access.key(:agent, %{})]) || %{}
     base_agent = Map.get(config, :agent, %{})
 
-    merged_agent = %{
-      kind: Map.get(review_agent, :kind, Map.get(base_agent, :kind)),
-      max_concurrent_agents: Map.get(base_agent, :max_concurrent_agents, 1),
-      max_turns: 1,
-      max_retry_backoff_ms: Map.get(base_agent, :max_retry_backoff_ms, 300_000),
-      command: Map.get(review_agent, :command, Map.get(base_agent, :command)),
-      args: Map.get(review_agent, :args, Map.get(base_agent, :args, [])),
-      env: Map.merge(Map.get(base_agent, :env, %{}), Map.get(review_agent, :env, %{})),
-      timeout_ms:
-        positive_integer(
-          Map.get(review_agent, :timeout_ms, Map.get(base_agent, :timeout_ms, 7_200_000)),
-          7_200_000
+    merged_agent =
+      if Map.get(review_agent, :explicit, false) do
+        # review.agent explicitly configured — start from base agent, apply overrides
+        base_agent
+        |> Map.put(:kind, Map.get(review_agent, :kind, Map.get(base_agent, :kind)))
+        |> Map.put(:max_turns, 1)
+        |> then(fn a ->
+          case Map.get(review_agent, :command) do
+            nil -> a
+            cmd -> Map.put(a, :command, cmd)
+          end
+        end)
+        |> then(fn a ->
+          case Map.get(review_agent, :args) do
+            [] -> a
+            args -> Map.put(a, :args, args)
+          end
+        end)
+        |> Map.put(:env, Map.merge(Map.get(base_agent, :env, %{}), Map.get(review_agent, :env, %{})))
+        |> Map.put(
+          :timeout_ms,
+          positive_integer(
+            Map.get(review_agent, :timeout_ms, Map.get(base_agent, :timeout_ms, 7_200_000)),
+            7_200_000
+          )
         )
-    }
+      else
+        # No review.agent configured — use main agent config as-is, just cap max_turns to 1
+        Map.put(base_agent, :max_turns, 1)
+      end
 
     %Config{config | agent: merged_agent}
   end

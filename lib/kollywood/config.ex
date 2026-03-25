@@ -330,7 +330,9 @@ defmodule Kollywood.Config do
 
   defp parse_review(raw, review_agent_kind) do
     review = Map.get(raw, "review", %{})
-    review_agent = Map.get(review, "agent", %{})
+    review_agent_raw = Map.get(review, "agent")
+    review_agent_explicit = is_map(review_agent_raw)
+    review_agent = review_agent_raw || %{}
 
     %{
       enabled: boolean(Map.get(review, "enabled", false), false),
@@ -339,6 +341,7 @@ defmodule Kollywood.Config do
       fail_token: optional_string(Map.get(review, "fail_token")) || "REVIEW_FAIL",
       prompt_template: optional_string(Map.get(review, "prompt_template")),
       agent: %{
+        explicit: review_agent_explicit,
         kind: review_agent_kind,
         command: optional_string(Map.get(review_agent, "command")),
         args: string_list(Map.get(review_agent, "args", [])),

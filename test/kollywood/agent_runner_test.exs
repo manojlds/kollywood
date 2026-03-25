@@ -525,6 +525,7 @@ defmodule Kollywood.AgentRunnerTest do
         pass_token: "REVIEW_PASS",
         fail_token: "REVIEW_FAIL",
         agent: %{
+          explicit: true,
           kind: :pi,
           command: review_cli_path,
           args: [],
@@ -566,6 +567,7 @@ defmodule Kollywood.AgentRunnerTest do
         pass_token: "REVIEW_PASS",
         fail_token: "REVIEW_FAIL",
         agent: %{
+          explicit: true,
           kind: :pi,
           command: review_cli_path,
           args: [],
@@ -607,6 +609,7 @@ defmodule Kollywood.AgentRunnerTest do
         pass_token: "REVIEW_PASS",
         fail_token: "REVIEW_FAIL",
         agent: %{
+          explicit: true,
           kind: :pi,
           command: review_cli_path,
           args: [],
