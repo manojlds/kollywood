@@ -120,7 +120,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
     test "recent activity rows link to run detail", %{conn: conn, project: project} do
       {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}")
 
-      assert html =~ "/projects/#{project.slug}/runs/US-002/20240101_120000"
+      assert html =~ "/projects/#{project.slug}/runs/US-002"
     end
   end
 
@@ -220,19 +220,19 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
   describe "run detail section" do
     test "run detail route renders with story info", %{conn: conn, project: project} do
-      {:ok, _view, html} =
-        live(conn, ~p"/projects/#{project.slug}/runs/US-002/20240101_120000")
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/runs/US-002")
 
-      assert html =~ "Run Detail"
       assert html =~ "US-002"
       assert html =~ "Back to Runs"
     end
 
-    test "shows no logs available when log files are missing", %{conn: conn, project: project} do
-      {:ok, _view, html} =
-        live(conn, ~p"/projects/#{project.slug}/runs/US-002/20240101_120000")
+    test "shows no logs message when story has no run log directory", %{
+      conn: conn,
+      project: project
+    } do
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/runs/US-002")
 
-      assert html =~ "No logs available"
+      assert html =~ "No run logs found for this story"
     end
 
     test "runs list shows view link for stories with lastAttempt", %{
@@ -242,7 +242,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/runs")
 
       assert html =~ "View"
-      assert html =~ "/projects/#{project.slug}/runs/US-002/20240101_120000"
+      assert html =~ "/projects/#{project.slug}/runs/US-002"
     end
   end
 
@@ -293,13 +293,13 @@ defmodule KollywoodWeb.DashboardLiveTest do
       story_id = "US-SWITCH-TAB"
       context = prepare_run_logs!(tmp_root, story_id)
       File.write!(context.files.agent, "agent content")
-      File.write!(context.files.run, "run log content")
+      File.write!(context.files.worker, "worker log content")
 
       {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}")
 
-      html = view |> element("button[phx-value-tab='run']") |> render_click()
+      html = view |> element("button[phx-value-tab='worker']") |> render_click()
 
-      assert html =~ "run log content"
+      assert html =~ "worker log content"
     end
 
     test "shows no output placeholder when active log file is empty", %{
