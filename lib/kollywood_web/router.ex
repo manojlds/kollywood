@@ -17,17 +17,12 @@ defmodule KollywoodWeb.Router do
   scope "/", KollywoodWeb do
     pipe_through :browser
 
-    get "/", PageController, :home
-
-    # Dashboard routes with project scope
+    live "/", ProjectsLive, :index
+    live "/projects/new", ProjectsLive, :new
     live "/projects/:project_slug", DashboardLive, :overview
     live "/projects/:project_slug/stories", DashboardLive, :stories
     live "/projects/:project_slug/runs", DashboardLive, :runs
+    live "/projects/:project_slug/runs/:story_id/:attempt", DashboardLive, :run_detail
     live "/projects/:project_slug/settings", DashboardLive, :settings
   end
-
-  # Other scopes may use custom stacks.
-  # scope "/api", KollywoodWeb do
-  #   pipe_through :api
-  # end
 end

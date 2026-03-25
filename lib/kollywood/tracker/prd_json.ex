@@ -47,6 +47,13 @@ defmodule Kollywood.Tracker.PrdJson do
     end)
   end
 
+  @spec mark_resumable(Config.t(), String.t()) :: :ok | {:error, String.t()}
+  def mark_resumable(%Config{} = config, issue_id) when is_binary(issue_id) do
+    update_story(config, issue_id, fn story ->
+      Map.put(story, "resumable", true)
+    end)
+  end
+
   @impl true
   @spec mark_done(Config.t(), String.t(), map()) :: :ok | {:error, String.t()}
   def mark_done(%Config{} = config, issue_id, metadata)
@@ -56,6 +63,7 @@ defmodule Kollywood.Tracker.PrdJson do
       |> set_story_status("done")
       |> Map.put("completedAt", now_iso8601())
       |> Map.put("lastError", nil)
+      |> Map.put("resumable", false)
       |> Map.put("lastRun", stringify_map(metadata))
     end)
   end
@@ -146,6 +154,7 @@ defmodule Kollywood.Tracker.PrdJson do
       state: story.status,
       priority: story.priority,
       blocked_by: blocker_list(story.depends_on, stories_by_id),
+      resumable: story.resumable,
       created_at: nil
     }
   end
@@ -200,7 +209,8 @@ defmodule Kollywood.Tracker.PrdJson do
       priority: priority(field(story, :priority)),
       status: story_status(story),
       depends_on: string_list(field(story, :dependsOn)),
-      notes: optional_string(field(story, :notes))
+      notes: optional_string(field(story, :notes)),
+      resumable: field(story, :resumable) == true
     }
   end
 

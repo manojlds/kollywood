@@ -22,6 +22,13 @@ defmodule Kollywood.Agent.Claude do
   @impl true
   @spec start_session(map() | String.t(), map()) :: {:ok, Session.t()} | {:error, String.t()}
   def start_session(workspace, opts \\ %{}) do
+    opts =
+      if Map.get(opts, :resumable) do
+        Map.put(opts, :args, @defaults.args ++ ["--continue"])
+      else
+        opts
+      end
+
     CLI.start_session(__MODULE__, workspace, opts, @defaults)
   end
 
