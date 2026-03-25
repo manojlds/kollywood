@@ -130,12 +130,35 @@ defmodule KollywoodWeb.DashboardLiveTest do
   end
 
   describe "settings section" do
-    test "shows workflow_path and tracker_path labels", %{conn: conn, project: project} do
-      conn = get(conn, ~p"/projects/#{project.slug}/settings")
-      response = html_response(conn, 200)
+    test "shows project settings and workflow editor", %{conn: conn, project: project} do
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/settings")
 
-      assert response =~ "Workflow Path"
-      assert response =~ "Tracker Path"
+      assert html =~ "Project Settings"
+      assert html =~ project.name
+      assert html =~ "WORKFLOW.md"
+    end
+
+    test "shows workflow editor with frontmatter and body textareas when WORKFLOW.md exists", %{
+      conn: conn,
+      project: project,
+      tmp_dir: tmp_dir
+    } do
+      File.write!(Path.join(tmp_dir, "WORKFLOW.md"), """
+      ---
+      agent:
+        kind: claude
+      polling:
+        interval_ms: 5000
+      ---
+
+      You are working on {{ issue.identifier }}.
+      """)
+
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/settings")
+
+      assert html =~ "Frontmatter"
+      assert html =~ "Prompt Template"
+      assert html =~ "Save WORKFLOW.md"
     end
   end
 
