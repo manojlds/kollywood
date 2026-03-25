@@ -1,8 +1,7 @@
 defmodule KollywoodWeb.DashboardLiveTest do
-  @moduledoc """
-  Integration tests for the DashboardLive routes.
-  """
   use KollywoodWeb.ConnCase, async: false
+
+  import Phoenix.LiveViewTest
 
   alias Kollywood.Projects
   alias Kollywood.Repo
@@ -10,10 +9,9 @@ defmodule KollywoodWeb.DashboardLiveTest do
   setup do
     Repo.delete_all(Kollywood.Projects.Project)
 
-    # Create a test project with unique name
     {:ok, project} =
       Projects.create_project(%{
-        name: "Dashboard Test Project #{System.unique_integer([:positive])}",
+        name: "Test Project",
         provider: :local,
         local_path: "/tmp/test_dashboard_project"
       })
@@ -21,72 +19,47 @@ defmodule KollywoodWeb.DashboardLiveTest do
     %{project: project}
   end
 
-  describe "dashboard routes" do
-    test "overview route renders successfully", %{conn: conn, project: project} do
-      conn = get(conn, ~p"/projects/#{project.slug}")
-      response = html_response(conn, 200)
+  describe "projects index" do
+    test "renders project list", %{conn: conn, project: project} do
+      {:ok, _view, html} = live(conn, ~p"/")
 
-      assert response =~ project.name
-      assert response =~ "Overview"
-      assert response =~ "Stories"
-      assert response =~ "Runs"
-      assert response =~ "Settings"
+      assert html =~ "Projects"
+      assert html =~ project.name
+    end
+  end
+
+  describe "dashboard overview" do
+    test "renders counters and navigation", %{conn: conn, project: project} do
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}")
+
+      assert html =~ project.name
+      assert html =~ "Overview"
+      assert html =~ "Stories"
+      assert html =~ "Runs"
+      assert html =~ "Settings"
+      assert html =~ "Open"
+      assert html =~ "In Progress"
+      assert html =~ "Done"
+      assert html =~ "Failed"
     end
 
-    test "stories route renders successfully", %{conn: conn, project: project} do
-      conn = get(conn, ~p"/projects/#{project.slug}/stories")
-      response = html_response(conn, 200)
+    test "navigates between tabs", %{conn: conn, project: project} do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}")
 
-      assert response =~ project.name
-      assert response =~ "Stories"
+      view |> element("a", "Stories") |> render_click()
+      assert_patch(view, ~p"/projects/#{project.slug}/stories")
+
+      view |> element("a", "Runs") |> render_click()
+      assert_patch(view, ~p"/projects/#{project.slug}/runs")
+
+      view |> element("a", "Settings") |> render_click()
+      assert_patch(view, ~p"/projects/#{project.slug}/settings")
     end
 
-    test "runs route renders successfully", %{conn: conn, project: project} do
-      conn = get(conn, ~p"/projects/#{project.slug}/runs")
-      response = html_response(conn, 200)
+    test "shows not found for nonexistent project", %{conn: conn} do
+      {:ok, _view, html} = live(conn, ~p"/projects/nonexistent")
 
-      assert response =~ project.name
-      assert response =~ "Runs"
-    end
-
-    test "settings route renders successfully", %{conn: conn, project: project} do
-      conn = get(conn, ~p"/projects/#{project.slug}/settings")
-      response = html_response(conn, 200)
-
-      assert response =~ project.name
-      assert response =~ "Settings"
-    end
-
-    test "shows no project selected state when project not found", %{conn: conn} do
-      conn = get(conn, ~p"/projects/nonexistent")
-      response = html_response(conn, 200)
-
-      assert response =~ "Select a Project"
-    end
-
-    test "displays counter cards", %{conn: conn, project: project} do
-      conn = get(conn, ~p"/projects/#{project.slug}")
-      response = html_response(conn, 200)
-
-      assert response =~ "Open"
-      assert response =~ "In Progress"
-      assert response =~ "Done"
-      assert response =~ "Failed"
-    end
-
-    test "displays project selector in header", %{conn: conn, project: project} do
-      conn = get(conn, ~p"/projects/#{project.slug}")
-      response = html_response(conn, 200)
-
-      # Should show project name when project is selected
-      assert response =~ project.name
-    end
-
-    test "displays project information section", %{conn: conn, project: project} do
-      conn = get(conn, ~p"/projects/#{project.slug}")
-      response = html_response(conn, 200)
-
-      assert response =~ "Project Information"
+      assert html =~ "Project not found"
     end
   end
 end

@@ -378,10 +378,13 @@ defmodule Kollywood.Orchestrator do
       {user_on_event, runner_opts} = Keyword.pop(state.runner_opts, :on_event)
       run_log_context = prepare_run_log_context(config, issue, attempt)
 
+      session_opts = if field(issue, :resumable), do: %{resumable: true}, else: %{}
+
       run_opts =
         [
           workflow_store: state.workflow_store,
           attempt: attempt,
+          session_opts: session_opts,
           on_event: runner_on_event(orchestrator_pid, issue_id, run_log_context, user_on_event)
         ] ++ runner_opts
 
