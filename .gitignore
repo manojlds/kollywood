@@ -41,3 +41,4 @@ erl_crash.dump
 .kollywood.db
 .kollywood.db-shm
 .kollywood.db-wal
+.kollywood/
