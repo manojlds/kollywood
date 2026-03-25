@@ -64,6 +64,8 @@ defmodule Kollywood.Orchestrator.RunLogs do
     "runtime_stop_failed"
   ]
 
+  @agent_log_events ["turn_succeeded", "review_passed", "review_failed"]
+
   @typedoc "Run-log context returned by `prepare_attempt/3`"
   @type context :: %{
           project_root: String.t(),
@@ -174,7 +176,8 @@ defmodule Kollywood.Orchestrator.RunLogs do
 
     with :ok <- append_jsonl(files.events, normalized_event),
          :ok <- append_text(files.run, human_line),
-         :ok <- append_text(category_path(files, category), human_line) do
+         :ok <- append_text(category_path(files, category), human_line),
+         :ok <- maybe_append_agent_log(files, normalized_event) do
       :ok
     else
       {:error, reason} -> {:error, "failed to append run log event: #{inspect(reason)}"}
@@ -245,7 +248,8 @@ defmodule Kollywood.Orchestrator.RunLogs do
           checks: files.checks,
           runtime: files.runtime,
           events: files.events,
-          metadata: files.metadata
+          metadata: files.metadata,
+          agent: files.agent
         }
       }
     }
@@ -333,7 +337,8 @@ defmodule Kollywood.Orchestrator.RunLogs do
       worker: Path.join(attempt_dir, "worker.log"),
       reviewer: Path.join(attempt_dir, "reviewer.log"),
       checks: Path.join(attempt_dir, "checks.log"),
-      runtime: Path.join(attempt_dir, "runtime.log")
+      runtime: Path.join(attempt_dir, "runtime.log"),
+      agent: Path.join(attempt_dir, "agent.log")
     }
   end
 
@@ -345,7 +350,8 @@ defmodule Kollywood.Orchestrator.RunLogs do
       files.worker,
       files.reviewer,
       files.checks,
-      files.runtime
+      files.runtime,
+      files.agent
     ]
     |> Enum.reduce_while(:ok, fn path, _acc ->
       case File.write(path, "", [:append]) do
@@ -408,7 +414,8 @@ defmodule Kollywood.Orchestrator.RunLogs do
         "reviewer" => files.reviewer,
         "checks" => files.checks,
         "runtime" => files.runtime,
-        "events" => files.events
+        "events" => files.events,
+        "agent" => files.agent
       }
     }
   end
@@ -460,6 +467,22 @@ defmodule Kollywood.Orchestrator.RunLogs do
   defp category_path(files, :reviewer), do: files.reviewer
   defp category_path(files, :checks), do: files.checks
   defp category_path(files, :runtime), do: files.runtime
+
+  defp maybe_append_agent_log(files, event) do
+    if Map.get(event, "type") in @agent_log_events do
+      output = optional_string(Map.get(event, "output"))
+
+      if output do
+        turn = Map.get(event, "turn") || Map.get(event, "cycle") || "?"
+        separator = "\n--- Turn #{turn} ---\n"
+        append_text(files.agent, separator <> output <> "\n")
+      else
+        :ok
+      end
+    else
+      :ok
+    end
+  end
 
   defp format_human_line(event, category) do
     timestamp = Map.get(event, "timestamp", now_iso8601())

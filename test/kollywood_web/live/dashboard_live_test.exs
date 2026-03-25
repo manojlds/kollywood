@@ -1,6 +1,8 @@
 defmodule KollywoodWeb.DashboardLiveTest do
   use KollywoodWeb.ConnCase, async: false
 
+  alias Kollywood.Config
+  alias Kollywood.Orchestrator.RunLogs
   alias Kollywood.Projects
   alias Kollywood.Repo
 
@@ -46,7 +48,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
     on_exit(fn -> File.rm_rf!(tmp_dir) end)
 
-    %{project: project, tmp_dir: tmp_dir}
+    %{project: project, tmp_dir: tmp_dir, tmp_root: tmp_dir}
   end
 
   describe "projects index" do
@@ -245,5 +247,108 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "View"
       assert html =~ "/projects/#{project.slug}/runs/US-002/20240101_120000"
     end
+  end
+
+  describe "run detail tabbed view" do
+    test "shows no logs message when story has no run logs", %{conn: conn, project: project} do
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/runs/US-MISSING")
+
+      assert html =~ "No run logs found for this story"
+    end
+
+    test "shows log tab bar when run logs exist", %{
+      conn: conn,
+      project: project,
+      tmp_root: tmp_root
+    } do
+      story_id = "US-TAB-TEST"
+      context = prepare_run_logs!(tmp_root, story_id)
+      File.write!(context.files.agent, "agent output here")
+
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}")
+
+      assert html =~ "Agent"
+      assert html =~ "Run"
+      assert html =~ "Checks"
+      assert html =~ "Reviewer"
+      assert html =~ "Runtime"
+    end
+
+    test "agent tab shows agent.log content by default", %{
+      conn: conn,
+      project: project,
+      tmp_root: tmp_root
+    } do
+      story_id = "US-AGENT-TAB"
+      context = prepare_run_logs!(tmp_root, story_id)
+      File.write!(context.files.agent, "agent log content")
+
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}")
+
+      assert html =~ "agent log content"
+    end
+
+    test "tab switching changes displayed log content", %{
+      conn: conn,
+      project: project,
+      tmp_root: tmp_root
+    } do
+      story_id = "US-SWITCH-TAB"
+      context = prepare_run_logs!(tmp_root, story_id)
+      File.write!(context.files.agent, "agent content")
+      File.write!(context.files.run, "run log content")
+
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}")
+
+      html = view |> element("button[phx-value-tab='run']") |> render_click()
+
+      assert html =~ "run log content"
+    end
+
+    test "shows no output placeholder when active log file is empty", %{
+      conn: conn,
+      project: project,
+      tmp_root: tmp_root
+    } do
+      story_id = "US-EMPTY-LOG"
+      _context = prepare_run_logs!(tmp_root, story_id)
+
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}")
+
+      assert html =~ "No output yet."
+    end
+
+    test "poll_logs handle_info updates log content", %{
+      conn: conn,
+      project: project,
+      tmp_root: tmp_root
+    } do
+      story_id = "US-POLL-TEST"
+      context = prepare_run_logs!(tmp_root, story_id, status: "running")
+
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}")
+
+      File.write!(context.files.agent, "new content after poll")
+
+      send(view.pid, :poll_logs)
+
+      html = render(view)
+      assert html =~ "new content after poll"
+    end
+  end
+
+  defp prepare_run_logs!(root, story_id, opts \\ []) do
+    config = %Config{
+      workspace: %{root: root},
+      tracker: %{path: nil}
+    }
+
+    issue = %{id: story_id, identifier: story_id, title: "Test #{story_id}"}
+    {:ok, context} = RunLogs.prepare_attempt(config, issue, nil)
+
+    status = Keyword.get(opts, :status, "finished")
+    RunLogs.complete_attempt(context, %{status: status, turn_count: 1})
+
+    context
   end
 end
