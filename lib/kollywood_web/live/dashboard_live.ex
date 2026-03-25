@@ -24,6 +24,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:selected_story, nil)
       |> assign(:active_log_tab, "agent")
       |> assign(:log_poll_timer, nil)
+      |> assign(:workflow, %{yaml: "", body: "", parsed: %{}, error: nil, path: nil})
       |> assign(:page_title, if(current_project, do: current_project.name, else: "Dashboard"))
       |> assign(:orchestrator_status, fetch_orchestrator_status())
       |> load_project_data(current_project)
@@ -140,6 +141,33 @@ defmodule KollywoodWeb.DashboardLive do
     {:noreply, socket}
   end
 
+  def handle_event("save_workflow", %{"yaml" => yaml, "body" => body}, socket) do
+    project = socket.assigns.current_project
+
+    socket =
+      case workflow_path(project) do
+        nil ->
+          socket
+
+        path ->
+          content = "---\n#{String.trim(yaml)}\n---\n\n#{String.trim(body)}\n"
+
+          case File.write(path, content) do
+            :ok ->
+              assign(socket, :workflow, load_workflow(project))
+
+            {:error, reason} ->
+              assign(
+                socket,
+                :workflow,
+                Map.put(socket.assigns.workflow, :error, "Save failed: #{inspect(reason)}")
+              )
+          end
+      end
+
+    {:noreply, socket}
+  end
+
   @impl true
   def render(assigns) do
     ~H"""
@@ -243,7 +271,7 @@ defmodule KollywoodWeb.DashboardLive do
                   project={@current_project}
                 />
               <% :settings -> %>
-                <.settings_section project={@current_project} />
+                <.settings_section project={@current_project} workflow={@workflow} />
               <% _ -> %>
                 <.overview_section
                   counters={@counters}
@@ -367,7 +395,7 @@ defmodule KollywoodWeb.DashboardLive do
       <% else %>
         <main class="flex items-center justify-center px-4 py-32">
           <div class="text-center">
-            <.icon name="hero-folder-open" class="size-16 text-base-300 mx-auto mb-4" />
+            <.icon name="hero-folder-open" class="size-16 text-base-content/20 mx-auto mb-4" />
             <h2 class="text-xl font-semibold mb-2">Project not found</h2>
             <p class="text-base-content/70 mb-6">
               The selected project does not exist.
@@ -476,6 +504,17 @@ defmodule KollywoodWeb.DashboardLive do
     <div class="space-y-6">
       <h2 class="text-2xl font-bold">Stories</h2>
 
+      <%= if @stories == [] do %>
+        <div class="card bg-base-200 border border-base-300">
+          <div class="card-body items-center text-center py-12">
+            <.icon name="hero-document-text" class="size-12 text-base-content/20 mb-2" />
+            <p class="text-base-content/60">
+              No stories yet. Add stories to prd.json to get started.
+            </p>
+          </div>
+        </div>
+      <% end %>
+
       <%= for {status, label} <- [{"in_progress", "In Progress"}, {"open", "Open"}, {"done", "Done"}, {"failed", "Failed"}] do %>
         <% stories = Map.get(@groups, status, []) %>
         <%= if stories != [] do %>
@@ -488,7 +527,6 @@ defmodule KollywoodWeb.DashboardLive do
             <div class="space-y-2">
               <%= for story <- stories do %>
                 <div id={"story-card-#{story["id"]}"} class="card bg-base-200 border border-base-300">
-
                   <div class="card-body p-4">
                     <div class="flex items-start justify-between gap-4">
                       <div class="flex-1 min-w-0">
@@ -577,13 +615,15 @@ defmodule KollywoodWeb.DashboardLive do
       <%= if @groups["draft"] != [] do %>
         <div class="opacity-60">
           <h3 class="text-lg font-semibold mb-3 flex items-center gap-2">
-            <.status_badge status="draft" />
-            Draft
+            <.status_badge status="draft" /> Draft
             <span class="badge badge-sm badge-ghost">{length(@groups["draft"])}</span>
           </h3>
           <div class="space-y-2">
             <%= for story <- @groups["draft"] do %>
-              <div id={"story-card-#{story["id"]}"} class="card bg-base-200 border border-base-300 border-dashed">
+              <div
+                id={"story-card-#{story["id"]}"}
+                class="card bg-base-200 border border-base-300 border-dashed"
+              >
                 <div class="card-body p-4">
                   <div class="flex items-start justify-between gap-4">
                     <div class="flex-1 min-w-0">
@@ -665,7 +705,7 @@ defmodule KollywoodWeb.DashboardLive do
       <%= if @run_attempts == [] && @story_runs == [] do %>
         <div class="card bg-base-200 border border-base-300">
           <div class="card-body items-center text-center py-12">
-            <.icon name="hero-play" class="size-12 text-base-300 mb-2" />
+            <.icon name="hero-play" class="size-12 text-base-content/20 mb-2" />
             <p class="text-base-content/60">
               No runs found. Runs appear here when the orchestrator dispatches stories.
             </p>
@@ -822,11 +862,14 @@ defmodule KollywoodWeb.DashboardLive do
   # -- Settings Section --
 
   attr :project, Project, required: true
+  attr :workflow, :map, required: true
 
   defp settings_section(assigns) do
     ~H"""
     <div class="space-y-6">
       <h2 class="text-2xl font-bold">Project Settings</h2>
+
+      <%!-- Project info --%>
       <div class="card bg-base-200 border border-base-300">
         <div class="card-body">
           <div class="grid sm:grid-cols-2 gap-4">
@@ -852,24 +895,114 @@ defmodule KollywoodWeb.DashboardLive do
                 <p class="font-medium font-mono text-sm">{@project.local_path}</p>
               </div>
             <% end %>
-            <%= if @project.workflow_path do %>
-              <div class="sm:col-span-2">
-                <span class="text-sm text-base-content/60">Workflow Path</span>
-                <p class="font-medium font-mono text-sm">{@project.workflow_path}</p>
-              </div>
-            <% end %>
-            <%= if @project.tracker_path do %>
-              <div class="sm:col-span-2">
-                <span class="text-sm text-base-content/60">Tracker Path</span>
-                <p class="font-medium font-mono text-sm">{@project.tracker_path}</p>
-              </div>
-            <% end %>
           </div>
         </div>
       </div>
+
+      <%!-- Workflow editor --%>
+      <%= if @workflow.path do %>
+        <div class="card bg-base-200 border border-base-300">
+          <div class="card-body gap-4">
+            <div class="flex items-center justify-between">
+              <h3 class="card-title text-lg">WORKFLOW.md</h3>
+              <span class="font-mono text-xs text-base-content/50">{@workflow.path}</span>
+            </div>
+
+            <%= if @workflow.error do %>
+              <div class="alert alert-error text-sm">{@workflow.error}</div>
+            <% end %>
+
+            <%!-- Parsed frontmatter summary --%>
+            <%= if @workflow.parsed != %{} do %>
+              <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 p-4 bg-base-100 rounded-lg">
+                <%= for {label, value} <- workflow_summary(@workflow.parsed) do %>
+                  <div>
+                    <span class="text-xs text-base-content/50 uppercase tracking-wide">{label}</span>
+                    <p class="font-mono text-sm mt-0.5 break-all">{value}</p>
+                  </div>
+                <% end %>
+              </div>
+            <% end %>
+
+            <%!-- Editor form --%>
+            <form phx-submit="save_workflow" class="space-y-4">
+              <div>
+                <label class="label">
+                  <span class="label-text font-medium">Frontmatter</span>
+                  <span class="label-text-alt text-base-content/50">YAML configuration</span>
+                </label>
+                <textarea
+                  name="yaml"
+                  rows="20"
+                  spellcheck="false"
+                  class="textarea textarea-bordered w-full font-mono text-xs leading-relaxed bg-base-100"
+                >{@workflow.yaml}</textarea>
+              </div>
+              <div>
+                <label class="label">
+                  <span class="label-text font-medium">Prompt Template</span>
+                  <span class="label-text-alt text-base-content/50">Liquid/Markdown body</span>
+                </label>
+                <textarea
+                  name="body"
+                  rows="16"
+                  spellcheck="false"
+                  class="textarea textarea-bordered w-full font-mono text-xs leading-relaxed bg-base-100"
+                >{@workflow.body}</textarea>
+              </div>
+              <div class="flex justify-end">
+                <button type="submit" class="btn btn-primary btn-sm">Save WORKFLOW.md</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      <% else %>
+        <div class="card bg-base-200 border border-base-300">
+          <div class="card-body items-center text-center py-12">
+            <.icon name="hero-document-text" class="size-12 text-base-content/20 mb-2" />
+            <p class="text-base-content/60">No WORKFLOW.md found for this project.</p>
+          </div>
+        </div>
+      <% end %>
     </div>
     """
   end
+
+  defp workflow_summary(parsed) when is_map(parsed) do
+    get = fn keys ->
+      Enum.reduce_while(keys, parsed, fn key, acc ->
+        case Map.get(acc, key) do
+          nil -> {:halt, nil}
+          val -> {:cont, val}
+        end
+      end)
+    end
+
+    to_s = fn
+      nil -> nil
+      true -> "true"
+      false -> "false"
+      list when is_list(list) -> Enum.join(list, ", ")
+      val -> to_string(val)
+    end
+
+    [
+      {"agent", get.(["agent", "kind"])},
+      {"retries", get.(["agent", "retries_enabled"])},
+      {"max attempts", get.(["agent", "max_attempts"])},
+      {"max turns", get.(["agent", "max_turns"])},
+      {"poll interval", get.(["polling", "interval_ms"])},
+      {"before_run", get.(["hooks", "before_run"])},
+      {"checks", get.(["checks", "required"])},
+      {"review", get.(["review", "enabled"])},
+      {"workspace", get.(["workspace", "root"])},
+      {"strategy", get.(["workspace", "strategy"])}
+    ]
+    |> Enum.reject(fn {_label, val} -> is_nil(val) end)
+    |> Enum.map(fn {label, val} -> {label, to_s.(val)} end)
+  end
+
+  defp workflow_summary(_), do: []
 
   # -- Small Components --
 
@@ -1192,6 +1325,66 @@ defmodule KollywoodWeb.DashboardLive do
     end
   end
 
+  defp workflow_path(nil), do: nil
+
+  defp workflow_path(project) do
+    cond do
+      is_binary(project.workflow_path) and project.workflow_path != "" ->
+        project.workflow_path
+
+      is_binary(project.local_path) ->
+        Path.join(project.local_path, "WORKFLOW.md")
+
+      true ->
+        nil
+    end
+  end
+
+  defp load_workflow(project) do
+    path = workflow_path(project)
+
+    cond do
+      is_nil(path) ->
+        %{yaml: "", body: "", parsed: %{}, error: nil, path: nil}
+
+      not File.exists?(path) ->
+        %{yaml: "", body: "", parsed: %{}, error: "File not found: #{path}", path: path}
+
+      true ->
+        case File.read(path) do
+          {:ok, content} ->
+            case String.split(content, "---", parts: 3) do
+              ["", yaml_str, rest] ->
+                parsed =
+                  case YamlElixir.read_from_string(yaml_str) do
+                    {:ok, map} -> map
+                    _ -> %{}
+                  end
+
+                %{
+                  yaml: String.trim(yaml_str),
+                  body: String.trim(rest),
+                  parsed: parsed,
+                  error: nil,
+                  path: path
+                }
+
+              _ ->
+                %{yaml: "", body: String.trim(content), parsed: %{}, error: nil, path: path}
+            end
+
+          {:error, reason} ->
+            %{
+              yaml: "",
+              body: "",
+              parsed: %{},
+              error: "Read error: #{inspect(reason)}",
+              path: path
+            }
+        end
+    end
+  end
+
   defp run_logs_dir(project) do
     if is_binary(project.tracker_path) do
       project.tracker_path
@@ -1288,6 +1481,10 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp truncate(str, _max), do: str
+
+  defp handle_live_action(socket, :settings, _params) do
+    assign(socket, :workflow, load_workflow(socket.assigns.current_project))
+  end
 
   defp handle_live_action(socket, :run_detail, params) do
     story_id = params["story_id"]
