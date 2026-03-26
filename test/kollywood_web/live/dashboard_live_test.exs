@@ -375,7 +375,21 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "No runs yet for this story."
     end
 
-    test "runs list shows view link for stories with lastAttempt", %{
+    test "run detail back link points to story runs tab", %{
+      conn: conn,
+      project: project,
+      tmp_root: tmp_root
+    } do
+      story_id = "US-BACK-LINK"
+      prepare_run_logs!(tmp_root, story_id)
+
+      {:ok, _view, html} =
+        live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
+
+      assert html =~ "/projects/#{project.slug}/stories/#{story_id}?tab=runs"
+    end
+
+    test "runs list shows view link with attempt number for stories with lastAttempt", %{
       conn: conn,
       project: project
     } do
@@ -383,6 +397,23 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       assert html =~ "View"
       assert html =~ "/projects/#{project.slug}/runs/US-002"
+    end
+  end
+
+  describe "stories section runs link" do
+    test "Runs link not shown for stories without lastAttempt", %{conn: conn, project: project} do
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/stories")
+
+      refute html =~ "/projects/#{project.slug}/stories/US-001?tab=runs"
+    end
+
+    test "Runs link shown for stories with lastAttempt pointing to story runs tab", %{
+      conn: conn,
+      project: project
+    } do
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/stories")
+
+      assert html =~ "/projects/#{project.slug}/stories/US-002?tab=runs"
     end
   end
 
