@@ -1236,7 +1236,6 @@ defmodule Kollywood.Orchestrator do
       claimed_count: MapSet.size(state.claimed),
       claimed_issue_ids: state.claimed |> MapSet.to_list() |> Enum.sort(),
       completed_count: MapSet.size(state.completed),
-      completed_issue_ids: state.completed |> MapSet.to_list() |> Enum.sort(),
       poll_interval_ms: state.poll_interval_ms,
       max_concurrent_agents: state.max_concurrent_agents,
       retries_enabled: state.retries_enabled,
