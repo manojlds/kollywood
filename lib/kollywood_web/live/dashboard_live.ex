@@ -1307,6 +1307,84 @@ defmodule KollywoodWeb.DashboardLive do
                       class="input input-bordered input-sm w-full font-mono"
                     />
                   </div>
+
+                  <%!-- Reviewer Agent --%>
+                  <div class="sm:col-span-2 pt-2">
+                    <p class="text-xs font-medium text-base-content/50 mb-3">
+                      Reviewer Agent
+                    </p>
+                    <div class="space-y-4">
+                      <div class="flex items-center gap-2">
+                        <input
+                          type="hidden"
+                          name="settings[review][agent_custom]"
+                          value="false"
+                        />
+                        <input
+                          type="checkbox"
+                          name="settings[review][agent_custom]"
+                          value="true"
+                          checked={get_in(@workflow.parsed, ["review", "agent"]) != nil}
+                          class="toggle toggle-sm"
+                        />
+                        <span class="text-sm">Use a different agent for reviews</span>
+                      </div>
+                      <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                        <div>
+                          <label class="label pb-1">
+                            <span class="label-text text-sm">Kind</span>
+                          </label>
+                          <select
+                            name="settings[review][agent][kind]"
+                            class="select select-bordered select-sm w-full"
+                          >
+                            <%= for k <- ["amp", "claude", "opencode", "pi"] do %>
+                              <option
+                                value={k}
+                                selected={
+                                  (get_in(@workflow.parsed, ["review", "agent", "kind"]) ||
+                                     get_in(@workflow.parsed, ["agent", "kind"])) == k
+                                }
+                              >
+                                {k}
+                              </option>
+                            <% end %>
+                          </select>
+                        </div>
+                        <div>
+                          <label class="label pb-1">
+                            <span class="label-text text-sm">Timeout (ms)</span>
+                          </label>
+                          <input
+                            type="number"
+                            min="1000"
+                            step="1000"
+                            name="settings[review][agent][timeout_ms]"
+                            value={
+                              get_in(@workflow.parsed, ["review", "agent", "timeout_ms"]) ||
+                                7_200_000
+                            }
+                            class="input input-bordered input-sm w-full"
+                          />
+                        </div>
+                        <div class="sm:col-span-2 lg:col-span-3">
+                          <label class="label pb-1">
+                            <span class="label-text text-sm">
+                              Custom command
+                              <span class="text-base-content/40 text-xs">(optional override)</span>
+                            </span>
+                          </label>
+                          <input
+                            type="text"
+                            name="settings[review][agent][command]"
+                            value={get_in(@workflow.parsed, ["review", "agent", "command"]) || ""}
+                            placeholder="e.g. /usr/local/bin/amp"
+                            class="input input-bordered input-sm w-full font-mono"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -1857,6 +1935,8 @@ defmodule KollywoodWeb.DashboardLive do
     }
 
     existing_prompt_template = get_in(parsed, ["review", "prompt_template"])
+    review_agent_custom = Map.get(review_p, "agent_custom") == "true"
+    review_agent_p = Map.get(review_p, "agent", %{})
 
     new_review =
       %{
@@ -1876,6 +1956,31 @@ defmodule KollywoodWeb.DashboardLive do
         if is_binary(existing_prompt_template) and existing_prompt_template != "",
           do: Map.put(r, "prompt_template", existing_prompt_template),
           else: r
+      end)
+      |> then(fn r ->
+        if review_agent_custom do
+          review_agent_command = String.trim(Map.get(review_agent_p, "command", ""))
+
+          review_agent =
+            %{"kind" => Map.get(review_agent_p, "kind", "claude")}
+            |> Map.put(
+              "timeout_ms",
+              parse_form_int(
+                review_agent_p,
+                "timeout_ms",
+                Map.get(existing_review, "agent", %{}) |> Map.get("timeout_ms", 7_200_000)
+              )
+            )
+            |> then(fn a ->
+              if review_agent_command != "",
+                do: Map.put(a, "command", review_agent_command),
+                else: a
+            end)
+
+          Map.put(r, "agent", review_agent)
+        else
+          Map.delete(r, "agent")
+        end
       end)
 
     provider_val = Map.get(publish_p, "provider", "")
