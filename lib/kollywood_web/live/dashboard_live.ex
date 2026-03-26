@@ -246,6 +246,9 @@ defmodule KollywoodWeb.DashboardLive do
         </div>
 
         <div class="flex-none flex items-center gap-4">
+          <.link navigate={~p"/admin"} class="btn btn-ghost btn-sm gap-1">
+            <.icon name="hero-cog-6-tooth" class="size-4" /> Admin
+          </.link>
           <.orchestrator_indicator status={@orchestrator_status} />
           <div class="dropdown dropdown-end">
             <div tabindex="0" role="button" class="btn btn-outline btn-sm gap-2">
@@ -980,7 +983,9 @@ defmodule KollywoodWeb.DashboardLive do
             <form phx-submit="save_settings" class="space-y-6">
               <%!-- Workspace --%>
               <div>
-                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">Workspace</p>
+                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
+                  Workspace
+                </p>
                 <div class="grid sm:grid-cols-2 gap-4">
                   <div class="sm:col-span-2">
                     <span class="text-xs text-base-content/50">Workspaces directory</span>
@@ -988,14 +993,24 @@ defmodule KollywoodWeb.DashboardLive do
                       {Kollywood.ServiceConfig.project_workspace_root(@project.slug)}/<em class="not-italic text-base-content/40">issue-id</em>
                     </p>
                     <p class="text-xs text-base-content/40 mt-1">
-                      Configured via <code class="font-mono bg-base-100 px-1 rounded">KOLLYWOOD_HOME</code> (default: <code class="font-mono bg-base-100 px-1 rounded">~/.kollywood</code>)
+                      Configured via
+                      <code class="font-mono bg-base-100 px-1 rounded">KOLLYWOOD_HOME</code>
+                      (default: <code class="font-mono bg-base-100 px-1 rounded">~/.kollywood</code>)
                     </p>
                   </div>
                   <div>
                     <label class="label pb-1"><span class="label-text text-sm">Strategy</span></label>
-                    <select name="settings[workspace][strategy]" class="select select-bordered select-sm w-full">
+                    <select
+                      name="settings[workspace][strategy]"
+                      class="select select-bordered select-sm w-full"
+                    >
                       <%= for s <- ["clone", "worktree"] do %>
-                        <option value={s} selected={get_in(@workflow.parsed, ["workspace", "strategy"]) == s}>{s}</option>
+                        <option
+                          value={s}
+                          selected={get_in(@workflow.parsed, ["workspace", "strategy"]) == s}
+                        >
+                          {s}
+                        </option>
                       <% end %>
                     </select>
                   </div>
@@ -1006,18 +1021,27 @@ defmodule KollywoodWeb.DashboardLive do
 
               <%!-- Agent --%>
               <div>
-                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">Agent</p>
+                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
+                  Agent
+                </p>
                 <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
                   <div>
                     <label class="label pb-1"><span class="label-text text-sm">Kind</span></label>
-                    <select name="settings[agent][kind]" class="select select-bordered select-sm w-full">
+                    <select
+                      name="settings[agent][kind]"
+                      class="select select-bordered select-sm w-full"
+                    >
                       <%= for k <- ["amp", "claude", "opencode", "pi"] do %>
-                        <option value={k} selected={get_in(@workflow.parsed, ["agent", "kind"]) == k}>{k}</option>
+                        <option value={k} selected={get_in(@workflow.parsed, ["agent", "kind"]) == k}>
+                          {k}
+                        </option>
                       <% end %>
                     </select>
                   </div>
                   <div>
-                    <label class="label pb-1"><span class="label-text text-sm">Max Turns</span></label>
+                    <label class="label pb-1">
+                      <span class="label-text text-sm">Max Turns</span>
+                    </label>
                     <input
                       type="number"
                       min="1"
@@ -1027,7 +1051,9 @@ defmodule KollywoodWeb.DashboardLive do
                     />
                   </div>
                   <div>
-                    <label class="label pb-1"><span class="label-text text-sm">Max Concurrent</span></label>
+                    <label class="label pb-1">
+                      <span class="label-text text-sm">Max Concurrent</span>
+                    </label>
                     <input
                       type="number"
                       min="1"
@@ -1037,7 +1063,9 @@ defmodule KollywoodWeb.DashboardLive do
                     />
                   </div>
                   <div>
-                    <label class="label pb-1"><span class="label-text text-sm">Max Attempts</span></label>
+                    <label class="label pb-1">
+                      <span class="label-text text-sm">Max Attempts</span>
+                    </label>
                     <input
                       type="number"
                       min="1"
@@ -1047,7 +1075,9 @@ defmodule KollywoodWeb.DashboardLive do
                     />
                   </div>
                   <div>
-                    <label class="label pb-1"><span class="label-text text-sm">Timeout (ms)</span></label>
+                    <label class="label pb-1">
+                      <span class="label-text text-sm">Timeout (ms)</span>
+                    </label>
                     <input
                       type="number"
                       min="1000"
@@ -1074,7 +1104,10 @@ defmodule KollywoodWeb.DashboardLive do
                   </div>
                   <div class="sm:col-span-2 lg:col-span-3">
                     <label class="label pb-1">
-                      <span class="label-text text-sm">Custom command <span class="text-base-content/40 text-xs">(optional override)</span></span>
+                      <span class="label-text text-sm">
+                        Custom command
+                        <span class="text-base-content/40 text-xs">(optional override)</span>
+                      </span>
                     </label>
                     <input
                       type="text"
@@ -1091,9 +1124,13 @@ defmodule KollywoodWeb.DashboardLive do
 
               <%!-- Polling --%>
               <div>
-                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">Polling</p>
+                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
+                  Polling
+                </p>
                 <div class="max-w-xs">
-                  <label class="label pb-1"><span class="label-text text-sm">Interval (ms)</span></label>
+                  <label class="label pb-1">
+                    <span class="label-text text-sm">Interval (ms)</span>
+                  </label>
                   <input
                     type="number"
                     min="1000"
@@ -1109,7 +1146,9 @@ defmodule KollywoodWeb.DashboardLive do
 
               <%!-- Checks --%>
               <div>
-                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">Checks</p>
+                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
+                  Checks
+                </p>
                 <div class="space-y-4">
                   <div>
                     <label class="label pb-1">
@@ -1125,7 +1164,9 @@ defmodule KollywoodWeb.DashboardLive do
                   </div>
                   <div class="grid sm:grid-cols-2 gap-4">
                     <div>
-                      <label class="label pb-1"><span class="label-text text-sm">Timeout (ms)</span></label>
+                      <label class="label pb-1">
+                        <span class="label-text text-sm">Timeout (ms)</span>
+                      </label>
                       <input
                         type="number"
                         min="1000"
@@ -1154,7 +1195,9 @@ defmodule KollywoodWeb.DashboardLive do
 
               <%!-- Review --%>
               <div>
-                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">Review</p>
+                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
+                  Review
+                </p>
                 <div class="grid sm:grid-cols-2 gap-4">
                   <div class="sm:col-span-2 flex items-center gap-2">
                     <input type="hidden" name="settings[review][enabled]" value="false" />
@@ -1168,7 +1211,9 @@ defmodule KollywoodWeb.DashboardLive do
                     <span class="text-sm">Enable review</span>
                   </div>
                   <div>
-                    <label class="label pb-1"><span class="label-text text-sm">Max Cycles</span></label>
+                    <label class="label pb-1">
+                      <span class="label-text text-sm">Max Cycles</span>
+                    </label>
                     <input
                       type="number"
                       min="1"
@@ -1180,7 +1225,9 @@ defmodule KollywoodWeb.DashboardLive do
                   </div>
                   <div></div>
                   <div>
-                    <label class="label pb-1"><span class="label-text text-sm">Pass Token</span></label>
+                    <label class="label pb-1">
+                      <span class="label-text text-sm">Pass Token</span>
+                    </label>
                     <input
                       type="text"
                       name="settings[review][pass_token]"
@@ -1189,7 +1236,9 @@ defmodule KollywoodWeb.DashboardLive do
                     />
                   </div>
                   <div>
-                    <label class="label pb-1"><span class="label-text text-sm">Fail Token</span></label>
+                    <label class="label pb-1">
+                      <span class="label-text text-sm">Fail Token</span>
+                    </label>
                     <input
                       type="text"
                       name="settings[review][fail_token]"
@@ -1204,32 +1253,69 @@ defmodule KollywoodWeb.DashboardLive do
 
               <%!-- Publish --%>
               <div>
-                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">Publish</p>
+                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
+                  Publish
+                </p>
                 <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
                   <div>
                     <label class="label pb-1"><span class="label-text text-sm">Provider</span></label>
-                    <select name="settings[publish][provider]" class="select select-bordered select-sm w-full">
-                      <option value="" selected={is_nil(get_in(@workflow.parsed, ["publish", "provider"]))}>
+                    <select
+                      name="settings[publish][provider]"
+                      class="select select-bordered select-sm w-full"
+                    >
+                      <option
+                        value=""
+                        selected={is_nil(get_in(@workflow.parsed, ["publish", "provider"]))}
+                      >
                         Auto (from project)
                       </option>
                       <%= for v <- ["github", "gitlab"] do %>
-                        <option value={v} selected={get_in(@workflow.parsed, ["publish", "provider"]) == v}>{v}</option>
+                        <option
+                          value={v}
+                          selected={get_in(@workflow.parsed, ["publish", "provider"]) == v}
+                        >
+                          {v}
+                        </option>
                       <% end %>
                     </select>
                   </div>
                   <div>
-                    <label class="label pb-1"><span class="label-text text-sm">Auto Push</span></label>
-                    <select name="settings[publish][auto_push]" class="select select-bordered select-sm w-full">
+                    <label class="label pb-1">
+                      <span class="label-text text-sm">Auto Push</span>
+                    </label>
+                    <select
+                      name="settings[publish][auto_push]"
+                      class="select select-bordered select-sm w-full"
+                    >
                       <%= for v <- ["never", "on_pass"] do %>
-                        <option value={v} selected={to_string(get_in(@workflow.parsed, ["publish", "auto_push"])) == v}>{v}</option>
+                        <option
+                          value={v}
+                          selected={
+                            to_string(get_in(@workflow.parsed, ["publish", "auto_push"])) == v
+                          }
+                        >
+                          {v}
+                        </option>
                       <% end %>
                     </select>
                   </div>
                   <div>
-                    <label class="label pb-1"><span class="label-text text-sm">Auto Create PR</span></label>
-                    <select name="settings[publish][auto_create_pr]" class="select select-bordered select-sm w-full">
+                    <label class="label pb-1">
+                      <span class="label-text text-sm">Auto Create PR</span>
+                    </label>
+                    <select
+                      name="settings[publish][auto_create_pr]"
+                      class="select select-bordered select-sm w-full"
+                    >
                       <%= for v <- ["never", "draft", "ready"] do %>
-                        <option value={v} selected={to_string(get_in(@workflow.parsed, ["publish", "auto_create_pr"])) == v}>{v}</option>
+                        <option
+                          value={v}
+                          selected={
+                            to_string(get_in(@workflow.parsed, ["publish", "auto_create_pr"])) == v
+                          }
+                        >
+                          {v}
+                        </option>
                       <% end %>
                     </select>
                   </div>
@@ -1240,10 +1326,14 @@ defmodule KollywoodWeb.DashboardLive do
 
               <%!-- Git --%>
               <div>
-                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">Git</p>
+                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
+                  Git
+                </p>
                 <div class="grid sm:grid-cols-2 gap-4">
                   <div>
-                    <label class="label pb-1"><span class="label-text text-sm">Base Branch</span></label>
+                    <label class="label pb-1">
+                      <span class="label-text text-sm">Base Branch</span>
+                    </label>
                     <input
                       type="text"
                       name="settings[git][base_branch]"
@@ -1297,7 +1387,11 @@ defmodule KollywoodWeb.DashboardLive do
               <div>
                 <h3 class="card-title text-lg">Review Prompt Template</h3>
                 <p class="text-sm text-base-content/60 mt-1">
-                  Template used to prompt the reviewer agent. Saved as <code class="font-mono text-xs bg-base-100 px-1 rounded">review.prompt_template</code> in WORKFLOW.md.
+                  Template used to prompt the reviewer agent. Saved as
+                  <code class="font-mono text-xs bg-base-100 px-1 rounded">
+                    review.prompt_template
+                  </code>
+                  in WORKFLOW.md.
                 </p>
               </div>
               <%= if @workflow.review_template_is_default do %>
@@ -1316,7 +1410,9 @@ defmodule KollywoodWeb.DashboardLive do
               >{@workflow.review_template}</textarea>
               <div class="flex items-center justify-between">
                 <%= if @workflow.review_template_is_default do %>
-                  <p class="text-xs text-base-content/50">Showing built-in default. Edit and save to override for this project.</p>
+                  <p class="text-xs text-base-content/50">
+                    Showing built-in default. Edit and save to override for this project.
+                  </p>
                 <% else %>
                   <p class="text-xs text-base-content/50">Custom template active for this project.</p>
                 <% end %>
@@ -1680,11 +1776,27 @@ defmodule KollywoodWeb.DashboardLive do
     new_agent =
       existing_agent
       |> Map.put("kind", Map.get(agent_p, "kind", Map.get(existing_agent, "kind", "amp")))
-      |> Map.put("max_turns", parse_form_int(agent_p, "max_turns", Map.get(existing_agent, "max_turns", 20)))
-      |> Map.put("max_concurrent_agents", parse_form_int(agent_p, "max_concurrent_agents", Map.get(existing_agent, "max_concurrent_agents", 5)))
+      |> Map.put(
+        "max_turns",
+        parse_form_int(agent_p, "max_turns", Map.get(existing_agent, "max_turns", 20))
+      )
+      |> Map.put(
+        "max_concurrent_agents",
+        parse_form_int(
+          agent_p,
+          "max_concurrent_agents",
+          Map.get(existing_agent, "max_concurrent_agents", 5)
+        )
+      )
       |> Map.put("retries_enabled", Map.get(agent_p, "retries_enabled") == "true")
-      |> Map.put("max_attempts", parse_form_int(agent_p, "max_attempts", Map.get(existing_agent, "max_attempts", 1)))
-      |> Map.put("timeout_ms", parse_form_int(agent_p, "timeout_ms", Map.get(existing_agent, "timeout_ms", 7_200_000)))
+      |> Map.put(
+        "max_attempts",
+        parse_form_int(agent_p, "max_attempts", Map.get(existing_agent, "max_attempts", 1))
+      )
+      |> Map.put(
+        "timeout_ms",
+        parse_form_int(agent_p, "timeout_ms", Map.get(existing_agent, "timeout_ms", 7_200_000))
+      )
       |> then(fn a ->
         if command != "", do: Map.put(a, "command", command), else: Map.delete(a, "command")
       end)
@@ -1698,7 +1810,8 @@ defmodule KollywoodWeb.DashboardLive do
     new_checks = %{
       "required" => checks_required,
       "fail_fast" => Map.get(checks_p, "fail_fast") == "true",
-      "timeout_ms" => parse_form_int(checks_p, "timeout_ms", Map.get(existing_checks, "timeout_ms", 7_200_000))
+      "timeout_ms" =>
+        parse_form_int(checks_p, "timeout_ms", Map.get(existing_checks, "timeout_ms", 7_200_000))
     }
 
     existing_prompt_template = get_in(parsed, ["review", "prompt_template"])
@@ -1706,9 +1819,16 @@ defmodule KollywoodWeb.DashboardLive do
     new_review =
       %{
         "enabled" => Map.get(review_p, "enabled") == "true",
-        "max_cycles" => parse_form_int(review_p, "max_cycles", Map.get(existing_review, "max_cycles", 1)),
-        "pass_token" => Map.get(review_p, "pass_token", "REVIEW_PASS") |> String.trim() |> then(&(if &1 == "", do: "REVIEW_PASS", else: &1)),
-        "fail_token" => Map.get(review_p, "fail_token", "REVIEW_FAIL") |> String.trim() |> then(&(if &1 == "", do: "REVIEW_FAIL", else: &1))
+        "max_cycles" =>
+          parse_form_int(review_p, "max_cycles", Map.get(existing_review, "max_cycles", 1)),
+        "pass_token" =>
+          Map.get(review_p, "pass_token", "REVIEW_PASS")
+          |> String.trim()
+          |> then(&if &1 == "", do: "REVIEW_PASS", else: &1),
+        "fail_token" =>
+          Map.get(review_p, "fail_token", "REVIEW_FAIL")
+          |> String.trim()
+          |> then(&if &1 == "", do: "REVIEW_FAIL", else: &1)
       }
       |> then(fn r ->
         if is_binary(existing_prompt_template) and existing_prompt_template != "",
@@ -1727,13 +1847,23 @@ defmodule KollywoodWeb.DashboardLive do
         if provider_val != "", do: Map.put(p, "provider", provider_val), else: p
       end)
 
-    base_branch = Map.get(git_p, "base_branch", get_in(parsed, ["git", "base_branch"]) || "main") |> String.trim()
+    base_branch =
+      Map.get(git_p, "base_branch", get_in(parsed, ["git", "base_branch"]) || "main")
+      |> String.trim()
 
     parsed
     |> Map.put("agent", new_agent)
-    |> Map.put("polling", %{"interval_ms" => parse_form_int(polling_p, "interval_ms", get_in(parsed, ["polling", "interval_ms"]) || 5000)})
+    |> Map.put("polling", %{
+      "interval_ms" =>
+        parse_form_int(
+          polling_p,
+          "interval_ms",
+          get_in(parsed, ["polling", "interval_ms"]) || 5000
+        )
+    })
     |> Map.put("workspace", %{
-      "strategy" => Map.get(workspace_p, "strategy", get_in(parsed, ["workspace", "strategy"]) || "clone")
+      "strategy" =>
+        Map.get(workspace_p, "strategy", get_in(parsed, ["workspace", "strategy"]) || "clone")
     })
     |> Map.put("checks", new_checks)
     |> Map.put("review", new_review)
@@ -1779,7 +1909,9 @@ defmodule KollywoodWeb.DashboardLive do
         "#{prefix}#{key}: []"
 
       v when is_list(v) ->
-        items = Enum.map_join(v, "\n", fn item -> "#{prefix}  - #{yaml_scalar(to_string(item))}" end)
+        items =
+          Enum.map_join(v, "\n", fn item -> "#{prefix}  - #{yaml_scalar(to_string(item))}" end)
+
         "#{prefix}#{key}:\n#{items}"
 
       v when is_boolean(v) ->
@@ -1819,8 +1951,12 @@ defmodule KollywoodWeb.DashboardLive do
 
   defp parse_form_int(params, key, default) do
     case Map.get(params, key) do
-      nil -> default
-      "" -> default
+      nil ->
+        default
+
+      "" ->
+        default
+
       v ->
         case Integer.parse(to_string(v)) do
           {n, _} when n > 0 -> n
@@ -1849,10 +1985,26 @@ defmodule KollywoodWeb.DashboardLive do
 
     cond do
       is_nil(path) ->
-        %{yaml: "", body: "", parsed: %{}, review_template: "", review_template_is_default: true, error: nil, path: nil}
+        %{
+          yaml: "",
+          body: "",
+          parsed: %{},
+          review_template: "",
+          review_template_is_default: true,
+          error: nil,
+          path: nil
+        }
 
       not File.exists?(path) ->
-        %{yaml: "", body: "", parsed: %{}, review_template: "", review_template_is_default: true, error: "File not found: #{path}", path: path}
+        %{
+          yaml: "",
+          body: "",
+          parsed: %{},
+          review_template: "",
+          review_template_is_default: true,
+          error: "File not found: #{path}",
+          path: path
+        }
 
       true ->
         case File.read(path) do
@@ -1886,7 +2038,15 @@ defmodule KollywoodWeb.DashboardLive do
                 }
 
               _ ->
-                %{yaml: "", body: String.trim(content), parsed: %{}, review_template: "", review_template_is_default: true, error: nil, path: path}
+                %{
+                  yaml: "",
+                  body: String.trim(content),
+                  parsed: %{},
+                  review_template: "",
+                  review_template_is_default: true,
+                  error: nil,
+                  path: path
+                }
             end
 
           {:error, reason} ->
