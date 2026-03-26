@@ -66,6 +66,8 @@ defmodule Kollywood.Orchestrator do
     :max_attempts,
     :retry_base_delay_ms,
     :continuation_delay_ms,
+    :repo_local_path,
+    :repo_default_branch,
     :last_error,
     :last_poll_at,
     running: %{},
@@ -128,6 +130,8 @@ defmodule Kollywood.Orchestrator do
           ),
         retries_enabled: Keyword.get(opts, :retries_enabled, true),
         max_attempts: positive_integer(Keyword.get(opts, :max_attempts), nil),
+        repo_local_path: Keyword.get(opts, :repo_local_path),
+        repo_default_branch: Keyword.get(opts, :repo_default_branch, "main"),
         retry_base_delay_ms:
           positive_integer(Keyword.get(opts, :retry_base_delay_ms), @default_retry_base_delay_ms),
         continuation_delay_ms:
@@ -229,6 +233,8 @@ defmodule Kollywood.Orchestrator do
   # --- Poll cycle ---
 
   defp run_poll_cycle(state) do
+    sync_repo(state.repo_local_path, state.repo_default_branch)
+
     with {:ok, config} <- fetch_config(state.workflow_store),
          tracker <- resolve_tracker(state.tracker, config),
          {:ok, issues} <- list_active_issues(tracker, config) do
@@ -772,6 +778,27 @@ defmodule Kollywood.Orchestrator do
   end
 
   # --- Config and integration ---
+
+  defp sync_repo(nil, _branch), do: :ok
+
+  defp sync_repo(local_path, branch) do
+    with {_, 0} <-
+           System.cmd("git", ["fetch", "--all", "--prune"],
+             cd: local_path,
+             stderr_to_stdout: true
+           ),
+         {_, 0} <-
+           System.cmd("git", ["reset", "--hard", "origin/#{branch}"],
+             cd: local_path,
+             stderr_to_stdout: true
+           ) do
+      :ok
+    else
+      {output, code} ->
+        Logger.warning("Repo sync failed (exit #{code}): #{String.trim(output)}")
+        :ok
+    end
+  end
 
   defp fetch_config(%Config{} = config), do: {:ok, config}
 
