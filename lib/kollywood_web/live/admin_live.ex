@@ -209,6 +209,10 @@ defmodule KollywoodWeb.AdminLive do
 
           <.running_table :if={@status.running != []} running={@status.running} />
           <.retrying_table :if={@status.retrying != []} retrying={@status.retrying} />
+          <.completed_table
+            :if={@status.completed_issue_ids != []}
+            issue_ids={@status.completed_issue_ids}
+          />
         </div>
       <% end %>
     </section>
@@ -308,6 +312,23 @@ defmodule KollywoodWeb.AdminLive do
               <% end %>
             </tbody>
           </table>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  attr :issue_ids, :list, required: true
+
+  defp completed_table(assigns) do
+    ~H"""
+    <div class="card bg-base-200 border border-base-300">
+      <div class="card-body p-4">
+        <h3 class="font-medium text-sm mb-2">Completed this session</h3>
+        <div class="flex flex-wrap gap-2">
+          <%= for id <- @issue_ids do %>
+            <span class="badge badge-ghost font-mono">{id}</span>
+          <% end %>
         </div>
       </div>
     </div>
