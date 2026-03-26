@@ -57,30 +57,8 @@ defmodule Kollywood.Projects.Project do
 
   defp validate_provider_fields(changeset) do
     case get_field(changeset, :provider) do
-      :local ->
-        changeset
-        |> validate_required([:local_path])
-        |> maybe_clear_field(:repository)
-
-      provider when provider in [:github, :gitlab] ->
+      provider when provider in [:local, :github, :gitlab] ->
         validate_required(changeset, [:repository])
-
-      _other ->
-        changeset
-    end
-  end
-
-  defp maybe_clear_field(changeset, field) do
-    case get_field(changeset, field) do
-      nil ->
-        changeset
-
-      value when is_binary(value) ->
-        if String.trim(value) == "" do
-          put_change(changeset, field, nil)
-        else
-          changeset
-        end
 
       _other ->
         changeset

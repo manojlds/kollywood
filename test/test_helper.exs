@@ -1,5 +1,14 @@
 ExUnit.start()
 
-# Bootstrap runs migrations in :auto mode during app startup above.
+# Run migrations directly (Bootstrap is disabled in test to avoid pool conflicts).
+migrations_path = Application.app_dir(:kollywood, "priv/repo/migrations")
+db_path = Application.get_env(:kollywood, Kollywood.Repo)[:database]
+
+if is_binary(db_path) and db_path != ":memory:" do
+  File.mkdir_p!(Path.dirname(Path.expand(db_path)))
+end
+
+Ecto.Migrator.run(Kollywood.Repo, migrations_path, :up, all: true)
+
 # Switch to :manual so each test must explicitly check out a sandbox connection.
 Ecto.Adapters.SQL.Sandbox.mode(Kollywood.Repo, :manual)
