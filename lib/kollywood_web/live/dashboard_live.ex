@@ -330,6 +330,7 @@ defmodule KollywoodWeb.DashboardLive do
                   stories={@stories}
                   orchestrator_status={@orchestrator_status}
                   project={@current_project}
+                  recent_runs={@recent_runs}
                 />
               <% :stories -> %>
                 <.stories_section stories={@stories} project={@current_project} />
@@ -366,6 +367,7 @@ defmodule KollywoodWeb.DashboardLive do
                   stories={@stories}
                   orchestrator_status={@orchestrator_status}
                   project={@current_project}
+                  recent_runs={@recent_runs}
                 />
             <% end %>
           </div>
@@ -416,6 +418,7 @@ defmodule KollywoodWeb.DashboardLive do
   attr :stories, :list, default: []
   attr :orchestrator_status, :map, default: nil
   attr :project, Project, default: nil
+  attr :recent_runs, :list, default: []
 
   defp overview_section(assigns) do
     ~H"""
@@ -431,26 +434,22 @@ defmodule KollywoodWeb.DashboardLive do
       <div class="card bg-base-200 border border-base-300">
         <div class="card-body">
           <h3 class="card-title text-lg">Recent Activity</h3>
-          <% recent_activity = @stories |> Enum.filter(&is_binary(&1["lastAttempt"])) |> Enum.take(10) %>
-          <%= if recent_activity == [] do %>
+          <%= if @recent_runs == [] do %>
             <p class="text-base-content/60 py-4">No recent activity</p>
           <% else %>
             <div class="space-y-1 mt-2">
-              <%= for story <- recent_activity do %>
+              <%= for run <- @recent_runs do %>
                 <.link
-                  navigate={~p"/projects/#{@project.slug}/runs/#{story["id"]}"}
-                  class="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3 p-3 bg-base-100 rounded-lg hover:bg-base-300 transition-colors"
+                  navigate={~p"/projects/#{@project.slug}/runs/#{run.story_id}/#{run.attempt}"}
+                  class="flex items-center gap-3 p-3 bg-base-100 rounded-lg hover:bg-base-300 transition-colors"
                 >
-                  <div class="flex items-center gap-2 min-w-0">
-                    <.status_badge status={story["status"] || "open"} />
-                    <span class="font-mono text-xs text-base-content/60 shrink-0">{story["id"]}</span>
-                    <span class="text-sm truncate">{story["title"]}</span>
-                  </div>
-                  <%= if story["lastError"] do %>
-                    <span class="text-xs text-error truncate sm:ml-auto">
-                      {truncate(story["lastError"], 60)}
-                    </span>
-                  <% end %>
+                  <.status_badge status={run.status} />
+                  <span class="font-mono text-xs text-base-content/60 shrink-0">{run.story_id}</span>
+                  <span class="text-sm truncate flex-1">{run.story_title}</span>
+                  <span class="text-xs text-base-content/50 shrink-0">#{run.attempt}</span>
+                  <span class="text-xs text-base-content/50 shrink-0">
+                    {time_ago(run.ended_at || run.started_at)}
+                  </span>
                 </.link>
               <% end %>
             </div>
@@ -1710,6 +1709,7 @@ defmodule KollywoodWeb.DashboardLive do
       stories: [],
       counters: %{open: 0, in_progress: 0, done: 0, failed: 0},
       run_attempts: [],
+      recent_runs: [],
       run_detail: nil,
       run_detail_story_id: nil,
       run_detail_attempt: nil
@@ -1720,12 +1720,14 @@ defmodule KollywoodWeb.DashboardLive do
     stories = read_stories(project)
     counters = count_stories(stories)
     run_attempts = list_run_attempts(project)
+    recent_runs = build_recent_runs(run_attempts, stories)
 
     socket =
       socket
       |> assign(:stories, stories)
       |> assign(:counters, counters)
       |> assign(:run_attempts, run_attempts)
+      |> assign(:recent_runs, recent_runs)
 
     # Load run detail if the action requires it
     story_id = socket.assigns[:run_detail_story_id]
@@ -1855,6 +1857,17 @@ defmodule KollywoodWeb.DashboardLive do
     end
   rescue
     _ -> []
+  end
+
+  defp build_recent_runs(run_attempts, stories) do
+    title_by_id = Map.new(stories, &{&1["id"], &1["title"]})
+
+    run_attempts
+    |> Enum.sort_by(fn r -> r.ended_at || r.started_at || "" end, :desc)
+    |> Enum.take(10)
+    |> Enum.map(fn r ->
+      Map.put(r, :story_title, Map.get(title_by_id, r.story_id, r.story_id))
+    end)
   end
 
   defp load_run_detail(project, story_id, attempt) when is_binary(attempt) do
@@ -2646,6 +2659,13 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp time_ago(nil), do: "never"
+
+  defp time_ago(s) when is_binary(s) do
+    case DateTime.from_iso8601(s) do
+      {:ok, dt, _} -> time_ago(dt)
+      _ -> "unknown"
+    end
+  end
 
   defp time_ago(%DateTime{} = dt) do
     diff = DateTime.diff(DateTime.utc_now(), dt)

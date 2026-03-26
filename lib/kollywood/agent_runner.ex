@@ -211,7 +211,11 @@ defmodule Kollywood.AgentRunner do
         |> emit(:turn_started, %{turn: turn_number})
 
       turn_result =
-        Agent.run_turn(state.session, prompt, with_raw_log(turn_opts, state.log_files, :agent_stdout))
+        Agent.run_turn(
+          state.session,
+          prompt,
+          with_raw_log(turn_opts, state.log_files, :agent_stdout)
+        )
 
       Workspace.after_run(state.workspace, config.hooks)
 
@@ -702,7 +706,11 @@ defmodule Kollywood.AgentRunner do
             |> emit(:turn_started, %{turn: turn_number, remediation: true, review_cycle: cycle})
 
           turn_result =
-            Agent.run_turn(session, prompt, with_raw_log(turn_opts, state.log_files, :agent_stdout))
+            Agent.run_turn(
+              session,
+              prompt,
+              with_raw_log(turn_opts, state.log_files, :agent_stdout)
+            )
 
           Workspace.after_run(state.workspace, config.hooks)
 
@@ -801,7 +809,11 @@ defmodule Kollywood.AgentRunner do
             |> emit(:turn_started, %{turn: turn_number, remediation: true, checks_cycle: cycle})
 
           turn_result =
-            Agent.run_turn(session, prompt, with_raw_log(turn_opts, state.log_files, :agent_stdout))
+            Agent.run_turn(
+              session,
+              prompt,
+              with_raw_log(turn_opts, state.log_files, :agent_stdout)
+            )
 
           Workspace.after_run(state.workspace, config.hooks)
 
@@ -1402,7 +1414,7 @@ defmodule Kollywood.AgentRunner do
     :erlang.phash2(to_string(workspace_identity), max(max_modulus, 1))
   end
 
-  defp run_review_turn(state, config, prompt, log_files \\ nil) do
+  defp run_review_turn(state, config, prompt, log_files) do
     review_config = reviewer_config(config)
     reviewer_opts = with_raw_log(%{}, log_files, :reviewer_stdout)
 

@@ -1,96 +1,89 @@
 ---
 tracker:
-  kind: prd_json
   active_states:
     - open
     - in_progress
+  kind: prd_json
   terminal_states:
     - done
     - failed
     - cancelled
-
 polling:
   interval_ms: 5000
-
-hooks:
-  before_run: devenv shell -- sh -c "mix deps.get && MIX_ENV=test mix deps.compile"
-
+workspace:
+  strategy: worktree
+agent:
+  kind: opencode
+  max_attempts: 1
+  max_concurrent_agents: 1
+  max_turns: 20
+  retries_enabled: false
+  timeout_ms: 7200000
 checks:
-  required:
-    - devenv shell -- mix format --check-formatted
-    - devenv shell -- bash -c "MIX_ENV=test mix test"
-  timeout_ms: 1800000
   fail_fast: true
-
+  required:
+    - "devenv shell -- mix format --check-formatted"
+    - "devenv shell -- bash -c \"MIX_ENV=test mix test\""
+  timeout_ms: 1800000
 runtime:
-  profile: checks_only
   full_stack:
     command: devenv
-    processes:
-      - server
     env: {}
     ports:
       PORT: 4000
-
+    processes:
+      - server
+  profile: checks_only
+hooks:
+  before_run: "devenv shell -- sh -c \"mix deps.get && MIX_ENV=test mix deps.compile\""
 review:
+  agent:
+    kind: opencode
+    timeout_ms: 7200000
   enabled: true
+  fail_token: REVIEW_FAIL
   max_cycles: 2
   pass_token: REVIEW_PASS
-  fail_token: REVIEW_FAIL
   prompt_template: |
     You are reviewing work for issue {{ issue.identifier }}: {{ issue.title }}.
-
+    
     Issue description:
     {{ issue.description }}
-
+    
     Prior implementation output (may be empty):
     {{ agent_output }}
-
+    
     Review the current workspace changes. You may run commands for validation.
     Do not modify files, do not commit, and do not push.
-
+    
     On the FIRST line, return exactly one verdict:
     REVIEW_PASS
     or
     REVIEW_FAIL: <one-line summary of the most critical issue>
-
+    
     After the first line, provide a structured review report with the following sections
     (omit sections with no findings):
-
+    
     ## Critical
     Issues that must be fixed before merging (bugs, broken tests, security issues, missing required functionality).
     List each as: - [description of issue and where to find it]
-
+    
     ## Major
     Significant quality issues that should be fixed (poor design, missing error handling, test coverage gaps).
     List each as: - [description of issue and where to find it]
-
+    
     ## Minor
     Nice-to-haves and style issues (naming, code clarity, optional improvements).
     List each as: - [description of issue and where to find it]
-
+    
     ## Summary
     One or two sentences summarising the overall quality of the changes.
-
 publish:
-  provider: github
+  auto_create_pr: never
   auto_push: on_pass
-  auto_create_pr: never # never | draft | ready
-
+  provider: github
 git:
-  # Keep this true to require agent commits before any publish action.
-  require_commit: true # true | false
-
-workspace:
-  strategy: worktree
-  branch_prefix: kollywood/
-
-agent:
-  kind: claude
-  retries_enabled: false
-  max_attempts: 1
-  max_concurrent_agents: 1
-  max_turns: 20
+  base_branch: main
 ---
 
 You are working on issue `{{ issue.identifier }}`: **{{ issue.title }}**

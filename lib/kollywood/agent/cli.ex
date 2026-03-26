@@ -57,7 +57,7 @@ defmodule Kollywood.Agent.CLI do
   @spec stop_session(Session.t()) :: :ok
   def stop_session(%Session{}), do: :ok
 
-  defp execute(session, args, prompt, prompt_mode, env, timeout_ms, raw_log \\ nil) do
+  defp execute(session, args, prompt, prompt_mode, env, timeout_ms, raw_log) do
     {command, command_args, command_opts, cleanup} =
       command_invocation(session, args, prompt, prompt_mode, env, raw_log)
 
