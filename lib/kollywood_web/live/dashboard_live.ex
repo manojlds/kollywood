@@ -572,12 +572,14 @@ defmodule KollywoodWeb.DashboardLive do
                             <% end %>
                           </ul>
                         </div>
-                        <.link
-                          navigate={~p"/projects/#{@project.slug}/runs"}
-                          class="btn btn-ghost btn-xs"
-                        >
-                          Runs →
-                        </.link>
+                        <%= if story["lastAttempt"] do %>
+                          <.link
+                            navigate={~p"/projects/#{@project.slug}/stories/#{story["id"]}?tab=runs"}
+                            class="btn btn-ghost btn-xs"
+                          >
+                            Runs →
+                          </.link>
+                        <% end %>
                       </div>
                     </div>
                   </div>
@@ -709,7 +711,7 @@ defmodule KollywoodWeb.DashboardLive do
                   <td class="text-sm text-base-content/70">{format_time(run.ended_at)}</td>
                   <td>
                     <.link
-                      patch={~p"/projects/#{@project.slug}/runs/#{run.story_id}"}
+                      navigate={~p"/projects/#{@project.slug}/runs/#{run.story_id}/#{run.attempt}"}
                       class="btn btn-ghost btn-xs"
                     >
                       View →
@@ -748,7 +750,9 @@ defmodule KollywoodWeb.DashboardLive do
                     <td class="text-sm text-base-content/60">{story["lastAttempt"]}</td>
                     <td>
                       <.link
-                        navigate={~p"/projects/#{@project.slug}/runs/#{story["id"]}"}
+                        navigate={
+                          ~p"/projects/#{@project.slug}/runs/#{story["id"]}/#{story["lastAttempt"]}"
+                        }
                         class="btn btn-xs btn-outline"
                       >
                         View
@@ -777,7 +781,10 @@ defmodule KollywoodWeb.DashboardLive do
     ~H"""
     <div class="flex flex-col gap-4 h-full">
       <div class="flex items-center gap-4">
-        <.link patch={~p"/projects/#{@project.slug}/runs"} class="btn btn-ghost btn-sm gap-2">
+        <.link
+          navigate={~p"/projects/#{@project.slug}/stories/#{@story_id}?tab=runs"}
+          class="btn btn-ghost btn-sm gap-2"
+        >
           <.icon name="hero-arrow-left" class="size-4" /> Back to Runs
         </.link>
         <span class="badge badge-outline font-mono text-sm">{@story_id}</span>
@@ -1030,7 +1037,7 @@ defmodule KollywoodWeb.DashboardLive do
                           <td>
                             <.link
                               navigate={
-                                ~p"/projects/#{@project.slug}/stories/#{@story_id}?attempt=#{run.attempt}&tab=runs"
+                                ~p"/projects/#{@project.slug}/runs/#{@story_id}/#{run.attempt}"
                               }
                               class="font-mono text-sm hover:text-primary"
                             >
@@ -2492,14 +2499,32 @@ defmodule KollywoodWeb.DashboardLive do
 
   defp handle_live_action(socket, :run_detail, params) do
     story_id = params["story_id"]
+    attempt = params["attempt"]
     project = socket.assigns.current_project
 
-    if project do
-      push_navigate(socket,
-        to: ~p"/projects/#{project.slug}/stories/#{story_id}?tab=runs"
-      )
-    else
-      socket
+    cond do
+      !project ->
+        socket
+
+      is_binary(attempt) ->
+        tab = socket.assigns.active_log_tab
+        run_detail = load_run_detail_for_attempt(project, story_id, attempt, tab)
+
+        socket =
+          socket
+          |> assign(:run_detail, run_detail)
+
+        if run_detail && get_in(run_detail, ["metadata", "status"]) == "running" do
+          {:ok, timer} = :timer.send_interval(1000, self(), :poll_logs)
+          assign(socket, :log_poll_timer, timer)
+        else
+          assign(socket, :log_poll_timer, nil)
+        end
+
+      true ->
+        push_navigate(socket,
+          to: ~p"/projects/#{project.slug}/stories/#{story_id}?tab=runs"
+        )
     end
   end
 
