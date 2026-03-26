@@ -1056,18 +1056,6 @@ defmodule KollywoodWeb.DashboardLive do
                   </div>
                   <div>
                     <label class="label pb-1">
-                      <span class="label-text text-sm">Max Concurrent</span>
-                    </label>
-                    <input
-                      type="number"
-                      min="1"
-                      name="settings[agent][max_concurrent_agents]"
-                      value={get_in(@workflow.parsed, ["agent", "max_concurrent_agents"]) || 5}
-                      class="input input-bordered input-sm w-full"
-                    />
-                  </div>
-                  <div>
-                    <label class="label pb-1">
                       <span class="label-text text-sm">Max Attempts</span>
                     </label>
                     <input
@@ -1121,28 +1109,6 @@ defmodule KollywoodWeb.DashboardLive do
                       class="input input-bordered input-sm w-full font-mono"
                     />
                   </div>
-                </div>
-              </div>
-
-              <div class="divider my-0"></div>
-
-              <%!-- Polling --%>
-              <div>
-                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
-                  Polling
-                </p>
-                <div class="max-w-xs">
-                  <label class="label pb-1">
-                    <span class="label-text text-sm">Interval (ms)</span>
-                  </label>
-                  <input
-                    type="number"
-                    min="1000"
-                    step="1000"
-                    name="settings[polling][interval_ms]"
-                    value={get_in(@workflow.parsed, ["polling", "interval_ms"]) || 5000}
-                    class="input input-bordered input-sm w-full"
-                  />
                 </div>
               </div>
 
@@ -1764,7 +1730,6 @@ defmodule KollywoodWeb.DashboardLive do
 
   defp apply_settings(parsed, settings) do
     agent_p = Map.get(settings, "agent", %{})
-    polling_p = Map.get(settings, "polling", %{})
     workspace_p = Map.get(settings, "workspace", %{})
     checks_p = Map.get(settings, "checks", %{})
     review_p = Map.get(settings, "review", %{})
@@ -1783,14 +1748,6 @@ defmodule KollywoodWeb.DashboardLive do
       |> Map.put(
         "max_turns",
         parse_form_int(agent_p, "max_turns", Map.get(existing_agent, "max_turns", 20))
-      )
-      |> Map.put(
-        "max_concurrent_agents",
-        parse_form_int(
-          agent_p,
-          "max_concurrent_agents",
-          Map.get(existing_agent, "max_concurrent_agents", 5)
-        )
       )
       |> Map.put("retries_enabled", Map.get(agent_p, "retries_enabled") == "true")
       |> Map.put(
@@ -1857,14 +1814,6 @@ defmodule KollywoodWeb.DashboardLive do
 
     parsed
     |> Map.put("agent", new_agent)
-    |> Map.put("polling", %{
-      "interval_ms" =>
-        parse_form_int(
-          polling_p,
-          "interval_ms",
-          get_in(parsed, ["polling", "interval_ms"]) || 5000
-        )
-    })
     |> Map.put("workspace", %{
       "strategy" =>
         Map.get(workspace_p, "strategy", get_in(parsed, ["workspace", "strategy"]) || "clone")
