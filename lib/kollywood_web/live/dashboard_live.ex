@@ -334,6 +334,8 @@ defmodule KollywoodWeb.DashboardLive do
                   active_log_tab={@active_log_tab}
                   story_detail_tab={@story_detail_tab}
                   project={@current_project}
+                  story_attempts={Enum.filter(@run_attempts, &(&1.story_id == @run_detail_story_id))}
+                  selected_attempt={@run_detail_attempt}
                 />
               <% :run_detail -> %>
                 <.run_detail_section
@@ -826,6 +828,8 @@ defmodule KollywoodWeb.DashboardLive do
   attr :active_log_tab, :string, default: "agent"
   attr :story_detail_tab, :string, default: "details"
   attr :project, Project, required: true
+  attr :story_attempts, :list, default: []
+  attr :selected_attempt, :string, default: nil
 
   defp story_detail_section(assigns) do
     ~H"""
@@ -949,7 +953,17 @@ defmodule KollywoodWeb.DashboardLive do
 
       <%= if @story_detail_tab == "runs" do %>
         <div class="flex flex-col gap-4">
-          <%= if @run_detail do %>
+          <%= if @selected_attempt do %>
+            <div class="flex items-center gap-3">
+              <.link
+                navigate={~p"/projects/#{@project.slug}/stories/#{@story_id}?tab=runs"}
+                class="btn btn-ghost btn-sm gap-2"
+              >
+                <.icon name="hero-arrow-left" class="size-4" /> All Runs
+              </.link>
+              <span class="text-sm text-base-content/60">Attempt #{@selected_attempt}</span>
+            </div>
+
             <div class="flex gap-0 border-b border-base-300">
               <%= for {tab, label} <- [
                 {"agent", "Agent"},
@@ -973,7 +987,7 @@ defmodule KollywoodWeb.DashboardLive do
               <% end %>
             </div>
 
-            <%= if @run_detail["active_log_content"] do %>
+            <%= if @run_detail && @run_detail["active_log_content"] do %>
               <pre
                 id="log-output"
                 phx-hook=".LogScroll"
@@ -983,7 +997,47 @@ defmodule KollywoodWeb.DashboardLive do
               <p class="text-base-content/50 text-sm italic">No output yet.</p>
             <% end %>
           <% else %>
-            <p class="text-base-content/50 text-sm italic">No run logs found for this story.</p>
+            <%= if @story_attempts == [] do %>
+              <p class="text-base-content/50 text-sm italic">No runs yet for this story.</p>
+            <% else %>
+              <div class="card bg-base-200 border border-base-300">
+                <div class="overflow-x-auto">
+                  <table class="table table-sm">
+                    <thead>
+                      <tr>
+                        <th>Attempt</th>
+                        <th>Status</th>
+                        <th>Started</th>
+                        <th>Duration</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <%= for run <- @story_attempts do %>
+                        <tr class="hover cursor-pointer">
+                          <td>
+                            <.link
+                              navigate={
+                                ~p"/projects/#{@project.slug}/stories/#{@story_id}?attempt=#{run.attempt}&tab=runs"
+                              }
+                              class="font-mono text-sm hover:text-primary"
+                            >
+                              #{"#{run.attempt}" |> String.pad_leading(4, "0")}
+                            </.link>
+                          </td>
+                          <td><.run_status_badge status={run.status} /></td>
+                          <td class="text-xs text-base-content/60">
+                            {format_time(run.started_at)}
+                          </td>
+                          <td class="text-xs text-base-content/60">
+                            {format_duration(run.started_at, run.ended_at)}
+                          </td>
+                        </tr>
+                      <% end %>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            <% end %>
           <% end %>
         </div>
       <% end %>
@@ -1587,7 +1641,7 @@ defmodule KollywoodWeb.DashboardLive do
 
     run_detail =
       cond do
-        story_id && attempt -> load_run_detail(project, story_id, attempt)
+        story_id && attempt -> load_run_detail_for_attempt(project, story_id, attempt, tab)
         story_id -> load_run_detail_latest(project, story_id, tab)
         true -> nil
       end
@@ -2206,6 +2260,21 @@ defmodule KollywoodWeb.DashboardLive do
 
   defp format_time(_), do: "—"
 
+  defp format_duration(nil, _), do: "—"
+  defp format_duration(_, nil), do: "—"
+
+  defp format_duration(started_at, ended_at) when is_binary(started_at) and is_binary(ended_at) do
+    with {:ok, start_dt, _} <- DateTime.from_iso8601(started_at),
+         {:ok, end_dt, _} <- DateTime.from_iso8601(ended_at) do
+      seconds = DateTime.diff(end_dt, start_dt)
+      if seconds < 60, do: "#{seconds}s", else: "#{div(seconds, 60)}m #{rem(seconds, 60)}s"
+    else
+      _ -> "—"
+    end
+  end
+
+  defp format_duration(_, _), do: "—"
+
   defp truncate(str, max) when is_binary(str) and byte_size(str) > max do
     String.slice(str, 0, max) <> "…"
   end
@@ -2231,10 +2300,18 @@ defmodule KollywoodWeb.DashboardLive do
 
   defp handle_live_action(socket, :story_detail, params) do
     story_id = params["story_id"]
+    attempt = params["attempt"]
     story = Enum.find(socket.assigns.stories, &(&1["id"] == story_id))
     tab = socket.assigns.active_log_tab
-    run_detail = load_run_detail_latest(socket.assigns.current_project, story_id, tab)
-    story_tab = params["tab"] || "details"
+    project = socket.assigns.current_project
+    story_tab = if attempt, do: params["tab"] || "runs", else: params["tab"] || "details"
+
+    run_detail =
+      if attempt do
+        load_run_detail_for_attempt(project, story_id, attempt, tab)
+      else
+        load_run_detail_latest(project, story_id, tab)
+      end
 
     socket =
       socket
@@ -2280,6 +2357,29 @@ defmodule KollywoodWeb.DashboardLive do
 
       {:error, _} ->
         nil
+    end
+  end
+
+  defp load_run_detail_for_attempt(nil, _story_id, _attempt, _tab), do: nil
+  defp load_run_detail_for_attempt(_project, nil, _attempt, _tab), do: nil
+
+  defp load_run_detail_for_attempt(project, story_id, attempt, tab) do
+    project_root = derive_project_root(project)
+    parsed = parse_attempt(attempt)
+
+    if parsed do
+      case RunLogs.resolve_attempt(project_root, story_id, parsed) do
+        {:ok, %{metadata: metadata, files: files}} ->
+          content = read_log_tab_content(files, tab)
+
+          %{
+            "metadata" => metadata,
+            "active_log_content" => content
+          }
+
+        {:error, _} ->
+          nil
+      end
     end
   end
 
