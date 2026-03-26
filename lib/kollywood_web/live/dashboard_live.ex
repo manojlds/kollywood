@@ -184,8 +184,15 @@ defmodule KollywoodWeb.DashboardLive do
           socket
 
         path ->
+          trimmed = String.trim(template)
+          default = String.trim(Kollywood.AgentRunner.default_review_prompt_template())
+
           with {:ok, content} <- File.read(path),
-               new_yaml <- inject_review_template(content, String.trim(template)),
+               new_yaml <-
+                 if(trimmed == default,
+                   do: remove_review_template(content),
+                   else: inject_review_template(content, trimmed)
+                 ),
                :ok <- File.write(path, new_yaml) do
             socket
             |> assign(:workflow, load_workflow(project))
@@ -2161,7 +2168,10 @@ defmodule KollywoodWeb.DashboardLive do
                     _ -> %{}
                   end
 
-                custom_review_template =
+                default_template =
+                  String.trim(Kollywood.AgentRunner.default_review_prompt_template())
+
+                stored_template =
                   parsed
                   |> get_in(["review", "prompt_template"])
                   |> then(fn
@@ -2169,14 +2179,15 @@ defmodule KollywoodWeb.DashboardLive do
                     _ -> nil
                   end)
 
+                is_default =
+                  is_nil(stored_template) or stored_template == default_template
+
                 %{
                   yaml: String.trim(yaml_str),
                   body: String.trim(rest),
                   parsed: parsed,
-                  review_template:
-                    custom_review_template ||
-                      String.trim(Kollywood.AgentRunner.default_review_prompt_template()),
-                  review_template_is_default: is_nil(custom_review_template),
+                  review_template: stored_template || default_template,
+                  review_template_is_default: is_default,
                   error: nil,
                   path: path
                 }
@@ -2280,6 +2291,55 @@ defmodule KollywoodWeb.DashboardLive do
           "\nreview:\n" <> Enum.join(new_block_lines, "\n") <> "\n"
       end
     end
+  end
+
+  # Removes the prompt_template block scalar from the review section of WORKFLOW.md content.
+  # Used when saving a template that matches the default — keeps the file clean.
+  defp remove_review_template(content) do
+    lines = String.split(content, "\n")
+
+    {result, _state} =
+      Enum.reduce(lines, {[], :scanning}, fn line, {acc, state} ->
+        case state do
+          :scanning ->
+            if String.trim(line) == "review:" do
+              {acc ++ [line], :in_review}
+            else
+              {acc ++ [line], :scanning}
+            end
+
+          :in_review ->
+            trimmed = String.trim_leading(line)
+
+            cond do
+              String.starts_with?(trimmed, "prompt_template:") ->
+                {acc, :skip_template}
+
+              not String.starts_with?(line, " ") and line != "" ->
+                {acc ++ [line], :scanning}
+
+              true ->
+                {acc ++ [line], :in_review}
+            end
+
+          :skip_template ->
+            cond do
+              String.starts_with?(line, "    ") ->
+                {acc, :skip_template}
+
+              String.starts_with?(line, "  ") and not String.starts_with?(line, "    ") ->
+                {acc ++ [line], :in_review}
+
+              not String.starts_with?(line, " ") and line != "" ->
+                {acc ++ [line], :scanning}
+
+              true ->
+                {acc, :skip_template}
+            end
+        end
+      end)
+
+    Enum.join(result, "\n")
   end
 
   defp run_logs_dir(project) do
