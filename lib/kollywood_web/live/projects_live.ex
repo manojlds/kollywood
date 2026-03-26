@@ -3,6 +3,7 @@ defmodule KollywoodWeb.ProjectsLive do
 
   alias Kollywood.Projects
   alias Kollywood.Projects.Project
+  alias Kollywood.ServiceConfig
 
   @impl true
   def mount(_params, _session, socket) do
@@ -46,9 +47,6 @@ defmodule KollywoodWeb.ProjectsLive do
   def handle_event("select_provider", %{"provider" => provider}, socket) do
     existing_params = Map.merge(socket.assigns.form.params || %{}, %{"provider" => provider})
 
-    existing_params =
-      maybe_suggest_clone_path(existing_params, provider)
-
     changeset =
       %Project{}
       |> Projects.change_project(existing_params)
@@ -61,8 +59,6 @@ defmodule KollywoodWeb.ProjectsLive do
   end
 
   def handle_event("validate", %{"project" => params}, socket) do
-    params = maybe_suggest_clone_path(params, socket.assigns.selected_provider)
-
     changeset =
       %Project{}
       |> Projects.change_project(params)
@@ -72,22 +68,8 @@ defmodule KollywoodWeb.ProjectsLive do
   end
 
   def handle_event("save", %{"project" => params}, socket) do
-    provider = socket.assigns.selected_provider
-
-    if provider in ["github", "gitlab"] do
-      start_clone(socket, params, String.to_atom(provider))
-    else
-      case Projects.create_project(params) do
-        {:ok, project} ->
-          {:noreply,
-           socket
-           |> put_flash(:info, "Project \"#{project.name}\" created.")
-           |> push_navigate(to: ~p"/projects/#{project.slug}")}
-
-        {:error, changeset} ->
-          {:noreply, assign(socket, :form, to_form(changeset, as: "project"))}
-      end
-    end
+    provider = String.to_atom(socket.assigns.selected_provider)
+    start_clone(socket, params, provider)
   end
 
   def handle_event("confirm_delete", %{"id" => id}, socket) do
@@ -158,7 +140,11 @@ defmodule KollywoodWeb.ProjectsLive do
       <main class="px-4 sm:px-6 lg:px-8 py-8">
         <div class="max-w-5xl mx-auto">
           <%= if @live_action == :new do %>
-            <.add_project_form form={@form} selected_provider={@selected_provider} clone_status={@clone_status} />
+            <.add_project_form
+              form={@form}
+              selected_provider={@selected_provider}
+              clone_status={@clone_status}
+            />
           <% else %>
             <.projects_index projects={@projects} />
           <% end %>
@@ -234,17 +220,14 @@ defmodule KollywoodWeb.ProjectsLive do
   # -- Private helpers --
 
   defp start_clone(socket, params, provider) do
-    local_path =
-      (Map.get(params, "local_path") || "")
-      |> String.trim()
-      |> Path.expand()
-
+    slug = Projects.slugify(params["name"] || "")
+    local_path = ServiceConfig.project_repos_path(slug)
     repository = Map.get(params, "repository", "")
     parent = self()
 
     Task.start(fn ->
       result = Kollywood.Projects.Cloner.clone(provider, repository, local_path)
-      send(parent, {:clone_result, result, Map.put(params, "local_path", local_path)})
+      send(parent, {:clone_result, result, params})
     end)
 
     {:noreply,
@@ -252,19 +235,6 @@ defmodule KollywoodWeb.ProjectsLive do
      |> assign(:clone_status, :cloning)
      |> assign(:clone_params, params)}
   end
-
-  defp maybe_suggest_clone_path(params, provider) when provider in ["github", "gitlab"] do
-    repository = Map.get(params, "repository", "")
-    existing = Map.get(params, "local_path", "")
-
-    if String.trim(existing) == "" and String.trim(repository) != "" do
-      Map.put(params, "local_path", Projects.default_clone_path(repository))
-    else
-      params
-    end
-  end
-
-  defp maybe_suggest_clone_path(params, _provider), do: params
 
   # -- Add Project Form --
 
@@ -332,34 +302,30 @@ defmodule KollywoodWeb.ProjectsLive do
                 <input type="hidden" name={@form[:provider].name} value={@selected_provider} />
               </div>
 
-              <%= if @selected_provider == "local" do %>
-                <.input
-                  field={@form[:local_path]}
-                  type="text"
-                  label="Local Path"
-                  placeholder="/home/user/projects/my-project"
-                />
-              <% else %>
+              <div>
                 <.input
                   field={@form[:repository]}
                   type="text"
-                  label="Repository"
-                  placeholder={if @selected_provider == "github",
-                    do: "owner/repo",
-                    else: "group/project"}
+                  label={
+                    if @selected_provider == "local", do: "Local Repository Path", else: "Repository"
+                  }
+                  placeholder={
+                    case @selected_provider do
+                      "local" -> "/home/user/projects/my-project"
+                      "github" -> "owner/repo"
+                      _ -> "group/project"
+                    end
+                  }
                 />
-                <div>
-                  <.input
-                    field={@form[:local_path]}
-                    type="text"
-                    label="Clone to"
-                    placeholder="~/kollywood-repos/my-repo"
-                  />
-                  <p class="text-xs text-base-content/50 mt-1">
-                    Where to clone the repository locally. Auto-suggested from the repo name.
-                  </p>
-                </div>
-              <% end %>
+                <% slug = Projects.slugify(@form.params["name"] || "") %>
+                <% managed_path =
+                  if slug != "" and slug != "project",
+                    do: ServiceConfig.project_repos_path(slug),
+                    else: "~/.kollywood/repos/<slug>" %>
+                <p class="text-xs text-base-content/50 mt-1">
+                  Kollywood will clone to: <span class="font-mono">{managed_path}</span>
+                </p>
+              </div>
 
               <.input
                 field={@form[:default_branch]}
@@ -369,13 +335,7 @@ defmodule KollywoodWeb.ProjectsLive do
               />
 
               <div class="pt-4 flex gap-2">
-                <button type="submit" class="btn btn-primary">
-                  <%= if @selected_provider == "local" do %>
-                    Create Project
-                  <% else %>
-                    Clone & Create Project
-                  <% end %>
-                </button>
+                <button type="submit" class="btn btn-primary">Clone & Create Project</button>
                 <.link navigate={~p"/"} class="btn btn-ghost">Cancel</.link>
               </div>
             </.form>

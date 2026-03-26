@@ -19,7 +19,7 @@ hooks:
 checks:
   required:
     - devenv shell -- mix format --check-formatted
-    - devenv shell -- mix test
+    - devenv shell -- bash -c "MIX_ENV=test mix test"
   timeout_ms: 1800000
   fail_fast: true
 

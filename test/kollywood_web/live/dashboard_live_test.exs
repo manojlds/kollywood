@@ -45,6 +45,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       Projects.create_project(%{
         name: "Dashboard Test Project #{System.unique_integer([:positive])}",
         provider: :local,
+        repository: tmp_dir,
         local_path: tmp_dir
       })
 

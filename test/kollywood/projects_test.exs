@@ -3,32 +3,35 @@ defmodule Kollywood.ProjectsTest do
 
   alias Kollywood.Projects
 
-  test "creates a local project with generated slug and default paths" do
-    local_path = Path.join(System.tmp_dir!(), "kollywood_projects_test_local")
-
+  test "creates a local project with generated slug and managed paths" do
     assert {:ok, project} =
              Projects.create_project(%{
                name: "My Local App",
                provider: :local,
-               local_path: local_path
+               repository: "/home/user/projects/my-local-app"
              })
+
+    managed_root = Kollywood.ServiceConfig.project_repos_path("my-local-app")
 
     assert project.slug == "my-local-app"
     assert project.provider == :local
     assert project.default_branch == "main"
-    assert project.workflow_path == Path.join(Path.expand(local_path), "WORKFLOW.md")
-    assert project.tracker_path == Path.join(Path.expand(local_path), "prd.json")
+    assert project.local_path == Path.expand(managed_root)
+    assert project.workflow_path == Path.join(Path.expand(managed_root), "WORKFLOW.md")
+    assert project.tracker_path == Path.join(Path.expand(managed_root), "prd.json")
   end
 
-  test "requires repository for github and gitlab providers" do
-    assert {:error, changeset} =
-             Projects.create_project(%{
-               name: "Remote App",
-               provider: :github,
-               slug: "remote-app"
-             })
+  test "requires repository for all providers" do
+    for provider <- [:local, :github, :gitlab] do
+      assert {:error, changeset} =
+               Projects.create_project(%{
+                 name: "App",
+                 provider: provider
+               })
 
-    assert errors_on(changeset, :repository) != []
+      assert errors_on(changeset, :repository) != [],
+             "expected :repository error for provider #{provider}"
+    end
   end
 
   test "enforces unique project slug" do
@@ -36,7 +39,7 @@ defmodule Kollywood.ProjectsTest do
              Projects.create_project(%{
                name: "Project One",
                provider: :local,
-               local_path: "/tmp/project-one",
+               repository: "/tmp/project-one",
                slug: "unique-slug"
              })
 
@@ -44,7 +47,7 @@ defmodule Kollywood.ProjectsTest do
              Projects.create_project(%{
                name: "Project Two",
                provider: :local,
-               local_path: "/tmp/project-two",
+               repository: "/tmp/project-two",
                slug: "unique-slug"
              })
 

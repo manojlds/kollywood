@@ -22,6 +22,10 @@ defmodule Kollywood.Projects.Cloner do
     end
   end
 
+  defp do_clone(:local, source, path) do
+    git_clone(source, path)
+  end
+
   defp do_clone(:github, repo, path) do
     case System.cmd("gh", ["repo", "clone", repo, path], stderr_to_stdout: true) do
       {_, 0} ->
@@ -54,23 +58,4 @@ defmodule Kollywood.Projects.Cloner do
       {output, code} -> {:error, "git clone exited #{code}: #{String.trim(output)}"}
     end
   end
-
-  @doc """
-  Returns the suggested default local path for a repository.
-  E.g. `"owner/my-repo"` → `"~/kollywood-repos/my-repo"`.
-  """
-  @spec default_path(String.t()) :: String.t()
-  def default_path(repository) when is_binary(repository) do
-    repo_name =
-      repository
-      |> String.split("/")
-      |> List.last()
-      |> String.replace(~r/\.git$/, "")
-      |> String.trim()
-
-    name = if repo_name == "", do: "repo", else: repo_name
-    "~/kollywood-repos/#{name}"
-  end
-
-  def default_path(_), do: "~/kollywood-repos/repo"
 end

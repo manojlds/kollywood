@@ -30,10 +30,7 @@ defmodule Kollywood.Store.Bootstrap do
     end
 
     migrations_path = Application.app_dir(:kollywood, "priv/repo/migrations")
-
-    Ecto.Migrator.with_repo(Repo, fn repo ->
-      Ecto.Migrator.run(repo, migrations_path, :up, all: true)
-    end)
+    Ecto.Migrator.run(Repo, migrations_path, :up, all: true)
   rescue
     error ->
       Logger.error("Store bootstrap failed: #{Exception.message(error)}")

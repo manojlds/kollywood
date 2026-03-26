@@ -73,11 +73,14 @@ defmodule Mix.Tasks.Kollywood.Projects do
     name = required_option(opts, :name, "--name is required")
     path = required_option(opts, :path, "--path is required")
 
+    expanded_path = Path.expand(path)
+
     attrs =
       %{
         name: name,
         provider: :local,
-        local_path: Path.expand(path),
+        repository: expanded_path,
+        local_path: expanded_path,
         default_branch: opts[:default_branch] || "main",
         enabled: not Keyword.get(opts, :disabled, false)
       }
