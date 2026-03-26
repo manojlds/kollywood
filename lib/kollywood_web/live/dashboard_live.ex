@@ -1311,17 +1311,7 @@ defmodule KollywoodWeb.DashboardLive do
                       class="input input-bordered input-sm w-full font-mono"
                     />
                   </div>
-                  <div class="flex items-center gap-2 pt-5">
-                    <input type="hidden" name="settings[git][require_commit]" value="false" />
-                    <input
-                      type="checkbox"
-                      name="settings[git][require_commit]"
-                      value="true"
-                      checked={get_in(@workflow.parsed, ["git", "require_commit"]) != false}
-                      class="toggle toggle-sm"
-                    />
-                    <span class="text-sm">Require commit before publish</span>
-                  </div>
+                  <div></div>
                 </div>
               </div>
 
@@ -1822,7 +1812,6 @@ defmodule KollywoodWeb.DashboardLive do
     |> Map.put("review", new_review)
     |> Map.put("publish", new_publish)
     |> Map.put("git", %{
-      "require_commit" => Map.get(git_p, "require_commit") == "true",
       "base_branch" => if(base_branch == "", do: "main", else: base_branch)
     })
   end

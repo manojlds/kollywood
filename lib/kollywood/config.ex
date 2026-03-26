@@ -410,14 +410,8 @@ defmodule Kollywood.Config do
 
   defp parse_git(raw) do
     git = Map.get(raw, "git", %{})
-
-    base_branch =
-      git |> Map.get("base_branch", "main") |> to_string() |> String.trim()
-
-    with {:ok, require_commit} <-
-           parse_boolean_value(Map.get(git, "require_commit", true), "git.require_commit") do
-      {:ok, %{require_commit: require_commit, base_branch: base_branch}}
-    end
+    base_branch = git |> Map.get("base_branch", "main") |> to_string() |> String.trim()
+    {:ok, %{base_branch: base_branch}}
   end
 
   defp parse_enum_value(value, valid_values, path) when is_binary(value) do
