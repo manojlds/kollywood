@@ -188,17 +188,19 @@ defmodule KollywoodWeb.ProjectsLive do
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <%= for project <- @projects do %>
             <div class="card bg-base-200 border border-base-300 hover:border-primary/50 hover:shadow-lg transition-all relative">
-              <.link navigate={~p"/projects/#{project.slug}"} class="card-body cursor-pointer">
+              <.link
+                navigate={~p"/projects/#{project.slug}"}
+                class="card-body cursor-pointer overflow-hidden"
+              >
                 <h2 class="card-title text-lg pr-8">{project.name}</h2>
                 <div class="flex items-center gap-2 text-sm text-base-content/60">
                   <span class="badge badge-sm badge-outline capitalize">{project.provider}</span>
                   <span>{project.default_branch}</span>
                 </div>
-                <%= if project.local_path do %>
-                  <p class="text-xs text-base-content/40 truncate mt-1">{project.local_path}</p>
-                <% end %>
                 <%= if project.repository do %>
-                  <p class="text-xs text-base-content/40 truncate mt-1">{project.repository}</p>
+                  <p class="text-xs text-base-content/40 truncate mt-1" title={project.repository}>
+                    {project.repository}
+                  </p>
                 <% end %>
                 <div class="flex items-center gap-1 mt-2">
                   <span class={"badge badge-sm #{if project.enabled, do: "badge-success", else: "badge-ghost"}"}>
@@ -327,8 +329,9 @@ defmodule KollywoodWeb.ProjectsLive do
                   if slug != "" and slug != "project",
                     do: ServiceConfig.project_repos_path(slug),
                     else: "~/.kollywood/repos/<slug>" %>
-                <p class="text-xs text-base-content/50 mt-1">
-                  Kollywood will clone to: <span class="font-mono">{managed_path}</span>
+                <p class="text-xs text-base-content/50 mt-1 flex gap-1 overflow-hidden">
+                  <span class="shrink-0">Kollywood will clone to:</span>
+                  <span class="font-mono truncate" title={managed_path}>{managed_path}</span>
                 </p>
               </div>
 

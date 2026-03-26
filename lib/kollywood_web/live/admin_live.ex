@@ -324,15 +324,15 @@ defmodule KollywoodWeb.AdminLive do
       <div class="card bg-base-200 border border-base-300">
         <div class="card-body p-0">
           <div class="overflow-x-auto">
-            <table class="table table-sm">
+            <table class="table table-sm table-fixed w-full">
               <thead>
                 <tr>
-                  <th>Project</th>
-                  <th>Provider</th>
-                  <th>Source</th>
-                  <th>Managed Clone</th>
-                  <th>Status</th>
-                  <th></th>
+                  <th class="w-40">Project</th>
+                  <th class="w-24">Provider</th>
+                  <th class="w-48">Source</th>
+                  <th class="w-48">Managed Clone</th>
+                  <th class="w-28">Status</th>
+                  <th class="w-16"></th>
                 </tr>
               </thead>
               <tbody>
@@ -353,11 +353,21 @@ defmodule KollywoodWeb.AdminLive do
                         {project.provider}
                       </span>
                     </td>
-                    <td class="font-mono text-xs text-base-content/60 max-w-48 truncate">
-                      {project.repository || "—"}
+                    <td class="max-w-0 w-48">
+                      <div
+                        class="font-mono text-xs text-base-content/60 truncate"
+                        title={project.repository || "—"}
+                      >
+                        {project.repository || "—"}
+                      </div>
                     </td>
-                    <td class="font-mono text-xs text-base-content/60 max-w-48 truncate">
-                      {project.local_path || "—"}
+                    <td class="max-w-0 w-48">
+                      <div
+                        class="font-mono text-xs text-base-content/60 truncate"
+                        title={project.local_path || "—"}
+                      >
+                        {project.local_path || "—"}
+                      </div>
                     </td>
                     <td>
                       <%= cond do %>
