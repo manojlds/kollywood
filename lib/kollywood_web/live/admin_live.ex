@@ -179,17 +179,6 @@ defmodule KollywoodWeb.AdminLive do
         </div>
       <% else %>
         <div class="space-y-4">
-          <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <.stat_card label="Running" value={@status.running_count} color="text-success" />
-            <.stat_card label="Retrying" value={@status.retry_count} color="text-warning" />
-            <.stat_card label="Claimed" value={@status.claimed_count} color="text-info" />
-            <.stat_card
-              label="Completed"
-              value={@status.completed_count}
-              color="text-base-content/60"
-            />
-          </div>
-
           <div class="card bg-base-200 border border-base-300">
             <div class="card-body p-4">
               <h3 class="font-medium text-sm mb-2">Config</h3>
@@ -218,28 +207,9 @@ defmodule KollywoodWeb.AdminLive do
 
           <.running_table :if={@status.running != []} running={@status.running} />
           <.retrying_table :if={@status.retrying != []} retrying={@status.retrying} />
-          <.completed_table
-            :if={@status.completed_issue_ids != []}
-            issue_ids={@status.completed_issue_ids}
-          />
         </div>
       <% end %>
     </section>
-    """
-  end
-
-  attr :label, :string, required: true
-  attr :value, :any, required: true
-  attr :color, :string, default: "text-base-content"
-
-  defp stat_card(assigns) do
-    ~H"""
-    <div class="card bg-base-200 border border-base-300">
-      <div class="card-body p-4 items-center text-center gap-1">
-        <span class={"text-2xl font-bold #{@color}"}>{@value}</span>
-        <span class="text-xs text-base-content/60">{@label}</span>
-      </div>
-    </div>
     """
   end
 
@@ -321,23 +291,6 @@ defmodule KollywoodWeb.AdminLive do
               <% end %>
             </tbody>
           </table>
-        </div>
-      </div>
-    </div>
-    """
-  end
-
-  attr :issue_ids, :list, required: true
-
-  defp completed_table(assigns) do
-    ~H"""
-    <div class="card bg-base-200 border border-base-300">
-      <div class="card-body p-4">
-        <h3 class="font-medium text-sm mb-2">Completed this session</h3>
-        <div class="flex flex-wrap gap-2">
-          <%= for id <- @issue_ids do %>
-            <span class="badge badge-ghost font-mono">{id}</span>
-          <% end %>
         </div>
       </div>
     </div>
