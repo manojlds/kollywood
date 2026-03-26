@@ -22,6 +22,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:current_project, current_project)
       |> assign(:current_scope, nil)
       |> assign(:selected_story, nil)
+      |> assign(:story_detail_tab, "details")
       |> assign(:active_log_tab, "agent")
       |> assign(:log_poll_timer, nil)
       |> assign(:workflow, %{
@@ -81,6 +82,7 @@ defmodule KollywoodWeb.DashboardLive do
     end
   end
 
+  @impl true
   def handle_event("set_log_tab", %{"tab" => tab}, socket) do
     story_id = socket.assigns.run_detail_story_id
     run_detail = load_run_detail_latest(socket.assigns.current_project, story_id, tab)
@@ -93,14 +95,8 @@ defmodule KollywoodWeb.DashboardLive do
     {:noreply, socket}
   end
 
-  @impl true
-  def handle_event("show_story", %{"id" => id}, socket) do
-    story = Enum.find(socket.assigns.stories, &(&1["id"] == id))
-    {:noreply, assign(socket, :selected_story, story)}
-  end
-
-  def handle_event("close_story", _params, socket) do
-    {:noreply, assign(socket, :selected_story, nil)}
+  def handle_event("set_story_tab", %{"tab" => tab}, socket) do
+    {:noreply, assign(socket, :story_detail_tab, tab)}
   end
 
   def handle_event("update_story_status", %{"id" => id, "status" => status}, socket) do
@@ -294,7 +290,7 @@ defmodule KollywoodWeb.DashboardLive do
             <.nav_tab
               label="Stories"
               icon="hero-list-bullet"
-              active={@live_action == :stories}
+              active={@live_action in [:stories, :story_detail]}
               patch={~p"/projects/#{@current_project.slug}/stories"}
             />
             <.nav_tab
@@ -330,6 +326,15 @@ defmodule KollywoodWeb.DashboardLive do
                   project={@current_project}
                   stories={@stories}
                 />
+              <% :story_detail -> %>
+                <.story_detail_section
+                  story={@selected_story}
+                  story_id={@run_detail_story_id}
+                  run_detail={@run_detail}
+                  active_log_tab={@active_log_tab}
+                  story_detail_tab={@story_detail_tab}
+                  project={@current_project}
+                />
               <% :run_detail -> %>
                 <.run_detail_section
                   run_detail={@run_detail}
@@ -350,116 +355,6 @@ defmodule KollywoodWeb.DashboardLive do
             <% end %>
           </div>
         </main>
-
-        <%!-- Story Detail Slide-over --%>
-        <div
-          id="story-backdrop"
-          class={[
-            "fixed inset-0 bg-black/50 z-40 transition-opacity duration-300",
-            if(@selected_story,
-              do: "opacity-100 pointer-events-auto",
-              else: "opacity-0 pointer-events-none"
-            )
-          ]}
-          phx-click="close_story"
-        />
-        <div
-          id="story-slide-over"
-          class={[
-            "fixed inset-y-0 right-0 w-full sm:w-[480px] bg-base-100 shadow-2xl z-50 overflow-y-auto transform transition-transform duration-300",
-            if(@selected_story, do: "translate-x-0", else: "translate-x-full")
-          ]}
-        >
-          <%= if @selected_story do %>
-            <div class="p-6">
-              <div class="flex items-start justify-between mb-6">
-                <div class="flex items-center gap-2 flex-wrap">
-                  <span class="badge badge-outline font-mono text-sm">
-                    {@selected_story["id"]}
-                  </span>
-                  <.status_badge status={@selected_story["status"] || "open"} />
-                </div>
-                <button
-                  id="close-story-btn"
-                  phx-click="close_story"
-                  class="btn btn-ghost btn-sm btn-circle"
-                >
-                  <.icon name="hero-x-mark" class="size-5" />
-                </button>
-              </div>
-
-              <h2 class="text-xl font-bold mb-4">{@selected_story["title"]}</h2>
-
-              <%= if @selected_story["description"] do %>
-                <div class="mb-4">
-                  <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
-                    Description
-                  </h3>
-                  <p class="text-sm">{@selected_story["description"]}</p>
-                </div>
-              <% end %>
-
-              <%= if criteria = @selected_story["acceptanceCriteria"] do %>
-                <%= if criteria != [] do %>
-                  <div class="mb-4">
-                    <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
-                      Acceptance Criteria
-                    </h3>
-                    <ul class="list-disc list-inside space-y-1">
-                      <%= for criterion <- criteria do %>
-                        <li class="text-sm">{criterion}</li>
-                      <% end %>
-                    </ul>
-                  </div>
-                <% end %>
-              <% end %>
-
-              <%= if @selected_story["notes"] do %>
-                <div class="mb-4">
-                  <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
-                    Notes
-                  </h3>
-                  <p class="text-sm text-base-content/70">{@selected_story["notes"]}</p>
-                </div>
-              <% end %>
-
-              <%= if depends_on = @selected_story["dependsOn"] do %>
-                <%= if depends_on != [] do %>
-                  <div class="mb-4">
-                    <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
-                      Depends On
-                    </h3>
-                    <div class="flex flex-wrap gap-2">
-                      <%= for dep <- depends_on do %>
-                        <span class="badge badge-outline font-mono text-xs">{dep}</span>
-                      <% end %>
-                    </div>
-                  </div>
-                <% end %>
-              <% end %>
-
-              <%= if @selected_story["priority"] do %>
-                <div class="mb-4">
-                  <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
-                    Priority
-                  </h3>
-                  <span class="text-sm capitalize">{@selected_story["priority"]}</span>
-                </div>
-              <% end %>
-
-              <%= if @selected_story["lastError"] do %>
-                <div class="mb-4">
-                  <h3 class="text-xs font-semibold text-error uppercase tracking-wide mb-2">
-                    Last Error
-                  </h3>
-                  <p class="text-sm text-error bg-error/10 p-3 rounded-lg">
-                    {@selected_story["lastError"]}
-                  </p>
-                </div>
-              <% end %>
-            </div>
-          <% end %>
-        </div>
       <% else %>
         <main class="flex items-center justify-center px-4 py-32">
           <div class="text-center">
@@ -599,20 +494,18 @@ defmodule KollywoodWeb.DashboardLive do
                     <div class="flex items-start justify-between gap-4">
                       <div class="flex-1 min-w-0">
                         <div class="flex items-center gap-2">
-                          <button
-                            phx-click="show_story"
-                            phx-value-id={story["id"]}
-                            class="font-mono text-sm font-semibold text-primary hover:underline cursor-pointer"
+                          <.link
+                            navigate={~p"/projects/#{@project.slug}/stories/#{story["id"]}"}
+                            class="font-mono text-sm font-semibold text-primary hover:underline"
                           >
                             {story["id"]}
-                          </button>
-                          <button
-                            phx-click="show_story"
-                            phx-value-id={story["id"]}
-                            class="font-medium hover:text-primary cursor-pointer text-left"
+                          </.link>
+                          <.link
+                            navigate={~p"/projects/#{@project.slug}/stories/#{story["id"]}"}
+                            class="font-medium hover:text-primary text-left"
                           >
                             {story["title"]}
-                          </button>
+                          </.link>
                         </div>
                         <%= if story["dependsOn"] && story["dependsOn"] != [] do %>
                           <div class="flex items-center gap-1 mt-1">
@@ -696,20 +589,18 @@ defmodule KollywoodWeb.DashboardLive do
                   <div class="flex items-start justify-between gap-4">
                     <div class="flex-1 min-w-0">
                       <div class="flex items-center gap-2">
-                        <button
-                          phx-click="show_story"
-                          phx-value-id={story["id"]}
-                          class="font-mono text-sm font-semibold text-primary hover:underline cursor-pointer"
+                        <.link
+                          navigate={~p"/projects/#{@project.slug}/stories/#{story["id"]}"}
+                          class="font-mono text-sm font-semibold text-primary hover:underline"
                         >
                           {story["id"]}
-                        </button>
-                        <button
-                          phx-click="show_story"
-                          phx-value-id={story["id"]}
-                          class="font-medium hover:text-primary cursor-pointer text-left"
+                        </.link>
+                        <.link
+                          navigate={~p"/projects/#{@project.slug}/stories/#{story["id"]}"}
+                          class="font-medium hover:text-primary text-left"
                         >
                           {story["title"]}
-                        </button>
+                        </.link>
                       </div>
                       <%= if story["dependsOn"] && story["dependsOn"] != [] do %>
                         <div class="flex items-center gap-1 mt-1">
@@ -924,6 +815,179 @@ defmodule KollywoodWeb.DashboardLive do
         }
       }
     </script>
+    """
+  end
+
+  # -- Story Detail Section --
+
+  attr :story, :map, default: nil
+  attr :story_id, :string, default: nil
+  attr :run_detail, :map, default: nil
+  attr :active_log_tab, :string, default: "agent"
+  attr :story_detail_tab, :string, default: "details"
+  attr :project, Project, required: true
+
+  defp story_detail_section(assigns) do
+    ~H"""
+    <div class="space-y-6">
+      <div class="flex items-center gap-4">
+        <.link navigate={~p"/projects/#{@project.slug}/stories"} class="btn btn-ghost btn-sm gap-2">
+          <.icon name="hero-arrow-left" class="size-4" /> Back to Stories
+        </.link>
+        <span class="badge badge-outline font-mono text-sm">{@story_id}</span>
+        <%= if @story do %>
+          <.status_badge status={@story["status"] || "open"} />
+        <% end %>
+      </div>
+
+      <%= if @story do %>
+        <h1 class="text-2xl font-bold">{@story["title"]}</h1>
+      <% end %>
+
+      <div class="flex gap-0 border-b border-base-300">
+        <button
+          phx-click="set_story_tab"
+          phx-value-tab="details"
+          class={[
+            "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
+            @story_detail_tab == "details" && "border-primary text-primary",
+            @story_detail_tab != "details" &&
+              "border-transparent text-base-content/60 hover:text-base-content"
+          ]}
+        >
+          Details
+        </button>
+        <button
+          phx-click="set_story_tab"
+          phx-value-tab="runs"
+          class={[
+            "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
+            @story_detail_tab == "runs" && "border-primary text-primary",
+            @story_detail_tab != "runs" &&
+              "border-transparent text-base-content/60 hover:text-base-content"
+          ]}
+        >
+          Runs
+        </button>
+      </div>
+
+      <%= if @story_detail_tab == "details" do %>
+        <%= if @story do %>
+          <div class="space-y-4">
+            <%= if @story["description"] do %>
+              <div>
+                <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
+                  Description
+                </h3>
+                <p class="text-sm">{@story["description"]}</p>
+              </div>
+            <% end %>
+
+            <%= if criteria = @story["acceptanceCriteria"] do %>
+              <%= if criteria != [] do %>
+                <div>
+                  <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
+                    Acceptance Criteria
+                  </h3>
+                  <ul class="list-disc list-inside space-y-1">
+                    <%= for criterion <- criteria do %>
+                      <li class="text-sm">{criterion}</li>
+                    <% end %>
+                  </ul>
+                </div>
+              <% end %>
+            <% end %>
+
+            <%= if @story["notes"] do %>
+              <div>
+                <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
+                  Notes
+                </h3>
+                <p class="text-sm text-base-content/70">{@story["notes"]}</p>
+              </div>
+            <% end %>
+
+            <%= if depends_on = @story["dependsOn"] do %>
+              <%= if depends_on != [] do %>
+                <div>
+                  <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
+                    Depends On
+                  </h3>
+                  <div class="flex flex-wrap gap-2">
+                    <%= for dep <- depends_on do %>
+                      <span class="badge badge-outline font-mono text-xs">{dep}</span>
+                    <% end %>
+                  </div>
+                </div>
+              <% end %>
+            <% end %>
+
+            <%= if @story["priority"] do %>
+              <div>
+                <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
+                  Priority
+                </h3>
+                <span class="text-sm capitalize">{@story["priority"]}</span>
+              </div>
+            <% end %>
+
+            <%= if @story["lastError"] do %>
+              <div>
+                <h3 class="text-xs font-semibold text-error uppercase tracking-wide mb-2">
+                  Last Error
+                </h3>
+                <p class="text-sm text-error bg-error/10 p-3 rounded-lg">
+                  {@story["lastError"]}
+                </p>
+              </div>
+            <% end %>
+          </div>
+        <% else %>
+          <p class="text-base-content/50 text-sm italic">Story not found.</p>
+        <% end %>
+      <% end %>
+
+      <%= if @story_detail_tab == "runs" do %>
+        <div class="flex flex-col gap-4">
+          <%= if @run_detail do %>
+            <div class="flex gap-0 border-b border-base-300">
+              <%= for {tab, label} <- [
+                {"agent", "Agent"},
+                {"worker", "Worker"},
+                {"checks", "Checks"},
+                {"reviewer", "Reviewer"},
+                {"runtime", "Runtime"}
+              ] do %>
+                <button
+                  phx-click="set_log_tab"
+                  phx-value-tab={tab}
+                  class={[
+                    "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
+                    @active_log_tab == tab && "border-primary text-primary",
+                    @active_log_tab != tab &&
+                      "border-transparent text-base-content/60 hover:text-base-content"
+                  ]}
+                >
+                  {label}
+                </button>
+              <% end %>
+            </div>
+
+            <%= if @run_detail["active_log_content"] do %>
+              <pre
+                id="log-output"
+                phx-hook=".LogScroll"
+                class="font-mono text-xs leading-relaxed bg-base-300 p-4 rounded-lg overflow-auto max-h-[75vh] whitespace-pre-wrap"
+              >{@run_detail["active_log_content"]}</pre>
+            <% else %>
+              <p class="text-base-content/50 text-sm italic">No output yet.</p>
+            <% end %>
+          <% else %>
+            <p class="text-base-content/50 text-sm italic">No run logs found for this story.</p>
+          <% end %>
+        </div>
+      <% end %>
+    </div>
     """
   end
 
@@ -2165,6 +2229,26 @@ defmodule KollywoodWeb.DashboardLive do
       else
         assign(socket, :log_poll_timer, nil)
       end
+    end
+  end
+
+  defp handle_live_action(socket, :story_detail, params) do
+    story_id = params["story_id"]
+    story = Enum.find(socket.assigns.stories, &(&1["id"] == story_id))
+    tab = socket.assigns.active_log_tab
+    run_detail = load_run_detail_latest(socket.assigns.current_project, story_id, tab)
+
+    socket =
+      socket
+      |> assign(:selected_story, story)
+      |> assign(:run_detail, run_detail)
+      |> assign(:story_detail_tab, "details")
+
+    if run_detail && get_in(run_detail, ["metadata", "status"]) == "running" do
+      {:ok, timer} = :timer.send_interval(1000, self(), :poll_logs)
+      assign(socket, :log_poll_timer, timer)
+    else
+      assign(socket, :log_poll_timer, nil)
     end
   end
 
