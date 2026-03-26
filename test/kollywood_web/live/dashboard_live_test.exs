@@ -209,14 +209,25 @@ defmodule KollywoodWeb.DashboardLiveTest do
     end
   end
 
-  describe "show_story event" do
-    test "opens story detail slide-over with story data", %{conn: conn, project: project} do
-      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories")
+  describe "story detail page" do
+    test "story links in stories list navigate to story detail route", %{
+      conn: conn,
+      project: project
+    } do
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/stories")
 
-      html =
-        view
-        |> element("button[phx-click='show_story'][phx-value-id='US-001']", "US-001")
-        |> render_click()
+      assert html =~ "/projects/#{project.slug}/stories/US-001"
+    end
+
+    test "story detail page renders story info and back link", %{conn: conn, project: project} do
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/stories/US-001")
+
+      assert html =~ "US-001"
+      assert html =~ "Back to Stories"
+    end
+
+    test "story detail details tab shows story content", %{conn: conn, project: project} do
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/stories/US-001")
 
       assert html =~ "First Story"
       assert html =~ "Description of first story"
@@ -226,19 +237,13 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "high"
     end
 
-    test "closes story detail on close event", %{conn: conn, project: project} do
-      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories")
+    test "story detail page shows story not found for missing story", %{
+      conn: conn,
+      project: project
+    } do
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/stories/US-MISSING")
 
-      view
-      |> element("button[phx-click='show_story'][phx-value-id='US-001']", "US-001")
-      |> render_click()
-
-      html =
-        view
-        |> element("#close-story-btn")
-        |> render_click()
-
-      refute html =~ "Description of first story"
+      assert html =~ "Story not found"
     end
   end
 
@@ -378,9 +383,14 @@ defmodule KollywoodWeb.DashboardLiveTest do
     end
   end
 
-  describe "run detail tabbed view" do
+  describe "story detail runs tab" do
     test "shows no logs message when story has no run logs", %{conn: conn, project: project} do
-      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/runs/US-MISSING")
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories/US-MISSING")
+
+      html =
+        view
+        |> element("button[phx-click='set_story_tab'][phx-value-tab='runs']")
+        |> render_click()
 
       assert html =~ "No run logs found for this story"
     end
@@ -394,16 +404,20 @@ defmodule KollywoodWeb.DashboardLiveTest do
       context = prepare_run_logs!(tmp_root, story_id)
       File.write!(context.files.agent, "agent output here")
 
-      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}")
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}")
+
+      html =
+        view
+        |> element("button[phx-click='set_story_tab'][phx-value-tab='runs']")
+        |> render_click()
 
       assert html =~ "Agent"
-      assert html =~ "Run"
       assert html =~ "Checks"
       assert html =~ "Reviewer"
       assert html =~ "Runtime"
     end
 
-    test "agent tab shows agent.log content by default", %{
+    test "agent tab shows agent.log content by default in runs tab", %{
       conn: conn,
       project: project,
       tmp_root: tmp_root
@@ -412,12 +426,17 @@ defmodule KollywoodWeb.DashboardLiveTest do
       context = prepare_run_logs!(tmp_root, story_id)
       File.write!(context.files.agent, "agent log content")
 
-      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}")
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}")
+
+      html =
+        view
+        |> element("button[phx-click='set_story_tab'][phx-value-tab='runs']")
+        |> render_click()
 
       assert html =~ "agent log content"
     end
 
-    test "tab switching changes displayed log content", %{
+    test "log tab switching changes displayed log content", %{
       conn: conn,
       project: project,
       tmp_root: tmp_root
@@ -427,9 +446,14 @@ defmodule KollywoodWeb.DashboardLiveTest do
       File.write!(context.files.agent, "agent content")
       File.write!(context.files.worker, "worker log content")
 
-      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}")
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}")
 
-      html = view |> element("button[phx-value-tab='worker']") |> render_click()
+      view |> element("button[phx-click='set_story_tab'][phx-value-tab='runs']") |> render_click()
+
+      html =
+        view
+        |> element("button[phx-click='set_log_tab'][phx-value-tab='worker']")
+        |> render_click()
 
       assert html =~ "worker log content"
     end
@@ -442,7 +466,12 @@ defmodule KollywoodWeb.DashboardLiveTest do
       story_id = "US-EMPTY-LOG"
       _context = prepare_run_logs!(tmp_root, story_id)
 
-      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}")
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}")
+
+      html =
+        view
+        |> element("button[phx-click='set_story_tab'][phx-value-tab='runs']")
+        |> render_click()
 
       assert html =~ "No output yet."
     end
@@ -455,7 +484,9 @@ defmodule KollywoodWeb.DashboardLiveTest do
       story_id = "US-POLL-TEST"
       context = prepare_run_logs!(tmp_root, story_id, status: "running")
 
-      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}")
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}")
+
+      view |> element("button[phx-click='set_story_tab'][phx-value-tab='runs']") |> render_click()
 
       File.write!(context.files.agent, "new content after poll")
 
