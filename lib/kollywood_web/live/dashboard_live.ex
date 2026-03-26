@@ -960,7 +960,7 @@ defmodule KollywoodWeb.DashboardLive do
             <%= if @project.local_path do %>
               <div class="sm:col-span-2">
                 <span class="text-sm text-base-content/60">Local Path</span>
-                <p class="font-medium font-mono text-sm truncate" title={@project.local_path}>
+                <p class="font-medium font-mono text-sm break-all">
                   {@project.local_path}
                 </p>
               </div>
@@ -975,10 +975,7 @@ defmodule KollywoodWeb.DashboardLive do
           <div class="card-body gap-4">
             <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
               <h3 class="card-title text-lg shrink-0">WORKFLOW.md</h3>
-              <span
-                class="font-mono text-xs text-base-content/50 truncate min-w-0"
-                title={@workflow.path}
-              >
+              <span class="font-mono text-xs text-base-content/50 break-all">
                 {@workflow.path}
               </span>
             </div>
@@ -996,7 +993,7 @@ defmodule KollywoodWeb.DashboardLive do
                 <div class="grid sm:grid-cols-2 gap-4">
                   <div class="sm:col-span-2">
                     <span class="text-xs text-base-content/50">Workspaces directory</span>
-                    <p class="font-mono text-sm mt-0.5 text-base-content/70">
+                    <p class="font-mono text-sm mt-0.5 text-base-content/70 break-all">
                       {Kollywood.ServiceConfig.project_workspace_root(@project.slug)}/<em class="not-italic text-base-content/40">issue-id</em>
                     </p>
                     <p class="text-xs text-base-content/40 mt-1">
@@ -1005,11 +1002,11 @@ defmodule KollywoodWeb.DashboardLive do
                       (default: <code class="font-mono bg-base-100 px-1 rounded">~/.kollywood</code>)
                     </p>
                   </div>
-                  <div>
+                  <div class="min-w-0">
                     <label class="label pb-1"><span class="label-text text-sm">Strategy</span></label>
                     <select
                       name="settings[workspace][strategy]"
-                      class="select select-bordered select-sm w-full"
+                      class="select select-bordered select-sm w-full max-w-full"
                     >
                       <%= for s <- ["clone", "worktree"] do %>
                         <option
