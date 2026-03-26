@@ -292,10 +292,15 @@ defmodule Kollywood.Tracker.PrdJson do
       config
       |> get_in([Access.key(:tracker, %{}), Access.key(:path)])
       |> optional_string()
+      |> Kernel.||(@default_path)
 
-    path
-    |> Kernel.||(@default_path)
-    |> Path.expand()
+    source = get_in(config, [Access.key(:workspace, %{}), Access.key(:source)])
+
+    if is_binary(source) do
+      Path.expand(path, source)
+    else
+      Path.expand(path)
+    end
   end
 
   defp story_id(story) do
