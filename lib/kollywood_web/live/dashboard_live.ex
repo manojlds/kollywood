@@ -1740,19 +1740,53 @@ defmodule KollywoodWeb.DashboardLive do
     assign(socket, :run_detail, run_detail)
   end
 
+  @status_group_order ~w(in_progress open failed done draft)
+
   defp read_stories(project) do
     path = project.tracker_path
 
     if is_binary(path) and File.exists?(path) do
       with {:ok, content} <- File.read(path),
            {:ok, decoded} <- Jason.decode(content) do
-        Map.get(decoded, "userStories", [])
+        decoded
+        |> Map.get("userStories", [])
+        |> sort_stories()
       else
         _ -> []
       end
     else
       []
     end
+  end
+
+  defp sort_stories(stories) do
+    stories
+    |> Enum.with_index()
+    |> Enum.sort(fn {story_a, idx_a}, {story_b, idx_b} ->
+      group_a = status_group_rank(story_a["status"])
+      group_b = status_group_rank(story_b["status"])
+
+      if group_a != group_b do
+        group_a < group_b
+      else
+        ts_a = story_a["completedAt"] || story_a["startedAt"]
+        ts_b = story_b["completedAt"] || story_b["startedAt"]
+
+        case {ts_a, ts_b} do
+          {nil, nil} -> idx_a <= idx_b
+          {nil, _} -> false
+          {_, nil} -> true
+          {a, b} when a == b -> idx_a <= idx_b
+          {a, b} -> a >= b
+        end
+      end
+    end)
+    |> Enum.map(fn {story, _idx} -> story end)
+  end
+
+  defp status_group_rank(status) do
+    normalized = normalize_status(status)
+    Enum.find_index(@status_group_order, &(&1 == normalized)) || length(@status_group_order)
   end
 
   defp count_stories(stories) do
