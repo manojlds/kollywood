@@ -135,6 +135,11 @@ defmodule KollywoodWeb.ProjectsLive do
             <span class="text-xl font-bold">Kollywood</span>
           </.link>
         </div>
+        <div class="flex-none">
+          <.link navigate={~p"/admin"} class="btn btn-ghost btn-sm gap-1">
+            <.icon name="hero-cog-6-tooth" class="size-4" /> Admin
+          </.link>
+        </div>
       </header>
 
       <main class="px-4 sm:px-6 lg:px-8 py-8">
