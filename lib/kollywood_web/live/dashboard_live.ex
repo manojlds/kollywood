@@ -159,7 +159,9 @@ defmodule KollywoodWeb.DashboardLive do
 
           case File.write(path, content) do
             :ok ->
-              assign(socket, :workflow, load_workflow(project))
+              socket
+              |> assign(:workflow, load_workflow(project))
+              |> put_flash(:info, "Prompt template saved.")
 
             {:error, reason} ->
               assign(
@@ -185,7 +187,9 @@ defmodule KollywoodWeb.DashboardLive do
           with {:ok, content} <- File.read(path),
                new_yaml <- inject_review_template(content, String.trim(template)),
                :ok <- File.write(path, new_yaml) do
-            assign(socket, :workflow, load_workflow(project))
+            socket
+            |> assign(:workflow, load_workflow(project))
+            |> put_flash(:info, "Review template saved.")
           else
             {:error, reason} ->
               assign(
@@ -215,7 +219,9 @@ defmodule KollywoodWeb.DashboardLive do
 
           case File.write(path, content) do
             :ok ->
-              assign(socket, :workflow, load_workflow(project))
+              socket
+              |> assign(:workflow, load_workflow(project))
+              |> put_flash(:info, "Settings saved.")
 
             {:error, reason} ->
               assign(
