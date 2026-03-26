@@ -797,10 +797,8 @@ defmodule KollywoodWeb.DashboardLive do
         <div class="flex gap-0 border-b border-base-300">
           <%= for {tab, label} <- [
             {"agent", "Agent"},
-            {"worker", "Worker"},
-            {"checks", "Checks"},
-            {"reviewer", "Reviewer"},
-            {"runtime", "Runtime"}
+            {"review_agent", "Review Agent"},
+            {"worker", "Worker"}
           ] do %>
             <button
               phx-click="set_log_tab"
@@ -987,10 +985,8 @@ defmodule KollywoodWeb.DashboardLive do
             <div class="flex gap-0 border-b border-base-300">
               <%= for {tab, label} <- [
                 {"agent", "Agent"},
-                {"worker", "Worker"},
-                {"checks", "Checks"},
-                {"reviewer", "Reviewer"},
-                {"runtime", "Runtime"}
+                {"review_agent", "Review Agent"},
+                {"worker", "Worker"}
               ] do %>
                 <button
                   phx-click="set_log_tab"
@@ -2623,8 +2619,15 @@ defmodule KollywoodWeb.DashboardLive do
     end
   end
 
+  @log_tab_file_keys %{
+    "agent" => :agent_stdout,
+    "review_agent" => :reviewer_stdout,
+    "worker" => :run
+  }
+
   defp read_log_tab_content(files, tab) when is_map(files) and is_binary(tab) do
-    file_path = Map.get(files, String.to_atom(tab))
+    key = Map.get(@log_tab_file_keys, tab, String.to_atom(tab))
+    file_path = Map.get(files, key)
 
     case file_path && File.read(file_path) do
       {:ok, content} when byte_size(content) > 0 -> content

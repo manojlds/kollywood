@@ -46,7 +46,8 @@ defmodule Kollywood.Agent.CLI do
          {:ok, timeout_ms} <- turn_timeout(session.timeout_ms, opts),
          {:ok, prompt_mode} <- turn_prompt_mode(session.prompt_mode, opts) do
       args = session.args ++ extra_args
-      execute(session, args, prompt, prompt_mode, env, timeout_ms)
+      raw_log = opt(opts, :raw_log, nil)
+      execute(session, args, prompt, prompt_mode, env, timeout_ms, raw_log)
     end
   end
 
@@ -56,9 +57,9 @@ defmodule Kollywood.Agent.CLI do
   @spec stop_session(Session.t()) :: :ok
   def stop_session(%Session{}), do: :ok
 
-  defp execute(session, args, prompt, prompt_mode, env, timeout_ms) do
+  defp execute(session, args, prompt, prompt_mode, env, timeout_ms, raw_log \\ nil) do
     {command, command_args, command_opts, cleanup} =
-      command_invocation(session, args, prompt, prompt_mode, env)
+      command_invocation(session, args, prompt, prompt_mode, env, raw_log)
 
     try do
       started_at = System.monotonic_time(:millisecond)
@@ -91,7 +92,21 @@ defmodule Kollywood.Agent.CLI do
     end
   end
 
-  defp command_invocation(session, args, prompt, :argv, env) do
+  defp command_invocation(session, args, prompt, :argv, env, raw_log)
+       when is_binary(raw_log) do
+    # Redirect stdin from /dev/null; tee -a captures raw stdout to log file as it streams.
+    wrapper_args =
+      [
+        "-c",
+        "set -o pipefail; \"$1\" \"${@:2}\" < /dev/null | tee -a \"$0\"",
+        raw_log,
+        session.command
+      ] ++ args ++ [prompt]
+
+    {"bash", wrapper_args, command_opts(session.workspace_path, env), fn -> :ok end}
+  end
+
+  defp command_invocation(session, args, prompt, :argv, env, _raw_log) do
     # Wrap with bash to redirect stdin from /dev/null — prevents CLI tools that
     # detect a pipe on stdin (e.g. claude) from waiting for input and polluting stdout.
     wrapper_args =
@@ -100,7 +115,25 @@ defmodule Kollywood.Agent.CLI do
     {"bash", wrapper_args, command_opts(session.workspace_path, env), fn -> :ok end}
   end
 
-  defp command_invocation(session, args, prompt, :stdin, env) do
+  defp command_invocation(session, args, prompt, :stdin, env, raw_log)
+       when is_binary(raw_log) do
+    prompt_file = prompt_file()
+    File.write!(prompt_file, prompt)
+
+    wrapper_args =
+      [
+        "-lc",
+        "set -o pipefail; \"$2\" \"${@:3}\" < \"$1\" | tee -a \"$0\"",
+        raw_log,
+        prompt_file,
+        session.command
+      ] ++ args
+
+    {"bash", wrapper_args, command_opts(session.workspace_path, env),
+     fn -> File.rm(prompt_file) end}
+  end
+
+  defp command_invocation(session, args, prompt, :stdin, env, _raw_log) do
     prompt_file = prompt_file()
     File.write!(prompt_file, prompt)
 
