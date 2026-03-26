@@ -486,6 +486,67 @@ defmodule KollywoodWeb.DashboardLiveTest do
     end
   end
 
+  describe "story sort order" do
+    test "done stories are ordered most-recent-first by completedAt", %{
+      conn: conn,
+      project: project,
+      tmp_dir: tmp_dir
+    } do
+      stories = [
+        %{
+          "id" => "US-OLD",
+          "title" => "Older Done",
+          "status" => "done",
+          "completedAt" => "20240101_120000"
+        },
+        %{
+          "id" => "US-NEW",
+          "title" => "Newer Done",
+          "status" => "done",
+          "completedAt" => "20240201_120000"
+        }
+      ]
+
+      File.write!(
+        Path.join(tmp_dir, "prd.json"),
+        Jason.encode!(%{"userStories" => stories}, pretty: true)
+      )
+
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/stories")
+
+      newer_pos = :binary.match(html, "US-NEW") |> elem(0)
+      older_pos = :binary.match(html, "US-OLD") |> elem(0)
+      assert newer_pos < older_pos
+    end
+
+    test "in_progress stories appear before open stories in rendered HTML", %{
+      conn: conn,
+      project: project,
+      tmp_dir: tmp_dir
+    } do
+      stories = [
+        %{"id" => "US-OPEN", "title" => "Open Story", "status" => "open"},
+        %{
+          "id" => "US-IP",
+          "title" => "In Progress Story",
+          "status" => "in_progress",
+          "startedAt" => "20240101_120000"
+        }
+      ]
+
+      File.write!(
+        Path.join(tmp_dir, "prd.json"),
+        Jason.encode!(%{"userStories" => stories}, pretty: true)
+      )
+
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/stories")
+
+      ip_pos = :binary.match(html, "US-IP") |> elem(0)
+      open_pos = :binary.match(html, "US-OPEN") |> elem(0)
+      assert ip_pos < open_pos
+    end
+  end
+
   defp prepare_run_logs!(root, story_id, opts \\ []) do
     config = %Config{
       workspace: %{root: root},
