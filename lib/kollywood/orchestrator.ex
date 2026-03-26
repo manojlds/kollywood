@@ -386,11 +386,17 @@ defmodule Kollywood.Orchestrator do
 
       session_opts = if field(issue, :resumable), do: %{resumable: true}, else: %{}
 
+      log_files = case run_log_context do
+        %{files: files} -> files
+        _ -> nil
+      end
+
       run_opts =
         [
           workflow_store: state.workflow_store,
           attempt: attempt,
           session_opts: session_opts,
+          log_files: log_files,
           on_event: runner_on_event(orchestrator_pid, issue_id, run_log_context, user_on_event)
         ] ++ runner_opts
 

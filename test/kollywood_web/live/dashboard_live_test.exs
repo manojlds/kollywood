@@ -436,25 +436,24 @@ defmodule KollywoodWeb.DashboardLiveTest do
     } do
       story_id = "US-TAB-TEST"
       context = prepare_run_logs!(tmp_root, story_id)
-      File.write!(context.files.agent, "agent output here")
+      File.write!(context.files.agent_stdout, "agent output here")
 
       {:ok, _view, html} =
         live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
 
       assert html =~ "Agent"
-      assert html =~ "Checks"
-      assert html =~ "Reviewer"
-      assert html =~ "Runtime"
+      assert html =~ "Review Agent"
+      assert html =~ "Worker"
     end
 
-    test "agent tab shows agent.log content by default in runs tab", %{
+    test "agent tab shows agent_stdout.log content by default in runs tab", %{
       conn: conn,
       project: project,
       tmp_root: tmp_root
     } do
       story_id = "US-AGENT-TAB"
       context = prepare_run_logs!(tmp_root, story_id)
-      File.write!(context.files.agent, "agent log content")
+      File.write!(context.files.agent_stdout, "agent log content")
 
       {:ok, _view, html} =
         live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
@@ -469,8 +468,8 @@ defmodule KollywoodWeb.DashboardLiveTest do
     } do
       story_id = "US-SWITCH-TAB"
       context = prepare_run_logs!(tmp_root, story_id)
-      File.write!(context.files.agent, "agent content")
-      File.write!(context.files.worker, "worker log content")
+      File.write!(context.files.agent_stdout, "agent content")
+      File.write!(context.files.run, "worker log content")
 
       {:ok, view, _html} =
         live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
@@ -508,7 +507,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       {:ok, view, _html} =
         live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
 
-      File.write!(context.files.agent, "new content after poll")
+      File.write!(context.files.agent_stdout, "new content after poll")
 
       send(view.pid, :poll_logs)
 

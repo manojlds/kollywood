@@ -255,7 +255,9 @@ defmodule Kollywood.Orchestrator.RunLogs do
           runtime: files.runtime,
           events: files.events,
           metadata: files.metadata,
-          agent: files.agent
+          agent: files.agent,
+          agent_stdout: files.agent_stdout,
+          reviewer_stdout: files.reviewer_stdout
         }
       }
     }
@@ -344,7 +346,9 @@ defmodule Kollywood.Orchestrator.RunLogs do
       reviewer: Path.join(attempt_dir, "reviewer.log"),
       checks: Path.join(attempt_dir, "checks.log"),
       runtime: Path.join(attempt_dir, "runtime.log"),
-      agent: Path.join(attempt_dir, "agent.log")
+      agent: Path.join(attempt_dir, "agent.log"),
+      agent_stdout: Path.join(attempt_dir, "agent_stdout.log"),
+      reviewer_stdout: Path.join(attempt_dir, "reviewer_stdout.log")
     }
   end
 
@@ -357,7 +361,9 @@ defmodule Kollywood.Orchestrator.RunLogs do
       files.reviewer,
       files.checks,
       files.runtime,
-      files.agent
+      files.agent,
+      files.agent_stdout,
+      files.reviewer_stdout
     ]
     |> Enum.reduce_while(:ok, fn path, _acc ->
       case File.write(path, "", [:append]) do
@@ -421,7 +427,9 @@ defmodule Kollywood.Orchestrator.RunLogs do
         "checks" => files.checks,
         "runtime" => files.runtime,
         "events" => files.events,
-        "agent" => files.agent
+        "agent" => files.agent,
+        "agent_stdout" => files.agent_stdout,
+        "reviewer_stdout" => files.reviewer_stdout
       }
     }
   end

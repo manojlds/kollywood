@@ -53,6 +53,8 @@ defmodule Kollywood.AgentRunner do
          {:ok, session_opts} <-
            normalize_opts(Keyword.get(opts, :session_opts, %{}), "session_opts"),
          {:ok, turn_opts} <- normalize_opts(Keyword.get(opts, :turn_opts, %{}), "turn_opts") do
+      log_files = Keyword.get(opts, :log_files)
+
       state = %{
         issue: issue,
         issue_id: issue_meta.id,
@@ -65,7 +67,8 @@ defmodule Kollywood.AgentRunner do
         last_output: nil,
         events_rev: [],
         on_event: on_event,
-        attempt: attempt
+        attempt: attempt,
+        log_files: log_files
       }
 
       state = emit(state, :run_started, %{attempt: attempt, mode: mode, turn_limit: turn_limit})
@@ -207,7 +210,9 @@ defmodule Kollywood.AgentRunner do
         |> Map.put(:turn_count, turn_number)
         |> emit(:turn_started, %{turn: turn_number})
 
-      turn_result = Agent.run_turn(state.session, prompt, turn_opts)
+      turn_result =
+        Agent.run_turn(state.session, prompt, with_raw_log(turn_opts, state.log_files, :agent_stdout))
+
       Workspace.after_run(state.workspace, config.hooks)
 
       case turn_result do
@@ -629,7 +634,7 @@ defmodule Kollywood.AgentRunner do
       state = emit(state, :review_started, %{agent_kind: review_agent_kind, cycle: cycle})
 
       with {:ok, prompt} <- build_review_prompt(state, config, cycle),
-           {:ok, output} <- run_review_turn(state, config, prompt),
+           {:ok, output} <- run_review_turn(state, config, prompt, state.log_files),
            {:ok, verdict} <- validate_review_output(output, config) do
         case verdict do
           :pass ->
@@ -696,7 +701,9 @@ defmodule Kollywood.AgentRunner do
             |> Map.put(:turn_count, turn_number)
             |> emit(:turn_started, %{turn: turn_number, remediation: true, review_cycle: cycle})
 
-          turn_result = Agent.run_turn(session, prompt, turn_opts)
+          turn_result =
+            Agent.run_turn(session, prompt, with_raw_log(turn_opts, state.log_files, :agent_stdout))
+
           Workspace.after_run(state.workspace, config.hooks)
 
           case turn_result do
@@ -793,7 +800,9 @@ defmodule Kollywood.AgentRunner do
             |> Map.put(:turn_count, turn_number)
             |> emit(:turn_started, %{turn: turn_number, remediation: true, checks_cycle: cycle})
 
-          turn_result = Agent.run_turn(session, prompt, turn_opts)
+          turn_result =
+            Agent.run_turn(session, prompt, with_raw_log(turn_opts, state.log_files, :agent_stdout))
+
           Workspace.after_run(state.workspace, config.hooks)
 
           case turn_result do
@@ -1393,12 +1402,13 @@ defmodule Kollywood.AgentRunner do
     :erlang.phash2(to_string(workspace_identity), max(max_modulus, 1))
   end
 
-  defp run_review_turn(state, config, prompt) do
+  defp run_review_turn(state, config, prompt, log_files \\ nil) do
     review_config = reviewer_config(config)
+    reviewer_opts = with_raw_log(%{}, log_files, :reviewer_stdout)
 
     case Agent.start_session(review_config, state.workspace, %{}) do
       {:ok, session} ->
-        turn_result = Agent.run_turn(session, prompt, %{})
+        turn_result = Agent.run_turn(session, prompt, reviewer_opts)
         stop_result = Agent.stop_session(session)
         normalize_review_turn_result(turn_result, stop_result)
 
@@ -1406,6 +1416,14 @@ defmodule Kollywood.AgentRunner do
         {:error, "failed to start reviewer session: #{reason}"}
     end
   end
+
+  defp with_raw_log(opts, %{agent_stdout: path}, :agent_stdout) when is_binary(path),
+    do: Map.put(opts, :raw_log, path)
+
+  defp with_raw_log(opts, %{reviewer_stdout: path}, :reviewer_stdout) when is_binary(path),
+    do: Map.put(opts, :raw_log, path)
+
+  defp with_raw_log(opts, _log_files, _key), do: opts
 
   defp normalize_review_turn_result({:ok, result}, :ok) when is_map(result) do
     case Map.get(result, :output) do
