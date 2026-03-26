@@ -1056,18 +1056,6 @@ defmodule KollywoodWeb.DashboardLive do
                   </div>
                   <div>
                     <label class="label pb-1">
-                      <span class="label-text text-sm">Max Attempts</span>
-                    </label>
-                    <input
-                      type="number"
-                      min="1"
-                      name="settings[agent][max_attempts]"
-                      value={get_in(@workflow.parsed, ["agent", "max_attempts"]) || 1}
-                      class="input input-bordered input-sm w-full"
-                    />
-                  </div>
-                  <div>
-                    <label class="label pb-1">
                       <span class="label-text text-sm">Timeout (ms)</span>
                     </label>
                     <input
@@ -1078,21 +1066,6 @@ defmodule KollywoodWeb.DashboardLive do
                       value={get_in(@workflow.parsed, ["agent", "timeout_ms"]) || 7_200_000}
                       class="input input-bordered input-sm w-full"
                     />
-                  </div>
-                  <div class="flex items-center gap-2 pt-5">
-                    <input
-                      type="hidden"
-                      name="settings[agent][retries_enabled]"
-                      value="false"
-                    />
-                    <input
-                      type="checkbox"
-                      name="settings[agent][retries_enabled]"
-                      value="true"
-                      checked={get_in(@workflow.parsed, ["agent", "retries_enabled"]) != false}
-                      class="toggle toggle-sm"
-                    />
-                    <span class="text-sm">Retries enabled</span>
                   </div>
                   <div class="sm:col-span-2 lg:col-span-3">
                     <label class="label pb-1">
@@ -1738,11 +1711,6 @@ defmodule KollywoodWeb.DashboardLive do
       |> Map.put(
         "max_turns",
         parse_form_int(agent_p, "max_turns", Map.get(existing_agent, "max_turns", 20))
-      )
-      |> Map.put("retries_enabled", Map.get(agent_p, "retries_enabled") == "true")
-      |> Map.put(
-        "max_attempts",
-        parse_form_int(agent_p, "max_attempts", Map.get(existing_agent, "max_attempts", 1))
       )
       |> Map.put(
         "timeout_ms",
