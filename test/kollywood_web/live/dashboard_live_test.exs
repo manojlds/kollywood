@@ -372,7 +372,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
     } do
       {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/stories/US-002?tab=runs")
 
-      assert html =~ "No run logs found for this story"
+      assert html =~ "No runs yet for this story."
     end
 
     test "runs list shows view link for stories with lastAttempt", %{
@@ -395,7 +395,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
         |> element("button[phx-click='set_story_tab'][phx-value-tab='runs']")
         |> render_click()
 
-      assert html =~ "No run logs found for this story"
+      assert html =~ "No runs yet for this story."
     end
 
     test "shows log tab bar when run logs exist", %{
@@ -407,12 +407,8 @@ defmodule KollywoodWeb.DashboardLiveTest do
       context = prepare_run_logs!(tmp_root, story_id)
       File.write!(context.files.agent, "agent output here")
 
-      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}")
-
-      html =
-        view
-        |> element("button[phx-click='set_story_tab'][phx-value-tab='runs']")
-        |> render_click()
+      {:ok, _view, html} =
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
 
       assert html =~ "Agent"
       assert html =~ "Checks"
@@ -429,12 +425,8 @@ defmodule KollywoodWeb.DashboardLiveTest do
       context = prepare_run_logs!(tmp_root, story_id)
       File.write!(context.files.agent, "agent log content")
 
-      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}")
-
-      html =
-        view
-        |> element("button[phx-click='set_story_tab'][phx-value-tab='runs']")
-        |> render_click()
+      {:ok, _view, html} =
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
 
       assert html =~ "agent log content"
     end
@@ -449,9 +441,8 @@ defmodule KollywoodWeb.DashboardLiveTest do
       File.write!(context.files.agent, "agent content")
       File.write!(context.files.worker, "worker log content")
 
-      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}")
-
-      view |> element("button[phx-click='set_story_tab'][phx-value-tab='runs']") |> render_click()
+      {:ok, view, _html} =
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
 
       html =
         view
@@ -469,12 +460,8 @@ defmodule KollywoodWeb.DashboardLiveTest do
       story_id = "US-EMPTY-LOG"
       _context = prepare_run_logs!(tmp_root, story_id)
 
-      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}")
-
-      html =
-        view
-        |> element("button[phx-click='set_story_tab'][phx-value-tab='runs']")
-        |> render_click()
+      {:ok, _view, html} =
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
 
       assert html =~ "No output yet."
     end
@@ -487,9 +474,8 @@ defmodule KollywoodWeb.DashboardLiveTest do
       story_id = "US-POLL-TEST"
       context = prepare_run_logs!(tmp_root, story_id, status: "running")
 
-      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}")
-
-      view |> element("button[phx-click='set_story_tab'][phx-value-tab='runs']") |> render_click()
+      {:ok, view, _html} =
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
 
       File.write!(context.files.agent, "new content after poll")
 
