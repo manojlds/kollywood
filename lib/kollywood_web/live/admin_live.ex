@@ -117,7 +117,7 @@ defmodule KollywoodWeb.AdminLive do
       <h2 class="text-lg font-semibold mb-3">Service Config</h2>
       <div class="card bg-base-200 border border-base-300">
         <div class="card-body p-4">
-          <table class="table table-sm">
+          <table class="table table-sm table-fixed w-full">
             <tbody>
               <.config_row label="Home" value={ServiceConfig.kollywood_home()} />
               <.config_row label="Repos" value={ServiceConfig.repos_dir()} />
@@ -136,8 +136,10 @@ defmodule KollywoodWeb.AdminLive do
   defp config_row(assigns) do
     ~H"""
     <tr>
-      <td class="text-base-content/60 w-32">{@label}</td>
-      <td class="font-mono text-sm">{@value}</td>
+      <td class="text-base-content/60 w-28 shrink-0">{@label}</td>
+      <td class="max-w-0">
+        <div class="font-mono text-sm truncate" title={@value}>{@value}</div>
+      </td>
     </tr>
     """
   end
@@ -182,7 +184,7 @@ defmodule KollywoodWeb.AdminLive do
           <div class="card bg-base-200 border border-base-300">
             <div class="card-body p-4">
               <h3 class="font-medium text-sm mb-2">Config</h3>
-              <table class="table table-xs">
+              <table class="table table-xs table-fixed w-full">
                 <tbody>
                   <.config_row label="Poll interval" value={"#{@status.poll_interval_ms}ms"} />
                   <.config_row label="Max agents" value={"#{@status.max_concurrent_agents}"} />
