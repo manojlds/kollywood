@@ -12,8 +12,8 @@ defmodule Kollywood.Agent.OpenCode do
 
   @defaults %{
     command: "opencode",
-    args: [],
-    prompt_mode: :stdin,
+    args: ["run"],
+    prompt_mode: :argv,
     timeout_ms: 7_200_000,
     env: %{}
   }
