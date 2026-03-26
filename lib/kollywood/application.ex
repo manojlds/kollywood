@@ -22,7 +22,7 @@ defmodule Kollywood.Application do
         {Kollywood.WorkflowStore, workflow_store_opts},
         KollywoodWeb.Endpoint
       ]
-      |> maybe_add_orchestrator()
+      |> maybe_add_orchestrator(workflow_store_opts)
 
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options
@@ -45,13 +45,14 @@ defmodule Kollywood.Application do
           |> Keyword.put(:project_provider, project.provider)
           |> Keyword.put(:project_slug, project.slug)
           |> Keyword.put(:project_local_path, project.local_path)
+          |> Keyword.put(:project_default_branch, project.default_branch)
       end
     rescue
       _ -> base
     end
   end
 
-  defp maybe_add_orchestrator(children) do
+  defp maybe_add_orchestrator(children, workflow_store_opts) do
     if Application.get_env(:kollywood, :orchestrator_enabled, true) do
       orchestrator_opts =
         case Application.get_env(:kollywood, :orchestrator, []) do
@@ -59,7 +60,12 @@ defmodule Kollywood.Application do
           _other -> []
         end
 
-      child_opts = Keyword.put_new(orchestrator_opts, :workflow_store, Kollywood.WorkflowStore)
+      child_opts =
+        orchestrator_opts
+        |> Keyword.put_new(:workflow_store, Kollywood.WorkflowStore)
+        |> Keyword.put_new(:repo_local_path, workflow_store_opts[:project_local_path])
+        |> Keyword.put_new(:repo_default_branch, workflow_store_opts[:project_default_branch])
+
       children ++ [{Kollywood.Orchestrator, child_opts}]
     else
       children
