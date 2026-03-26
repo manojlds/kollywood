@@ -288,18 +288,27 @@ defmodule Kollywood.Tracker.PrdJson do
   end
 
   defp tracker_path(config) do
-    path =
+    slug =
       config
-      |> get_in([Access.key(:tracker, %{}), Access.key(:path)])
+      |> get_in([Access.key(:tracker, %{}), Access.key(:project_slug)])
       |> optional_string()
-      |> Kernel.||(@default_path)
 
-    source = get_in(config, [Access.key(:workspace, %{}), Access.key(:source)])
-
-    if is_binary(source) do
-      Path.expand(path, source)
+    if slug do
+      Kollywood.ServiceConfig.project_tracker_path(slug)
     else
-      Path.expand(path)
+      path =
+        config
+        |> get_in([Access.key(:tracker, %{}), Access.key(:path)])
+        |> optional_string()
+        |> Kernel.||(@default_path)
+
+      source = get_in(config, [Access.key(:workspace, %{}), Access.key(:source)])
+
+      if is_binary(source) do
+        Path.expand(path, source)
+      else
+        Path.expand(path)
+      end
     end
   end
 

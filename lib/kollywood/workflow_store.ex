@@ -148,6 +148,7 @@ defmodule Kollywood.WorkflowStore do
         config
         |> Map.put(:project_provider, state.project_provider)
         |> inject_workspace(state)
+        |> inject_tracker(state)
 
       {:ok,
        %{
@@ -163,6 +164,20 @@ defmodule Kollywood.WorkflowStore do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  # Fills in tracker.project_slug from the DB project slug (unless already set in YAML).
+  # This allows the prd_json tracker to resolve its path via ServiceConfig rather than
+  # looking inside the managed clone, which gets reset on every sync.
+  defp inject_tracker(config, state) do
+    tracker = config.tracker || %{}
+
+    if is_nil(Map.get(tracker, :project_slug)) and is_binary(state.project_slug) and
+         state.project_slug != "" do
+      %{config | tracker: Map.put(tracker, :project_slug, state.project_slug)}
+    else
+      config
     end
   end
 

@@ -39,4 +39,10 @@ defmodule Kollywood.ServiceConfig do
   def project_repos_path(slug) when is_binary(slug) and slug != "" do
     Path.join(repos_dir(), slug)
   end
+
+  @doc "Tracker file path for a specific project (projects/<slug>/prd.json)."
+  @spec project_tracker_path(String.t()) :: String.t()
+  def project_tracker_path(slug) when is_binary(slug) and slug != "" do
+    Path.join([kollywood_home(), "projects", slug, "prd.json"])
+  end
 end
