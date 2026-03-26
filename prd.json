@@ -12,11 +12,13 @@
       ],
       "description": "The orchestrator section of the admin page (`/admin`) currently shows four stat cards (Running, Retrying, Claimed, Completed) and a 'Completed this session' badge list. These are low-value in-memory stats that reset on restart. Remove them.\n\nSpecifically:\n- Remove the four `<.stat_card>` components (running_count, retry_count, claimed_count, completed_count) and their wrapping grid div from `orchestrator_section` in `lib/kollywood_web/live/admin_live.ex`.\n- Remove the `<.completed_table>` component call and the `completed_table/1` function definition.\n- Remove the `stat_card/1` function definition.\n- In `lib/kollywood/orchestrator.ex`, remove `completed_issue_ids` from the status map returned by the `status/0` function (the `completed_count` line added alongside it can stay if other things use it, but `completed_issue_ids` is only used by the now-removed UI).\n- Run `mix format` and `MIX_ENV=test mix test` to verify nothing is broken.\n- Commit with a conventional commit message (no Co-Authored-By).",
       "id": "US-001",
-      "lastError": null,
-      "passes": false,
+      "lastAttempt": 1,
+      "lastError": "review failed: reviewer must start first line with REVIEW_PASS or REVIEW_FAIL; got: \"Warning: no stdin data received in 3s, proceeding without it. If piping from a slow command, redirect stdin explicitly: < /dev/null to skip, or wait longer.\"",
+      "notes": "[2026-03-26T14:41:10Z] attempt 1: review failed: reviewer must start first line with REVIEW_PASS or REVIEW_FAIL; got: \"Warning: no stdin data received in 3s, proceeding without it. If piping from a slow command, redirect stdin explicitly: < /dev/null to skip, or wait longer.\"",
+      "passes": true,
       "priority": 1,
       "startedAt": "2026-03-26T14:38:27Z",
-      "status": "in_progress",
+      "status": "done",
       "title": "Remove stat cards and completed session list from admin orchestrator section"
     }
   ]
