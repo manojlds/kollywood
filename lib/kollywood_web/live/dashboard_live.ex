@@ -960,7 +960,9 @@ defmodule KollywoodWeb.DashboardLive do
             <%= if @project.local_path do %>
               <div class="sm:col-span-2">
                 <span class="text-sm text-base-content/60">Local Path</span>
-                <p class="font-medium font-mono text-sm break-all">{@project.local_path}</p>
+                <p class="font-medium font-mono text-sm truncate" title={@project.local_path}>
+                  {@project.local_path}
+                </p>
               </div>
             <% end %>
           </div>
@@ -973,7 +975,12 @@ defmodule KollywoodWeb.DashboardLive do
           <div class="card-body gap-4">
             <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
               <h3 class="card-title text-lg shrink-0">WORKFLOW.md</h3>
-              <span class="font-mono text-xs text-base-content/50 break-all">{@workflow.path}</span>
+              <span
+                class="font-mono text-xs text-base-content/50 truncate min-w-0"
+                title={@workflow.path}
+              >
+                {@workflow.path}
+              </span>
             </div>
 
             <%= if @workflow.error do %>
