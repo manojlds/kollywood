@@ -63,14 +63,23 @@ defmodule KollywoodWeb.AdminLive do
     if is_binary(local_path) and File.dir?(local_path) do
       parent = self()
 
+      branch = project.default_branch || "main"
+
       Task.start(fn ->
         result =
-          case System.cmd("git", ["fetch", "--all", "--prune"],
-                 cd: local_path,
-                 stderr_to_stdout: true
-               ) do
-            {_, 0} -> :ok
-            {output, code} -> {:error, "git fetch exited #{code}: #{String.trim(output)}"}
+          with {_, 0} <-
+                 System.cmd("git", ["fetch", "--all", "--prune"],
+                   cd: local_path,
+                   stderr_to_stdout: true
+                 ),
+               {_, 0} <-
+                 System.cmd("git", ["reset", "--hard", "origin/#{branch}"],
+                   cd: local_path,
+                   stderr_to_stdout: true
+                 ) do
+            :ok
+          else
+            {output, code} -> {:error, "git sync exited #{code}: #{String.trim(output)}"}
           end
 
         send(parent, {:sync_done, slug, result})
