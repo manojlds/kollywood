@@ -69,6 +69,19 @@ defmodule Kollywood.WorkflowStore do
 
   @impl true
   def init({path, project_provider, project_slug, project_local_path}) do
+    # If project info was not resolved at startup (Repo not yet running when
+    # application.ex called resolve_workflow_store_opts), attempt the lookup now —
+    # Repo is guaranteed to be running before WorkflowStore starts.
+    {project_provider, project_slug, project_local_path} =
+      if is_nil(project_slug) do
+        case lookup_project_by_path(path) do
+          nil -> {project_provider, project_slug, project_local_path}
+          project -> {project.provider, project.slug, project.local_path}
+        end
+      else
+        {project_provider, project_slug, project_local_path}
+      end
+
     state = %__MODULE__{
       path: path,
       project_provider: project_provider,
@@ -209,6 +222,14 @@ defmodule Kollywood.WorkflowStore do
       end
 
     %{config | workspace: workspace}
+  end
+
+  defp lookup_project_by_path(path) do
+    Kollywood.Projects.get_project_by_workflow_path(path)
+  rescue
+    _ -> nil
+  catch
+    :exit, _ -> nil
   end
 
   defp file_stamp(path) do
