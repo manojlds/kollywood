@@ -1429,12 +1429,16 @@ defmodule Kollywood.AgentRunner do
      "reviewer returned unexpected results: turn=#{inspect(other_result)} stop=#{inspect(other_stop_result)}"}
   end
 
+  # Matches ANSI escape sequences (e.g. \e[0m, \e[1;32m)
+  @ansi_escape_re ~r/\e\[[0-9;]*[A-Za-z]/
+
   defp validate_review_output(output, config) do
     pass_token = review_pass_token(config)
     fail_token = review_fail_token(config)
 
     first_line =
       output
+      |> String.replace(@ansi_escape_re, "")
       |> String.split("\n", parts: 2)
       |> List.first()
       |> to_string()

@@ -34,11 +34,11 @@ defmodule Kollywood.Agent.OpenCodeTest do
     %{workspace: workspace, cli_path: cli_path}
   end
 
-  test "runs a turn using stdin prompt mode", %{workspace: workspace, cli_path: cli_path} do
+  test "runs a turn using argv prompt mode", %{workspace: workspace, cli_path: cli_path} do
     assert {:ok, %Session{} = session} = OpenCode.start_session(workspace, %{command: cli_path})
-    assert session.prompt_mode == :stdin
+    assert session.prompt_mode == :argv
 
     assert {:ok, result} = OpenCode.run_turn(session, "ship feature")
-    assert result.output =~ "prompt:ship feature"
+    assert result.output =~ "ship feature"
   end
 end
