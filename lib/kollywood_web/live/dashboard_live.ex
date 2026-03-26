@@ -2280,9 +2280,6 @@ defmodule KollywoodWeb.DashboardLive do
 
   defp derive_project_root(project) do
     cond do
-      is_binary(project.tracker_path) and String.trim(project.tracker_path) != "" ->
-        project.tracker_path |> Path.expand() |> Path.dirname()
-
       is_binary(project.local_path) and String.trim(project.local_path) != "" ->
         Path.expand(project.local_path)
 
