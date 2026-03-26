@@ -2215,20 +2215,14 @@ defmodule KollywoodWeb.DashboardLive do
 
   defp handle_live_action(socket, :run_detail, params) do
     story_id = params["story_id"]
+    project = socket.assigns.current_project
 
-    if params["attempt"] do
-      socket
+    if project do
+      push_navigate(socket,
+        to: ~p"/projects/#{project.slug}/stories/#{story_id}?tab=runs"
+      )
     else
-      tab = socket.assigns.active_log_tab
-      run_detail = load_run_detail_latest(socket.assigns.current_project, story_id, tab)
-      socket = assign(socket, :run_detail, run_detail)
-
-      if run_detail && get_in(run_detail, ["metadata", "status"]) == "running" do
-        {:ok, timer} = :timer.send_interval(1000, self(), :poll_logs)
-        assign(socket, :log_poll_timer, timer)
-      else
-        assign(socket, :log_poll_timer, nil)
-      end
+      socket
     end
   end
 
@@ -2237,12 +2231,13 @@ defmodule KollywoodWeb.DashboardLive do
     story = Enum.find(socket.assigns.stories, &(&1["id"] == story_id))
     tab = socket.assigns.active_log_tab
     run_detail = load_run_detail_latest(socket.assigns.current_project, story_id, tab)
+    story_tab = params["tab"] || "details"
 
     socket =
       socket
       |> assign(:selected_story, story)
       |> assign(:run_detail, run_detail)
-      |> assign(:story_detail_tab, "details")
+      |> assign(:story_detail_tab, story_tab)
 
     if run_detail && get_in(run_detail, ["metadata", "status"]) == "running" do
       {:ok, timer} = :timer.send_interval(1000, self(), :poll_logs)

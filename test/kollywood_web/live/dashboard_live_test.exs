@@ -356,18 +356,21 @@ defmodule KollywoodWeb.DashboardLiveTest do
   end
 
   describe "run detail section" do
-    test "run detail route renders with story info", %{conn: conn, project: project} do
-      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/runs/US-002")
-
-      assert html =~ "US-002"
-      assert html =~ "Back to Runs"
-    end
-
-    test "shows no logs message when story has no run log directory", %{
+    test "run detail route redirects to story detail with runs tab", %{
       conn: conn,
       project: project
     } do
-      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/runs/US-002")
+      {:error, {:live_redirect, %{to: redirected_to}}} =
+        live(conn, ~p"/projects/#{project.slug}/runs/US-002")
+
+      assert redirected_to == ~p"/projects/#{project.slug}/stories/US-002?tab=runs"
+    end
+
+    test "redirected story detail page shows runs tab content", %{
+      conn: conn,
+      project: project
+    } do
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/stories/US-002?tab=runs")
 
       assert html =~ "No run logs found for this story"
     end
