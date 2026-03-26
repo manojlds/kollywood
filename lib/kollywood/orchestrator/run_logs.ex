@@ -81,6 +81,11 @@ defmodule Kollywood.Orchestrator.RunLogs do
   @doc "Resolves the project root used for run-log persistence."
   @spec project_root(Config.t()) :: String.t()
   def project_root(%Config{} = config) do
+    source =
+      config
+      |> get_in([Access.key(:workspace, %{}), Access.key(:source)])
+      |> optional_string()
+
     tracker_path =
       config
       |> get_in([Access.key(:tracker, %{}), Access.key(:path)])
@@ -92,6 +97,7 @@ defmodule Kollywood.Orchestrator.RunLogs do
       |> optional_string()
 
     cond do
+      source -> expand_path(source)
       tracker_path -> tracker_path |> expand_path() |> Path.dirname()
       workspace_root -> expand_path(workspace_root)
       true -> File.cwd!()

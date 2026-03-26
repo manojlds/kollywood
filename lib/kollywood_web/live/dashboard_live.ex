@@ -2049,10 +2049,8 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp run_logs_dir(project) do
-    if is_binary(project.tracker_path) do
-      project.tracker_path
-      |> Path.dirname()
-      |> Path.join(".kollywood/run_logs")
+    if is_binary(project.local_path) do
+      Path.join(project.local_path, ".kollywood/run_logs")
     else
       ""
     end
