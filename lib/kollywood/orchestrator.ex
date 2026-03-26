@@ -386,10 +386,11 @@ defmodule Kollywood.Orchestrator do
 
       session_opts = if field(issue, :resumable), do: %{resumable: true}, else: %{}
 
-      log_files = case run_log_context do
-        %{files: files} -> files
-        _ -> nil
-      end
+      log_files =
+        case run_log_context do
+          %{files: files} -> files
+          _ -> nil
+        end
 
       run_opts =
         [

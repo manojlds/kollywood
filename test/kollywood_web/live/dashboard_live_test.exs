@@ -115,18 +115,36 @@ defmodule KollywoodWeb.DashboardLiveTest do
   end
 
   describe "overview section" do
-    test "shows recent activity for stories with lastAttempt", %{conn: conn, project: project} do
+    test "shows no recent activity when no runs exist", %{conn: conn, project: project} do
       {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}")
 
       assert html =~ "Recent Activity"
-      assert html =~ "US-002"
-      assert html =~ "Second Story"
+      assert html =~ "No recent activity"
     end
 
-    test "recent activity rows link to run detail", %{conn: conn, project: project} do
+    test "shows completed run attempt in recent activity", %{
+      conn: conn,
+      project: project,
+      tmp_root: tmp_root
+    } do
+      prepare_run_logs!(tmp_root, "US-001")
+
       {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}")
 
-      assert html =~ "/projects/#{project.slug}/runs/US-002"
+      assert html =~ "US-001"
+      assert html =~ "/projects/#{project.slug}/runs/US-001/1"
+    end
+
+    test "recent activity shows story title when available", %{
+      conn: conn,
+      project: project,
+      tmp_root: tmp_root
+    } do
+      prepare_run_logs!(tmp_root, "US-001")
+
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}")
+
+      assert html =~ "First Story"
     end
   end
 
