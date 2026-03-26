@@ -149,8 +149,11 @@ defmodule Kollywood.AgentRunner do
                      ) do
                   {:ok, qualified_state} ->
                     case run_publish(qualified_state, config) do
-                      {:ok, published_state} -> {:ok, status, published_state}
-                      {:error, pub_reason, published_state} -> {:error, pub_reason, published_state}
+                      {:ok, published_state} ->
+                        {:ok, status, published_state}
+
+                      {:error, pub_reason, published_state} ->
+                        {:error, pub_reason, published_state}
                     end
 
                   {:error, gate_reason, qualified_state} ->
@@ -359,11 +362,10 @@ defmodule Kollywood.AgentRunner do
 
   defp run_publish(state, config) do
     workspace = state.workspace
-    require_commit = get_in(config, [Access.key(:git, %{}), Access.key(:require_commit, true)])
     auto_push = get_in(config, [Access.key(:publish, %{}), Access.key(:auto_push, :never)])
 
     with {:ok, ahead} <- Workspace.commits_ahead(workspace),
-         :ok <- check_commit_requirement(require_commit, ahead) do
+         :ok <- check_commit_requirement(auto_push, ahead) do
       case {auto_push, ahead} do
         {:on_pass, count} when is_integer(count) and count > 0 ->
           state = emit(state, :publish_started, %{branch: workspace.branch, auto_push: auto_push})
@@ -383,7 +385,8 @@ defmodule Kollywood.AgentRunner do
       end
     else
       {:error, reason} ->
-        {:error, reason, emit(state, :publish_failed, %{branch: workspace.branch, reason: reason})}
+        {:error, reason,
+         emit(state, :publish_failed, %{branch: workspace.branch, reason: reason})}
     end
   end
 
@@ -408,8 +411,7 @@ defmodule Kollywood.AgentRunner do
           {:ok, adapter} ->
             case adapter.create_pr(workspace, pr_opts) do
               {:ok, url} ->
-                {:ok,
-                 emit(state, :publish_succeeded, %{branch: workspace.branch, pr_url: url})}
+                {:ok, emit(state, :publish_succeeded, %{branch: workspace.branch, pr_url: url})}
 
               {:error, reason} ->
                 {:error, "PR creation failed: #{reason}",
@@ -423,12 +425,11 @@ defmodule Kollywood.AgentRunner do
     end
   end
 
-  defp check_commit_requirement(true, 0) do
-    {:error,
-     "no commits found on branch — agent did not commit any changes (git.require_commit: true)"}
+  defp check_commit_requirement(:on_pass, 0) do
+    {:error, "no commits found on branch — agent did not commit any changes"}
   end
 
-  defp check_commit_requirement(_require, _ahead), do: :ok
+  defp check_commit_requirement(_auto_push, _ahead), do: :ok
 
   defp finalize_with_quality_gates(
          state,
@@ -610,7 +611,9 @@ defmodule Kollywood.AgentRunner do
               {:ok, emit(state, :checks_passed, %{check_count: length(commands)})}
             else
               reason = "required checks failed:\n#{Enum.map_join(errors, "\n", &"- #{&1}")}"
-              {:checks_failed, reason, emit(state, :checks_failed, %{error_count: length(errors)})}
+
+              {:checks_failed, reason,
+               emit(state, :checks_failed, %{error_count: length(errors)})}
             end
           else
             {:error, reason, state} ->
@@ -1535,7 +1538,10 @@ defmodule Kollywood.AgentRunner do
             args -> Map.put(a, :args, args)
           end
         end)
-        |> Map.put(:env, Map.merge(Map.get(base_agent, :env, %{}), Map.get(review_agent, :env, %{})))
+        |> Map.put(
+          :env,
+          Map.merge(Map.get(base_agent, :env, %{}), Map.get(review_agent, :env, %{}))
+        )
         |> Map.put(
           :timeout_ms,
           positive_integer(

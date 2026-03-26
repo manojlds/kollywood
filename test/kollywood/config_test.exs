@@ -118,7 +118,6 @@ defmodule Kollywood.ConfigTest do
     assert config.publish.auto_push == :never
     assert config.publish.auto_create_pr == :never
 
-    assert config.git.require_commit == true
     assert config.git.base_branch == "main"
 
     assert config.project_provider == nil
@@ -296,8 +295,6 @@ defmodule Kollywood.ConfigTest do
       provider: gitlab
       auto_push: on_pass
       auto_create_pr: draft
-    git:
-      require_commit: false
     workspace:
       root: /tmp
     agent:
@@ -310,18 +307,15 @@ defmodule Kollywood.ConfigTest do
     assert config.publish.provider == :gitlab
     assert config.publish.auto_push == :on_pass
     assert config.publish.auto_create_pr == :draft
-    assert config.git.require_commit == false
   end
 
-  test "parses ready PR policy and string git.require_commit" do
+  test "parses ready PR policy" do
     content = """
     ---
     publish:
       provider: github
       auto_push: never
       auto_create_pr: ready
-    git:
-      require_commit: "false"
     workspace:
       root: /tmp
     agent:
@@ -334,7 +328,6 @@ defmodule Kollywood.ConfigTest do
     assert config.publish.provider == :github
     assert config.publish.auto_push == :never
     assert config.publish.auto_create_pr == :ready
-    assert config.git.require_commit == false
   end
 
   test "rejects invalid publish.provider" do
@@ -386,23 +379,6 @@ defmodule Kollywood.ConfigTest do
 
     assert {:error, msg} = Config.parse(content)
     assert msg =~ "Invalid publish.auto_create_pr"
-  end
-
-  test "rejects invalid git.require_commit" do
-    content = """
-    ---
-    git:
-      require_commit: maybe
-    workspace:
-      root: /tmp
-    agent:
-      kind: amp
-    ---
-    prompt
-    """
-
-    assert {:error, msg} = Config.parse(content)
-    assert msg =~ "Invalid git.require_commit"
   end
 
   test "parses full_stack runtime settings" do
