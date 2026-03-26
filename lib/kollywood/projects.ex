@@ -128,13 +128,24 @@ defmodule Kollywood.Projects do
 
   defp put_default_workflow_and_tracker_paths(attrs) do
     local_path = Map.get(attrs, "local_path") || Map.get(attrs, :local_path)
+    slug = Map.get(attrs, "slug") || Map.get(attrs, :slug)
 
     if is_binary(local_path) and String.trim(local_path) != "" do
       local_path = local_path |> String.trim() |> Path.expand()
 
+      # Use the kollywood-managed tracker path only when the project is using its
+      # managed clone as local_path — otherwise keep tracker inside local_path.
+      tracker_path =
+        if is_binary(slug) and String.trim(slug) != "" and
+             local_path == Kollywood.ServiceConfig.project_repos_path(String.trim(slug)) do
+          Kollywood.ServiceConfig.project_tracker_path(String.trim(slug))
+        else
+          Path.join(local_path, "prd.json")
+        end
+
       attrs
       |> Map.put_new("workflow_path", Path.join(local_path, "WORKFLOW.md"))
-      |> Map.put_new("tracker_path", Path.join(local_path, "prd.json"))
+      |> Map.put_new("tracker_path", tracker_path)
       |> Map.put("local_path", local_path)
     else
       attrs
