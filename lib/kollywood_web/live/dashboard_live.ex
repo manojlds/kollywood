@@ -1583,11 +1583,16 @@ defmodule KollywoodWeb.DashboardLive do
     story_id = socket.assigns[:run_detail_story_id]
     attempt = socket.assigns[:run_detail_attempt]
 
-    if story_id && attempt do
-      assign(socket, :run_detail, load_run_detail(project, story_id, attempt))
-    else
-      assign(socket, :run_detail, nil)
-    end
+    tab = socket.assigns[:active_log_tab] || "agent"
+
+    run_detail =
+      cond do
+        story_id && attempt -> load_run_detail(project, story_id, attempt)
+        story_id -> load_run_detail_latest(project, story_id, tab)
+        true -> nil
+      end
+
+    assign(socket, :run_detail, run_detail)
   end
 
   defp read_stories(project) do
