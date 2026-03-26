@@ -92,7 +92,12 @@ defmodule Kollywood.Agent.CLI do
   end
 
   defp command_invocation(session, args, prompt, :argv, env) do
-    {session.command, args ++ [prompt], command_opts(session.workspace_path, env), fn -> :ok end}
+    # Wrap with bash to redirect stdin from /dev/null — prevents CLI tools that
+    # detect a pipe on stdin (e.g. claude) from waiting for input and polluting stdout.
+    wrapper_args =
+      ["-c", "exec \"$1\" \"${@:2}\" < /dev/null", "--", session.command] ++ args ++ [prompt]
+
+    {"bash", wrapper_args, command_opts(session.workspace_path, env), fn -> :ok end}
   end
 
   defp command_invocation(session, args, prompt, :stdin, env) do
