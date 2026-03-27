@@ -1194,8 +1194,12 @@ defmodule KollywoodWeb.DashboardLive do
                   <td class="font-mono text-sm font-semibold">{run.story_id}</td>
                   <td>{run_number(run.attempt)}</td>
                   <td><.run_status_badge status={run.status} /></td>
-                  <td class="text-sm text-base-content/70">{format_time(run.started_at)}</td>
-                  <td class="text-sm text-base-content/70">{format_time(run.ended_at)}</td>
+                  <td class="text-sm text-base-content/70" title={format_time_tooltip(run.started_at)}>
+                    {format_relative_time(run.started_at)}
+                  </td>
+                  <td class="text-sm text-base-content/70" title={format_time_tooltip(run.ended_at)}>
+                    {format_relative_time(run.ended_at)}
+                  </td>
                   <td>
                     <.link
                       navigate={~p"/projects/#{@project.slug}/runs/#{run.story_id}/#{run.attempt}"}
@@ -3265,6 +3269,25 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp format_time(_), do: "—"
+
+  defp format_relative_time(nil), do: "—"
+
+  defp format_relative_time(time_str) when is_binary(time_str) do
+    case DateTime.from_iso8601(time_str) do
+      {:ok, dt, _} -> time_ago(dt)
+      _ -> "—"
+    end
+  end
+
+  defp format_relative_time(_), do: "—"
+
+  defp format_time_tooltip(nil), do: ""
+
+  defp format_time_tooltip(time_str) when is_binary(time_str) do
+    format_time(time_str)
+  end
+
+  defp format_time_tooltip(_), do: ""
 
   defp format_duration(nil, _), do: "—"
   defp format_duration(_, nil), do: "—"
