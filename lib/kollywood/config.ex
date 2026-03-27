@@ -473,7 +473,7 @@ defmodule Kollywood.Config do
   defp parse_optional_enum_value(value, valid_values, path),
     do: parse_enum_value(value, valid_values, path)
 
-  defp derive_publish_mode_from_legacy(:on_pass, _auto_create_pr, :on_pass), do: :auto_merge
+  defp derive_publish_mode_from_legacy(_auto_push, _auto_create_pr, :on_pass), do: :auto_merge
 
   defp derive_publish_mode_from_legacy(:on_pass, auto_create_pr, _auto_merge)
        when auto_create_pr in [:draft, :ready],

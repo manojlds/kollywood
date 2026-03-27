@@ -443,18 +443,23 @@ defmodule Kollywood.AgentRunner do
   defp run_publish_with_pr(state, config, workspace, provider, enable_auto_merge?) do
     pr_opts = Publisher.pr_opts(config, state.issue)
 
-    with {:ok, pushed_state} <- push_branch(state, workspace),
-         {:ok, adapter} <- publisher_adapter(provider),
-         {:ok, pr_opts} <- require_pr_opts(pr_opts),
-         {:ok, pr_url} <- create_pr(adapter, workspace, pr_opts),
-         :ok <- maybe_enable_auto_merge(adapter, workspace, pr_url, enable_auto_merge?),
-         :ok <- tracker_mark_pending_merge(config, pushed_state.issue_id, pr_url) do
-      state =
-        pushed_state
-        |> emit(:publish_pr_created, %{branch: workspace.branch, pr_url: pr_url})
-        |> emit(:publish_succeeded, %{branch: workspace.branch, pr_url: pr_url})
+    with {:ok, pushed_state} <- push_branch(state, workspace) do
+      with {:ok, adapter} <- publisher_adapter(provider),
+           {:ok, pr_opts} <- require_pr_opts(pr_opts),
+           {:ok, pr_url} <- create_pr(adapter, workspace, pr_opts),
+           :ok <- maybe_enable_auto_merge(adapter, workspace, pr_url, enable_auto_merge?),
+           :ok <- tracker_mark_pending_merge(config, pushed_state.issue_id, pr_url) do
+        state =
+          pushed_state
+          |> emit(:publish_pr_created, %{branch: workspace.branch, pr_url: pr_url})
+          |> emit(:publish_succeeded, %{branch: workspace.branch, pr_url: pr_url})
 
-      {:ok, state}
+        {:ok, state}
+      else
+        {:error, reason} ->
+          {:error, reason,
+           emit(pushed_state, :publish_failed, %{branch: workspace.branch, reason: reason})}
+      end
     else
       {:error, reason} ->
         {:error, reason,

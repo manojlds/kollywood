@@ -390,6 +390,28 @@ defmodule Kollywood.ConfigTest do
     assert log =~ "publish.mode"
   end
 
+  test "derives auto_merge mode from legacy auto_merge on_pass without auto_push" do
+    content = """
+    ---
+    publish:
+      auto_merge: on_pass
+    workspace:
+      root: /tmp
+    agent:
+      kind: amp
+    ---
+    prompt
+    """
+
+    log =
+      capture_log(fn ->
+        assert {:ok, config, _} = Config.parse(content)
+        assert config.publish.mode == :auto_merge
+      end)
+
+    assert log =~ "deprecated"
+  end
+
   test "parses ready PR policy" do
     content = """
     ---
