@@ -5,24 +5,21 @@ defmodule Kollywood.Application do
 
   use Application
 
+  alias Kollywood.AppMode
+
   @impl true
   def start(_type, _args) do
+    app_mode = AppMode.normalize(Application.get_env(:kollywood, :app_mode, :all))
+
     workflow_path =
       Application.get_env(:kollywood, :workflow_path, Path.join(File.cwd!(), "WORKFLOW.md"))
 
-    workflow_store_opts = resolve_workflow_store_opts(workflow_path)
+    workflow_store_opts = [path: workflow_path]
 
     children =
-      [
-        Kollywood.Repo,
-        Kollywood.Store.Bootstrap,
-        KollywoodWeb.Telemetry,
-        {DNSCluster, query: Application.get_env(:kollywood, :dns_cluster_query) || :ignore},
-        {Phoenix.PubSub, name: Kollywood.PubSub},
-        {Kollywood.WorkflowStore, workflow_store_opts},
-        KollywoodWeb.Endpoint
-      ]
-      |> maybe_add_orchestrator(workflow_store_opts)
+      app_mode
+      |> children_for_mode(workflow_store_opts)
+      |> maybe_add_orchestrator(app_mode)
 
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options
@@ -30,30 +27,40 @@ defmodule Kollywood.Application do
     Supervisor.start_link(children, opts)
   end
 
-  # Looks up the project whose workflow_path matches, and adds slug + local_path
-  # to WorkflowStore opts so it can inject correct workspace paths at runtime.
-  defp resolve_workflow_store_opts(workflow_path) do
-    base = [path: workflow_path]
+  defp children_for_mode(mode, workflow_store_opts) do
+    shared_children = [
+      KollywoodWeb.Telemetry,
+      {DNSCluster, query: Application.get_env(:kollywood, :dns_cluster_query) || :ignore},
+      {Phoenix.PubSub, name: Kollywood.PubSub}
+    ]
 
-    try do
-      case Kollywood.Projects.get_project_by_workflow_path(workflow_path) do
-        nil ->
-          base
-
-        project ->
-          base
-          |> Keyword.put(:project_provider, project.provider)
-          |> Keyword.put(:project_slug, project.slug)
-          |> Keyword.put(:project_local_path, project.local_path)
-          |> Keyword.put(:project_default_branch, project.default_branch)
+    children =
+      if AppMode.data_enabled?(mode) do
+        [Kollywood.Repo, Kollywood.Store.Bootstrap | shared_children]
+      else
+        shared_children
       end
-    rescue
-      _ -> base
-    end
+
+    children =
+      if AppMode.agent_pool_enabled?(mode) do
+        children ++ [{Kollywood.AgentPool, name: Kollywood.AgentPool}]
+      else
+        children
+      end
+
+    children =
+      if AppMode.data_enabled?(mode) do
+        children ++ [{Kollywood.WorkflowStore, workflow_store_opts}]
+      else
+        children
+      end
+
+    if AppMode.web_enabled?(mode), do: children ++ [KollywoodWeb.Endpoint], else: children
   end
 
-  defp maybe_add_orchestrator(children, workflow_store_opts) do
-    if Application.get_env(:kollywood, :orchestrator_enabled, true) do
+  defp maybe_add_orchestrator(children, mode) do
+    if AppMode.orchestrator_enabled?(mode) and
+         Application.get_env(:kollywood, :orchestrator_enabled, true) do
       orchestrator_opts =
         case Application.get_env(:kollywood, :orchestrator, []) do
           opts when is_list(opts) -> opts
@@ -63,8 +70,8 @@ defmodule Kollywood.Application do
       child_opts =
         orchestrator_opts
         |> Keyword.put_new(:workflow_store, Kollywood.WorkflowStore)
-        |> Keyword.put_new(:repo_local_path, workflow_store_opts[:project_local_path])
-        |> Keyword.put_new(:repo_default_branch, workflow_store_opts[:project_default_branch])
+        |> Keyword.put_new(:agent_pool, Kollywood.AgentPool)
+        |> Keyword.put_new(:repo_syncer, Kollywood.ProjectRepoSync)
 
       children ++ [{Kollywood.Orchestrator, child_opts}]
     else

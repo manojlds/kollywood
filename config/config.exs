@@ -9,6 +9,7 @@ import Config
 
 config :kollywood,
   generators: [timestamp_type: :utc_datetime],
+  app_mode: :all,
   orchestrator_enabled: true,
   orchestrator: []
 

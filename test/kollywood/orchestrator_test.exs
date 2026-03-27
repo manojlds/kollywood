@@ -172,6 +172,31 @@ defmodule Kollywood.OrchestratorTest do
     %{root: root}
   end
 
+  test "poll executes repo syncer callback when configured", %{root: root} do
+    %{store: workflow_store} = start_workflow_store!(root, %{})
+    sync_calls = start_agent!(fn -> 0 end)
+
+    repo_syncer = fn ->
+      Agent.update(sync_calls, &(&1 + 1))
+      :ok
+    end
+
+    tracker = fn _config -> {:ok, []} end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: tracker,
+         auto_poll: false,
+         repo_syncer: repo_syncer}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert Agent.get(sync_calls, & &1) == 1
+  end
+
   test "dispatches issues by priority with bounded concurrency", %{root: root} do
     %{store: workflow_store} = start_workflow_store!(root, %{max_concurrent_agents: 1})
     test_pid = self()
@@ -784,7 +809,8 @@ defmodule Kollywood.OrchestratorTest do
     Agent.update(issues_agent, fn _issues -> [] end)
 
     assert :ok = Orchestrator.poll_now(orchestrator)
-    assert_receive {:DOWN, ^runner_ref, :process, ^runner_pid, :killed}
+    assert_receive {:DOWN, ^runner_ref, :process, ^runner_pid, reason}
+    assert reason in [:killed, :shutdown]
 
     status = Orchestrator.status(orchestrator)
     assert status.running_count == 0

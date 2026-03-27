@@ -23,6 +23,25 @@ end
 config :kollywood, KollywoodWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
+app_mode =
+  case System.get_env("KOLLYWOOD_APP_MODE") do
+    nil ->
+      nil
+
+    value ->
+      case value |> String.trim() |> String.downcase() do
+        "all" -> :all
+        "web" -> :web
+        "orchestrator" -> :orchestrator
+        "worker" -> :worker
+        _other -> :all
+      end
+  end
+
+if app_mode do
+  config :kollywood, app_mode: app_mode
+end
+
 if config_env() != :test do
   config :kollywood, Kollywood.Repo,
     database:
