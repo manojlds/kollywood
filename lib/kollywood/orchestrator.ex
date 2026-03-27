@@ -206,16 +206,18 @@ defmodule Kollywood.Orchestrator do
 
   def handle_info({:run_worker_result, issue_id, worker_pid, result}, state)
       when is_binary(issue_id) and is_pid(worker_pid) do
-    case pop_running_by_issue(state, issue_id) do
-      {:ok, run_entry, state} ->
-        if Map.get(run_entry, :run_pid) == worker_pid do
-          Process.demonitor(run_entry.run_ref, [:flush])
-          {:noreply, handle_runner_result(state, issue_id, run_entry, result)}
-        else
-          {:noreply, state}
+    case Map.get(state.running, issue_id) do
+      %{run_pid: ^worker_pid} ->
+        case pop_running_by_issue(state, issue_id) do
+          {:ok, run_entry, state} ->
+            Process.demonitor(run_entry.run_ref, [:flush])
+            {:noreply, handle_runner_result(state, issue_id, run_entry, result)}
+
+          :error ->
+            {:noreply, state}
         end
 
-      :error ->
+      _other ->
         {:noreply, state}
     end
   end
@@ -290,19 +292,49 @@ defmodule Kollywood.Orchestrator do
 
   defp dispatch_retry(state, issue_id, retry_entry) do
     with {:ok, config} <- fetch_config(state.workflow_store),
-         tracker <- resolve_tracker(state.tracker, config),
-         {:ok, issues} <- list_active_issues(tracker, config) do
+         tracker <- resolve_tracker(state.tracker, config) do
       state = apply_runtime_limits(state, config)
-      issue = find_issue(issues, issue_id)
+      dispatch_retry_by_kind(state, issue_id, retry_entry, config, tracker)
+    else
+      {:error, reason} ->
+        schedule_retry(
+          state,
+          issue_id,
+          retry_entry.issue,
+          retry_entry.attempt,
+          "retry dispatch failed: #{reason}",
+          retry_backoff_delay_ms(state, retry_entry.attempt),
+          retry_schedule_opts(retry_entry)
+        )
+    end
+  end
 
-      if not is_nil(state.max_attempts) and retry_entry.attempt >= state.max_attempts do
+  defp dispatch_retry_by_kind(state, issue_id, retry_entry, config, tracker) do
+    case retry_kind(retry_entry) do
+      :run ->
+        dispatch_run_retry(state, issue_id, retry_entry, config, tracker)
+
+      :finalize_done ->
+        dispatch_finalize_done_retry(state, issue_id, retry_entry)
+
+      :finalize_resumable ->
+        dispatch_finalize_resumable_retry(state, issue_id, retry_entry)
+
+      other ->
         Logger.warning(
-          "Max attempts (#{state.max_attempts}) reached for issue_id=#{issue_id} on retry dispatch; stopping"
+          "Unknown retry kind for issue_id=#{issue_id}; releasing claim: #{inspect(other)}"
         )
 
-        state
-        |> release_claim(issue_id)
-        |> Map.update!(:completed, &MapSet.put(&1, issue_id))
+        release_claim(state, issue_id)
+    end
+  end
+
+  defp dispatch_run_retry(state, issue_id, retry_entry, config, tracker) do
+    with {:ok, issues} <- list_active_issues(tracker, config) do
+      issue = find_issue(issues, issue_id)
+
+      if retry_attempt_reached_limit?(state, retry_entry.attempt) do
+        stop_retry_after_limit(state, issue_id)
       else
         cond do
           is_nil(issue) ->
@@ -335,6 +367,66 @@ defmodule Kollywood.Orchestrator do
           "retry dispatch failed: #{reason}",
           retry_backoff_delay_ms(state, retry_entry.attempt)
         )
+    end
+  end
+
+  defp dispatch_finalize_done_retry(state, issue_id, retry_entry) do
+    if retry_attempt_reached_limit?(state, retry_entry.attempt) do
+      stop_retry_after_limit(state, issue_id)
+    else
+      finalization = retry_finalization(retry_entry)
+      done_metadata = Map.get(finalization, :done_metadata, %{})
+      mark_merged? = Map.get(finalization, :mark_merged?, false)
+      run_entry = Map.get(finalization, :run_entry)
+
+      case finalize_successful_run(state, issue_id, run_entry, done_metadata, mark_merged?) do
+        {:ok, state} ->
+          state
+
+        {:error, reason, state} ->
+          maybe_schedule_retry(
+            state,
+            issue_id,
+            retry_entry.issue,
+            next_retry_attempt(retry_entry.attempt),
+            "failed to finalize successful run: #{reason}",
+            kind: :finalize_done,
+            finalization: finalization
+          )
+      end
+    end
+  end
+
+  defp dispatch_finalize_resumable_retry(state, issue_id, retry_entry) do
+    if retry_attempt_reached_limit?(state, retry_entry.attempt) do
+      stop_retry_after_limit(state, issue_id)
+    else
+      finalization = retry_finalization(retry_entry)
+      done_metadata = Map.get(finalization, :done_metadata, %{})
+      continuation_attempt = Map.get(finalization, :continuation_attempt, 1)
+
+      case tracker_mark_resumable(state, issue_id, done_metadata) do
+        {:ok, state} ->
+          schedule_retry(
+            state,
+            issue_id,
+            retry_entry.issue,
+            continuation_attempt,
+            nil,
+            state.continuation_delay_ms
+          )
+
+        {:error, reason, state} ->
+          maybe_schedule_retry(
+            state,
+            issue_id,
+            retry_entry.issue,
+            next_retry_attempt(retry_entry.attempt),
+            "failed to mark issue resumable: #{reason}",
+            kind: :finalize_resumable,
+            finalization: finalization
+          )
+      end
     end
   end
 
@@ -549,11 +641,14 @@ defmodule Kollywood.Orchestrator do
   defp handle_runner_result(state, issue_id, run_entry, {:ok, %Result{} = result}) do
     maybe_complete_run_logs(run_entry, result)
     state = %{state | completed: MapSet.put(state.completed, issue_id)}
+    done_metadata = tracker_done_metadata(result, run_entry)
 
     case result.status do
       :ok ->
-        with {:ok, state} <- tracker_mark_done(state, issue_id, result, run_entry),
-             {:ok, state} <- maybe_tracker_mark_merged(state, issue_id, result, run_entry) do
+        mark_merged? = publish_merged?(result)
+
+        with {:ok, state} <-
+               finalize_successful_run(state, issue_id, run_entry, done_metadata, mark_merged?) do
           state
         else
           {:error, reason, state} ->
@@ -564,14 +659,20 @@ defmodule Kollywood.Orchestrator do
               issue_id,
               run_entry.issue,
               next_attempt,
-              "failed to mark issue done: #{reason}"
+              "failed to finalize successful run: #{reason}",
+              kind: :finalize_done,
+              finalization: %{
+                done_metadata: done_metadata,
+                mark_merged?: mark_merged?,
+                run_entry: run_entry
+              }
             )
         end
 
       :max_turns_reached ->
         next_attempt = next_retry_attempt(run_entry.attempt)
 
-        case tracker_mark_resumable(state, issue_id, result, run_entry) do
+        case tracker_mark_resumable(state, issue_id, done_metadata) do
           {:ok, state} ->
             schedule_retry(
               state,
@@ -588,7 +689,12 @@ defmodule Kollywood.Orchestrator do
               issue_id,
               run_entry.issue,
               next_attempt,
-              "failed to mark issue resumable: #{reason}"
+              "failed to mark issue resumable: #{reason}",
+              kind: :finalize_resumable,
+              finalization: %{
+                done_metadata: done_metadata,
+                continuation_attempt: next_attempt
+              }
             )
         end
 
@@ -621,9 +727,16 @@ defmodule Kollywood.Orchestrator do
     maybe_schedule_retry(state, issue_id, run_entry.issue, next_attempt, reason)
   end
 
+  defp finalize_successful_run(state, issue_id, run_entry, done_metadata, mark_merged?) do
+    with {:ok, state} <- tracker_mark_done(state, issue_id, done_metadata, run_entry),
+         {:ok, state} <- maybe_tracker_mark_merged(state, issue_id, mark_merged?, done_metadata) do
+      {:ok, state}
+    end
+  end
+
   # --- Retry and claim management ---
 
-  defp maybe_schedule_retry(state, issue_id, issue, attempt, reason) do
+  defp maybe_schedule_retry(state, issue_id, issue, attempt, reason, opts \\ []) do
     cond do
       not is_nil(state.max_attempts) and attempt >= state.max_attempts ->
         Logger.warning(
@@ -642,7 +755,8 @@ defmodule Kollywood.Orchestrator do
           issue,
           attempt,
           reason,
-          retry_backoff_delay_ms(state, attempt)
+          retry_backoff_delay_ms(state, attempt),
+          opts
         )
 
       true ->
@@ -657,15 +771,17 @@ defmodule Kollywood.Orchestrator do
     end
   end
 
-  defp schedule_retry(state, issue_id, issue, attempt, reason, delay_ms) do
+  defp schedule_retry(state, issue_id, issue, attempt, reason, delay_ms, opts \\ []) do
     if state.retries_enabled do
       state = cancel_retry(state, issue_id)
       due_at_ms = System.monotonic_time(:millisecond) + delay_ms
       timer_ref = Process.send_after(self(), {:retry_due, issue_id}, delay_ms)
+      kind = Keyword.get(opts, :kind, :run)
+      finalization = Keyword.get(opts, :finalization)
 
       if reason do
         Logger.warning(
-          "Scheduling retry issue_id=#{issue_id} attempt=#{attempt} delay_ms=#{delay_ms} reason=#{reason}"
+          "Scheduling retry issue_id=#{issue_id} attempt=#{attempt} delay_ms=#{delay_ms} kind=#{kind} reason=#{reason}"
         )
       else
         Logger.info("Scheduling continuation issue_id=#{issue_id} delay_ms=#{delay_ms}")
@@ -675,6 +791,8 @@ defmodule Kollywood.Orchestrator do
         issue: issue,
         attempt: attempt,
         reason: reason,
+        kind: kind,
+        finalization: finalization,
         timer_ref: timer_ref,
         due_at_ms: due_at_ms
       }
@@ -690,6 +808,39 @@ defmodule Kollywood.Orchestrator do
       |> cancel_retry(issue_id)
       |> release_claim(issue_id)
     end
+  end
+
+  defp retry_kind(retry_entry) when is_map(retry_entry), do: Map.get(retry_entry, :kind, :run)
+  defp retry_kind(_retry_entry), do: :run
+
+  defp retry_finalization(retry_entry) when is_map(retry_entry),
+    do: Map.get(retry_entry, :finalization) || %{}
+
+  defp retry_finalization(_retry_entry), do: %{}
+
+  defp retry_schedule_opts(retry_entry) do
+    kind = retry_kind(retry_entry)
+    finalization = retry_finalization(retry_entry)
+
+    if kind == :run do
+      []
+    else
+      [kind: kind, finalization: finalization]
+    end
+  end
+
+  defp retry_attempt_reached_limit?(state, attempt) do
+    not is_nil(state.max_attempts) and attempt >= state.max_attempts
+  end
+
+  defp stop_retry_after_limit(state, issue_id) do
+    Logger.warning(
+      "Max attempts (#{state.max_attempts}) reached for issue_id=#{issue_id} on retry dispatch; stopping"
+    )
+
+    state
+    |> release_claim(issue_id)
+    |> Map.update!(:completed, &MapSet.put(&1, issue_id))
   end
 
   defp retry_backoff_delay_ms(state, attempt) do
@@ -1001,15 +1152,10 @@ defmodule Kollywood.Orchestrator do
     end
   end
 
-  defp tracker_mark_done(state, issue_id, %Result{} = result, run_entry) do
+  defp tracker_mark_done(state, issue_id, done_metadata, run_entry) when is_map(done_metadata) do
     with {:ok, config} <- fetch_config(state.workflow_store),
          tracker <- resolve_tracker(state.tracker, config),
-         :ok <-
-           tracker_call(tracker, :mark_done, [
-             config,
-             issue_id,
-             tracker_done_metadata(result, run_entry)
-           ]) do
+         :ok <- tracker_call(tracker, :mark_done, [config, issue_id, done_metadata]) do
       state = release_claim(state, issue_id)
       {:ok, maybe_cleanup_terminal_workspace(state, run_entry, config)}
     else
@@ -1017,23 +1163,19 @@ defmodule Kollywood.Orchestrator do
     end
   end
 
-  defp maybe_tracker_mark_merged(state, issue_id, %Result{} = result, run_entry) do
-    if publish_merged?(result) do
-      tracker_mark_merged(state, issue_id, result, run_entry)
+  defp maybe_tracker_mark_merged(state, issue_id, mark_merged?, done_metadata)
+       when is_boolean(mark_merged?) and is_map(done_metadata) do
+    if mark_merged? do
+      tracker_mark_merged(state, issue_id, done_metadata)
     else
       {:ok, state}
     end
   end
 
-  defp tracker_mark_merged(state, issue_id, %Result{} = result, run_entry) do
+  defp tracker_mark_merged(state, issue_id, done_metadata) when is_map(done_metadata) do
     with {:ok, config} <- fetch_config(state.workflow_store),
          tracker <- resolve_tracker(state.tracker, config),
-         :ok <-
-           tracker_call(tracker, :mark_merged, [
-             config,
-             issue_id,
-             tracker_done_metadata(result, run_entry)
-           ]) do
+         :ok <- tracker_call(tracker, :mark_merged, [config, issue_id, done_metadata]) do
       {:ok, state}
     else
       {:error, reason} -> {:error, reason, state}
@@ -1055,15 +1197,10 @@ defmodule Kollywood.Orchestrator do
     end
   end
 
-  defp tracker_mark_resumable(state, issue_id, %Result{} = result, run_entry) do
+  defp tracker_mark_resumable(state, issue_id, done_metadata) when is_map(done_metadata) do
     with {:ok, config} <- fetch_config(state.workflow_store),
          tracker <- resolve_tracker(state.tracker, config),
-         :ok <-
-           tracker_call(tracker, :mark_resumable, [
-             config,
-             issue_id,
-             tracker_done_metadata(result, run_entry)
-           ]) do
+         :ok <- tracker_call(tracker, :mark_resumable, [config, issue_id, done_metadata]) do
       {:ok, state}
     else
       {:error, reason} -> {:error, reason, state}
@@ -1448,6 +1585,7 @@ defmodule Kollywood.Orchestrator do
           issue_id: issue_id,
           identifier: issue_identifier(entry.issue),
           attempt: entry.attempt,
+          kind: retry_kind(entry),
           reason: entry.reason,
           due_in_ms: max(entry.due_at_ms - now_ms, 0)
         }
