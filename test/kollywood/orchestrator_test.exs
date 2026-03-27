@@ -255,6 +255,38 @@ defmodule Kollywood.OrchestratorTest do
     assert Agent.get(sync_calls, & &1) == 1
   end
 
+  test "poll throttles repo syncer by configured interval", %{root: root} do
+    %{store: workflow_store} = start_workflow_store!(root, %{})
+    sync_calls = start_agent!(fn -> 0 end)
+
+    repo_syncer = fn ->
+      Agent.update(sync_calls, &(&1 + 1))
+      :ok
+    end
+
+    tracker = fn _config -> {:ok, []} end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: tracker,
+         auto_poll: false,
+         repo_syncer: repo_syncer,
+         repo_sync_interval_ms: 60_000}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert :ok = Orchestrator.poll_now(orchestrator)
+
+    assert Agent.get(sync_calls, & &1) == 1
+
+    status = Orchestrator.status(orchestrator)
+    assert status.repo_sync_interval_ms == 60_000
+    assert status.repo_sync_due_in_ms > 0
+  end
+
   test "dispatches issues by priority with bounded concurrency", %{root: root} do
     %{store: workflow_store} = start_workflow_store!(root, %{max_concurrent_agents: 1})
     test_pid = self()
@@ -650,6 +682,68 @@ defmodule Kollywood.OrchestratorTest do
 
     status = Orchestrator.status(orchestrator)
     assert status.completed_count == 1
+  end
+
+  test "times out stuck runs and retries with attempt metadata", %{root: root} do
+    %{store: workflow_store} =
+      start_workflow_store!(root, %{max_retry_backoff_ms: 200, max_concurrent_agents: 1})
+
+    issue = issue("ISS-TIMEOUT", "ABC-TIMEOUT", 1)
+    test_pid = self()
+    issues_agent = start_agent!(fn -> [issue] end)
+    runner_calls = start_agent!(fn -> 0 end)
+
+    tracker = fn _config -> {:ok, Agent.get(issues_agent, & &1)} end
+
+    runner = fn issue, opts ->
+      call_number = Agent.get_and_update(runner_calls, fn count -> {count + 1, count + 1} end)
+
+      send(
+        test_pid,
+        {:runner_started, call_number, issue.id, self(), Keyword.get(opts, :attempt)}
+      )
+
+      case call_number do
+        1 ->
+          receive do
+            {:complete_runner, result} -> result
+          after
+            5_000 -> {:error, failed_result(issue, "test timed out waiting for completion")}
+          end
+
+        _ ->
+          {:ok, success_result(issue)}
+      end
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: tracker,
+         runner: runner,
+         auto_poll: false,
+         run_timeout_ms: 30,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_started, 1, "ISS-TIMEOUT", first_runner_pid, nil}
+
+    first_runner_ref = Process.monitor(first_runner_pid)
+    assert_receive {:DOWN, ^first_runner_ref, :process, ^first_runner_pid, reason}, 1_000
+    assert reason in [:shutdown, :killed, :noproc]
+
+    assert_receive {:runner_started, 2, "ISS-TIMEOUT", _second_runner_pid, 1}, 1_000
+
+    _ = :sys.get_state(orchestrator)
+
+    status = Orchestrator.status(orchestrator)
+    assert status.running_count == 0
+    assert status.retry_count == 0
+    assert status.completed_count == 1
+    assert status.run_timeout_ms == 30
   end
 
   test "releases claim when mark_in_progress fails and redispatches on next poll", %{root: root} do

@@ -24,6 +24,7 @@ defmodule Kollywood.Orchestrator do
   alias Kollywood.WorkflowStore
 
   @default_poll_interval_ms 5_000
+  @default_repo_sync_interval_ms 30_000
   @default_max_concurrent_agents 5
   @default_max_retry_backoff_ms 300_000
   @default_retry_base_delay_ms 10_000
@@ -38,12 +39,15 @@ defmodule Kollywood.Orchestrator do
           auto_poll: boolean(),
           poll_timer_ref: reference() | nil,
           poll_interval_ms: pos_integer(),
+          repo_sync_interval_ms: pos_integer(),
+          last_repo_sync_at_ms: integer() | nil,
           max_concurrent_agents: pos_integer(),
           max_retry_backoff_ms: pos_integer(),
           retries_enabled: boolean(),
           max_attempts: pos_integer() | nil,
           retry_base_delay_ms: pos_integer(),
           continuation_delay_ms: pos_integer(),
+          run_timeout_ms: pos_integer() | nil,
           running: %{optional(String.t()) => map()},
           running_by_ref: %{optional(reference()) => String.t()},
           claimed: MapSet.t(String.t()),
@@ -62,12 +66,15 @@ defmodule Kollywood.Orchestrator do
     :auto_poll,
     :poll_timer_ref,
     :poll_interval_ms,
+    :repo_sync_interval_ms,
+    :last_repo_sync_at_ms,
     :max_concurrent_agents,
     :max_retry_backoff_ms,
     :retries_enabled,
     :max_attempts,
     :retry_base_delay_ms,
     :continuation_delay_ms,
+    :run_timeout_ms,
     :repo_syncer,
     :repo_local_path,
     :repo_default_branch,
@@ -121,6 +128,12 @@ defmodule Kollywood.Orchestrator do
         poll_timer_ref: nil,
         poll_interval_ms:
           positive_integer(Keyword.get(opts, :poll_interval_ms), @default_poll_interval_ms),
+        repo_sync_interval_ms:
+          positive_integer(
+            Keyword.get(opts, :repo_sync_interval_ms),
+            @default_repo_sync_interval_ms
+          ),
+        last_repo_sync_at_ms: nil,
         max_concurrent_agents:
           positive_integer(
             Keyword.get(opts, :max_concurrent_agents),
@@ -142,7 +155,8 @@ defmodule Kollywood.Orchestrator do
           positive_integer(
             Keyword.get(opts, :continuation_delay_ms),
             @default_continuation_delay_ms
-          )
+          ),
+        run_timeout_ms: positive_integer(Keyword.get(opts, :run_timeout_ms), nil)
       }
 
       state = startup_reconcile(state)
@@ -210,8 +224,40 @@ defmodule Kollywood.Orchestrator do
       %{run_pid: ^worker_pid} ->
         case pop_running_by_issue(state, issue_id) do
           {:ok, run_entry, state} ->
+            cancel_run_timeout_timer(run_entry)
             Process.demonitor(run_entry.run_ref, [:flush])
             {:noreply, handle_runner_result(state, issue_id, run_entry, result)}
+
+          :error ->
+            {:noreply, state}
+        end
+
+      _other ->
+        {:noreply, state}
+    end
+  end
+
+  def handle_info({:run_timeout, issue_id, run_pid, run_ref}, state)
+      when is_binary(issue_id) and is_pid(run_pid) and is_reference(run_ref) do
+    case Map.get(state.running, issue_id) do
+      %{run_pid: ^run_pid, run_ref: ^run_ref} ->
+        case pop_running_by_issue(state, issue_id) do
+          {:ok, run_entry, state} ->
+            cancel_run_timeout_timer(run_entry)
+            Process.demonitor(run_entry.run_ref, [:flush])
+
+            reason =
+              "run timed out after #{state.run_timeout_ms || "configured"}ms without a result"
+
+            maybe_complete_run_logs(run_entry, %{status: :failed, error: reason})
+
+            next_attempt = next_retry_attempt(run_entry.attempt)
+
+            state
+            |> stop_run_task(run_entry)
+            |> tracker_mark_failed(issue_id, reason, next_attempt)
+            |> maybe_schedule_retry(issue_id, run_entry.issue, next_attempt, reason)
+            |> then(&{:noreply, &1})
 
           :error ->
             {:noreply, state}
@@ -225,6 +271,7 @@ defmodule Kollywood.Orchestrator do
   def handle_info({:DOWN, ref, :process, _pid, reason}, state) when is_reference(ref) do
     case pop_running_by_ref(state, ref) do
       {:ok, issue_id, run_entry, state} ->
+        cancel_run_timeout_timer(run_entry)
         next_attempt = next_retry_attempt(run_entry.attempt)
 
         reason =
@@ -270,7 +317,7 @@ defmodule Kollywood.Orchestrator do
   end
 
   defp run_poll_cycle(state) do
-    sync_managed_repos(state)
+    state = maybe_sync_managed_repos(state)
 
     with {:ok, config} <- fetch_config(state.workflow_store),
          tracker <- resolve_tracker(state.tracker, config),
@@ -533,6 +580,7 @@ defmodule Kollywood.Orchestrator do
       with {:ok, run_pid} <-
              start_run_worker(state.agent_pool, orchestrator_pid, issue_id, run_fun) do
         run_ref = Process.monitor(run_pid)
+        run_timeout_timer_ref = schedule_run_timeout_timer(issue_id, run_pid, run_ref, state)
         runtime_profile = runtime_profile(config)
 
         run_entry = %{
@@ -540,6 +588,7 @@ defmodule Kollywood.Orchestrator do
           attempt: attempt,
           run_ref: run_ref,
           run_pid: run_pid,
+          run_timeout_timer_ref: run_timeout_timer_ref,
           started_at: DateTime.utc_now(),
           runtime_profile: runtime_profile,
           runtime_process_state: initial_runtime_process_state(runtime_profile),
@@ -951,7 +1000,31 @@ defmodule Kollywood.Orchestrator do
     end
   end
 
+  defp schedule_run_timeout_timer(issue_id, run_pid, run_ref, state) do
+    case state.run_timeout_ms do
+      timeout_ms when is_integer(timeout_ms) and timeout_ms > 0 ->
+        Process.send_after(self(), {:run_timeout, issue_id, run_pid, run_ref}, timeout_ms)
+
+      _other ->
+        nil
+    end
+  end
+
+  defp cancel_run_timeout_timer(run_entry) when is_map(run_entry) do
+    case Map.get(run_entry, :run_timeout_timer_ref) do
+      ref when is_reference(ref) ->
+        Process.cancel_timer(ref)
+        :ok
+
+      _other ->
+        :ok
+    end
+  end
+
+  defp cancel_run_timeout_timer(_run_entry), do: :ok
+
   defp stop_run_task(state, run_entry) do
+    cancel_run_timeout_timer(run_entry)
     _ = AgentPool.stop_run(state.agent_pool, run_entry.run_pid)
     state
   rescue
@@ -1061,6 +1134,32 @@ defmodule Kollywood.Orchestrator do
   end
 
   defp resolve_agent_pool(_agent_pool), do: {:error, "invalid agent pool configuration"}
+
+  defp maybe_sync_managed_repos(state) do
+    now_ms = System.monotonic_time(:millisecond)
+
+    if repo_sync_due?(state, now_ms) do
+      sync_managed_repos(state)
+      %{state | last_repo_sync_at_ms: now_ms}
+    else
+      state
+    end
+  end
+
+  defp repo_sync_due?(state, now_ms) do
+    interval_ms = state.repo_sync_interval_ms
+
+    case state.last_repo_sync_at_ms do
+      nil ->
+        true
+
+      last_sync_ms when is_integer(last_sync_ms) ->
+        now_ms - last_sync_ms >= interval_ms
+
+      _other ->
+        true
+    end
+  end
 
   defp sync_managed_repos(%__MODULE__{repo_syncer: nil} = state) do
     sync_repo(state.repo_local_path, state.repo_default_branch)
@@ -1419,6 +1518,12 @@ defmodule Kollywood.Orchestrator do
         state.poll_interval_ms
       )
 
+    repo_sync_interval_ms =
+      positive_integer(
+        get_in(config, [Access.key(:polling, %{}), Access.key(:repo_sync_interval_ms)]),
+        state.repo_sync_interval_ms
+      )
+
     max_concurrent_agents =
       positive_integer(
         get_in(config, [Access.key(:agent, %{}), Access.key(:max_concurrent_agents)]),
@@ -1446,13 +1551,21 @@ defmodule Kollywood.Orchestrator do
         state.max_attempts
       )
 
+    run_timeout_ms =
+      positive_integer(
+        get_in(config, [Access.key(:agent, %{}), Access.key(:run_timeout_ms)]),
+        state.run_timeout_ms
+      )
+
     %{
       state
       | poll_interval_ms: poll_interval_ms,
+        repo_sync_interval_ms: repo_sync_interval_ms,
         max_concurrent_agents: max_concurrent_agents,
         max_retry_backoff_ms: max_retry_backoff_ms,
         retries_enabled: retries_enabled,
-        max_attempts: max_attempts
+        max_attempts: max_attempts,
+        run_timeout_ms: run_timeout_ms
     }
   end
 
@@ -1601,12 +1714,15 @@ defmodule Kollywood.Orchestrator do
       claimed_issue_ids: state.claimed |> MapSet.to_list() |> Enum.sort(),
       completed_count: MapSet.size(state.completed),
       poll_interval_ms: state.poll_interval_ms,
+      repo_sync_interval_ms: state.repo_sync_interval_ms,
+      repo_sync_due_in_ms: repo_sync_due_in_ms(state, now_ms),
       max_concurrent_agents: state.max_concurrent_agents,
       retries_enabled: state.retries_enabled,
       max_attempts: state.max_attempts,
       max_retry_backoff_ms: state.max_retry_backoff_ms,
       retry_base_delay_ms: state.retry_base_delay_ms,
       continuation_delay_ms: state.continuation_delay_ms,
+      run_timeout_ms: state.run_timeout_ms,
       last_error: state.last_error,
       last_poll_at: state.last_poll_at
     }
@@ -1617,6 +1733,19 @@ defmodule Kollywood.Orchestrator do
 
   defp runtime_last_event_at(%{} = event), do: Map.get(event, :timestamp)
   defp runtime_last_event_at(_event), do: nil
+
+  defp repo_sync_due_in_ms(state, now_ms) do
+    case state.last_repo_sync_at_ms do
+      nil ->
+        0
+
+      last_sync_ms when is_integer(last_sync_ms) ->
+        max(state.repo_sync_interval_ms - (now_ms - last_sync_ms), 0)
+
+      _other ->
+        0
+    end
+  end
 
   defp maybe_cleanup_terminal_workspace(state, _run_entry, _config), do: state
 
