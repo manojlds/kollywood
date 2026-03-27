@@ -609,6 +609,7 @@ defmodule KollywoodWeb.DashboardLive do
         Enum.filter(assigns.stories, &(normalize_status(&1["status"]) == "in_progress")),
       "open" => Enum.filter(assigns.stories, &(normalize_status(&1["status"]) == "open")),
       "done" => Enum.filter(assigns.stories, &(normalize_status(&1["status"]) == "done")),
+      "merged" => Enum.filter(assigns.stories, &(normalize_status(&1["status"]) == "merged")),
       "failed" => Enum.filter(assigns.stories, &(normalize_status(&1["status"]) == "failed")),
       "draft" => Enum.filter(assigns.stories, &(normalize_status(&1["status"]) == "draft"))
     }
@@ -630,7 +631,7 @@ defmodule KollywoodWeb.DashboardLive do
         </div>
       <% end %>
 
-      <%= for {status, label} <- [{"in_progress", "In Progress"}, {"open", "Open"}, {"done", "Done"}, {"failed", "Failed"}] do %>
+      <%= for {status, label} <- [{"in_progress", "In Progress"}, {"open", "Open"}, {"done", "Done"}, {"merged", "Merged"}, {"failed", "Failed"}] do %>
         <% stories = Map.get(@groups, status, []) %>
         <%= if stories != [] do %>
           <div>
@@ -1921,7 +1922,7 @@ defmodule KollywoodWeb.DashboardLive do
     assign(socket, :run_detail, run_detail)
   end
 
-  @status_group_order ~w(in_progress open failed done draft)
+  @status_group_order ~w(in_progress open failed done merged draft)
 
   defp read_stories(project) do
     path = project.tracker_path
