@@ -13,3 +13,12 @@
 - Start server: `vaibhav dev start kollywood server`
 - Restart server: `vaibhav dev restart kollywood server`
 - Stop server: `vaibhav dev stop kollywood server`
+
+## Kollywood CLI (Stories)
+
+- Install once: `cargo install --path tools/kollywood-cli --force`
+- Default API base URL: `http://127.0.0.1:4000` (override with `KOLLYWOOD_API`)
+- From a project directory, add a story with auto-detected project:
+  - `kollywood story add --title "Story title" --status draft`
+- To target a specific project explicitly:
+  - `kollywood story add --project <project-slug> --title "Story title" --status draft`
