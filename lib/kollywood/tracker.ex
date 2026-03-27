@@ -17,6 +17,9 @@ defmodule Kollywood.Tracker do
 
   @callback mark_in_progress(Config.t(), issue_id()) :: :ok | {:error, String.t()}
 
+  @callback mark_resumable(Config.t(), issue_id(), done_metadata()) ::
+              :ok | {:error, String.t()}
+
   @callback mark_done(Config.t(), issue_id(), done_metadata()) :: :ok | {:error, String.t()}
 
   @callback mark_failed(Config.t(), issue_id(), failure_reason(), failure_attempt()) ::

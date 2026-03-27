@@ -48,10 +48,14 @@ defmodule Kollywood.Tracker.PrdJson do
     end)
   end
 
-  @spec mark_resumable(Config.t(), String.t()) :: :ok | {:error, String.t()}
-  def mark_resumable(%Config{} = config, issue_id) when is_binary(issue_id) do
+  @impl true
+  @spec mark_resumable(Config.t(), String.t(), map()) :: :ok | {:error, String.t()}
+  def mark_resumable(%Config{} = config, issue_id, metadata)
+      when is_binary(issue_id) and is_map(metadata) do
     update_story(config, issue_id, fn story ->
-      Map.put(story, "resumable", true)
+      story
+      |> Map.put("resumable", true)
+      |> Map.put("lastRun", stringify_map(metadata))
     end)
   end
 
