@@ -10,9 +10,9 @@ defmodule KollywoodWeb.DashboardLiveTest do
       "id" => "US-001",
       "title" => "First Story",
       "status" => "open",
-      "description" => "Description of first story",
+      "description" => "## First Story Details\n\nThis is **formatted** description text.",
       "acceptanceCriteria" => ["Must do X", "Must do Y"],
-      "notes" => "Some notes here",
+      "notes" => "Remember to run `mix test` before closing this story.",
       "dependsOn" => [],
       "priority" => "high"
     },
@@ -248,10 +248,13 @@ defmodule KollywoodWeb.DashboardLiveTest do
       {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/stories/US-001")
 
       assert html =~ "First Story"
-      assert html =~ "Description of first story"
+      assert html =~ "<h2>First Story Details</h2>"
+      assert html =~ "<strong>formatted</strong>"
       assert html =~ "Must do X"
       assert html =~ "Must do Y"
-      assert html =~ "Some notes here"
+      assert html =~ "<code>mix test</code>"
+      refute html =~ "## First Story Details"
+      refute html =~ "`mix test`"
       assert html =~ "high"
     end
 
