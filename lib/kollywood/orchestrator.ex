@@ -459,14 +459,15 @@ defmodule Kollywood.Orchestrator do
       {:error, reason} ->
         retry_attempt = retry_attempt_from_run_attempt(attempt)
 
-        schedule_retry(
-          state,
+        state
+        |> schedule_retry(
           issue_id,
           issue,
           retry_attempt,
           "tracker update failed before dispatch: #{reason}",
           retry_backoff_delay_ms(state, retry_attempt)
         )
+        |> release_claim(issue_id)
     end
   end
 
