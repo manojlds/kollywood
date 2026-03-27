@@ -200,7 +200,7 @@ defmodule Kollywood.AgentRunner do
   defp run_turns(state, config, prompt_template, mode, turn_limit, turn_opts) do
     turn_number = state.turn_count + 1
 
-    with {:ok, prompt} <- build_prompt(state, prompt_template, turn_number),
+    with {:ok, prompt} <- build_prompt(state, config, prompt_template, turn_number),
          :ok <- Workspace.before_run(state.workspace, config.hooks) do
       state =
         state
@@ -251,7 +251,7 @@ defmodule Kollywood.AgentRunner do
     run_turns(state, config, template, :max_turns, turn_limit, turn_opts)
   end
 
-  defp build_prompt(state, prompt_template, 1) do
+  defp build_prompt(state, config, prompt_template, 1) do
     variables = PromptBuilder.build_variables(state.issue, state.attempt)
 
     # Check for existing work in workspace
@@ -265,14 +265,35 @@ defmodule Kollywood.AgentRunner do
         variables
       end
 
-    case PromptBuilder.render(prompt_template, variables) do
+    case build_task_prompt(prompt_template, variables, config) do
       {:ok, prompt} -> {:ok, prompt}
       {:error, reason} -> {:error, "Failed to render initial prompt: #{reason}"}
     end
   end
 
-  defp build_prompt(state, _prompt_template, turn_number) do
+  defp build_prompt(state, _config, _prompt_template, turn_number) do
     {:ok, ContinuationPrompt.build(state.issue, turn_number)}
+  end
+
+  defp build_task_prompt(prompt_template, variables, config) do
+    case PromptBuilder.render(prompt_template, variables) do
+      {:ok, prompt} -> {:ok, prompt <> verification_section(config)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp verification_section(config) do
+    commands = get_in(config, [Access.key(:checks, %{}), Access.key(:required, [])]) || []
+
+    case commands do
+      [] ->
+        ""
+
+      cmds ->
+        list = Enum.map_join(cmds, "\n", fn cmd -> "- `#{cmd}`" end)
+
+        "\n\n## Verification\n\nRun these commands to verify your changes before finishing:\n#{list}"
+    end
   end
 
   # Detect if there's existing work in the workspace to resume from
