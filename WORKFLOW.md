@@ -47,7 +47,6 @@ publish:
   auto_create_pr: never
   auto_merge: on_pass
   auto_push: on_pass
-  provider: github
 git:
   base_branch: main
 ---
