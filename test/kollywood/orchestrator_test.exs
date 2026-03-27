@@ -399,6 +399,105 @@ defmodule Kollywood.OrchestratorTest do
     assert status.completed_count == 1
   end
 
+  test "keeps done dependencies blocked and unblocks merged dependencies", %{root: root} do
+    %{store: workflow_store} =
+      start_workflow_store!(root, %{
+        tracker_active_states: ["open", "in_progress", "pending_merge", "merged"],
+        tracker_terminal_states: ["done", "merged", "failed", "cancelled"]
+      })
+
+    test_pid = self()
+
+    blocked_on_done = %{
+      id: "ISS-BLOCKED",
+      identifier: "US-BLOCKED",
+      title: "Blocked by done",
+      description: "Should remain blocked",
+      state: "open",
+      priority: 1,
+      blocked_by: [
+        %{id: "US-DEP-DONE", identifier: "US-DEP-DONE", title: "Dep done", state: "done"}
+      ],
+      created_at: "2026-01-01T00:00:00Z"
+    }
+
+    unblocked_on_merged = %{
+      id: "ISS-READY",
+      identifier: "US-READY",
+      title: "Ready with merged dep",
+      description: "Should dispatch",
+      state: "open",
+      priority: 2,
+      blocked_by: [
+        %{id: "US-DEP-MERGED", identifier: "US-DEP-MERGED", title: "Dep merged", state: "merged"}
+      ],
+      created_at: "2026-01-01T00:00:00Z"
+    }
+
+    issues_agent = start_agent!(fn -> [blocked_on_done, unblocked_on_merged] end)
+    tracker = fn _config -> {:ok, Agent.get(issues_agent, & &1)} end
+
+    runner = fn issue, _opts ->
+      send(test_pid, {:runner_started, issue.id})
+      {:ok, success_result(issue)}
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: tracker,
+         runner: runner,
+         auto_poll: false,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_started, "ISS-READY"}
+    refute_receive {:runner_started, "ISS-BLOCKED"}, 100
+  end
+
+  test "does not dispatch pending_merge or merged stories", %{root: root} do
+    %{store: workflow_store} =
+      start_workflow_store!(root, %{
+        tracker_active_states: ["open", "in_progress", "pending_merge", "merged"],
+        tracker_terminal_states: ["done", "merged", "failed", "cancelled"]
+      })
+
+    test_pid = self()
+
+    issues = [
+      %{issue("ISS-PENDING", "US-PENDING", 1) | state: "pending_merge"},
+      %{issue("ISS-MERGED", "US-MERGED", 2) | state: "merged"},
+      %{issue("ISS-OPEN", "US-OPEN", 3) | state: "open"}
+    ]
+
+    issues_agent = start_agent!(fn -> issues end)
+    tracker = fn _config -> {:ok, Agent.get(issues_agent, & &1)} end
+
+    runner = fn issue, _opts ->
+      send(test_pid, {:runner_started, issue.id})
+      {:ok, success_result(issue)}
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: tracker,
+         runner: runner,
+         auto_poll: false,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_started, "ISS-OPEN"}
+    refute_receive {:runner_started, "ISS-PENDING"}, 100
+    refute_receive {:runner_started, "ISS-MERGED"}, 100
+  end
+
   test "stops ineligible running issue during reconciliation", %{root: root} do
     %{store: workflow_store} = start_workflow_store!(root, %{max_concurrent_agents: 1})
     issue = issue("ISS-4", "ABC-4", 1)

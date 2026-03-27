@@ -26,6 +26,14 @@ defmodule Kollywood.Tracker.Noop do
   def mark_done(_config, _issue_id, _metadata), do: :ok
 
   @impl true
+  @spec mark_pending_merge(Kollywood.Config.t(), String.t(), map()) :: :ok
+  def mark_pending_merge(_config, _issue_id, _metadata), do: :ok
+
+  @impl true
+  @spec mark_merged(Kollywood.Config.t(), String.t(), map()) :: :ok
+  def mark_merged(_config, _issue_id, _metadata), do: :ok
+
+  @impl true
   @spec mark_failed(Kollywood.Config.t(), String.t(), String.t(), pos_integer()) :: :ok
   def mark_failed(_config, _issue_id, _reason, _attempt), do: :ok
 end

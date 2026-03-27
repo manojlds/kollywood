@@ -465,6 +465,7 @@ defmodule Kollywood.Orchestrator do
       non_empty_string?(identifier) and
       non_empty_string?(title) and
       active_state?(state_name, config) and
+      normalize_state(state_name) not in ["pending_merge", "merged"] and
       not terminal_state?(state_name, config) and
       not blocked_issue?(issue, config)
   end
@@ -479,8 +480,8 @@ defmodule Kollywood.Orchestrator do
     end)
   end
 
-  defp success_terminal_state?(state_name, config) do
-    terminal_state?(state_name, config) and normalize_state(state_name) == "done"
+  defp success_terminal_state?(state_name, _config) do
+    normalize_state(state_name) == "merged"
   end
 
   defp sort_issues_for_dispatch(issues) do

@@ -145,13 +145,60 @@ defmodule Kollywood.Tracker.PrdJsonTest do
     assert story_after_failure["passes"] == false
   end
 
+  test "marks story pending_merge and stores pr metadata", %{root: root} do
+    path = Path.join(root, "prd.json")
+
+    write_prd!(path, [
+      %{"id" => "US-030", "title" => "Await merge", "status" => "done", "priority" => 1}
+    ])
+
+    cfg = config(path)
+    pr_url = "https://github.com/acme/kollywood/pull/42"
+
+    assert :ok = PrdJson.mark_pending_merge(cfg, "US-030", %{pr_url: pr_url})
+
+    story_after_pending_merge = story(path, "US-030")
+    assert story_after_pending_merge["status"] == "pending_merge"
+    assert story_after_pending_merge["pr_url"] == pr_url
+
+    assert story_after_pending_merge["notes"] =~
+             ~r/\[\d{4}-\d{2}-\d{2}T[^\]]+\] pending merge: https:\/\/github.com\/acme\/kollywood\/pull\/42/
+  end
+
+  test "marks story merged and appends merged note", %{root: root} do
+    path = Path.join(root, "prd.json")
+
+    write_prd!(path, [
+      %{
+        "id" => "US-031",
+        "title" => "Merge complete",
+        "status" => "pending_merge",
+        "priority" => 1,
+        "resumable" => true,
+        "notes" => "existing note"
+      }
+    ])
+
+    cfg = config(path)
+
+    assert :ok = PrdJson.mark_merged(cfg, "US-031", %{})
+
+    story_after_merge = story(path, "US-031")
+    assert story_after_merge["status"] == "merged"
+    assert story_after_merge["resumable"] == false
+    assert is_binary(story_after_merge["mergedAt"])
+    assert {:ok, _datetime, 0} = DateTime.from_iso8601(story_after_merge["mergedAt"])
+    assert story_after_merge["notes"] =~ "existing note"
+    assert story_after_merge["notes"] =~ ~r/\[\d{4}-\d{2}-\d{2}T[^\]]+\] merged to main/
+  end
+
   defp config(path, opts \\ []) do
     %Config{
       tracker: %{
         kind: "prd_json",
         path: path,
-        active_states: ["open", "in_progress"],
-        terminal_states: ["done", "failed", "cancelled"]
+        active_states: ["open", "in_progress", "pending_merge", "merged"],
+        terminal_states: ["done", "merged", "failed", "cancelled"]
       },
       polling: %{},
       workspace: %{},

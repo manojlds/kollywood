@@ -167,8 +167,8 @@ defmodule Kollywood.ConfigTest do
     assert {:ok, config, _} = Config.parse(content)
     assert config.tracker.kind == "prd_json"
     assert config.tracker.path == "prd.json"
-    assert config.tracker.active_states == ["open", "in_progress"]
-    assert config.tracker.terminal_states == ["done", "failed", "cancelled"]
+    assert config.tracker.active_states == ["open", "in_progress", "pending_merge", "merged"]
+    assert config.tracker.terminal_states == ["done", "merged", "failed", "cancelled"]
   end
 
   test "supports local tracker alias defaults" do
@@ -186,8 +186,8 @@ defmodule Kollywood.ConfigTest do
 
     assert {:ok, config, _} = Config.parse(content)
     assert config.tracker.path == "prd.json"
-    assert config.tracker.active_states == ["open", "in_progress"]
-    assert config.tracker.terminal_states == ["done", "failed", "cancelled"]
+    assert config.tracker.active_states == ["open", "in_progress", "pending_merge", "merged"]
+    assert config.tracker.terminal_states == ["done", "merged", "failed", "cancelled"]
   end
 
   test "parses agent retries_enabled setting" do
