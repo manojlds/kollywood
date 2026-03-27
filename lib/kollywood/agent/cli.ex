@@ -59,7 +59,7 @@ defmodule Kollywood.Agent.CLI do
 
   defp execute(session, args, prompt, prompt_mode, env, timeout_ms, raw_log) do
     {command, command_args, command_opts, cleanup} =
-      command_invocation(session, args, prompt, prompt_mode, env, raw_log)
+      command_invocation(session, args, prompt, prompt_mode, env)
 
     try do
       started_at = System.monotonic_time(:millisecond)
@@ -67,6 +67,8 @@ defmodule Kollywood.Agent.CLI do
 
       case result do
         {:ok, {output, 0}} ->
+          maybe_append_raw_log(raw_log, output)
+
           {:ok,
            %{
              output: String.trim(output),
@@ -78,6 +80,7 @@ defmodule Kollywood.Agent.CLI do
            }}
 
         {:ok, {output, exit_code}} ->
+          maybe_append_raw_log(raw_log, output)
           {:error, "Agent command failed with exit code #{exit_code}: #{String.trim(output)}"}
 
         {:error, :timeout} ->
@@ -92,21 +95,16 @@ defmodule Kollywood.Agent.CLI do
     end
   end
 
-  defp command_invocation(session, args, prompt, :argv, env, raw_log)
-       when is_binary(raw_log) do
-    # Redirect stdin from /dev/null; tee -a captures raw stdout to log file as it streams.
-    wrapper_args =
-      [
-        "-c",
-        "set -o pipefail; \"$1\" \"${@:2}\" < /dev/null | tee -a \"$0\"",
-        raw_log,
-        session.command
-      ] ++ args ++ [prompt]
+  defp maybe_append_raw_log(nil, _output), do: :ok
 
-    {"bash", wrapper_args, command_opts(session.workspace_path, env), fn -> :ok end}
+  defp maybe_append_raw_log(path, output) when is_binary(path) and byte_size(output) > 0 do
+    File.write(path, output, [:append])
+    :ok
   end
 
-  defp command_invocation(session, args, prompt, :argv, env, _raw_log) do
+  defp maybe_append_raw_log(_path, _output), do: :ok
+
+  defp command_invocation(session, args, prompt, :argv, env) do
     # Wrap with bash to redirect stdin from /dev/null — prevents CLI tools that
     # detect a pipe on stdin (e.g. claude) from waiting for input and polluting stdout.
     wrapper_args =
@@ -115,25 +113,7 @@ defmodule Kollywood.Agent.CLI do
     {"bash", wrapper_args, command_opts(session.workspace_path, env), fn -> :ok end}
   end
 
-  defp command_invocation(session, args, prompt, :stdin, env, raw_log)
-       when is_binary(raw_log) do
-    prompt_file = prompt_file()
-    File.write!(prompt_file, prompt)
-
-    wrapper_args =
-      [
-        "-lc",
-        "set -o pipefail; \"$2\" \"${@:3}\" < \"$1\" | tee -a \"$0\"",
-        raw_log,
-        prompt_file,
-        session.command
-      ] ++ args
-
-    {"bash", wrapper_args, command_opts(session.workspace_path, env),
-     fn -> File.rm(prompt_file) end}
-  end
-
-  defp command_invocation(session, args, prompt, :stdin, env, _raw_log) do
+  defp command_invocation(session, args, prompt, :stdin, env) do
     prompt_file = prompt_file()
     File.write!(prompt_file, prompt)
 
