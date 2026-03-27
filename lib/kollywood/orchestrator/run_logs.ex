@@ -633,8 +633,12 @@ defmodule Kollywood.Orchestrator.RunLogs do
 
   defp expand_path(_path), do: File.cwd!()
 
-  defp field(map, key) when is_map(map),
-    do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  defp field(map, key) when is_map(map) do
+    case Map.fetch(map, key) do
+      {:ok, value} -> value
+      :error -> Map.get(map, Atom.to_string(key))
+    end
+  end
 
   defp field(_map, _key), do: nil
 

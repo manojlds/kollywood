@@ -36,6 +36,31 @@ process checks, so no per-project metadata file is required.
 
 Now you can visit [`localhost:4000`](http://localhost:4000) from your browser.
 
+## Runtime Modes
+
+Kollywood supports role-based startup via `KOLLYWOOD_APP_MODE`.
+
+- `all` (default): web UI + orchestrator + agent pool
+- `web`: web UI only
+- `orchestrator`: orchestrator + agent pool (no web endpoint)
+- `worker`: agent pool only
+
+Examples:
+
+```bash
+# Default local dev behaviour (single node, everything enabled)
+mix phx.server
+
+# Web-only node
+KOLLYWOOD_APP_MODE=web mix phx.server
+
+# Orchestrator-only node
+KOLLYWOOD_APP_MODE=orchestrator mix run --no-halt
+
+# Worker-pool-only node
+KOLLYWOOD_APP_MODE=worker mix run --no-halt
+```
+
 ## Projects
 
 Kollywood now tracks onboarded projects in a SQLite control store.

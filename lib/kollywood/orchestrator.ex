@@ -14,10 +14,12 @@ defmodule Kollywood.Orchestrator do
   use GenServer
   require Logger
 
+  alias Kollywood.AgentPool
   alias Kollywood.AgentRunner
   alias Kollywood.AgentRunner.Result
   alias Kollywood.Config
   alias Kollywood.Orchestrator.RunLogs
+  alias Kollywood.RepoSync
   alias Kollywood.Tracker
   alias Kollywood.WorkflowStore
 
@@ -31,7 +33,7 @@ defmodule Kollywood.Orchestrator do
           workflow_store: WorkflowStore.server() | Config.t(),
           tracker: :auto | module() | (Config.t() -> {:ok, [map()]} | {:error, String.t()}),
           runner: module() | (map(), keyword() -> {:ok, Result.t()} | {:error, Result.t()}),
-          task_supervisor: pid(),
+          agent_pool: GenServer.server(),
           runner_opts: keyword(),
           auto_poll: boolean(),
           poll_timer_ref: reference() | nil,
@@ -55,7 +57,7 @@ defmodule Kollywood.Orchestrator do
     :workflow_store,
     :tracker,
     :runner,
-    :task_supervisor,
+    :agent_pool,
     :runner_opts,
     :auto_poll,
     :poll_timer_ref,
@@ -66,6 +68,7 @@ defmodule Kollywood.Orchestrator do
     :max_attempts,
     :retry_base_delay_ms,
     :continuation_delay_ms,
+    :repo_syncer,
     :repo_local_path,
     :repo_default_branch,
     :last_error,
@@ -107,12 +110,12 @@ defmodule Kollywood.Orchestrator do
 
   @impl true
   def init(opts) do
-    with {:ok, task_supervisor} <- Task.Supervisor.start_link() do
+    with {:ok, agent_pool} <- resolve_agent_pool(Keyword.get(opts, :agent_pool, AgentPool)) do
       state = %__MODULE__{
         workflow_store: Keyword.get(opts, :workflow_store, WorkflowStore),
         tracker: Keyword.get(opts, :tracker, :auto),
         runner: Keyword.get(opts, :runner, AgentRunner),
-        task_supervisor: task_supervisor,
+        agent_pool: agent_pool,
         runner_opts: Keyword.get(opts, :runner_opts, []),
         auto_poll: Keyword.get(opts, :auto_poll, true),
         poll_timer_ref: nil,
@@ -130,6 +133,7 @@ defmodule Kollywood.Orchestrator do
           ),
         retries_enabled: Keyword.get(opts, :retries_enabled, true),
         max_attempts: positive_integer(Keyword.get(opts, :max_attempts), nil),
+        repo_syncer: Keyword.get(opts, :repo_syncer),
         repo_local_path: Keyword.get(opts, :repo_local_path),
         repo_default_branch: Keyword.get(opts, :repo_default_branch, "main"),
         retry_base_delay_ms:
@@ -200,12 +204,16 @@ defmodule Kollywood.Orchestrator do
     {:noreply, track_runner_event(state, issue_id, event)}
   end
 
-  def handle_info({ref, result}, state) when is_reference(ref) do
-    Process.demonitor(ref, [:flush])
-
-    case pop_running_by_ref(state, ref) do
-      {:ok, issue_id, run_entry, state} ->
-        {:noreply, handle_runner_result(state, issue_id, run_entry, result)}
+  def handle_info({:run_worker_result, issue_id, worker_pid, result}, state)
+      when is_binary(issue_id) and is_pid(worker_pid) do
+    case pop_running_by_issue(state, issue_id) do
+      {:ok, run_entry, state} ->
+        if Map.get(run_entry, :run_pid) == worker_pid do
+          Process.demonitor(run_entry.run_ref, [:flush])
+          {:noreply, handle_runner_result(state, issue_id, run_entry, result)}
+        else
+          {:noreply, state}
+        end
 
       :error ->
         {:noreply, state}
@@ -218,7 +226,7 @@ defmodule Kollywood.Orchestrator do
         next_attempt = next_retry_attempt(run_entry.attempt)
 
         reason =
-          "Runner task exited before returning a result: #{inspect(reason)}"
+          "Run worker exited before returning a result: #{inspect(reason)}"
 
         maybe_complete_run_logs(run_entry, %{status: :failed, error: reason})
 
@@ -260,7 +268,7 @@ defmodule Kollywood.Orchestrator do
   end
 
   defp run_poll_cycle(state) do
-    sync_repo(state.repo_local_path, state.repo_default_branch)
+    sync_managed_repos(state)
 
     with {:ok, config} <- fetch_config(state.workflow_store),
          tracker <- resolve_tracker(state.tracker, config),
@@ -360,7 +368,7 @@ defmodule Kollywood.Orchestrator do
 
         acc
         |> stop_run_task(run_entry)
-        |> drop_running(issue_id, run_entry.task_ref)
+        |> drop_running(issue_id, run_entry.run_ref)
         |> cancel_retry(issue_id)
         |> release_claim(issue_id)
         |> maybe_cleanup_terminal_workspace(run_entry, config)
@@ -428,33 +436,47 @@ defmodule Kollywood.Orchestrator do
           on_event: runner_on_event(orchestrator_pid, issue_id, run_log_context, user_on_event)
         ] ++ runner_opts
 
-      task =
-        Task.Supervisor.async_nolink(state.task_supervisor, fn ->
-          invoke_runner(state.runner, issue, run_opts)
-        end)
+      run_fun = fn -> invoke_runner(state.runner, issue, run_opts) end
 
-      runtime_profile = runtime_profile(config)
+      with {:ok, run_pid} <-
+             start_run_worker(state.agent_pool, orchestrator_pid, issue_id, run_fun) do
+        run_ref = Process.monitor(run_pid)
+        runtime_profile = runtime_profile(config)
 
-      run_entry = %{
-        issue: issue,
-        attempt: attempt,
-        task_ref: task.ref,
-        task_pid: task.pid,
-        started_at: DateTime.utc_now(),
-        runtime_profile: runtime_profile,
-        runtime_process_state: initial_runtime_process_state(runtime_profile),
-        runtime_last_event: nil,
-        run_log_context: run_log_context
-      }
+        run_entry = %{
+          issue: issue,
+          attempt: attempt,
+          run_ref: run_ref,
+          run_pid: run_pid,
+          started_at: DateTime.utc_now(),
+          runtime_profile: runtime_profile,
+          runtime_process_state: initial_runtime_process_state(runtime_profile),
+          runtime_last_event: nil,
+          run_log_context: run_log_context
+        }
 
-      Logger.info(
-        "Dispatching issue_id=#{issue_id} identifier=#{identifier} attempt=#{inspect(attempt)}"
-      )
+        Logger.info(
+          "Dispatching issue_id=#{issue_id} identifier=#{identifier} attempt=#{inspect(attempt)}"
+        )
 
-      state
-      |> cancel_retry(issue_id)
-      |> put_running(issue_id, run_entry)
-      |> claim(issue_id)
+        state
+        |> cancel_retry(issue_id)
+        |> put_running(issue_id, run_entry)
+        |> claim(issue_id)
+      else
+        {:error, reason} ->
+          retry_attempt = retry_attempt_from_run_attempt(attempt)
+
+          state
+          |> schedule_retry(
+            issue_id,
+            issue,
+            retry_attempt,
+            "run worker failed to start: #{reason}",
+            retry_backoff_delay_ms(state, retry_attempt)
+          )
+          |> release_claim(issue_id)
+      end
     else
       {:error, reason} ->
         retry_attempt = retry_attempt_from_run_attempt(attempt)
@@ -707,26 +729,62 @@ defmodule Kollywood.Orchestrator do
     end
   end
 
-  # --- Running tasks ---
+  defp start_run_worker(agent_pool, orchestrator_pid, issue_id, run_fun)
+       when is_function(run_fun, 0) do
+    case AgentPool.start_run(agent_pool,
+           orchestrator: orchestrator_pid,
+           issue_id: issue_id,
+           run_fun: run_fun
+         ) do
+      {:ok, run_pid} ->
+        {:ok, run_pid}
+
+      {:ok, run_pid, _info} ->
+        {:ok, run_pid}
+
+      :ignore ->
+        {:error, "run worker ignored start request"}
+
+      {:error, reason} ->
+        {:error, inspect(reason)}
+    end
+  end
+
+  # --- Running workers ---
 
   defp put_running(state, issue_id, run_entry) do
     %{
       state
       | running: Map.put(state.running, issue_id, run_entry),
-        running_by_ref: Map.put(state.running_by_ref, run_entry.task_ref, issue_id)
+        running_by_ref: Map.put(state.running_by_ref, run_entry.run_ref, issue_id)
     }
   end
 
-  defp drop_running(state, issue_id, task_ref) do
+  defp drop_running(state, issue_id, run_ref) do
     %{
       state
       | running: Map.delete(state.running, issue_id),
-        running_by_ref: Map.delete(state.running_by_ref, task_ref)
+        running_by_ref: Map.delete(state.running_by_ref, run_ref)
     }
   end
 
-  defp pop_running_by_ref(state, task_ref) do
-    case Map.pop(state.running_by_ref, task_ref) do
+  defp pop_running_by_issue(state, issue_id) do
+    case Map.pop(state.running, issue_id) do
+      {nil, _running} ->
+        :error
+
+      {run_entry, running} ->
+        {:ok, run_entry,
+         %{
+           state
+           | running: running,
+             running_by_ref: Map.delete(state.running_by_ref, run_entry.run_ref)
+         }}
+    end
+  end
+
+  defp pop_running_by_ref(state, run_ref) do
+    case Map.pop(state.running_by_ref, run_ref) do
       {nil, _running_by_ref} ->
         :error
 
@@ -743,7 +801,7 @@ defmodule Kollywood.Orchestrator do
   end
 
   defp stop_run_task(state, run_entry) do
-    Process.exit(run_entry.task_pid, :kill)
+    _ = AgentPool.stop_run(state.agent_pool, run_entry.run_pid)
     state
   rescue
     _ -> state
@@ -761,7 +819,7 @@ defmodule Kollywood.Orchestrator do
 
         state
         |> stop_run_task(run_entry)
-        |> drop_running(issue_id, run_entry.task_ref)
+        |> drop_running(issue_id, run_entry.run_ref)
         |> release_claim(issue_id)
     end
   end
@@ -841,23 +899,75 @@ defmodule Kollywood.Orchestrator do
 
   # --- Config and integration ---
 
+  defp resolve_agent_pool(agent_pool) when is_pid(agent_pool), do: {:ok, agent_pool}
+
+  defp resolve_agent_pool(agent_pool) when is_atom(agent_pool) do
+    if Process.whereis(agent_pool) do
+      {:ok, agent_pool}
+    else
+      AgentPool.start_link(name: agent_pool)
+    end
+  end
+
+  defp resolve_agent_pool(_agent_pool), do: {:error, "invalid agent pool configuration"}
+
+  defp sync_managed_repos(%__MODULE__{repo_syncer: nil} = state) do
+    sync_repo(state.repo_local_path, state.repo_default_branch)
+  end
+
+  defp sync_managed_repos(%__MODULE__{repo_syncer: repo_syncer}) do
+    case invoke_repo_syncer(repo_syncer) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Managed repo sync failed: #{reason}")
+        :ok
+    end
+  end
+
+  defp invoke_repo_syncer(repo_syncer) when is_function(repo_syncer, 0) do
+    normalize_sync_result(repo_syncer.())
+  rescue
+    error -> {:error, Exception.message(error)}
+  catch
+    :exit, reason -> {:error, inspect(reason)}
+  end
+
+  defp invoke_repo_syncer(repo_syncer) when is_atom(repo_syncer) do
+    case Code.ensure_loaded(repo_syncer) do
+      {:module, _module} ->
+        if function_exported?(repo_syncer, :sync_enabled_projects, 0) do
+          normalize_sync_result(repo_syncer.sync_enabled_projects())
+        else
+          {:error, "repo syncer #{inspect(repo_syncer)} does not export sync_enabled_projects/0"}
+        end
+
+      {:error, reason} ->
+        {:error, "repo syncer #{inspect(repo_syncer)} could not be loaded: #{inspect(reason)}"}
+    end
+  rescue
+    error -> {:error, Exception.message(error)}
+  catch
+    :exit, reason -> {:error, inspect(reason)}
+  end
+
+  defp invoke_repo_syncer(_repo_syncer), do: {:error, "invalid repo syncer"}
+
+  defp normalize_sync_result(:ok), do: :ok
+  defp normalize_sync_result({:ok, _value}), do: :ok
+  defp normalize_sync_result({:error, _reason} = error), do: error
+  defp normalize_sync_result(other), do: {:error, "unexpected sync result: #{inspect(other)}"}
+
   defp sync_repo(nil, _branch), do: :ok
 
   defp sync_repo(local_path, branch) do
-    with {_, 0} <-
-           System.cmd("git", ["fetch", "--all", "--prune"],
-             cd: local_path,
-             stderr_to_stdout: true
-           ),
-         {_, 0} <-
-           System.cmd("git", ["reset", "--hard", "origin/#{branch}"],
-             cd: local_path,
-             stderr_to_stdout: true
-           ) do
-      :ok
-    else
-      {output, code} ->
-        Logger.warning("Repo sync failed (exit #{code}): #{String.trim(output)}")
+    case RepoSync.sync(local_path, branch) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Repo sync failed: #{reason}")
         :ok
     end
   end
@@ -1251,8 +1361,12 @@ defmodule Kollywood.Orchestrator do
     Enum.find(issues, fn issue -> issue_id(issue) == issue_id end)
   end
 
-  defp field(map, key) when is_map(map),
-    do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  defp field(map, key) when is_map(map) do
+    case Map.fetch(map, key) do
+      {:ok, value} -> value
+      :error -> Map.get(map, Atom.to_string(key))
+    end
+  end
 
   defp field(_value, _key), do: nil
 

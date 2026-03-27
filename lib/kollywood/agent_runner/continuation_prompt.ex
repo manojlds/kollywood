@@ -19,7 +19,12 @@ defmodule Kollywood.AgentRunner.ContinuationPrompt do
     |> String.trim()
   end
 
-  defp field(map, key) do
-    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  defp field(map, key) when is_map(map) do
+    case Map.fetch(map, key) do
+      {:ok, value} -> value
+      :error -> Map.get(map, Atom.to_string(key))
+    end
   end
+
+  defp field(_value, _key), do: nil
 end

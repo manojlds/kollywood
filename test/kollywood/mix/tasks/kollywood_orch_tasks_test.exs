@@ -104,7 +104,8 @@ defmodule Mix.Tasks.Kollywood.OrchTasksTest do
 
     runner_ref = Process.monitor(runner_pid)
     assert :ok = Orchestrator.stop_issue(orchestrator, "US-777")
-    assert_receive {:DOWN, ^runner_ref, :process, ^runner_pid, :killed}
+    assert_receive {:DOWN, ^runner_ref, :process, ^runner_pid, reason}
+    assert reason in [:killed, :shutdown]
   end
 
   test "kollywood.orch.poll triggers a poll cycle", %{root: root, server: server} do
@@ -155,7 +156,8 @@ defmodule Mix.Tasks.Kollywood.OrchTasksTest do
     output = run_task("kollywood.orch.stop", ["US-501"])
 
     assert output =~ "Requested stop for issue US-501"
-    assert_receive {:DOWN, ^runner_ref, :process, ^runner_pid, :killed}
+    assert_receive {:DOWN, ^runner_ref, :process, ^runner_pid, reason}
+    assert reason in [:killed, :shutdown]
 
     status = Orchestrator.status(orchestrator)
     assert status.running_count == 0
