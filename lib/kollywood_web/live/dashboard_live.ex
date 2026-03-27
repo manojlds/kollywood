@@ -395,21 +395,30 @@ defmodule KollywoodWeb.DashboardLive do
                   <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
                     Description
                   </h3>
-                  <p class="text-sm">{@selected_story["description"]}</p>
+                  <div class="prose prose-sm max-w-none">
+                    {raw(markdown_to_html(@selected_story["description"]))}
+                  </div>
                 </div>
               <% end %>
 
               <%= if criteria = @selected_story["acceptanceCriteria"] do %>
-                <%= if criteria != [] do %>
+                <%= if present?(criteria) do %>
                   <div class="mb-4">
                     <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
                       Acceptance Criteria
                     </h3>
-                    <ul class="list-disc list-inside space-y-1">
-                      <%= for criterion <- criteria do %>
-                        <li class="text-sm">{criterion}</li>
-                      <% end %>
-                    </ul>
+
+                    <%= if is_list(criteria) do %>
+                      <ul class="list-disc list-inside space-y-1">
+                        <%= for criterion <- criteria do %>
+                          <li class="text-sm">{criterion}</li>
+                        <% end %>
+                      </ul>
+                    <% else %>
+                      <div class="prose prose-sm max-w-none">
+                        {raw(markdown_to_html(criteria))}
+                      </div>
+                    <% end %>
                   </div>
                 <% end %>
               <% end %>
@@ -419,7 +428,9 @@ defmodule KollywoodWeb.DashboardLive do
                   <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
                     Notes
                   </h3>
-                  <p class="text-sm text-base-content/70">{@selected_story["notes"]}</p>
+                  <div class="prose prose-sm max-w-none text-base-content/70">
+                    {raw(markdown_to_html(@selected_story["notes"]))}
+                  </div>
                 </div>
               <% end %>
 
@@ -2224,6 +2235,18 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp read_log_tab_content(_files, _tab), do: nil
+
+  defp markdown_to_html(nil), do: ""
+
+  defp markdown_to_html(text) when is_binary(text) do
+    MDEx.to_html!(text)
+  end
+
+  defp markdown_to_html(_), do: ""
+
+  defp present?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present?(value) when is_list(value), do: value != []
+  defp present?(_), do: false
 
   defp fetch_orchestrator_status do
     Kollywood.Orchestrator.status()
