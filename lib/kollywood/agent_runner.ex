@@ -637,15 +637,15 @@ defmodule Kollywood.AgentRunner do
       review_agent_kind = review_agent_kind(config)
       state = emit(state, :review_started, %{agent_kind: review_agent_kind, cycle: cycle})
 
-      # Always use a /tmp path so the reviewer agent can write to it without
-      # hitting workspace sandbox restrictions. The attempt-dir path (if any)
-      # is used only for post-run persistence.
-      tmp_rjp = temp_review_json_path()
+      # Write review.json inside the workspace worktree — the reviewer agent
+      # has full write access there. The orchestrator copies it to the
+      # attempt dir afterward for persistence/UI access.
+      workspace_rjp = workspace_review_json_path(state.workspace)
 
-      with {:ok, prompt} <- build_review_prompt(state, config, cycle, tmp_rjp),
+      with {:ok, prompt} <- build_review_prompt(state, config, cycle, workspace_rjp),
            {:ok, _output} <- run_review_turn(state, config, prompt, state.log_files),
-           {:ok, verdict} <- read_review_json(tmp_rjp) do
-        persist_review_json(tmp_rjp, state.log_files)
+           {:ok, verdict} <- read_review_json(workspace_rjp) do
+        persist_review_json(workspace_rjp, state.log_files)
 
         case verdict do
           :pass ->
@@ -1527,12 +1527,18 @@ defmodule Kollywood.AgentRunner do
     end
   end
 
-  defp temp_review_json_path do
-    Path.join(
-      System.tmp_dir!(),
-      "kollywood_review_#{System.unique_integer([:positive, :monotonic])}.json"
-    )
+  defp workspace_review_json_path(%{path: path}) when is_binary(path) do
+    dir = Path.join(path, ".kollywood")
+    File.mkdir_p!(dir)
+    Path.join(dir, "review.json")
   end
+
+  defp workspace_review_json_path(_),
+    do:
+      Path.join(
+        System.tmp_dir!(),
+        "kollywood_review_#{System.unique_integer([:positive, :monotonic])}.json"
+      )
 
   defp persist_review_json(src, %{review_json: dest}) when is_binary(dest) do
     File.copy(src, dest)
