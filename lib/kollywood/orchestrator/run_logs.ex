@@ -348,7 +348,8 @@ defmodule Kollywood.Orchestrator.RunLogs do
       runtime: Path.join(attempt_dir, "runtime.log"),
       agent: Path.join(attempt_dir, "agent.log"),
       agent_stdout: Path.join(attempt_dir, "agent_stdout.log"),
-      reviewer_stdout: Path.join(attempt_dir, "reviewer_stdout.log")
+      reviewer_stdout: Path.join(attempt_dir, "reviewer_stdout.log"),
+      review_json: Path.join(attempt_dir, "review.json")
     }
   end
 
@@ -429,7 +430,8 @@ defmodule Kollywood.Orchestrator.RunLogs do
         "events" => files.events,
         "agent" => files.agent,
         "agent_stdout" => files.agent_stdout,
-        "reviewer_stdout" => files.reviewer_stdout
+        "reviewer_stdout" => files.reviewer_stdout,
+        "review_json" => files.review_json
       }
     }
   end
