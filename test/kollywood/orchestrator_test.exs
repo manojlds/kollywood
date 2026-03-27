@@ -518,6 +518,43 @@ defmodule Kollywood.OrchestratorTest do
     assert_receive {:tracker_mark_merged, "ISS-MERGED"}
   end
 
+  test "dispatches issue when blocker state is merged", %{root: root} do
+    %{store: workflow_store} =
+      start_workflow_store!(root, %{
+        tracker_active_states: ["Todo", "In Progress"],
+        tracker_terminal_states: ["Done", "Merged", "Cancelled"]
+      })
+
+    test_pid = self()
+
+    issue =
+      issue("ISS-BLOCKED", "ABC-BLOCKED", 1)
+      |> Map.put(:blocked_by, [%{id: "ISS-DEP", state: "Merged"}])
+
+    issues_agent = start_agent!(fn -> [issue] end)
+    tracker = fn _config -> {:ok, Agent.get(issues_agent, & &1)} end
+
+    runner = fn issue, _opts ->
+      send(test_pid, {:runner_started, issue.id})
+      {:ok, success_result(issue)}
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: tracker,
+         runner: runner,
+         auto_poll: false,
+         continuation_delay_ms: 60_000,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_started, "ISS-BLOCKED"}
+  end
+
   defp issue(id, identifier, priority) do
     %{
       id: id,

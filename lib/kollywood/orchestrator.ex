@@ -473,7 +473,7 @@ defmodule Kollywood.Orchestrator do
   end
 
   defp success_terminal_state?(state_name, config) do
-    terminal_state?(state_name, config) and normalize_state(state_name) == "done"
+    terminal_state?(state_name, config) and normalize_state(state_name) in ["done", "merged"]
   end
 
   defp sort_issues_for_dispatch(issues) do
