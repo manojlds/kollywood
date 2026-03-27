@@ -18,6 +18,10 @@ defmodule Kollywood.Tracker.Noop do
   def mark_in_progress(_config, _issue_id), do: :ok
 
   @impl true
+  @spec mark_resumable(Kollywood.Config.t(), String.t(), map()) :: :ok
+  def mark_resumable(_config, _issue_id, _metadata), do: :ok
+
+  @impl true
   @spec mark_done(Kollywood.Config.t(), String.t(), map()) :: :ok
   def mark_done(_config, _issue_id, _metadata), do: :ok
 

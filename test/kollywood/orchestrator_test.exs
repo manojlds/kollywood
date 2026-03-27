@@ -5,6 +5,55 @@ defmodule Kollywood.OrchestratorTest do
   alias Kollywood.Orchestrator
   alias Kollywood.WorkflowStore
 
+  defmodule ResumableTracker do
+    @behaviour Kollywood.Tracker
+
+    def put_state(test_pid, issue) when is_pid(test_pid) and is_map(issue) do
+      :persistent_term.put({__MODULE__, :state}, %{test_pid: test_pid, issue: issue})
+    end
+
+    def clear_state do
+      :persistent_term.erase({__MODULE__, :state})
+    end
+
+    @impl true
+    def list_active_issues(_config) do
+      state = :persistent_term.get({__MODULE__, :state}, %{issue: nil})
+      {:ok, List.wrap(state.issue)}
+    end
+
+    @impl true
+    def claim_issue(_config, _issue_id), do: :ok
+
+    @impl true
+    def mark_in_progress(_config, _issue_id), do: :ok
+
+    @impl true
+    def mark_resumable(_config, issue_id, metadata) do
+      notify({:tracker_mark_resumable, issue_id, metadata})
+      :ok
+    end
+
+    @impl true
+    def mark_done(_config, issue_id, metadata) do
+      notify({:tracker_mark_done, issue_id, metadata})
+      :ok
+    end
+
+    @impl true
+    def mark_failed(_config, issue_id, reason, attempt) do
+      notify({:tracker_mark_failed, issue_id, reason, attempt})
+      :ok
+    end
+
+    defp notify(message) do
+      case :persistent_term.get({__MODULE__, :state}, nil) do
+        %{test_pid: test_pid} when is_pid(test_pid) -> send(test_pid, message)
+        _other -> :ok
+      end
+    end
+  end
+
   setup do
     root =
       Path.join(
@@ -300,6 +349,56 @@ defmodule Kollywood.OrchestratorTest do
     assert status.retry_count == 0
   end
 
+  test "marks max-turn runs resumable and schedules continuation", %{root: root} do
+    %{store: workflow_store} = start_workflow_store!(root, %{})
+    issue = issue("ISS-MAX", "ABC-MAX", 1)
+    test_pid = self()
+    runner_calls = start_agent!(fn -> 0 end)
+
+    ResumableTracker.put_state(test_pid, issue)
+    on_exit(fn -> ResumableTracker.clear_state() end)
+
+    runner = fn issue, opts ->
+      call_number = Agent.get_and_update(runner_calls, fn count -> {count + 1, count + 1} end)
+      send(test_pid, {:runner_attempt, call_number, Keyword.get(opts, :attempt)})
+
+      case call_number do
+        1 -> {:ok, max_turns_result(issue)}
+        _ -> {:ok, success_result(issue)}
+      end
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: ResumableTracker,
+         runner: runner,
+         auto_poll: false,
+         continuation_delay_ms: 300,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_attempt, 1, nil}
+    assert_receive {:tracker_mark_resumable, "ISS-MAX", %{status: :max_turns_reached}}
+
+    status = Orchestrator.status(orchestrator)
+    assert status.retry_count == 1
+
+    assert [%{issue_id: "ISS-MAX", attempt: 1, reason: nil, due_in_ms: due_in_ms}] =
+             status.retrying
+
+    assert due_in_ms <= 300
+
+    assert_receive {:runner_attempt, 2, 1}, 2_000
+    assert_receive {:tracker_mark_done, "ISS-MAX", %{status: :ok}}
+
+    status = Orchestrator.status(orchestrator)
+    assert status.completed_count == 1
+  end
+
   test "stops ineligible running issue during reconciliation", %{root: root} do
     %{store: workflow_store} = start_workflow_store!(root, %{max_concurrent_agents: 1})
     issue = issue("ISS-4", "ABC-4", 1)
@@ -474,6 +573,23 @@ defmodule Kollywood.OrchestratorTest do
       last_output: nil,
       events: [],
       error: reason
+    }
+  end
+
+  defp max_turns_result(issue) do
+    now = DateTime.utc_now()
+
+    %Result{
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      workspace_path: nil,
+      turn_count: 5,
+      status: :max_turns_reached,
+      started_at: now,
+      ended_at: now,
+      last_output: "max turns reached",
+      events: [],
+      error: nil
     }
   end
 
