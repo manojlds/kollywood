@@ -52,9 +52,13 @@ defmodule Kollywood.Tracker.PrdJson do
   @spec mark_resumable(Config.t(), String.t(), map()) :: :ok | {:error, String.t()}
   def mark_resumable(%Config{} = config, issue_id, metadata)
       when is_binary(issue_id) and is_map(metadata) do
+    note = "[#{now_iso8601()}] continuation scheduled after max turns"
+
     update_story(config, issue_id, fn story ->
       story
+      |> set_story_status("in_progress")
       |> Map.put("resumable", true)
+      |> append_note(note)
       |> Map.put("lastRun", stringify_map(metadata))
     end)
   end

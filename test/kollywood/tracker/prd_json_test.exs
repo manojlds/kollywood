@@ -101,6 +101,34 @@ defmodule Kollywood.Tracker.PrdJsonTest do
     assert is_map(story_after_done["lastRun"])
   end
 
+  test "marks story resumable and keeps in_progress status", %{root: root} do
+    path = Path.join(root, "prd.json")
+
+    write_prd!(path, [
+      %{
+        "id" => "US-030",
+        "title" => "Resumable story",
+        "status" => "in_progress",
+        "priority" => 1,
+        "completedAt" => "2026-03-27T09:30:00Z",
+        "notes" => "existing note"
+      }
+    ])
+
+    cfg = config(path)
+
+    assert :ok = PrdJson.mark_resumable(cfg, "US-030", %{turn_count: 5})
+
+    saved_story = story(path, "US-030")
+    assert saved_story["status"] == "in_progress"
+    assert saved_story["resumable"] == true
+    assert saved_story["completedAt"] == "2026-03-27T09:30:00Z"
+    assert String.contains?(saved_story["notes"], "existing note")
+
+    assert saved_story["notes"] =~
+             ~r/\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\] continuation scheduled after max turns/
+  end
+
   test "marks story failed when retries are disabled", %{root: root} do
     path = Path.join(root, "prd.json")
 
