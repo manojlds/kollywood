@@ -5,6 +5,43 @@ defmodule Kollywood.OrchestratorTest do
   alias Kollywood.Orchestrator
   alias Kollywood.WorkflowStore
 
+  defmodule FlakyMarkInProgressTracker do
+    @issue_id "ISS-7"
+    @issue_identifier "ABC-7"
+    @attempts_table :kollywood_orchestrator_mark_in_progress_attempts
+
+    def list_active_issues(_config) do
+      {:ok,
+       [
+         %{
+           id: @issue_id,
+           identifier: @issue_identifier,
+           title: "Issue #{@issue_identifier}",
+           description: "Test issue",
+           state: "Todo",
+           priority: 1,
+           created_at: "2026-01-01T00:00:00Z",
+           blocked_by: []
+         }
+       ]}
+    end
+
+    def claim_issue(_config, @issue_id), do: :ok
+
+    def mark_in_progress(_config, @issue_id) do
+      attempts = :ets.update_counter(@attempts_table, @issue_id, {2, 1}, {@issue_id, 0})
+
+      if attempts == 1 do
+        {:error, "forced mark_in_progress failure"}
+      else
+        :ok
+      end
+    end
+
+    def mark_done(_config, @issue_id, _metadata), do: :ok
+    def mark_failed(_config, @issue_id, _reason, _attempt), do: :ok
+  end
+
   setup do
     root =
       Path.join(
@@ -265,6 +302,55 @@ defmodule Kollywood.OrchestratorTest do
 
     status = Orchestrator.status(orchestrator)
     assert status.completed_count == 1
+  end
+
+  test "releases claim when mark_in_progress fails and redispatches on next poll", %{root: root} do
+    attempts_table = :kollywood_orchestrator_mark_in_progress_attempts
+
+    if :ets.whereis(attempts_table) != :undefined do
+      :ets.delete(attempts_table)
+    end
+
+    :ets.new(attempts_table, [:named_table, :set, :public])
+
+    on_exit(fn ->
+      if :ets.whereis(attempts_table) != :undefined do
+        :ets.delete(attempts_table)
+      end
+    end)
+
+    %{store: workflow_store} = start_workflow_store!(root, %{max_retry_backoff_ms: 60_000})
+    test_pid = self()
+
+    runner = fn issue, opts ->
+      send(test_pid, {:runner_started, issue.id, self(), Keyword.get(opts, :attempt)})
+      {:ok, success_result(issue)}
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: FlakyMarkInProgressTracker,
+         runner: runner,
+         auto_poll: false,
+         continuation_delay_ms: 60_000,
+         retry_base_delay_ms: 60_000}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    refute_receive {:runner_started, "ISS-7", _, _}, 100
+
+    status = Orchestrator.status(orchestrator)
+    assert status.claimed_issue_ids == []
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_started, "ISS-7", runner_pid, nil}
+
+    runner_ref = Process.monitor(runner_pid)
+    assert_receive {:DOWN, ^runner_ref, :process, ^runner_pid, reason}
+    assert reason in [:normal, :noproc]
   end
 
   test "does not retry failed runs when retries are disabled", %{root: root} do
