@@ -389,6 +389,127 @@ defmodule KollywoodWeb.DashboardLive do
             <% end %>
           </div>
         </main>
+
+        <%!-- Story Detail Slide-over --%>
+        <div
+          id="story-backdrop"
+          class={[
+            "fixed inset-0 bg-black/50 z-40 transition-opacity duration-300",
+            if(@selected_story,
+              do: "opacity-100 pointer-events-auto",
+              else: "opacity-0 pointer-events-none"
+            )
+          ]}
+          phx-click="close_story"
+        />
+        <div
+          id="story-slide-over"
+          class={[
+            "fixed inset-y-0 right-0 w-full sm:w-[480px] bg-base-100 shadow-2xl z-50 overflow-y-auto transform transition-transform duration-300",
+            if(@selected_story, do: "translate-x-0", else: "translate-x-full")
+          ]}
+        >
+          <%= if @selected_story do %>
+            <div class="p-6">
+              <div class="flex items-start justify-between mb-6">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="badge badge-outline font-mono text-sm">
+                    {@selected_story["id"]}
+                  </span>
+                  <.status_badge status={@selected_story["status"] || "open"} />
+                </div>
+                <button
+                  id="close-story-btn"
+                  phx-click="close_story"
+                  class="btn btn-ghost btn-sm btn-circle"
+                >
+                  <.icon name="hero-x-mark" class="size-5" />
+                </button>
+              </div>
+
+              <h2 class="text-xl font-bold mb-4">{@selected_story["title"]}</h2>
+
+              <%= if @selected_story["description"] do %>
+                <div class="mb-4">
+                  <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
+                    Description
+                  </h3>
+                  <div class="prose prose-sm max-w-none">
+                    {raw(markdown_to_html(@selected_story["description"]))}
+                  </div>
+                </div>
+              <% end %>
+
+              <%= if criteria = @selected_story["acceptanceCriteria"] do %>
+                <%= if present?(criteria) do %>
+                  <div class="mb-4">
+                    <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
+                      Acceptance Criteria
+                    </h3>
+
+                    <%= if is_list(criteria) do %>
+                      <ul class="list-disc list-inside space-y-1">
+                        <%= for criterion <- criteria do %>
+                          <li class="text-sm">{criterion}</li>
+                        <% end %>
+                      </ul>
+                    <% else %>
+                      <div class="prose prose-sm max-w-none">
+                        {raw(markdown_to_html(criteria))}
+                      </div>
+                    <% end %>
+                  </div>
+                <% end %>
+              <% end %>
+
+              <%= if @selected_story["notes"] do %>
+                <div class="mb-4">
+                  <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
+                    Notes
+                  </h3>
+                  <div class="prose prose-sm max-w-none text-base-content/70">
+                    {raw(markdown_to_html(@selected_story["notes"]))}
+                  </div>
+                </div>
+              <% end %>
+
+              <%= if depends_on = @selected_story["dependsOn"] do %>
+                <%= if depends_on != [] do %>
+                  <div class="mb-4">
+                    <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
+                      Depends On
+                    </h3>
+                    <div class="flex flex-wrap gap-2">
+                      <%= for dep <- depends_on do %>
+                        <span class="badge badge-outline font-mono text-xs">{dep}</span>
+                      <% end %>
+                    </div>
+                  </div>
+                <% end %>
+              <% end %>
+
+              <%= if @selected_story["priority"] do %>
+                <div class="mb-4">
+                  <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
+                    Priority
+                  </h3>
+                  <span class="text-sm capitalize">{@selected_story["priority"]}</span>
+                </div>
+              <% end %>
+
+              <%= if @selected_story["lastError"] do %>
+                <div class="mb-4">
+                  <h3 class="text-xs font-semibold text-error uppercase tracking-wide mb-2">
+                    Last Error
+                  </h3>
+                  <p class="text-sm text-error bg-error/10 p-3 rounded-lg">
+                    {@selected_story["lastError"]}
+                  </p>
+                </div>
+              <% end %>
+            </div>
+          <% end %>
+        </div>
       <% else %>
         <main class="flex items-center justify-center px-4 py-32">
           <div class="text-center">
@@ -917,21 +1038,30 @@ defmodule KollywoodWeb.DashboardLive do
                 <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
                   Description
                 </h3>
-                <p class="text-sm">{@story["description"]}</p>
+                <div class="prose prose-sm max-w-none">
+                  {raw(markdown_to_html(@story["description"]))}
+                </div>
               </div>
             <% end %>
 
             <%= if criteria = @story["acceptanceCriteria"] do %>
-              <%= if criteria != [] do %>
+              <%= if present?(criteria) do %>
                 <div>
                   <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
                     Acceptance Criteria
                   </h3>
-                  <ul class="list-disc list-inside space-y-1">
-                    <%= for criterion <- criteria do %>
-                      <li class="text-sm">{criterion}</li>
-                    <% end %>
-                  </ul>
+
+                  <%= if is_list(criteria) do %>
+                    <ul class="list-disc list-inside space-y-1">
+                      <%= for criterion <- criteria do %>
+                        <li class="text-sm">{criterion}</li>
+                      <% end %>
+                    </ul>
+                  <% else %>
+                    <div class="prose prose-sm max-w-none">
+                      {raw(markdown_to_html(criteria))}
+                    </div>
+                  <% end %>
                 </div>
               <% end %>
             <% end %>
@@ -941,7 +1071,9 @@ defmodule KollywoodWeb.DashboardLive do
                 <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
                   Notes
                 </h3>
-                <p class="text-sm text-base-content/70">{@story["notes"]}</p>
+                <div class="prose prose-sm max-w-none text-base-content/70">
+                  {raw(markdown_to_html(@story["notes"]))}
+                </div>
               </div>
             <% end %>
 
@@ -2729,6 +2861,18 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp read_log_tab_content(_files, _tab), do: nil
+
+  defp markdown_to_html(nil), do: ""
+
+  defp markdown_to_html(text) when is_binary(text) do
+    MDEx.to_html!(text)
+  end
+
+  defp markdown_to_html(_), do: ""
+
+  defp present?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present?(value) when is_list(value), do: value != []
+  defp present?(_), do: false
 
   defp fetch_orchestrator_status do
     Kollywood.Orchestrator.status()
