@@ -76,6 +76,7 @@ review:
 publish:
   provider: github
   auto_push: on_pass
+  auto_merge: on_pass
   auto_create_pr: never # never | draft | ready
 
 git:
