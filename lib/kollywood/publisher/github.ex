@@ -41,4 +41,21 @@ defmodule Kollywood.Publisher.GitHub do
   rescue
     e -> {:error, "gh pr create failed: #{Exception.message(e)}"}
   end
+
+  @impl true
+  def enable_auto_merge(workspace, pr_url) when is_binary(pr_url) do
+    args = ["pr", "merge", "--auto", "--squash", pr_url]
+
+    Logger.info("Enabling GitHub PR auto-merge: #{pr_url}")
+
+    case System.cmd("gh", args, cd: workspace.path, stderr_to_stdout: true) do
+      {_output, 0} ->
+        :ok
+
+      {output, code} ->
+        {:error, "gh pr merge --auto exited #{code}: #{String.trim(output)}"}
+    end
+  rescue
+    e -> {:error, "gh pr merge --auto failed: #{Exception.message(e)}"}
+  end
 end
