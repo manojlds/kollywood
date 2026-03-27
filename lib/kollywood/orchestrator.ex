@@ -499,28 +499,54 @@ defmodule Kollywood.Orchestrator do
     maybe_complete_run_logs(run_entry, result)
     state = %{state | completed: MapSet.put(state.completed, issue_id)}
 
-    if result.status in [:ok, :max_turns_reached] do
-      case tracker_mark_done(state, issue_id, result, run_entry) do
-        {:ok, state} ->
-          state
+    case result.status do
+      :ok ->
+        case tracker_mark_done(state, issue_id, result, run_entry) do
+          {:ok, state} ->
+            state
 
-        {:error, reason, state} ->
-          next_attempt = next_retry_attempt(run_entry.attempt)
+          {:error, reason, state} ->
+            next_attempt = next_retry_attempt(run_entry.attempt)
 
-          maybe_schedule_retry(
-            state,
-            issue_id,
-            run_entry.issue,
-            next_attempt,
-            "failed to mark issue done: #{reason}"
-          )
-      end
-    else
-      next_attempt = next_retry_attempt(run_entry.attempt)
-      reason = "runner returned non-success status: #{inspect(result.status)}"
-      state = tracker_mark_failed(state, issue_id, reason, next_attempt)
+            maybe_schedule_retry(
+              state,
+              issue_id,
+              run_entry.issue,
+              next_attempt,
+              "failed to mark issue done: #{reason}"
+            )
+        end
 
-      maybe_schedule_retry(state, issue_id, run_entry.issue, next_attempt, reason)
+      :max_turns_reached ->
+        next_attempt = next_retry_attempt(run_entry.attempt)
+
+        case tracker_mark_resumable(state, issue_id, result, run_entry) do
+          {:ok, state} ->
+            schedule_retry(
+              state,
+              issue_id,
+              run_entry.issue,
+              next_attempt,
+              nil,
+              state.continuation_delay_ms
+            )
+
+          {:error, reason, state} ->
+            maybe_schedule_retry(
+              state,
+              issue_id,
+              run_entry.issue,
+              next_attempt,
+              "failed to mark issue resumable: #{reason}"
+            )
+        end
+
+      _other ->
+        next_attempt = next_retry_attempt(run_entry.attempt)
+        reason = "runner returned non-success status: #{inspect(result.status)}"
+        state = tracker_mark_failed(state, issue_id, reason, next_attempt)
+
+        maybe_schedule_retry(state, issue_id, run_entry.issue, next_attempt, reason)
     end
   end
 
@@ -864,6 +890,21 @@ defmodule Kollywood.Orchestrator do
         )
 
         state
+    end
+  end
+
+  defp tracker_mark_resumable(state, issue_id, %Result{} = result, run_entry) do
+    with {:ok, config} <- fetch_config(state.workflow_store),
+         tracker <- resolve_tracker(state.tracker, config),
+         :ok <-
+           tracker_call(tracker, :mark_resumable, [
+             config,
+             issue_id,
+             tracker_done_metadata(result, run_entry)
+           ]) do
+      {:ok, state}
+    else
+      {:error, reason} -> {:error, reason, state}
     end
   end
 
