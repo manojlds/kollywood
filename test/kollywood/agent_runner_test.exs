@@ -61,18 +61,19 @@ defmodule Kollywood.AgentRunnerTest do
       printf "REVIEW_PROMPT<<%s>>\n" "$prompt" >> "$REVIEW_PROMPT_LOG_FILE"
     fi
 
+    # Extract review.json path from prompt
+    review_json_path=$(printf '%s' "$prompt" | grep -oP 'Write your review to `\\K[^`]+' || echo "/tmp/review_fallback.json")
+
     if [ -n "${REVIEW_FAIL_ONCE_FILE:-}" ]; then
       if [ ! -f "$REVIEW_FAIL_ONCE_FILE" ]; then
         touch "$REVIEW_FAIL_ONCE_FILE"
-        echo "REVIEW_FAIL: address review feedback"
-        echo "reviewed:$prompt"
+        printf '{"verdict":"fail","summary":"address review feedback","findings":[{"severity":"critical","description":"missing regression test"}]}' > "$review_json_path"
         exit 0
       fi
     fi
 
-    verdict="${REVIEW_VERDICT:-REVIEW_PASS}"
-    echo "$verdict"
-    echo "reviewed:$prompt"
+    verdict="${REVIEW_VERDICT:-pass}"
+    printf '{"verdict":"%s","summary":"review complete","findings":[]}' "$verdict" > "$review_json_path"
     """)
 
     File.chmod!(review_cli_path, 0o755)
@@ -522,14 +523,12 @@ defmodule Kollywood.AgentRunnerTest do
       runner_config(workspace_root, cli_path, prompt_log)
       |> Map.put(:review, %{
         enabled: true,
-        pass_token: "REVIEW_PASS",
-        fail_token: "REVIEW_FAIL",
         agent: %{
           explicit: true,
           kind: :pi,
           command: review_cli_path,
           args: [],
-          env: %{"REVIEW_VERDICT" => "REVIEW_PASS"},
+          env: %{"REVIEW_VERDICT" => "pass"},
           timeout_ms: 10_000
         }
       })
@@ -564,8 +563,6 @@ defmodule Kollywood.AgentRunnerTest do
       |> Map.put(:review, %{
         enabled: true,
         max_cycles: 2,
-        pass_token: "REVIEW_PASS",
-        fail_token: "REVIEW_FAIL",
         agent: %{
           explicit: true,
           kind: :pi,
@@ -606,14 +603,12 @@ defmodule Kollywood.AgentRunnerTest do
       runner_config(workspace_root, cli_path, prompt_log)
       |> Map.put(:review, %{
         enabled: true,
-        pass_token: "REVIEW_PASS",
-        fail_token: "REVIEW_FAIL",
         agent: %{
           explicit: true,
           kind: :pi,
           command: review_cli_path,
           args: [],
-          env: %{"REVIEW_VERDICT" => "REVIEW_FAIL: missing regression test"},
+          env: %{"REVIEW_VERDICT" => "fail"},
           timeout_ms: 10_000
         }
       })
@@ -628,7 +623,7 @@ defmodule Kollywood.AgentRunnerTest do
              )
 
     assert result.error =~ "review failed after 1 cycle"
-    assert result.error =~ "missing regression test"
+    assert result.error =~ "review complete"
     assert :review_failed in Enum.map(result.events, & &1.type)
   end
 

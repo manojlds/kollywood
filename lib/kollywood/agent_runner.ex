@@ -401,7 +401,7 @@ defmodule Kollywood.AgentRunner do
 
   defp run_create_pr(state, config, workspace) do
     provider = Config.effective_publish_provider(config)
-    pr_opts = Publisher.pr_opts(config, state.issue, state.last_output)
+    pr_opts = Publisher.pr_opts(config, state.issue)
 
     cond do
       is_nil(pr_opts) ->
@@ -636,28 +636,21 @@ defmodule Kollywood.AgentRunner do
     if review_enabled?(config) do
       review_agent_kind = review_agent_kind(config)
       state = emit(state, :review_started, %{agent_kind: review_agent_kind, cycle: cycle})
+      rjp = review_json_path(state.log_files) || temp_review_json_path()
 
-      with {:ok, prompt} <- build_review_prompt(state, config, cycle),
-           {:ok, output} <- run_review_turn(state, config, prompt, state.log_files),
-           {:ok, verdict} <- validate_review_output(output, config) do
+      with {:ok, prompt} <- build_review_prompt(state, config, cycle, rjp),
+           {:ok, _output} <- run_review_turn(state, config, prompt, state.log_files),
+           {:ok, verdict} <- read_review_json(rjp) do
         case verdict do
           :pass ->
-            {:ok,
-             emit(state, :review_passed, %{
-               agent_kind: review_agent_kind,
-               cycle: cycle,
-               output: output
-             })}
+            {:ok, emit(state, :review_passed, %{agent_kind: review_agent_kind, cycle: cycle})}
 
-          {:fail, reason} ->
-            full_feedback = "#{reason}\n\n#{output}" |> String.trim()
-
-            {:review_failed, full_feedback,
+          {:fail, feedback} ->
+            {:review_failed, feedback,
              emit(state, :review_failed, %{
                agent_kind: review_agent_kind,
                cycle: cycle,
-               reason: reason,
-               output: output
+               reason: feedback
              })}
         end
       else
@@ -1459,61 +1452,80 @@ defmodule Kollywood.AgentRunner do
      "reviewer returned unexpected results: turn=#{inspect(other_result)} stop=#{inspect(other_stop_result)}"}
   end
 
-  # Matches ANSI escape sequences (e.g. \e[0m, \e[1;32m)
-  @ansi_escape_re ~r/\e\[[0-9;]*[A-Za-z]/
+  defp review_json_path(%{review_json: path}) when is_binary(path), do: path
+  defp review_json_path(_), do: nil
 
-  defp validate_review_output(output, config) do
-    pass_token = review_pass_token(config)
-    fail_token = review_fail_token(config)
+  defp read_review_json(nil), do: {:error, "review_json path not configured"}
 
-    first_line =
-      output
-      |> String.replace(@ansi_escape_re, "")
-      |> String.split("\n", parts: 2)
-      |> List.first()
-      |> to_string()
-      |> String.trim()
+  defp read_review_json(path) do
+    case File.read(path) do
+      {:ok, content} ->
+        case Jason.decode(content) do
+          {:ok, %{"verdict" => "pass"}} ->
+            {:ok, :pass}
 
-    cond do
-      String.starts_with?(first_line, pass_token) ->
-        {:ok, :pass}
+          {:ok, %{"verdict" => "fail"} = review} ->
+            feedback = format_review_feedback(review)
+            {:ok, {:fail, feedback}}
 
-      String.starts_with?(first_line, fail_token) ->
-        reason =
-          first_line
-          |> String.replace_prefix(fail_token, "")
-          |> String.trim()
-          |> String.trim_leading(":")
-          |> String.trim()
+          {:ok, _other} ->
+            {:error, "review.json missing valid verdict field (expected \"pass\" or \"fail\")"}
 
-        if reason == "" do
-          {:ok, {:fail, "reviewer rejected changes"}}
-        else
-          {:ok, {:fail, reason}}
+          {:error, reason} ->
+            {:error, "failed to parse review.json: #{inspect(reason)}"}
         end
 
-      true ->
-        {:error,
-         "reviewer must start first line with #{pass_token} or #{fail_token}; got: #{inspect(first_line)}"}
+      {:error, :enoent} ->
+        {:error, "reviewer did not write review.json"}
+
+      {:error, reason} ->
+        {:error, "failed to read review.json: #{inspect(reason)}"}
     end
   end
 
-  defp build_review_prompt(state, config, cycle) do
-    pass_token = review_pass_token(config)
-    fail_token = review_fail_token(config)
+  defp format_review_feedback(review) do
+    summary = Map.get(review, "summary", "") |> to_string() |> String.trim()
+    findings = Map.get(review, "findings", [])
+
+    by_severity = Enum.group_by(findings, fn f -> Map.get(f, "severity", "minor") end)
+
+    sections =
+      ["critical", "major", "minor"]
+      |> Enum.flat_map(fn sev ->
+        case Map.get(by_severity, sev) do
+          nil ->
+            []
+
+          items ->
+            header = "## #{String.capitalize(sev)}"
+            lines = Enum.map(items, fn f -> "- #{Map.get(f, "description", "")}" end)
+            [header | lines]
+        end
+      end)
+
+    prefix = if summary != "", do: "#{summary}\n\n", else: ""
+    "#{prefix}#{Enum.join(sections, "\n")}" |> String.trim()
+  end
+
+  defp build_review_prompt(state, config, cycle, rjp) do
     template = review_prompt_template(config)
 
     variables =
       PromptBuilder.build_variables(state.issue, state.attempt)
-      |> Map.put("pass_token", pass_token)
-      |> Map.put("fail_token", fail_token)
-      |> Map.put("agent_output", state.last_output || "")
+      |> Map.put("review_json_path", rjp)
       |> Map.put("cycle", cycle)
 
     case PromptBuilder.render(template, variables) do
       {:ok, prompt} -> {:ok, prompt}
       {:error, reason} -> {:error, "failed to render review prompt: #{reason}"}
     end
+  end
+
+  defp temp_review_json_path do
+    Path.join(
+      System.tmp_dir!(),
+      "kollywood_review_#{System.unique_integer([:positive, :monotonic])}.json"
+    )
   end
 
   defp build_review_remediation_prompt(state, review_feedback, cycle, prompt_template) do
@@ -1626,30 +1638,6 @@ defmodule Kollywood.AgentRunner do
     |> positive_integer(1)
   end
 
-  defp review_pass_token(config) do
-    config
-    |> review_config()
-    |> Map.get(:pass_token, "REVIEW_PASS")
-    |> to_string()
-    |> String.trim()
-    |> case do
-      "" -> "REVIEW_PASS"
-      value -> value
-    end
-  end
-
-  defp review_fail_token(config) do
-    config
-    |> review_config()
-    |> Map.get(:fail_token, "REVIEW_FAIL")
-    |> to_string()
-    |> String.trim()
-    |> case do
-      "" -> "REVIEW_FAIL"
-      value -> value
-    end
-  end
-
   defp review_agent_kind(config) do
     config
     |> review_config()
@@ -1666,34 +1654,31 @@ defmodule Kollywood.AgentRunner do
   Issue description:
   {{ issue.description }}
 
-  Prior implementation output (may be empty):
-  {{ agent_output }}
+  Run `git diff` and `git log` to see what was changed. You may run read-only commands
+  (tests, linters, type checkers) for validation. Do not modify files, do not commit, and do not push.
 
-  Review the current workspace changes. You may run commands for validation.
-  Do not modify files, do not commit, and do not push.
+  Write your review to `{{ review_json_path }}` as a JSON file with this exact structure:
 
-  On the FIRST line, return exactly one verdict:
-  {{ pass_token }}
-  or
-  {{ fail_token }}: <one-line summary of the most critical issue>
+  ```json
+  {
+    "verdict": "pass",
+    "summary": "One or two sentence summary of overall quality.",
+    "findings": [
+      {"severity": "critical", "description": "Description and where to find it"},
+      {"severity": "major", "description": "..."},
+      {"severity": "minor", "description": "..."}
+    ]
+  }
+  ```
 
-  After the first line, provide a structured review report with the following sections
-  (omit sections with no findings):
-
-  ## Critical
-  Issues that must be fixed before merging (bugs, broken tests, security issues, missing required functionality).
-  List each as: - [description of issue and where to find it]
-
-  ## Major
-  Significant quality issues that should be fixed (poor design, missing error handling, test coverage gaps).
-  List each as: - [description of issue and where to find it]
-
-  ## Minor
-  Nice-to-haves and style issues (naming, code clarity, optional improvements).
-  List each as: - [description of issue and where to find it]
-
-  ## Summary
-  One or two sentences summarising the overall quality of the changes.
+  Rules:
+  - `verdict` must be exactly `"pass"` or `"fail"`
+  - Use `"fail"` if there are any critical findings; use `"pass"` otherwise
+  - `"critical"`: bugs, broken tests, security issues, missing required functionality
+  - `"major"`: significant quality issues (poor design, missing error handling, test coverage gaps)
+  - `"minor"`: style issues, naming, nice-to-haves
+  - Omit findings for severities with no issues
+  - Write the file, then stop — do not print the review to stdout
   """
 
   @doc "Returns the default review prompt template used when none is configured in WORKFLOW.md."
