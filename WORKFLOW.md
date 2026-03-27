@@ -7,6 +7,7 @@ tracker:
     - in_progress
   terminal_states:
     - done
+    - merged
     - failed
     - cancelled
 

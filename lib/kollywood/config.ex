@@ -185,10 +185,10 @@ defmodule Kollywood.Config do
 
   defp tracker_default_states(kind) do
     case String.downcase(kind) do
-      "prd_json" -> {["open", "in_progress"], ["done", "failed", "cancelled"]}
-      "prd-json" -> {["open", "in_progress"], ["done", "failed", "cancelled"]}
-      "prd" -> {["open", "in_progress"], ["done", "failed", "cancelled"]}
-      "local" -> {["open", "in_progress"], ["done", "failed", "cancelled"]}
+      "prd_json" -> {["open", "in_progress"], ["done", "merged", "failed", "cancelled"]}
+      "prd-json" -> {["open", "in_progress"], ["done", "merged", "failed", "cancelled"]}
+      "prd" -> {["open", "in_progress"], ["done", "merged", "failed", "cancelled"]}
+      "local" -> {["open", "in_progress"], ["done", "merged", "failed", "cancelled"]}
       _other -> {["Todo", "In Progress"], ["Done", "Cancelled"]}
     end
   end
