@@ -69,6 +69,36 @@ defmodule Kollywood.Tracker.PrdJson do
     end)
   end
 
+  @impl true
+  @spec mark_pending_merge(Config.t(), String.t(), map()) :: :ok | {:error, String.t()}
+  def mark_pending_merge(%Config{} = config, issue_id, metadata)
+      when is_binary(issue_id) and is_map(metadata) do
+    pr_url = metadata |> field(:pr_url) |> optional_string()
+
+    update_story(config, issue_id, fn story ->
+      story
+      |> set_story_status("pending_merge")
+      |> put_story_field_if_present("pr_url", pr_url)
+      |> append_note("pending merge: #{pr_url}")
+    end)
+  end
+
+  @impl true
+  @spec mark_merged(Config.t(), String.t(), map()) :: :ok | {:error, String.t()}
+  def mark_merged(%Config{} = config, issue_id, metadata)
+      when is_binary(issue_id) and is_map(metadata) do
+    _ = metadata
+
+    update_story(config, issue_id, fn story ->
+      story
+      |> set_story_status("merged")
+      |> Map.put("mergedAt", now_iso8601())
+      |> Map.put("resumable", false)
+      |> Map.put("lastError", nil)
+      |> append_note("merged to main")
+    end)
+  end
+
   @spec reset_story(String.t(), String.t(), keyword()) :: :ok | {:error, String.t()}
   def reset_story(tracker_path, issue_id, opts \\ [])
       when is_binary(tracker_path) and is_binary(issue_id) do
@@ -268,6 +298,9 @@ defmodule Kollywood.Tracker.PrdJson do
 
     Map.put(story, "notes", notes)
   end
+
+  defp put_story_field_if_present(story, _field_name, nil), do: story
+  defp put_story_field_if_present(story, field_name, value), do: Map.put(story, field_name, value)
 
   defp active_state_set(config) do
     config
