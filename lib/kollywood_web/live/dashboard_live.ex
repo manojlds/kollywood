@@ -4,6 +4,7 @@ defmodule KollywoodWeb.DashboardLive do
   and run detail with logs.
   """
   use KollywoodWeb, :live_view
+  require Logger
 
   alias Kollywood.Orchestrator.RunLogs
   alias Kollywood.Projects
@@ -150,26 +151,32 @@ defmodule KollywoodWeb.DashboardLive do
     yaml = socket.assigns.workflow.yaml
 
     socket =
-      case workflow_path(project) do
-        nil ->
-          socket
+      if local_provider?(project) do
+        case workflow_path(project) do
+          nil ->
+            socket
 
-        path ->
-          content = "---\n#{String.trim(yaml)}\n---\n\n#{String.trim(body)}\n"
+          path ->
+            content = "---\n#{String.trim(yaml)}\n---\n\n#{String.trim(body)}\n"
 
-          case File.write(path, content) do
-            :ok ->
-              socket
-              |> assign(:workflow, load_workflow(project))
-              |> put_flash(:info, "Prompt template saved.")
+            case File.write(path, content) do
+              :ok ->
+                git_commit_workflow(path)
 
-            {:error, reason} ->
-              assign(
-                socket,
-                :workflow,
-                Map.put(socket.assigns.workflow, :error, "Save failed: #{inspect(reason)}")
-              )
-          end
+                socket
+                |> assign(:workflow, load_workflow(project))
+                |> put_flash(:info, "Prompt template saved.")
+
+              {:error, reason} ->
+                assign(
+                  socket,
+                  :workflow,
+                  Map.put(socket.assigns.workflow, :error, "Save failed: #{inspect(reason)}")
+                )
+            end
+        end
+      else
+        put_flash(socket, :error, "Workflow settings are read-only for remote providers.")
       end
 
     {:noreply, socket}
@@ -179,32 +186,38 @@ defmodule KollywoodWeb.DashboardLive do
     project = socket.assigns.current_project
 
     socket =
-      case workflow_path(project) do
-        nil ->
-          socket
-
-        path ->
-          trimmed = String.trim(template)
-          default = String.trim(Kollywood.AgentRunner.default_review_prompt_template())
-
-          with {:ok, content} <- File.read(path),
-               new_yaml <-
-                 if(trimmed == default,
-                   do: remove_review_template(content),
-                   else: inject_review_template(content, trimmed)
-                 ),
-               :ok <- File.write(path, new_yaml) do
+      if local_provider?(project) do
+        case workflow_path(project) do
+          nil ->
             socket
-            |> assign(:workflow, load_workflow(project))
-            |> put_flash(:info, "Review template saved.")
-          else
-            {:error, reason} ->
-              assign(
-                socket,
-                :workflow,
-                Map.put(socket.assigns.workflow, :error, "Save failed: #{inspect(reason)}")
-              )
-          end
+
+          path ->
+            trimmed = String.trim(template)
+            default = String.trim(Kollywood.AgentRunner.default_review_prompt_template())
+
+            with {:ok, content} <- File.read(path),
+                 new_yaml <-
+                   if(trimmed == default,
+                     do: remove_review_template(content),
+                     else: inject_review_template(content, trimmed)
+                   ),
+                 :ok <- File.write(path, new_yaml) do
+              git_commit_workflow(path)
+
+              socket
+              |> assign(:workflow, load_workflow(project))
+              |> put_flash(:info, "Review template saved.")
+            else
+              {:error, reason} ->
+                assign(
+                  socket,
+                  :workflow,
+                  Map.put(socket.assigns.workflow, :error, "Save failed: #{inspect(reason)}")
+                )
+            end
+        end
+      else
+        put_flash(socket, :error, "Workflow settings are read-only for remote providers.")
       end
 
     {:noreply, socket}
@@ -360,7 +373,11 @@ defmodule KollywoodWeb.DashboardLive do
                   project={@current_project}
                 />
               <% :settings -> %>
-                <.settings_section project={@current_project} workflow={@workflow} />
+                <.settings_section
+                  project={@current_project}
+                  workflow={@workflow}
+                  workflow_editable={local_provider?(@current_project)}
+                />
               <% _ -> %>
                 <.overview_section
                   counters={@counters}
@@ -1064,6 +1081,7 @@ defmodule KollywoodWeb.DashboardLive do
 
   attr :project, Project, required: true
   attr :workflow, :map, required: true
+  attr :workflow_editable, :boolean, default: false
 
   defp settings_section(assigns) do
     ~H"""
@@ -1510,17 +1528,29 @@ defmodule KollywoodWeb.DashboardLive do
         <div class="card bg-base-200 border border-base-300">
           <div class="card-body gap-4">
             <h3 class="card-title text-lg">Prompt Template</h3>
-            <form phx-submit="save_workflow" class="space-y-3">
+            <%= if @workflow_editable do %>
+              <form phx-submit="save_workflow" class="space-y-3">
+                <textarea
+                  name="body"
+                  rows="16"
+                  spellcheck="false"
+                  class="textarea textarea-bordered w-full font-mono text-xs leading-relaxed bg-base-100"
+                >{@workflow.body}</textarea>
+                <div class="flex justify-end">
+                  <button type="submit" class="btn btn-primary btn-sm">Save Template</button>
+                </div>
+              </form>
+            <% else %>
               <textarea
-                name="body"
                 rows="16"
                 spellcheck="false"
+                disabled
                 class="textarea textarea-bordered w-full font-mono text-xs leading-relaxed bg-base-100"
               >{@workflow.body}</textarea>
-              <div class="flex justify-end">
-                <button type="submit" class="btn btn-primary btn-sm">Save Template</button>
-              </div>
-            </form>
+              <p class="text-xs text-base-content/60">
+                Edit WORKFLOW.md in your repository to change these settings.
+              </p>
+            <% end %>
           </div>
         </div>
 
@@ -1545,24 +1575,38 @@ defmodule KollywoodWeb.DashboardLive do
               <% end %>
             </div>
 
-            <form phx-submit="save_review_template" class="space-y-4">
+            <%= if @workflow_editable do %>
+              <form phx-submit="save_review_template" class="space-y-4">
+                <textarea
+                  name="review_template"
+                  rows="20"
+                  spellcheck="false"
+                  class="textarea textarea-bordered w-full font-mono text-xs leading-relaxed bg-base-100"
+                >{@workflow.review_template}</textarea>
+                <div class="flex items-center justify-between">
+                  <%= if @workflow.review_template_is_default do %>
+                    <p class="text-xs text-base-content/50">
+                      Showing built-in default. Edit and save to override for this project.
+                    </p>
+                  <% else %>
+                    <p class="text-xs text-base-content/50">
+                      Custom template active for this project.
+                    </p>
+                  <% end %>
+                  <button type="submit" class="btn btn-primary btn-sm">Save Review Template</button>
+                </div>
+              </form>
+            <% else %>
               <textarea
-                name="review_template"
                 rows="20"
                 spellcheck="false"
+                disabled
                 class="textarea textarea-bordered w-full font-mono text-xs leading-relaxed bg-base-100"
               >{@workflow.review_template}</textarea>
-              <div class="flex items-center justify-between">
-                <%= if @workflow.review_template_is_default do %>
-                  <p class="text-xs text-base-content/50">
-                    Showing built-in default. Edit and save to override for this project.
-                  </p>
-                <% else %>
-                  <p class="text-xs text-base-content/50">Custom template active for this project.</p>
-                <% end %>
-                <button type="submit" class="btn btn-primary btn-sm">Save Review Template</button>
-              </div>
-            </form>
+              <p class="text-xs text-base-content/60">
+                Edit WORKFLOW.md in your repository to change these settings.
+              </p>
+            <% end %>
           </div>
         </div>
       <% else %>
@@ -2164,6 +2208,42 @@ defmodule KollywoodWeb.DashboardLive do
           _ -> default
         end
     end
+  end
+
+  defp local_provider?(%{provider: "local"}), do: true
+  defp local_provider?(%{provider: :local}), do: true
+  defp local_provider?(_), do: false
+
+  defp git_commit_workflow(workflow_path) when is_binary(workflow_path) do
+    repo_root = Path.dirname(workflow_path)
+    workflow_file = Path.basename(workflow_path)
+
+    {add_out, add_status} =
+      System.cmd("git", ["add", workflow_file], cd: repo_root, stderr_to_stdout: true)
+
+    if add_status != 0 do
+      Logger.warning(
+        "Failed to stage #{workflow_file} after settings save: #{String.trim(add_out)}"
+      )
+    else
+      {commit_out, commit_status} =
+        System.cmd("git", ["commit", "-m", "chore: update workflow settings"],
+          cd: repo_root,
+          stderr_to_stdout: true
+        )
+
+      if commit_status != 0 do
+        Logger.warning(
+          "Failed to commit #{workflow_file} after settings save: #{String.trim(commit_out)}"
+        )
+      end
+    end
+
+    :ok
+  rescue
+    error ->
+      Logger.warning("Failed to commit workflow after settings save: #{inspect(error)}")
+      :ok
   end
 
   defp workflow_path(nil), do: nil
