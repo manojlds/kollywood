@@ -18,6 +18,7 @@ defmodule Kollywood.Orchestrator do
   alias Kollywood.AgentRunner
   alias Kollywood.AgentRunner.Result
   alias Kollywood.Config
+  alias Kollywood.Orchestrator.EphemeralStore
   alias Kollywood.Orchestrator.RetryStore
   alias Kollywood.Orchestrator.RunLogs
   alias Kollywood.RepoSync
@@ -26,6 +27,8 @@ defmodule Kollywood.Orchestrator do
 
   @default_poll_interval_ms 5_000
   @default_repo_sync_interval_ms 30_000
+  @default_claim_ttl_ms 86_400_000
+  @default_completed_ttl_ms 60_000
   @default_max_concurrent_agents 5
   @default_max_retry_backoff_ms 300_000
   @default_retry_base_delay_ms 10_000
@@ -36,6 +39,7 @@ defmodule Kollywood.Orchestrator do
           tracker: :auto | module() | (Config.t() -> {:ok, [map()]} | {:error, String.t()}),
           runner: module() | (map(), keyword() -> {:ok, Result.t()} | {:error, Result.t()}),
           agent_pool: GenServer.server(),
+          ephemeral_store: module() | nil,
           retry_store: module() | nil,
           runner_opts: keyword(),
           auto_poll: boolean(),
@@ -49,12 +53,16 @@ defmodule Kollywood.Orchestrator do
           max_attempts: pos_integer() | nil,
           retry_base_delay_ms: pos_integer(),
           continuation_delay_ms: pos_integer(),
+          claim_ttl_ms: pos_integer(),
+          completed_ttl_ms: pos_integer(),
           run_timeout_ms: pos_integer() | nil,
           running: %{optional(String.t()) => map()},
           running_by_ref: %{optional(reference()) => String.t()},
           claimed: MapSet.t(String.t()),
+          claimed_until: %{optional(String.t()) => integer()},
           retry_attempts: %{optional(String.t()) => map()},
           completed: MapSet.t(String.t()),
+          completed_until: %{optional(String.t()) => integer()},
           last_error: String.t() | nil,
           last_poll_at: DateTime.t() | nil
         }
@@ -64,6 +72,7 @@ defmodule Kollywood.Orchestrator do
     :tracker,
     :runner,
     :agent_pool,
+    :ephemeral_store,
     :retry_store,
     :runner_opts,
     :auto_poll,
@@ -77,6 +86,8 @@ defmodule Kollywood.Orchestrator do
     :max_attempts,
     :retry_base_delay_ms,
     :continuation_delay_ms,
+    :claim_ttl_ms,
+    :completed_ttl_ms,
     :run_timeout_ms,
     :repo_syncer,
     :repo_local_path,
@@ -86,8 +97,10 @@ defmodule Kollywood.Orchestrator do
     running: %{},
     running_by_ref: %{},
     claimed: MapSet.new(),
+    claimed_until: %{},
     retry_attempts: %{},
-    completed: MapSet.new()
+    completed: MapSet.new(),
+    completed_until: %{}
   ]
 
   @typedoc "GenServer name or pid"
@@ -126,6 +139,8 @@ defmodule Kollywood.Orchestrator do
         tracker: Keyword.get(opts, :tracker, :auto),
         runner: Keyword.get(opts, :runner, AgentRunner),
         agent_pool: agent_pool,
+        ephemeral_store:
+          resolve_ephemeral_store(Keyword.get(opts, :ephemeral_store, :__default__)),
         retry_store: resolve_retry_store(Keyword.get(opts, :retry_store, :__default__)),
         runner_opts: Keyword.get(opts, :runner_opts, []),
         auto_poll: Keyword.get(opts, :auto_poll, true),
@@ -160,12 +175,16 @@ defmodule Kollywood.Orchestrator do
             Keyword.get(opts, :continuation_delay_ms),
             @default_continuation_delay_ms
           ),
+        claim_ttl_ms: positive_integer(Keyword.get(opts, :claim_ttl_ms), @default_claim_ttl_ms),
+        completed_ttl_ms:
+          positive_integer(Keyword.get(opts, :completed_ttl_ms), @default_completed_ttl_ms),
         run_timeout_ms: positive_integer(Keyword.get(opts, :run_timeout_ms), nil)
       }
 
       state =
         state
         |> cleanup_orphan_workers()
+        |> restore_persisted_ephemeral_state()
         |> startup_reconcile()
         |> restore_persisted_retries()
 
@@ -313,7 +332,9 @@ defmodule Kollywood.Orchestrator do
         |> Enum.reject(&is_nil/1)
         |> MapSet.new()
 
-      %{state | claimed: MapSet.union(state.claimed, in_progress_ids)}
+      Enum.reduce(in_progress_ids, state, fn issue_id, acc ->
+        claim(acc, issue_id)
+      end)
     else
       {:error, reason} ->
         Logger.warning("Orchestrator startup reconciliation failed: #{reason}")
@@ -332,6 +353,7 @@ defmodule Kollywood.Orchestrator do
          tracker <- resolve_tracker(state.tracker, config),
          {:ok, issues} <- list_active_issues(tracker, config) do
       state
+      |> prune_expired_ephemeral()
       |> apply_runtime_limits(config)
       |> Map.put(:last_poll_at, DateTime.utc_now())
       |> clear_completed_for_open_issues(issues)
@@ -496,7 +518,11 @@ defmodule Kollywood.Orchestrator do
       |> Enum.reject(&is_nil/1)
       |> MapSet.new()
 
-    %{state | completed: MapSet.difference(state.completed, open_ids)}
+    state.completed
+    |> MapSet.intersection(open_ids)
+    |> Enum.reduce(state, fn issue_id, acc ->
+      unmark_completed(acc, issue_id)
+    end)
   end
 
   defp reconcile_running(state, issues, config) do
@@ -698,7 +724,7 @@ defmodule Kollywood.Orchestrator do
 
   defp handle_runner_result(state, issue_id, run_entry, {:ok, %Result{} = result}) do
     maybe_complete_run_logs(run_entry, result)
-    state = %{state | completed: MapSet.put(state.completed, issue_id)}
+    state = mark_completed(state, issue_id)
     done_metadata = tracker_done_metadata(result, run_entry)
 
     case result.status do
@@ -804,7 +830,7 @@ defmodule Kollywood.Orchestrator do
         state
         |> cancel_retry(issue_id)
         |> release_claim(issue_id)
-        |> Map.update!(:completed, &MapSet.put(&1, issue_id))
+        |> mark_completed(issue_id)
 
       state.retries_enabled ->
         schedule_retry(
@@ -825,7 +851,7 @@ defmodule Kollywood.Orchestrator do
         state
         |> cancel_retry(issue_id)
         |> release_claim(issue_id)
-        |> Map.update!(:completed, &MapSet.put(&1, issue_id))
+        |> mark_completed(issue_id)
     end
   end
 
@@ -900,6 +926,10 @@ defmodule Kollywood.Orchestrator do
   defp normalize_retry_kind("finalize_resumable"), do: :finalize_resumable
   defp normalize_retry_kind(_kind), do: :run
 
+  defp normalize_ephemeral_kind(kind) when kind in [:claimed, :completed], do: kind
+  defp normalize_ephemeral_kind("completed"), do: :completed
+  defp normalize_ephemeral_kind(_kind), do: :claimed
+
   defp retry_run_entry(run_entry) when is_map(run_entry) do
     case Map.get(run_entry, :run_log_context) do
       nil -> %{}
@@ -972,7 +1002,7 @@ defmodule Kollywood.Orchestrator do
     state
     |> cancel_retry(issue_id)
     |> release_claim(issue_id)
-    |> Map.update!(:completed, &MapSet.put(&1, issue_id))
+    |> mark_completed(issue_id)
   end
 
   defp retry_backoff_delay_ms(state, attempt) do
@@ -996,10 +1026,130 @@ defmodule Kollywood.Orchestrator do
 
   defp retry_attempt_from_run_attempt(_), do: 1
 
-  defp claim(state, issue_id), do: %{state | claimed: MapSet.put(state.claimed, issue_id)}
+  defp claim(state, issue_id) when is_binary(issue_id) do
+    expires_at_ms = System.monotonic_time(:millisecond) + state.claim_ttl_ms
+    claim_with_expiry(state, issue_id, expires_at_ms)
+  end
 
-  defp release_claim(state, issue_id),
-    do: %{state | claimed: MapSet.delete(state.claimed, issue_id)}
+  defp claim(state, _issue_id), do: state
+
+  defp claim_with_expiry(state, issue_id, expires_at_ms)
+       when is_binary(issue_id) and is_integer(expires_at_ms) do
+    state = %{
+      state
+      | claimed: MapSet.put(state.claimed, issue_id),
+        claimed_until: Map.put(state.claimed_until, issue_id, expires_at_ms)
+    }
+
+    persist_ephemeral_entry(state, :claimed, issue_id, expires_at_ms)
+  end
+
+  defp claim_with_expiry(state, _issue_id, _expires_at_ms), do: state
+
+  defp release_claim(state, issue_id) when is_binary(issue_id) do
+    state = %{
+      state
+      | claimed: MapSet.delete(state.claimed, issue_id),
+        claimed_until: Map.delete(state.claimed_until, issue_id)
+    }
+
+    delete_persisted_ephemeral_entry(state, :claimed, issue_id)
+  end
+
+  defp release_claim(state, _issue_id), do: state
+
+  defp mark_completed(state, issue_id) when is_binary(issue_id) do
+    expires_at_ms = System.monotonic_time(:millisecond) + state.completed_ttl_ms
+
+    state = %{
+      state
+      | completed: MapSet.put(state.completed, issue_id),
+        completed_until: Map.put(state.completed_until, issue_id, expires_at_ms)
+    }
+
+    persist_ephemeral_entry(state, :completed, issue_id, expires_at_ms)
+  end
+
+  defp mark_completed(state, _issue_id), do: state
+
+  defp unmark_completed(state, issue_id) when is_binary(issue_id) do
+    state = %{
+      state
+      | completed: MapSet.delete(state.completed, issue_id),
+        completed_until: Map.delete(state.completed_until, issue_id)
+    }
+
+    delete_persisted_ephemeral_entry(state, :completed, issue_id)
+  end
+
+  defp unmark_completed(state, _issue_id), do: state
+
+  defp prune_expired_ephemeral(state) do
+    now_ms = System.monotonic_time(:millisecond)
+
+    expired_claimed_ids =
+      state.claimed_until
+      |> Enum.filter(fn {_issue_id, expires_at_ms} -> expires_at_ms <= now_ms end)
+      |> Enum.map(fn {issue_id, _expires_at_ms} -> issue_id end)
+
+    expired_completed_ids =
+      state.completed_until
+      |> Enum.filter(fn {_issue_id, expires_at_ms} -> expires_at_ms <= now_ms end)
+      |> Enum.map(fn {issue_id, _expires_at_ms} -> issue_id end)
+
+    state = Enum.reduce(expired_claimed_ids, state, &release_claim(&2, &1))
+    Enum.reduce(expired_completed_ids, state, &unmark_completed(&2, &1))
+  end
+
+  defp persist_ephemeral_entry(state, kind, issue_id, expires_at_ms) do
+    case state.ephemeral_store do
+      nil ->
+        state
+
+      ephemeral_store ->
+        case ephemeral_store.upsert(kind, issue_id, expires_at_ms) do
+          :ok ->
+            state
+
+          {:error, reason} ->
+            Logger.warning("Failed to persist #{kind} marker issue_id=#{issue_id}: #{reason}")
+
+            state
+        end
+    end
+  rescue
+    error ->
+      Logger.warning(
+        "Failed to persist #{kind} marker issue_id=#{issue_id}: #{Exception.message(error)}"
+      )
+
+      state
+  end
+
+  defp delete_persisted_ephemeral_entry(state, kind, issue_id) do
+    case state.ephemeral_store do
+      nil ->
+        state
+
+      ephemeral_store ->
+        case ephemeral_store.delete(kind, issue_id) do
+          :ok ->
+            state
+
+          {:error, reason} ->
+            Logger.warning("Failed to delete #{kind} marker issue_id=#{issue_id}: #{reason}")
+
+            state
+        end
+    end
+  rescue
+    error ->
+      Logger.warning(
+        "Failed to delete #{kind} marker issue_id=#{issue_id}: #{Exception.message(error)}"
+      )
+
+      state
+  end
 
   defp cancel_retry(state, issue_id) do
     state = delete_persisted_retry(state, issue_id)
@@ -1208,6 +1358,16 @@ defmodule Kollywood.Orchestrator do
 
   # --- Config and integration ---
 
+  defp resolve_ephemeral_store(:__default__) do
+    Application.get_env(:kollywood, :orchestrator_ephemeral_store, EphemeralStore)
+  end
+
+  defp resolve_ephemeral_store(nil), do: nil
+
+  defp resolve_ephemeral_store(ephemeral_store) when is_atom(ephemeral_store), do: ephemeral_store
+
+  defp resolve_ephemeral_store(_ephemeral_store), do: nil
+
   defp resolve_retry_store(:__default__) do
     Application.get_env(:kollywood, :orchestrator_retry_store, RetryStore)
   end
@@ -1251,6 +1411,50 @@ defmodule Kollywood.Orchestrator do
         state
     end
   end
+
+  defp restore_persisted_ephemeral_state(%__MODULE__{ephemeral_store: nil} = state), do: state
+
+  defp restore_persisted_ephemeral_state(state) do
+    now_ms = System.monotonic_time(:millisecond)
+
+    case state.ephemeral_store.list_active(now_ms) do
+      {:ok, entries} ->
+        Enum.reduce(entries, state, &restore_ephemeral_entry(&2, &1))
+
+      {:error, reason} ->
+        Logger.warning("Failed to restore persisted ephemeral state: #{reason}")
+        state
+    end
+  rescue
+    error ->
+      Logger.warning("Failed to restore persisted ephemeral state: #{Exception.message(error)}")
+      state
+  end
+
+  defp restore_ephemeral_entry(state, %{
+         issue_id: issue_id,
+         kind: kind,
+         expires_at_ms: expires_at_ms
+       })
+       when is_binary(issue_id) and is_integer(expires_at_ms) do
+    case normalize_ephemeral_kind(kind) do
+      :claimed ->
+        %{
+          state
+          | claimed: MapSet.put(state.claimed, issue_id),
+            claimed_until: Map.put(state.claimed_until, issue_id, expires_at_ms)
+        }
+
+      :completed ->
+        %{
+          state
+          | completed: MapSet.put(state.completed, issue_id),
+            completed_until: Map.put(state.completed_until, issue_id, expires_at_ms)
+        }
+    end
+  end
+
+  defp restore_ephemeral_entry(state, _entry), do: state
 
   defp restore_persisted_retries(%__MODULE__{retry_store: nil} = state), do: state
 
@@ -1298,11 +1502,18 @@ defmodule Kollywood.Orchestrator do
       |> then(fn acc ->
         %{acc | retry_attempts: Map.put(acc.retry_attempts, issue_id, restored_entry)}
       end)
-      |> claim(issue_id)
+      |> claim_with_expiry(issue_id, claim_expiry_from_retry(state, retry_entry, now_ms))
     end
   end
 
   defp restore_retry_entry(state, _retry_entry, _now_ms), do: state
+
+  defp claim_expiry_from_retry(state, retry_entry, now_ms) do
+    base_expiry = now_ms + state.claim_ttl_ms
+    retry_due_ms = Map.get(retry_entry, :due_at_ms, now_ms)
+
+    max(base_expiry, retry_due_ms + state.claim_ttl_ms)
+  end
 
   defp list_agent_pool_children(agent_pool) do
     {:ok, DynamicSupervisor.which_children(agent_pool)}
@@ -1733,6 +1944,18 @@ defmodule Kollywood.Orchestrator do
         state.max_attempts
       )
 
+    claim_ttl_ms =
+      positive_integer(
+        get_in(config, [Access.key(:agent, %{}), Access.key(:claim_ttl_ms)]),
+        state.claim_ttl_ms
+      )
+
+    completed_ttl_ms =
+      positive_integer(
+        get_in(config, [Access.key(:agent, %{}), Access.key(:completed_ttl_ms)]),
+        state.completed_ttl_ms
+      )
+
     run_timeout_ms =
       positive_integer(
         get_in(config, [Access.key(:agent, %{}), Access.key(:run_timeout_ms)]),
@@ -1747,6 +1970,8 @@ defmodule Kollywood.Orchestrator do
         max_retry_backoff_ms: max_retry_backoff_ms,
         retries_enabled: retries_enabled,
         max_attempts: max_attempts,
+        claim_ttl_ms: claim_ttl_ms,
+        completed_ttl_ms: completed_ttl_ms,
         run_timeout_ms: run_timeout_ms
     }
   end
@@ -1904,6 +2129,8 @@ defmodule Kollywood.Orchestrator do
       max_retry_backoff_ms: state.max_retry_backoff_ms,
       retry_base_delay_ms: state.retry_base_delay_ms,
       continuation_delay_ms: state.continuation_delay_ms,
+      claim_ttl_ms: state.claim_ttl_ms,
+      completed_ttl_ms: state.completed_ttl_ms,
       run_timeout_ms: state.run_timeout_ms,
       last_error: state.last_error,
       last_poll_at: state.last_poll_at
