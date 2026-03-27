@@ -18,6 +18,7 @@ defmodule Kollywood.Orchestrator do
   alias Kollywood.AgentRunner
   alias Kollywood.AgentRunner.Result
   alias Kollywood.Config
+  alias Kollywood.Orchestrator.RetryStore
   alias Kollywood.Orchestrator.RunLogs
   alias Kollywood.RepoSync
   alias Kollywood.Tracker
@@ -35,6 +36,7 @@ defmodule Kollywood.Orchestrator do
           tracker: :auto | module() | (Config.t() -> {:ok, [map()]} | {:error, String.t()}),
           runner: module() | (map(), keyword() -> {:ok, Result.t()} | {:error, Result.t()}),
           agent_pool: GenServer.server(),
+          retry_store: module() | nil,
           runner_opts: keyword(),
           auto_poll: boolean(),
           poll_timer_ref: reference() | nil,
@@ -62,6 +64,7 @@ defmodule Kollywood.Orchestrator do
     :tracker,
     :runner,
     :agent_pool,
+    :retry_store,
     :runner_opts,
     :auto_poll,
     :poll_timer_ref,
@@ -123,6 +126,7 @@ defmodule Kollywood.Orchestrator do
         tracker: Keyword.get(opts, :tracker, :auto),
         runner: Keyword.get(opts, :runner, AgentRunner),
         agent_pool: agent_pool,
+        retry_store: resolve_retry_store(Keyword.get(opts, :retry_store, :__default__)),
         runner_opts: Keyword.get(opts, :runner_opts, []),
         auto_poll: Keyword.get(opts, :auto_poll, true),
         poll_timer_ref: nil,
@@ -159,7 +163,11 @@ defmodule Kollywood.Orchestrator do
         run_timeout_ms: positive_integer(Keyword.get(opts, :run_timeout_ms), nil)
       }
 
-      state = startup_reconcile(state)
+      state =
+        state
+        |> cleanup_orphan_workers()
+        |> startup_reconcile()
+        |> restore_persisted_retries()
 
       state =
         if state.auto_poll do
@@ -210,6 +218,7 @@ defmodule Kollywood.Orchestrator do
 
       {retry_entry, retry_attempts} ->
         state = %{state | retry_attempts: retry_attempts}
+        state = delete_persisted_retry(state, issue_id)
         {:noreply, dispatch_retry(state, issue_id, retry_entry)}
     end
   end
@@ -713,7 +722,7 @@ defmodule Kollywood.Orchestrator do
               finalization: %{
                 done_metadata: done_metadata,
                 mark_merged?: mark_merged?,
-                run_entry: run_entry
+                run_entry: retry_run_entry(run_entry)
               }
             )
         end
@@ -825,7 +834,7 @@ defmodule Kollywood.Orchestrator do
       state = cancel_retry(state, issue_id)
       due_at_ms = System.monotonic_time(:millisecond) + delay_ms
       timer_ref = Process.send_after(self(), {:retry_due, issue_id}, delay_ms)
-      kind = Keyword.get(opts, :kind, :run)
+      kind = normalize_retry_kind(Keyword.get(opts, :kind, :run))
       finalization = Keyword.get(opts, :finalization)
 
       if reason do
@@ -846,8 +855,11 @@ defmodule Kollywood.Orchestrator do
         due_at_ms: due_at_ms
       }
 
-      %{state | retry_attempts: Map.put(state.retry_attempts, issue_id, retry_entry)}
-      |> claim(issue_id)
+      state =
+        %{state | retry_attempts: Map.put(state.retry_attempts, issue_id, retry_entry)}
+        |> claim(issue_id)
+
+      persist_retry_entry(state, issue_id, retry_entry)
     else
       Logger.warning(
         "Retries disabled for issue_id=#{issue_id}; not scheduling retry#{if reason, do: " reason=#{reason}", else: ""}"
@@ -859,7 +871,9 @@ defmodule Kollywood.Orchestrator do
     end
   end
 
-  defp retry_kind(retry_entry) when is_map(retry_entry), do: Map.get(retry_entry, :kind, :run)
+  defp retry_kind(retry_entry) when is_map(retry_entry),
+    do: normalize_retry_kind(Map.get(retry_entry, :kind, :run))
+
   defp retry_kind(_retry_entry), do: :run
 
   defp retry_finalization(retry_entry) when is_map(retry_entry),
@@ -878,6 +892,74 @@ defmodule Kollywood.Orchestrator do
     end
   end
 
+  defp normalize_retry_kind(kind) when kind in [:run, :finalize_done, :finalize_resumable],
+    do: kind
+
+  defp normalize_retry_kind("run"), do: :run
+  defp normalize_retry_kind("finalize_done"), do: :finalize_done
+  defp normalize_retry_kind("finalize_resumable"), do: :finalize_resumable
+  defp normalize_retry_kind(_kind), do: :run
+
+  defp retry_run_entry(run_entry) when is_map(run_entry) do
+    case Map.get(run_entry, :run_log_context) do
+      nil -> %{}
+      run_log_context -> %{run_log_context: run_log_context}
+    end
+  end
+
+  defp retry_run_entry(_run_entry), do: %{}
+
+  defp persist_retry_entry(state, issue_id, retry_entry) do
+    case state.retry_store do
+      nil ->
+        state
+
+      retry_store ->
+        retry_entry =
+          retry_entry
+          |> Map.drop([:timer_ref])
+          |> Map.update(:kind, :run, &normalize_retry_kind/1)
+
+        case retry_store.upsert(issue_id, retry_entry) do
+          :ok ->
+            state
+
+          {:error, reason} ->
+            Logger.warning("Failed to persist retry issue_id=#{issue_id}: #{reason}")
+            state
+        end
+    end
+  rescue
+    error ->
+      Logger.warning("Failed to persist retry issue_id=#{issue_id}: #{Exception.message(error)}")
+
+      state
+  end
+
+  defp delete_persisted_retry(state, issue_id) do
+    case state.retry_store do
+      nil ->
+        state
+
+      retry_store ->
+        case retry_store.delete(issue_id) do
+          :ok ->
+            state
+
+          {:error, reason} ->
+            Logger.warning("Failed to delete persisted retry issue_id=#{issue_id}: #{reason}")
+            state
+        end
+    end
+  rescue
+    error ->
+      Logger.warning(
+        "Failed to delete persisted retry issue_id=#{issue_id}: #{Exception.message(error)}"
+      )
+
+      state
+  end
+
   defp retry_attempt_reached_limit?(state, attempt) do
     not is_nil(state.max_attempts) and attempt >= state.max_attempts
   end
@@ -888,6 +970,7 @@ defmodule Kollywood.Orchestrator do
     )
 
     state
+    |> cancel_retry(issue_id)
     |> release_claim(issue_id)
     |> Map.update!(:completed, &MapSet.put(&1, issue_id))
   end
@@ -919,6 +1002,8 @@ defmodule Kollywood.Orchestrator do
     do: %{state | claimed: MapSet.delete(state.claimed, issue_id)}
 
   defp cancel_retry(state, issue_id) do
+    state = delete_persisted_retry(state, issue_id)
+
     case Map.pop(state.retry_attempts, issue_id) do
       {nil, _retry_attempts} ->
         state
@@ -1123,6 +1208,16 @@ defmodule Kollywood.Orchestrator do
 
   # --- Config and integration ---
 
+  defp resolve_retry_store(:__default__) do
+    Application.get_env(:kollywood, :orchestrator_retry_store, RetryStore)
+  end
+
+  defp resolve_retry_store(nil), do: nil
+
+  defp resolve_retry_store(retry_store) when is_atom(retry_store), do: retry_store
+
+  defp resolve_retry_store(_retry_store), do: nil
+
   defp resolve_agent_pool(agent_pool) when is_pid(agent_pool), do: {:ok, agent_pool}
 
   defp resolve_agent_pool(agent_pool) when is_atom(agent_pool) do
@@ -1134,6 +1229,93 @@ defmodule Kollywood.Orchestrator do
   end
 
   defp resolve_agent_pool(_agent_pool), do: {:error, "invalid agent pool configuration"}
+
+  defp cleanup_orphan_workers(state) do
+    with {:ok, children} <- list_agent_pool_children(state.agent_pool),
+         orphan_pids when orphan_pids != [] <- worker_child_pids(children) do
+      Logger.warning(
+        "Stopping #{length(orphan_pids)} orphan run worker(s) during orchestrator startup"
+      )
+
+      Enum.each(orphan_pids, fn pid ->
+        _ = AgentPool.stop_run(state.agent_pool, pid)
+      end)
+
+      state
+    else
+      [] ->
+        state
+
+      {:error, reason} ->
+        Logger.warning("Failed to inspect agent pool children: #{reason}")
+        state
+    end
+  end
+
+  defp restore_persisted_retries(%__MODULE__{retry_store: nil} = state), do: state
+
+  defp restore_persisted_retries(state) do
+    case state.retry_store.list() do
+      {:ok, retry_entries} ->
+        now_ms = System.monotonic_time(:millisecond)
+
+        Enum.reduce(retry_entries, state, fn retry_entry, acc ->
+          restore_retry_entry(acc, retry_entry, now_ms)
+        end)
+
+      {:error, reason} ->
+        Logger.warning("Failed to restore persisted retries: #{reason}")
+        state
+    end
+  rescue
+    error ->
+      Logger.warning("Failed to restore persisted retries: #{Exception.message(error)}")
+      state
+  end
+
+  defp restore_retry_entry(state, retry_entry, now_ms) when is_map(retry_entry) do
+    issue_id =
+      retry_entry
+      |> field(:issue_id)
+      |> case do
+        value when is_binary(value) and value != "" -> value
+        _other -> nil
+      end
+
+    if is_nil(issue_id) do
+      state
+    else
+      delay_ms = max(Map.get(retry_entry, :due_at_ms, now_ms) - now_ms, 0)
+      timer_ref = Process.send_after(self(), {:retry_due, issue_id}, delay_ms)
+
+      restored_entry =
+        retry_entry
+        |> Map.put(:kind, retry_kind(retry_entry))
+        |> Map.put(:timer_ref, timer_ref)
+        |> Map.put_new(:finalization, %{})
+
+      state
+      |> then(fn acc ->
+        %{acc | retry_attempts: Map.put(acc.retry_attempts, issue_id, restored_entry)}
+      end)
+      |> claim(issue_id)
+    end
+  end
+
+  defp restore_retry_entry(state, _retry_entry, _now_ms), do: state
+
+  defp list_agent_pool_children(agent_pool) do
+    {:ok, DynamicSupervisor.which_children(agent_pool)}
+  rescue
+    error -> {:error, Exception.message(error)}
+  end
+
+  defp worker_child_pids(children) do
+    Enum.flat_map(children, fn
+      {_id, pid, :worker, _modules} when is_pid(pid) -> [pid]
+      _other -> []
+    end)
+  end
 
   defp maybe_sync_managed_repos(state) do
     now_ms = System.monotonic_time(:millisecond)
