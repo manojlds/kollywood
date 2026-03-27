@@ -502,10 +502,10 @@ defmodule Kollywood.Orchestrator do
 
     case result.status do
       :ok ->
-        case tracker_mark_done(state, issue_id, result, run_entry) do
-          {:ok, state} ->
-            state
-
+        with {:ok, state} <- tracker_mark_done(state, issue_id, result, run_entry),
+             {:ok, state} <- maybe_tracker_mark_merged(state, issue_id, result, run_entry) do
+          state
+        else
           {:error, reason, state} ->
             next_attempt = next_retry_attempt(run_entry.attempt)
 
@@ -879,6 +879,29 @@ defmodule Kollywood.Orchestrator do
     end
   end
 
+  defp maybe_tracker_mark_merged(state, issue_id, %Result{} = result, run_entry) do
+    if publish_merged?(result) do
+      tracker_mark_merged(state, issue_id, result, run_entry)
+    else
+      {:ok, state}
+    end
+  end
+
+  defp tracker_mark_merged(state, issue_id, %Result{} = result, run_entry) do
+    with {:ok, config} <- fetch_config(state.workflow_store),
+         tracker <- resolve_tracker(state.tracker, config),
+         :ok <-
+           tracker_call(tracker, :mark_merged, [
+             config,
+             issue_id,
+             tracker_done_metadata(result, run_entry)
+           ]) do
+      {:ok, state}
+    else
+      {:error, reason} -> {:error, reason, state}
+    end
+  end
+
   defp tracker_mark_failed(state, issue_id, reason, attempt) do
     with {:ok, config} <- fetch_config(state.workflow_store),
          tracker <- resolve_tracker(state.tracker, config),
@@ -959,6 +982,13 @@ defmodule Kollywood.Orchestrator do
       end
 
     Map.merge(base, run_log_metadata)
+  end
+
+  defp publish_merged?(%Result{} = result) do
+    Enum.any?(result.events || [], fn event ->
+      type = Map.get(event, :type) || Map.get(event, "type")
+      type in [:publish_merged, "publish_merged"]
+    end)
   end
 
   defp list_active_issues(tracker, config) when is_function(tracker, 1) do

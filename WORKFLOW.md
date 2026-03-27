@@ -6,6 +6,7 @@ tracker:
   kind: prd_json
   terminal_states:
     - done
+    - merged
     - failed
     - cancelled
 polling:
@@ -44,6 +45,7 @@ review:
   max_cycles: 2
 publish:
   auto_create_pr: never
+  auto_merge: on_pass
   auto_push: on_pass
   provider: github
 git:

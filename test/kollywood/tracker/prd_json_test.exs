@@ -99,6 +99,12 @@ defmodule Kollywood.Tracker.PrdJsonTest do
     assert story_after_done["status"] == "done"
     assert story_after_done["passes"] == true
     assert is_map(story_after_done["lastRun"])
+
+    assert :ok = PrdJson.mark_merged(cfg, "US-010", %{status: :ok, turn_count: 1})
+
+    story_after_merged = story(path, "US-010")
+    assert story_after_merged["status"] == "merged"
+    assert story_after_merged["passes"] == true
   end
 
   test "marks story resumable and keeps in_progress status", %{root: root} do
