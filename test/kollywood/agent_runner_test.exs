@@ -738,6 +738,43 @@ defmodule Kollywood.AgentRunnerTest do
     end)
   end
 
+  test "auto_merge github failure after push keeps push event in timeline", %{
+    root: root,
+    git_cli_path: git_cli_path
+  } do
+    %{source: source, workspaces_root: workspaces_root} = setup_worktree_repo(root)
+    seed_prd_story!(source, @issue.id)
+
+    gh_log = Path.join(root, "fake_gh_auto_merge_fail.log")
+    fake_gh = write_fake_gh!(root, gh_log)
+
+    with_path(fake_gh, fn ->
+      previous = System.get_env("FAKE_GH_FAIL_AUTO_MERGE")
+      System.put_env("FAKE_GH_FAIL_AUTO_MERGE", "1")
+
+      try do
+        config =
+          worktree_runner_config(source, workspaces_root, git_cli_path)
+          |> Map.put(:publish, %{provider: :github, mode: :auto_merge})
+
+        assert {:error, result} =
+                 AgentRunner.run_issue(@issue, config: config, prompt_template: "Implement")
+
+        event_types = Enum.map(result.events, & &1.type)
+        assert :publish_push_succeeded in event_types
+        assert :publish_failed in event_types
+        refute :publish_succeeded in event_types
+        assert result.error =~ "auto-merge enable failed"
+      after
+        if is_nil(previous) do
+          System.delete_env("FAKE_GH_FAIL_AUTO_MERGE")
+        else
+          System.put_env("FAKE_GH_FAIL_AUTO_MERGE", previous)
+        end
+      end
+    end)
+  end
+
   test "auto_merge on local provider merges branch after push", %{
     root: root,
     git_cli_path: git_cli_path
@@ -890,6 +927,11 @@ defmodule Kollywood.AgentRunnerTest do
     fi
 
     if [ "${1:-}" = "pr" ] && [ "${2:-}" = "merge" ] && [ "${3:-}" = "--auto" ]; then
+      if [ "${FAKE_GH_FAIL_AUTO_MERGE:-}" = "1" ]; then
+        echo "forced auto-merge failure" >&2
+        exit 23
+      fi
+
       exit 0
     fi
 
