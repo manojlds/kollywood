@@ -63,12 +63,10 @@ defmodule Kollywood.Agent.CLI do
 
     try do
       started_at = System.monotonic_time(:millisecond)
-      result = execute_with_timeout(command, command_args, command_opts, timeout_ms)
+      result = port_execute(command, command_args, command_opts, timeout_ms, raw_log)
 
       case result do
         {:ok, {output, 0}} ->
-          maybe_append_raw_log(raw_log, output)
-
           {:ok,
            %{
              output: String.trim(output),
@@ -80,7 +78,6 @@ defmodule Kollywood.Agent.CLI do
            }}
 
         {:ok, {output, exit_code}} ->
-          maybe_append_raw_log(raw_log, output)
           {:error, "Agent command failed with exit code #{exit_code}: #{String.trim(output)}"}
 
         {:error, :timeout} ->
@@ -95,14 +92,60 @@ defmodule Kollywood.Agent.CLI do
     end
   end
 
-  defp maybe_append_raw_log(nil, _output), do: :ok
+  defp port_execute(command, args, opts, timeout_ms, raw_log) do
+    # Port.open requires charlists for executable, args, cd, and env keys/values.
+    # System.cmd handles these conversions internally; we must do them explicitly.
+    executable =
+      (System.find_executable(command) || command) |> String.to_charlist()
 
-  defp maybe_append_raw_log(path, output) when is_binary(path) and byte_size(output) > 0 do
-    File.write(path, output, [:append])
-    :ok
+    cd =
+      opts
+      |> Keyword.get(:cd)
+      |> then(fn
+        nil -> nil
+        s -> String.to_charlist(s)
+      end)
+
+    env =
+      opts
+      |> Keyword.get(:env, [])
+      |> Enum.map(fn {k, v} -> {String.to_charlist(k), String.to_charlist(v)} end)
+
+    args_cl = Enum.map(args, &String.to_charlist/1)
+
+    port_opts =
+      [:binary, :exit_status, :use_stdio, :stderr_to_stdout, {:args, args_cl}]
+      |> then(fn o -> if cd, do: [{:cd, cd} | o], else: o end)
+      |> then(fn o -> if env != [], do: [{:env, env} | o], else: o end)
+
+    port = Port.open({:spawn_executable, executable}, port_opts)
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    collect_port_output(port, raw_log, [], deadline)
   end
 
-  defp maybe_append_raw_log(_path, _output), do: :ok
+  defp collect_port_output(port, raw_log, chunks, deadline) do
+    remaining = deadline - System.monotonic_time(:millisecond)
+
+    if remaining <= 0 do
+      Port.close(port)
+      {:error, :timeout}
+    else
+      receive do
+        {^port, {:data, chunk}} ->
+          if is_binary(raw_log) and byte_size(chunk) > 0,
+            do: File.write(raw_log, chunk, [:append])
+
+          collect_port_output(port, raw_log, [chunks, chunk], deadline)
+
+        {^port, {:exit_status, status}} ->
+          {:ok, {IO.iodata_to_binary(chunks), status}}
+      after
+        remaining ->
+          Port.close(port)
+          {:error, :timeout}
+      end
+    end
+  end
 
   defp command_invocation(session, args, prompt, :argv, env) do
     # Wrap with bash to redirect stdin from /dev/null — prevents CLI tools that
@@ -130,15 +173,6 @@ defmodule Kollywood.Agent.CLI do
       env: env_to_cmd_env(env),
       stderr_to_stdout: true
     ]
-  end
-
-  defp execute_with_timeout(command, args, opts, timeout_ms) do
-    task = Task.async(fn -> System.cmd(command, args, opts) end)
-
-    case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
-      {:ok, result} -> {:ok, result}
-      nil -> {:error, :timeout}
-    end
   end
 
   defp final_args(args, _prompt, :stdin), do: args
