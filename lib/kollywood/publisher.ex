@@ -24,6 +24,11 @@ defmodule Kollywood.Publisher do
   @callback create_pr(Workspace.t(), pr_opts()) :: {:ok, String.t()} | {:error, String.t()}
 
   @doc """
+  Enables platform auto-merge for a pull/merge request.
+  """
+  @callback enable_auto_merge(Workspace.t(), String.t()) :: :ok | {:error, String.t()}
+
+  @doc """
   Returns the Publisher module for the given provider atom, or an error.
   """
   @spec module_for_provider(atom()) :: {:ok, module()} | {:error, String.t()}
@@ -34,18 +39,21 @@ defmodule Kollywood.Publisher do
     do: {:error, "no publisher adapter for provider #{inspect(other)}"}
 
   @doc """
-  Builds the PR options map from config and issue, with auto_create_pr policy applied.
-  Returns `nil` if PR creation is disabled.
+  Builds PR options from config + issue for modes that create PRs.
+  Returns `nil` when mode does not require a PR.
   """
   @spec pr_opts(Config.t(), map()) :: pr_opts() | nil
   def pr_opts(config, issue) do
-    policy = get_in(config, [Access.key(:publish, %{}), Access.key(:auto_create_pr, :never)])
+    mode = Config.effective_publish_mode(config)
 
-    case policy do
-      :never ->
+    auto_create_pr =
+      get_in(config, [Access.key(:publish, %{}), Access.key(:auto_create_pr, :never)])
+
+    case mode do
+      :push ->
         nil
 
-      draft_or_ready ->
+      mode when mode in [:pr, :auto_merge] ->
         base_branch =
           get_in(config, [Access.key(:git, %{}), Access.key(:base_branch, "main")]) || "main"
 
@@ -53,7 +61,7 @@ defmodule Kollywood.Publisher do
         title = Map.get(issue, :title) || Map.get(issue, "title") || identifier
 
         %{
-          draft: draft_or_ready == :draft,
+          draft: mode == :pr and auto_create_pr == :draft,
           base_branch: base_branch,
           title: "#{identifier}: #{title}",
           body: pr_body(issue)
