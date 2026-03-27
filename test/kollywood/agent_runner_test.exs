@@ -124,6 +124,54 @@ defmodule Kollywood.AgentRunnerTest do
            ]
   end
 
+  test "appends verification section to initial prompt when checks are required", %{
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    prompt_log: prompt_log
+  } do
+    config =
+      runner_config(workspace_root, cli_path, prompt_log)
+      |> Map.put(:checks, %{
+        required: ["test -d .", "pwd >/dev/null"],
+        timeout_ms: 10_000,
+        fail_fast: true
+      })
+
+    template = "Work on {{ issue.identifier }}"
+
+    assert {:ok, _result} =
+             AgentRunner.run_issue(@issue,
+               config: config,
+               prompt_template: template,
+               mode: :single_turn
+             )
+
+    prompt_history = File.read!(prompt_log)
+    assert prompt_history =~ "## Verification"
+
+    assert prompt_history =~
+             "Run these commands to verify your changes before finishing:\n- `test -d .`\n- `pwd >/dev/null`"
+  end
+
+  test "omits verification section from initial prompt when checks are empty", %{
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    prompt_log: prompt_log
+  } do
+    config = runner_config(workspace_root, cli_path, prompt_log)
+    template = "Work on {{ issue.identifier }}"
+
+    assert {:ok, _result} =
+             AgentRunner.run_issue(@issue,
+               config: config,
+               prompt_template: template,
+               mode: :single_turn
+             )
+
+    prompt_history = File.read!(prompt_log)
+    refute prompt_history =~ "## Verification"
+  end
+
   test "fails when before_run hook fails", %{
     workspace_root: workspace_root,
     cli_path: cli_path,
