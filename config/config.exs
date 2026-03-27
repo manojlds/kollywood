@@ -11,6 +11,7 @@ config :kollywood,
   generators: [timestamp_type: :utc_datetime],
   app_mode: :all,
   orchestrator_enabled: true,
+  orchestrator_ephemeral_store: Kollywood.Orchestrator.EphemeralStore,
   orchestrator_retry_store: Kollywood.Orchestrator.RetryStore,
   orchestrator: []
 
