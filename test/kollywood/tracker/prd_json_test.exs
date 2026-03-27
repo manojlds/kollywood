@@ -198,6 +198,51 @@ defmodule Kollywood.Tracker.PrdJsonTest do
     assert story_after_merge["notes"] =~ ~r/\[\d{4}-\d{2}-\d{2}T[^\]]+\] merged to main/
   end
 
+  test "create, update, and delete story helpers", %{root: root} do
+    path = Path.join(root, "prd.json")
+
+    write_prd!(path, [
+      %{"id" => "US-100", "title" => "Base story", "status" => "open", "priority" => 1}
+    ])
+
+    assert {:ok, created} =
+             PrdJson.create_story(path, %{
+               "title" => "Created story",
+               "status" => "draft",
+               "dependsOn" => "US-100"
+             })
+
+    created_id = created["id"]
+    assert created["status"] == "draft"
+
+    assert {:ok, updated} =
+             PrdJson.update_story(path, created_id, %{
+               "title" => "Updated title",
+               "status" => "open",
+               "priority" => 4
+             })
+
+    assert updated["title"] == "Updated title"
+    assert updated["status"] == "open"
+    assert updated["priority"] == 4
+
+    assert :ok = PrdJson.delete_story(path, created_id)
+
+    assert {:ok, stories} = PrdJson.list_stories(path)
+    refute Enum.any?(stories, &(Map.get(&1, "id") == created_id))
+  end
+
+  test "manual status updates cannot move to in_progress", %{root: root} do
+    path = Path.join(root, "prd.json")
+
+    write_prd!(path, [
+      %{"id" => "US-200", "title" => "Manual transition", "status" => "open", "priority" => 1}
+    ])
+
+    assert {:error, reason} = PrdJson.set_manual_status(path, "US-200", "in_progress")
+    assert reason =~ "managed by the orchestrator"
+  end
+
   defp config(path, opts \\ []) do
     %Config{
       tracker: %{

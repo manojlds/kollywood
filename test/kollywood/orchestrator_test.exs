@@ -42,7 +42,13 @@ defmodule Kollywood.OrchestratorTest do
     end
 
     @impl true
-    def mark_pending_merge(_config, _issue_id, _metadata), do: :ok
+    def mark_pending_merge(%Config{} = config, issue_id, _metadata) do
+      if pid = get_in(config, [Access.key(:tracker, %{}), Access.key(:test_pid)]) do
+        send(pid, {:tracker_mark_pending_merge, issue_id})
+      end
+
+      :ok
+    end
 
     @impl true
     def mark_merged(_config, _issue_id, _metadata), do: :ok
@@ -88,7 +94,13 @@ defmodule Kollywood.OrchestratorTest do
     end
 
     @impl true
-    def mark_pending_merge(_config, _issue_id, _metadata), do: :ok
+    def mark_pending_merge(%Config{} = config, issue_id, _metadata) do
+      if pid = get_in(config, [Access.key(:tracker, %{}), Access.key(:test_pid)]) do
+        send(pid, {:tracker_mark_pending_merge, issue_id})
+      end
+
+      :ok
+    end
 
     @impl true
     def mark_merged(%Config{} = config, issue_id, _metadata) do
@@ -1199,6 +1211,61 @@ defmodule Kollywood.OrchestratorTest do
     assert :ok = Orchestrator.poll_now(orchestrator)
     assert_receive {:tracker_mark_done, "ISS-MERGED"}
     assert_receive {:tracker_mark_merged, "ISS-MERGED"}
+  end
+
+  test "keeps issue pending_merge when publish creates PR", %{root: root} do
+    issue = issue("ISS-PENDING", "ABC-PENDING", 1)
+
+    config = %Config{
+      tracker: %{
+        kind: "merge_test",
+        active_states: ["Todo", "In Progress"],
+        terminal_states: ["Done", "Merged", "Cancelled"],
+        test_pid: self(),
+        test_issues: [issue]
+      },
+      polling: %{interval_ms: 1000},
+      workspace: %{root: Path.join(root, "workspaces"), strategy: :clone},
+      hooks: %{},
+      checks: %{},
+      runtime: %{},
+      review: %{},
+      agent: %{
+        kind: :amp,
+        max_concurrent_agents: 1,
+        max_turns: 1,
+        retries_enabled: false,
+        max_attempts: 1,
+        max_retry_backoff_ms: 1000
+      },
+      publish: %{},
+      git: %{base_branch: "main"},
+      raw: %{}
+    }
+
+    runner = fn issue, _opts ->
+      {:ok,
+       %{
+         success_result(issue)
+         | events: [%{type: :publish_pr_created, pr_url: "https://example.test/pulls/1"}]
+       }}
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: config,
+         tracker: MergeTracker,
+         runner: runner,
+         auto_poll: false,
+         continuation_delay_ms: 60_000,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:tracker_mark_pending_merge, "ISS-PENDING"}
+    refute_receive {:tracker_mark_done, "ISS-PENDING"}, 100
   end
 
   test "dispatches issue when blocker state is merged", %{root: root} do

@@ -138,7 +138,7 @@ defmodule Mix.Tasks.Kollywood.PrdTest do
         "passes" => false,
         "startedAt" => "2026-03-24T00:00:00Z",
         "completedAt" => "2026-03-24T00:10:00Z",
-        "lastAttempt" => 4,
+        "lastRunAttempt" => 4,
         "lastError" => "timeout",
         "lastRun" => %{"status" => "failed"},
         "notes" => "older note"
@@ -152,6 +152,7 @@ defmodule Mix.Tasks.Kollywood.PrdTest do
     assert story["passes"] == false
     refute Map.has_key?(story, "startedAt")
     refute Map.has_key?(story, "completedAt")
+    refute Map.has_key?(story, "lastRunAttempt")
     refute Map.has_key?(story, "lastAttempt")
     refute Map.has_key?(story, "lastError")
     refute Map.has_key?(story, "lastRun")
