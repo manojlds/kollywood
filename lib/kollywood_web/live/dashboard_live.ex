@@ -443,7 +443,7 @@ defmodule KollywoodWeb.DashboardLive do
                   navigate={~p"/projects/#{@project.slug}/runs/#{run.story_id}/#{run.attempt}"}
                   class="flex items-center gap-3 p-3 bg-base-100 rounded-lg hover:bg-base-300 transition-colors"
                 >
-                  <.status_badge status={run.status} />
+                  <.run_status_badge status={run.status} />
                   <span class="font-mono text-xs text-base-content/60 shrink-0">{run.story_id}</span>
                   <span class="text-sm truncate flex-1">{run.story_title}</span>
                   <span class="text-xs text-base-content/50 shrink-0">#{run.attempt}</span>
@@ -1616,20 +1616,20 @@ defmodule KollywoodWeb.DashboardLive do
   attr :status, :string, required: true
 
   defp run_status_badge(assigns) do
-    color =
+    {color, label} =
       case assigns.status do
-        "running" -> "badge-warning"
-        "ok" -> "badge-success"
-        "finished" -> "badge-success"
-        "failed" -> "badge-error"
-        "stopped" -> "badge-ghost"
-        _ -> "badge-ghost"
+        "running" -> {"badge-warning", "Running"}
+        "ok" -> {"badge-success", "Passed"}
+        "finished" -> {"badge-success", "Done"}
+        "failed" -> {"badge-error", "Failed"}
+        "stopped" -> {"badge-ghost", "Stopped"}
+        other -> {"badge-ghost", other}
       end
 
-    assigns = assign(assigns, :color, color)
+    assigns = assigns |> assign(:color, color) |> assign(:label, label)
 
     ~H"""
-    <span class={"badge badge-sm #{@color}"}>{@status}</span>
+    <span class={"badge badge-sm #{@color}"}>{@label}</span>
     """
   end
 
