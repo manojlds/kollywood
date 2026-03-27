@@ -64,7 +64,8 @@ defmodule Kollywood.MixProject do
       {:ecto_sqlite3, "~> 0.17"},
       {:yaml_elixir, "~> 2.9"},
       {:solid, "~> 0.15"},
-      {:req, "~> 0.5"}
+      {:req, "~> 0.5"},
+      {:mdex, "~> 0.2"}
     ]
   end
 
