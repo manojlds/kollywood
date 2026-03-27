@@ -22,6 +22,7 @@ config :phoenix,
   sort_verified_routes_query_params: true
 
 config :kollywood, orchestrator_enabled: false
+config :kollywood, orchestrator_retry_store: nil
 config :kollywood, store_bootstrap_enabled: false
 
 config :kollywood, Kollywood.Repo,
