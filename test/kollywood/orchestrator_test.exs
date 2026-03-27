@@ -156,6 +156,64 @@ defmodule Kollywood.OrchestratorTest do
     def mark_failed(_config, @issue_id, _reason, _attempt), do: :ok
   end
 
+  defmodule FlakyMarkDoneTracker do
+    @behaviour Kollywood.Tracker
+
+    def put_state(test_pid, issue) when is_pid(test_pid) and is_map(issue) do
+      :persistent_term.put({__MODULE__, :state}, %{test_pid: test_pid, issue: issue, attempts: 0})
+    end
+
+    def clear_state do
+      :persistent_term.erase({__MODULE__, :state})
+    end
+
+    @impl true
+    def list_active_issues(_config) do
+      state = :persistent_term.get({__MODULE__, :state}, %{issue: nil})
+      {:ok, List.wrap(state.issue)}
+    end
+
+    @impl true
+    def claim_issue(_config, _issue_id), do: :ok
+
+    @impl true
+    def mark_in_progress(_config, _issue_id), do: :ok
+
+    @impl true
+    def mark_resumable(_config, _issue_id, _metadata), do: :ok
+
+    @impl true
+    def mark_done(_config, issue_id, _metadata) do
+      state = :persistent_term.get({__MODULE__, :state}, %{attempts: 0})
+      attempts = state.attempts + 1
+      :persistent_term.put({__MODULE__, :state}, %{state | attempts: attempts})
+
+      notify({:tracker_mark_done_attempt, issue_id, attempts})
+
+      if attempts == 1 do
+        {:error, "forced mark_done failure"}
+      else
+        :ok
+      end
+    end
+
+    @impl true
+    def mark_pending_merge(_config, _issue_id, _metadata), do: :ok
+
+    @impl true
+    def mark_merged(_config, _issue_id, _metadata), do: :ok
+
+    @impl true
+    def mark_failed(_config, _issue_id, _reason, _attempt), do: :ok
+
+    defp notify(message) do
+      case :persistent_term.get({__MODULE__, :state}, nil) do
+        %{test_pid: test_pid} when is_pid(test_pid) -> send(test_pid, message)
+        _other -> :ok
+      end
+    end
+  end
+
   setup do
     root =
       Path.join(
@@ -325,6 +383,60 @@ defmodule Kollywood.OrchestratorTest do
     send(runner_pid, {:complete_runner, "ISS-RT", {:ok, success_result(issue)}})
     assert_receive {:DOWN, ^runner_ref, :process, ^runner_pid, reason}
     assert reason in [:normal, :noproc]
+  end
+
+  test "ignores stale run_worker_result messages from another pid", %{root: root} do
+    %{store: workflow_store} = start_workflow_store!(root, %{max_concurrent_agents: 1})
+    issue = issue("ISS-STALE", "ABC-STALE", 1)
+    test_pid = self()
+    issues_agent = start_agent!(fn -> [issue] end)
+
+    tracker = fn _config -> {:ok, Agent.get(issues_agent, & &1)} end
+
+    runner = fn issue, opts ->
+      issue_id = issue.id
+      send(test_pid, {:runner_started, issue_id, self(), Keyword.get(opts, :attempt)})
+
+      receive do
+        {:complete_runner, ^issue_id, result} ->
+          result
+      after
+        5_000 -> {:error, failed_result(issue, "test timed out waiting for completion")}
+      end
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: tracker,
+         runner: runner,
+         auto_poll: false,
+         continuation_delay_ms: 60_000,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_started, "ISS-STALE", runner_pid, nil}
+
+    send(orchestrator, {:run_worker_result, "ISS-STALE", self(), {:ok, success_result(issue)}})
+
+    _ = :sys.get_state(orchestrator)
+
+    status = Orchestrator.status(orchestrator)
+    assert status.running_count == 1
+    assert Enum.any?(status.running, &(&1.issue_id == "ISS-STALE"))
+
+    runner_ref = Process.monitor(runner_pid)
+    send(runner_pid, {:complete_runner, "ISS-STALE", {:ok, success_result(issue)}})
+    assert_receive {:DOWN, ^runner_ref, :process, ^runner_pid, reason}
+    assert reason in [:normal, :noproc]
+
+    _ = :sys.get_state(orchestrator)
+
+    status = Orchestrator.status(orchestrator)
+    assert status.running_count == 0
   end
 
   test "startup reconciliation skips redispatch for in_progress issues", %{root: root} do
@@ -587,6 +699,48 @@ defmodule Kollywood.OrchestratorTest do
     runner_ref = Process.monitor(runner_pid)
     assert_receive {:DOWN, ^runner_ref, :process, ^runner_pid, reason}
     assert reason in [:normal, :noproc]
+  end
+
+  test "retries done finalization without rerunning a successful worker", %{root: root} do
+    %{store: workflow_store} = start_workflow_store!(root, %{max_retry_backoff_ms: 200})
+    issue = issue("ISS-FINALIZE", "ABC-FINALIZE", 1)
+    test_pid = self()
+    runner_calls = start_agent!(fn -> 0 end)
+
+    FlakyMarkDoneTracker.put_state(test_pid, issue)
+    on_exit(fn -> FlakyMarkDoneTracker.clear_state() end)
+
+    runner = fn issue, opts ->
+      Agent.update(runner_calls, &(&1 + 1))
+      send(test_pid, {:runner_attempt, issue.id, Keyword.get(opts, :attempt)})
+      {:ok, success_result(issue)}
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: FlakyMarkDoneTracker,
+         runner: runner,
+         auto_poll: false,
+         continuation_delay_ms: 60_000,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_attempt, "ISS-FINALIZE", nil}
+    assert_receive {:tracker_mark_done_attempt, "ISS-FINALIZE", 1}
+    assert_receive {:tracker_mark_done_attempt, "ISS-FINALIZE", 2}, 1_000
+    refute_receive {:runner_attempt, "ISS-FINALIZE", 1}, 150
+
+    _ = :sys.get_state(orchestrator)
+
+    status = Orchestrator.status(orchestrator)
+    assert status.running_count == 0
+    assert status.retry_count == 0
+    assert status.completed_count == 1
+    assert Agent.get(runner_calls, & &1) == 1
   end
 
   test "does not retry failed runs when retries are disabled", %{root: root} do
