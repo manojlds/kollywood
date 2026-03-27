@@ -19,6 +19,8 @@ defmodule Kollywood.Tracker do
 
   @callback mark_done(Config.t(), issue_id(), done_metadata()) :: :ok | {:error, String.t()}
 
+  @callback mark_merged(Config.t(), issue_id(), done_metadata()) :: :ok | {:error, String.t()}
+
   @callback mark_failed(Config.t(), issue_id(), failure_reason(), failure_attempt()) ::
               :ok | {:error, String.t()}
 

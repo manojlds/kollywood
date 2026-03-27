@@ -116,6 +116,7 @@ defmodule Kollywood.ConfigTest do
 
     assert config.publish.provider == nil
     assert config.publish.auto_push == :never
+    assert config.publish.auto_merge == :never
     assert config.publish.auto_create_pr == :never
 
     assert config.git.base_branch == "main"
@@ -294,6 +295,7 @@ defmodule Kollywood.ConfigTest do
     publish:
       provider: gitlab
       auto_push: on_pass
+      auto_merge: on_pass
       auto_create_pr: draft
     workspace:
       root: /tmp
@@ -306,6 +308,7 @@ defmodule Kollywood.ConfigTest do
     assert {:ok, config, _} = Config.parse(content)
     assert config.publish.provider == :gitlab
     assert config.publish.auto_push == :on_pass
+    assert config.publish.auto_merge == :on_pass
     assert config.publish.auto_create_pr == :draft
   end
 
@@ -362,6 +365,23 @@ defmodule Kollywood.ConfigTest do
 
     assert {:error, msg} = Config.parse(content)
     assert msg =~ "Invalid publish.auto_push"
+  end
+
+  test "rejects invalid publish.auto_merge" do
+    content = """
+    ---
+    publish:
+      auto_merge: always
+    workspace:
+      root: /tmp
+    agent:
+      kind: amp
+    ---
+    prompt
+    """
+
+    assert {:error, msg} = Config.parse(content)
+    assert msg =~ "Invalid publish.auto_merge"
   end
 
   test "rejects invalid publish.auto_create_pr" do

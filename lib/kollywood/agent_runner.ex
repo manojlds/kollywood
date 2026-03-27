@@ -372,7 +372,11 @@ defmodule Kollywood.AgentRunner do
 
           case Workspace.push_branch(workspace) do
             :ok ->
-              state = emit(state, :publish_push_succeeded, %{branch: workspace.branch})
+              state =
+                state
+                |> emit(:publish_push_succeeded, %{branch: workspace.branch})
+                |> maybe_auto_merge_local(config, workspace)
+
               run_create_pr(state, config, workspace)
 
             {:error, reason} ->
@@ -387,6 +391,33 @@ defmodule Kollywood.AgentRunner do
       {:error, reason} ->
         {:error, reason,
          emit(state, :publish_failed, %{branch: workspace.branch, reason: reason})}
+    end
+  end
+
+  defp maybe_auto_merge_local(state, config, workspace) do
+    auto_merge = get_in(config, [Access.key(:publish, %{}), Access.key(:auto_merge, :never)])
+    provider = Config.effective_publish_provider(config)
+
+    if auto_merge == :on_pass and provider == :local do
+      base_branch = get_in(config, [Access.key(:git, %{}), Access.key(:base_branch)]) || "main"
+
+      case Workspace.merge_branch_to_main(workspace, base_branch) do
+        :ok ->
+          emit(state, :publish_merged, %{branch: workspace.branch, base_branch: base_branch})
+
+        {:error, reason} ->
+          Logger.warning(
+            "publish auto-merge failed for branch #{workspace.branch} -> #{base_branch}: #{reason}"
+          )
+
+          emit(state, :publish_merge_failed, %{
+            branch: workspace.branch,
+            base_branch: base_branch,
+            reason: reason
+          })
+      end
+    else
+      state
     end
   end
 

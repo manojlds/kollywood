@@ -8,11 +8,13 @@ defmodule Kollywood.Config do
   @type agent_kind :: :amp | :claude | :opencode | :pi
   @type publish_provider :: :github | :gitlab
   @type auto_push_policy :: :never | :on_pass
+  @type auto_merge_policy :: :never | :on_pass
   @type auto_create_pr_policy :: :never | :draft | :ready
 
   @valid_agent_kinds ~w(amp claude opencode pi)a
   @valid_publish_providers ~w(github gitlab)a
   @valid_auto_push_policies ~w(never on_pass)a
+  @valid_auto_merge_policies ~w(never on_pass)a
   @valid_auto_create_pr_policies ~w(never draft ready)a
   @default_timeout_ms 7_200_000
 
@@ -386,6 +388,12 @@ defmodule Kollywood.Config do
              @valid_auto_push_policies,
              "publish.auto_push"
            ),
+         {:ok, auto_merge} <-
+           parse_enum_value(
+             Map.get(publish, "auto_merge", "never"),
+             @valid_auto_merge_policies,
+             "publish.auto_merge"
+           ),
          {:ok, auto_create_pr} <-
            parse_enum_value(
              Map.get(publish, "auto_create_pr", "never"),
@@ -396,6 +404,7 @@ defmodule Kollywood.Config do
        %{
          provider: provider,
          auto_push: auto_push,
+         auto_merge: auto_merge,
          auto_create_pr: auto_create_pr
        }}
     end

@@ -69,6 +69,19 @@ defmodule Kollywood.Tracker.PrdJson do
     end)
   end
 
+  @impl true
+  @spec mark_merged(Config.t(), String.t(), map()) :: :ok | {:error, String.t()}
+  def mark_merged(%Config{} = config, issue_id, metadata)
+      when is_binary(issue_id) and is_map(metadata) do
+    update_story(config, issue_id, fn story ->
+      story
+      |> set_story_status("merged")
+      |> Map.put("lastError", nil)
+      |> Map.put("resumable", false)
+      |> Map.put("lastRun", stringify_map(metadata))
+    end)
+  end
+
   @spec reset_story(String.t(), String.t(), keyword()) :: :ok | {:error, String.t()}
   def reset_story(tracker_path, issue_id, opts \\ [])
       when is_binary(tracker_path) and is_binary(issue_id) do
@@ -250,7 +263,7 @@ defmodule Kollywood.Tracker.PrdJson do
   defp set_story_status(story, status) do
     story
     |> Map.put("status", status)
-    |> Map.put("passes", status == "done")
+    |> Map.put("passes", status in ["done", "merged"])
   end
 
   defp reset_notes(story, true), do: Map.put(story, "notes", "")
