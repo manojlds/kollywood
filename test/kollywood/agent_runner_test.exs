@@ -1,5 +1,5 @@
 defmodule Kollywood.AgentRunnerTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Kollywood.AgentRunner
   alias Kollywood.Config
@@ -646,6 +646,98 @@ defmodule Kollywood.AgentRunnerTest do
     assert :review_failed in Enum.map(result.events, & &1.type)
   end
 
+  test "push mode pushes branch only", %{root: root, git_cli_path: git_cli_path} do
+    %{source: source, workspaces_root: workspaces_root, origin: origin} =
+      setup_worktree_repo(root)
+
+    seed_prd_story!(source, @issue.id)
+
+    config =
+      worktree_runner_config(source, workspaces_root, git_cli_path)
+      |> Map.put(:publish, %{mode: :push})
+      |> Map.put(:project_provider, :local)
+
+    assert {:ok, result} =
+             AgentRunner.run_issue(@issue, config: config, prompt_template: "Implement")
+
+    event_types = Enum.map(result.events, & &1.type)
+    assert :publish_push_succeeded in event_types
+    assert :publish_succeeded in event_types
+    refute :publish_pr_created in event_types
+    refute :publish_merged in event_types
+
+    verify_path = Path.join(root, "verify_push_repo")
+    git!(["clone", origin, verify_path], root)
+    git!(["checkout", "main"], verify_path)
+    refute File.exists?(Path.join(verify_path, "agent_output.txt"))
+  end
+
+  test "pr mode creates PR and marks tracker pending_merge", %{
+    root: root,
+    git_cli_path: git_cli_path
+  } do
+    %{source: source, workspaces_root: workspaces_root} = setup_worktree_repo(root)
+    seed_prd_story!(source, @issue.id)
+
+    gh_log = Path.join(root, "fake_gh_pr.log")
+    fake_gh = write_fake_gh!(root, gh_log)
+
+    with_path(fake_gh, fn ->
+      config =
+        worktree_runner_config(source, workspaces_root, git_cli_path)
+        |> Map.put(:publish, %{provider: :github, mode: :pr})
+
+      assert {:ok, result} =
+               AgentRunner.run_issue(@issue, config: config, prompt_template: "Implement")
+
+      event_types = Enum.map(result.events, & &1.type)
+      assert :publish_push_succeeded in event_types
+      assert :publish_pr_created in event_types
+      refute :publish_merged in event_types
+
+      assert_prd_status(source, @issue.id, "pending_merge")
+
+      prd = read_prd(source)
+      story = Enum.find(prd["userStories"], &(&1["id"] == @issue.id))
+      assert story["pr_url"] == "https://example.test/pulls/123"
+
+      gh_output = File.read!(gh_log)
+      assert gh_output =~ "pr create"
+      refute gh_output =~ "pr merge --auto"
+    end)
+  end
+
+  test "auto_merge on github enables PR auto-merge and marks pending_merge", %{
+    root: root,
+    git_cli_path: git_cli_path
+  } do
+    %{source: source, workspaces_root: workspaces_root} = setup_worktree_repo(root)
+    seed_prd_story!(source, @issue.id)
+
+    gh_log = Path.join(root, "fake_gh_auto_merge.log")
+    fake_gh = write_fake_gh!(root, gh_log)
+
+    with_path(fake_gh, fn ->
+      config =
+        worktree_runner_config(source, workspaces_root, git_cli_path)
+        |> Map.put(:publish, %{provider: :github, mode: :auto_merge})
+
+      assert {:ok, result} =
+               AgentRunner.run_issue(@issue, config: config, prompt_template: "Implement")
+
+      event_types = Enum.map(result.events, & &1.type)
+      assert :publish_push_succeeded in event_types
+      assert :publish_pr_created in event_types
+      refute :publish_merged in event_types
+
+      assert_prd_status(source, @issue.id, "pending_merge")
+
+      gh_output = File.read!(gh_log)
+      assert gh_output =~ "pr create"
+      assert gh_output =~ "pr merge --auto"
+    end)
+  end
+
   test "auto_merge on local provider merges branch after push", %{
     root: root,
     git_cli_path: git_cli_path
@@ -653,47 +745,12 @@ defmodule Kollywood.AgentRunnerTest do
     %{source: source, workspaces_root: workspaces_root, origin: origin} =
       setup_worktree_repo(root)
 
-    config = %Config{
-      tracker: %{},
-      polling: %{},
-      workspace: %{
-        root: workspaces_root,
-        strategy: :worktree,
-        source: source,
-        branch_prefix: "kw/"
-      },
-      hooks: %{
-        @no_hooks
-        | after_create: "git config user.email test@test.com && git config user.name Test"
-      },
-      checks: %{required: [], timeout_ms: 10_000, fail_fast: true},
-      runtime: %{
-        profile: :checks_only,
-        full_stack: %{
-          command: "devenv",
-          processes: [],
-          env: %{},
-          ports: %{},
-          port_offset_mod: 1000,
-          start_timeout_ms: 120_000,
-          stop_timeout_ms: 60_000
-        }
-      },
-      review: %{enabled: false, max_cycles: 1, agent: %{kind: :amp}},
-      agent: %{
-        kind: :amp,
-        max_concurrent_agents: 1,
-        max_turns: 1,
-        command: git_cli_path,
-        args: [],
-        env: %{},
-        timeout_ms: 10_000
-      },
-      publish: %{auto_push: :on_pass, auto_merge: :on_pass, auto_create_pr: :never},
-      git: %{base_branch: "main"},
-      project_provider: :local,
-      raw: %{}
-    }
+    seed_prd_story!(source, @issue.id)
+
+    config =
+      worktree_runner_config(source, workspaces_root, git_cli_path)
+      |> Map.put(:publish, %{mode: :auto_merge})
+      |> Map.put(:project_provider, :local)
 
     assert {:ok, result} =
              AgentRunner.run_issue(@issue, config: config, prompt_template: "Implement")
@@ -708,6 +765,7 @@ defmodule Kollywood.AgentRunnerTest do
     git!(["checkout", "main"], verify_path)
 
     assert File.exists?(Path.join(verify_path, "agent_output.txt"))
+    assert_prd_status(source, @issue.id, "merged")
   end
 
   test "auto_merge failure does not fail publish", %{
@@ -716,8 +774,25 @@ defmodule Kollywood.AgentRunnerTest do
   } do
     %{source: source, workspaces_root: workspaces_root} = setup_worktree_repo(root)
 
-    config = %Config{
-      tracker: %{},
+    config =
+      worktree_runner_config(source, workspaces_root, git_cli_path)
+      |> Map.put(:publish, %{mode: :auto_merge})
+      |> Map.put(:git, %{base_branch: "does-not-exist"})
+      |> Map.put(:project_provider, :local)
+
+    assert {:ok, result} =
+             AgentRunner.run_issue(@issue, config: config, prompt_template: "Implement")
+
+    event_types = Enum.map(result.events, & &1.type)
+    assert :publish_push_succeeded in event_types
+    assert :publish_merge_failed in event_types
+    assert :publish_succeeded in event_types
+    refute :publish_failed in event_types
+  end
+
+  defp worktree_runner_config(source, workspaces_root, git_cli_path) do
+    %Config{
+      tracker: %{kind: "local", path: "prd.json"},
       polling: %{},
       workspace: %{
         root: workspaces_root,
@@ -752,20 +827,92 @@ defmodule Kollywood.AgentRunnerTest do
         env: %{},
         timeout_ms: 10_000
       },
-      publish: %{auto_push: :on_pass, auto_merge: :on_pass, auto_create_pr: :never},
-      git: %{base_branch: "does-not-exist"},
-      project_provider: :local,
+      publish: %{mode: :push},
+      git: %{base_branch: "main"},
       raw: %{}
     }
+  end
 
-    assert {:ok, result} =
-             AgentRunner.run_issue(@issue, config: config, prompt_template: "Implement")
+  defp seed_prd_story!(source_repo, issue_id) do
+    prd_path = Path.join(source_repo, "prd.json")
 
-    event_types = Enum.map(result.events, & &1.type)
-    assert :publish_push_succeeded in event_types
-    assert :publish_merge_failed in event_types
-    assert :publish_succeeded in event_types
-    refute :publish_failed in event_types
+    git!(["config", "user.email", "test@test.com"], source_repo)
+    git!(["config", "user.name", "Test"], source_repo)
+
+    prd = %{
+      "userStories" => [
+        %{
+          "id" => issue_id,
+          "title" => "Story #{issue_id}",
+          "description" => "Test story",
+          "acceptanceCriteria" => ["it works"],
+          "status" => "open",
+          "priority" => 1,
+          "dependsOn" => []
+        }
+      ]
+    }
+
+    File.write!(prd_path, Jason.encode_to_iodata!(prd, pretty: true))
+    git!(["add", "prd.json"], source_repo)
+    git!(["commit", "-m", "add prd story"], source_repo)
+    git!(["push", "origin", "main"], source_repo)
+  end
+
+  defp assert_prd_status(source_repo, issue_id, expected_status) do
+    prd = read_prd(source_repo)
+    story = Enum.find(prd["userStories"], &(&1["id"] == issue_id))
+    assert story["status"] == expected_status
+  end
+
+  defp read_prd(source_repo) do
+    source_repo
+    |> Path.join("prd.json")
+    |> File.read!()
+    |> Jason.decode!()
+  end
+
+  defp write_fake_gh!(root, log_path) do
+    fake_bin = Path.join(root, "fake_bin")
+    File.mkdir_p!(fake_bin)
+
+    path = Path.join(fake_bin, "gh")
+
+    File.write!(path, """
+    #!/usr/bin/env bash
+    set -eu
+
+    printf "%s\n" "$*" >> "#{log_path}"
+
+    if [ "${1:-}" = "pr" ] && [ "${2:-}" = "create" ]; then
+      echo "https://example.test/pulls/123"
+      exit 0
+    fi
+
+    if [ "${1:-}" = "pr" ] && [ "${2:-}" = "merge" ] && [ "${3:-}" = "--auto" ]; then
+      exit 0
+    fi
+
+    echo "unexpected gh invocation: $*" >&2
+    exit 17
+    """)
+
+    File.chmod!(path, 0o755)
+    File.rm(log_path)
+    path
+  end
+
+  defp with_path(binary_path, fun) when is_binary(binary_path) and is_function(fun, 0) do
+    original_path = System.get_env("PATH") || ""
+    new_path = "#{Path.dirname(binary_path)}:#{original_path}"
+
+    System.put_env("PATH", new_path)
+
+    try do
+      fun.()
+    after
+      System.put_env("PATH", original_path)
+    end
   end
 
   defp setup_worktree_repo(root) do

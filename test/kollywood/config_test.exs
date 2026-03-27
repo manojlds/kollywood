@@ -3,6 +3,8 @@ defmodule Kollywood.ConfigTest do
 
   alias Kollywood.Config
 
+  import ExUnit.CaptureLog
+
   @valid_workflow """
   ---
   tracker:
@@ -115,6 +117,7 @@ defmodule Kollywood.ConfigTest do
     assert config.tracker.active_states == ["Todo", "In Progress"]
 
     assert config.publish.provider == nil
+    assert config.publish.mode == :push
     assert config.publish.auto_push == :never
     assert config.publish.auto_merge == :never
     assert config.publish.auto_create_pr == :never
@@ -123,6 +126,7 @@ defmodule Kollywood.ConfigTest do
 
     assert config.project_provider == nil
     assert Config.effective_publish_provider(config) == nil
+    assert Config.effective_publish_mode(config) == :push
   end
 
   test "parses optional agent runtime settings" do
@@ -307,9 +311,65 @@ defmodule Kollywood.ConfigTest do
 
     assert {:ok, config, _} = Config.parse(content)
     assert config.publish.provider == :gitlab
+    assert config.publish.mode == :auto_merge
     assert config.publish.auto_push == :on_pass
     assert config.publish.auto_merge == :on_pass
     assert config.publish.auto_create_pr == :draft
+  end
+
+  test "parses publish.mode auto_merge explicitly" do
+    content = """
+    ---
+    publish:
+      provider: github
+      mode: auto_merge
+    workspace:
+      root: /tmp
+    agent:
+      kind: pi
+    ---
+    prompt
+    """
+
+    assert {:ok, config, _} = Config.parse(content)
+    assert config.publish.mode == :auto_merge
+    assert Config.effective_publish_mode(config) == :auto_merge
+  end
+
+  test "effective_publish_mode uses provider defaults when mode is not set" do
+    github_config = %Config{publish: %{provider: :github, mode: nil}, project_provider: nil}
+    gitlab_config = %Config{publish: %{provider: :gitlab, mode: nil}, project_provider: nil}
+    local_config = %Config{publish: %{provider: nil, mode: nil}, project_provider: :local}
+    unknown_config = %Config{publish: %{provider: nil, mode: nil}, project_provider: nil}
+
+    assert Config.effective_publish_mode(github_config) == :pr
+    assert Config.effective_publish_mode(gitlab_config) == :pr
+    assert Config.effective_publish_mode(local_config) == :auto_merge
+    assert Config.effective_publish_mode(unknown_config) == :push
+  end
+
+  test "derives mode from legacy publish fields and logs deprecation warning" do
+    content = """
+    ---
+    publish:
+      auto_push: on_pass
+      auto_create_pr: ready
+    workspace:
+      root: /tmp
+    agent:
+      kind: amp
+    ---
+    prompt
+    """
+
+    log =
+      capture_log(fn ->
+        assert {:ok, config, _} = Config.parse(content)
+        assert config.publish.mode == :pr
+      end)
+
+    assert log =~ "deprecated"
+    assert log =~ "publish.mode"
   end
 
   test "parses ready PR policy" do

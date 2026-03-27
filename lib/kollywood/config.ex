@@ -5,14 +5,18 @@ defmodule Kollywood.Config do
   Supports multiple agent kinds: amp, claude, opencode, pi.
   """
 
+  require Logger
+
   @type agent_kind :: :amp | :claude | :opencode | :pi
   @type publish_provider :: :github | :gitlab
+  @type publish_mode :: :push | :pr | :auto_merge
   @type auto_push_policy :: :never | :on_pass
   @type auto_merge_policy :: :never | :on_pass
   @type auto_create_pr_policy :: :never | :draft | :ready
 
   @valid_agent_kinds ~w(amp claude opencode pi)a
   @valid_publish_providers ~w(github gitlab)a
+  @valid_publish_modes ~w(push pr auto_merge)a
   @valid_auto_push_policies ~w(never on_pass)a
   @valid_auto_merge_policies ~w(never on_pass)a
   @valid_auto_create_pr_policies ~w(never draft ready)a
@@ -56,6 +60,19 @@ defmodule Kollywood.Config do
   def effective_publish_provider(%__MODULE__{} = config) do
     get_in(config, [Access.key(:publish, %{}), Access.key(:provider)]) ||
       config.project_provider
+  end
+
+  @doc """
+  Returns the effective publish mode.
+
+  Resolution order:
+  - `publish.mode` from WORKFLOW.md (including legacy-derived mode)
+  - provider default (`:auto_merge` for local, `:pr` for github/gitlab, `:push` fallback)
+  """
+  @spec effective_publish_mode(t()) :: publish_mode()
+  def effective_publish_mode(%__MODULE__{} = config) do
+    get_in(config, [Access.key(:publish, %{}), Access.key(:mode)]) ||
+      default_publish_mode(effective_publish_provider(config))
   end
 
   @doc """
@@ -394,7 +411,16 @@ defmodule Kollywood.Config do
   defp parse_publish(raw) do
     publish = Map.get(raw, "publish", %{})
 
+    legacy_fields_present? =
+      Enum.any?(["auto_push", "auto_merge", "auto_create_pr"], &Map.has_key?(publish, &1))
+
     with {:ok, provider} <- parse_optional_publish_provider(Map.get(publish, "provider")),
+         {:ok, mode} <-
+           parse_optional_enum_value(
+             Map.get(publish, "mode"),
+             @valid_publish_modes,
+             "publish.mode"
+           ),
          {:ok, auto_push} <-
            parse_enum_value(
              Map.get(publish, "auto_push", "never"),
@@ -412,10 +438,15 @@ defmodule Kollywood.Config do
              Map.get(publish, "auto_create_pr", "never"),
              @valid_auto_create_pr_policies,
              "publish.auto_create_pr"
-           ) do
+           ),
+         resolved_mode <-
+           mode || derive_publish_mode_from_legacy(auto_push, auto_create_pr, auto_merge) do
+      maybe_warn_legacy_publish_fields(legacy_fields_present?)
+
       {:ok,
        %{
          provider: provider,
+         mode: resolved_mode,
          auto_push: auto_push,
          auto_merge: auto_merge,
          auto_create_pr: auto_create_pr
@@ -429,6 +460,33 @@ defmodule Kollywood.Config do
 
   defp parse_optional_publish_provider(value),
     do: parse_enum_value(value, @valid_publish_providers, "publish.provider")
+
+  defp parse_optional_enum_value(nil, _valid_values, _path), do: {:ok, nil}
+  defp parse_optional_enum_value("", _valid_values, _path), do: {:ok, nil}
+
+  defp parse_optional_enum_value(value, valid_values, path),
+    do: parse_enum_value(value, valid_values, path)
+
+  defp derive_publish_mode_from_legacy(:on_pass, _auto_create_pr, :on_pass), do: :auto_merge
+
+  defp derive_publish_mode_from_legacy(:on_pass, auto_create_pr, _auto_merge)
+       when auto_create_pr in [:draft, :ready],
+       do: :pr
+
+  defp derive_publish_mode_from_legacy(:on_pass, _auto_create_pr, _auto_merge), do: :push
+  defp derive_publish_mode_from_legacy(_auto_push, _auto_create_pr, _auto_merge), do: :push
+
+  defp maybe_warn_legacy_publish_fields(true) do
+    Logger.warning(
+      "publish.auto_push / publish.auto_create_pr / publish.auto_merge are deprecated; use publish.mode (push, pr, auto_merge)"
+    )
+  end
+
+  defp maybe_warn_legacy_publish_fields(false), do: :ok
+
+  defp default_publish_mode(:local), do: :auto_merge
+  defp default_publish_mode(provider) when provider in [:github, :gitlab], do: :pr
+  defp default_publish_mode(_provider), do: :push
 
   defp parse_git(raw) do
     git = Map.get(raw, "git", %{})
