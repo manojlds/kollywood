@@ -42,4 +42,21 @@ defmodule Kollywood.Publisher.GitLab do
   rescue
     e -> {:error, "glab mr create failed: #{Exception.message(e)}"}
   end
+
+  @impl true
+  def enable_auto_merge(workspace, pr_url) when is_binary(pr_url) do
+    args = ["mr", "merge", "--auto-merge", "--yes", pr_url]
+
+    Logger.info("Enabling GitLab MR auto-merge: #{pr_url}")
+
+    case System.cmd("glab", args, cd: workspace.path, stderr_to_stdout: true) do
+      {_output, 0} ->
+        :ok
+
+      {output, code} ->
+        {:error, "glab mr merge --auto-merge exited #{code}: #{String.trim(output)}"}
+    end
+  rescue
+    e -> {:error, "glab mr merge --auto-merge failed: #{Exception.message(e)}"}
+  end
 end

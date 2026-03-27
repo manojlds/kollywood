@@ -14,6 +14,7 @@ defmodule Kollywood.AgentRunner do
   alias Kollywood.Config
   alias Kollywood.PromptBuilder
   alias Kollywood.Publisher
+  alias Kollywood.Tracker
   alias Kollywood.WorkflowStore
   alias Kollywood.Workspace
 
@@ -392,30 +393,93 @@ defmodule Kollywood.AgentRunner do
 
   defp run_publish(state, config) do
     workspace = state.workspace
-    auto_push = get_in(config, [Access.key(:publish, %{}), Access.key(:auto_push, :never)])
+    mode = Config.effective_publish_mode(config)
+    provider = Config.effective_publish_provider(config)
 
-    with {:ok, ahead} <- Workspace.commits_ahead(workspace),
-         :ok <- check_commit_requirement(auto_push, ahead) do
-      case {auto_push, ahead} do
-        {:on_pass, count} when is_integer(count) and count > 0 ->
-          state = emit(state, :publish_started, %{branch: workspace.branch, auto_push: auto_push})
+    case Workspace.commits_ahead(workspace) do
+      {:ok, :not_applicable} ->
+        {:ok,
+         emit(state, :publish_skipped, %{
+           branch: workspace.branch,
+           mode: mode,
+           reason: "workspace strategy does not support publishing"
+         })}
 
-          case Workspace.push_branch(workspace) do
-            :ok ->
-              state =
-                state
-                |> emit(:publish_push_succeeded, %{branch: workspace.branch})
-                |> maybe_auto_merge_local(config, workspace)
+      {:ok, ahead} ->
+        with :ok <- check_commit_requirement(mode, ahead) do
+          state = emit(state, :publish_started, %{branch: workspace.branch, mode: mode})
 
-              run_create_pr(state, config, workspace)
+          case mode do
+            :push ->
+              run_publish_push(state, workspace)
 
-            {:error, reason} ->
-              {:error, "push failed: #{reason}",
-               emit(state, :publish_failed, %{branch: workspace.branch, reason: reason})}
+            :pr ->
+              run_publish_pr(state, config, workspace, provider)
+
+            :auto_merge when provider == :local ->
+              run_publish_auto_merge_local(state, config, workspace)
+
+            :auto_merge when provider in [:github, :gitlab] ->
+              run_publish_auto_merge_remote(state, config, workspace, provider)
+
+            :auto_merge ->
+              {:error,
+               "publish.mode auto_merge requires provider local, github, or gitlab (got: #{inspect(provider)})",
+               emit(state, :publish_failed, %{
+                 branch: workspace.branch,
+                 reason: "unsupported provider"
+               })}
           end
+        else
+          {:error, reason} ->
+            {:error, reason,
+             emit(state, :publish_failed, %{branch: workspace.branch, reason: reason})}
+        end
 
-        _ ->
-          {:ok, emit(state, :publish_skipped, %{branch: workspace.branch, auto_push: auto_push})}
+      {:error, reason} ->
+        {:error, reason,
+         emit(state, :publish_failed, %{branch: workspace.branch, reason: reason})}
+    end
+  end
+
+  defp run_publish_push(state, workspace) do
+    with {:ok, state} <- push_branch(state, workspace) do
+      {:ok, emit(state, :publish_succeeded, %{branch: workspace.branch, pr_url: nil})}
+    end
+  end
+
+  defp run_publish_pr(state, config, workspace, provider) do
+    if provider in [:github, :gitlab] do
+      run_publish_with_pr(state, config, workspace, provider, false)
+    else
+      {:error, "publish.mode pr requires provider github or gitlab (got: #{inspect(provider)})",
+       emit(state, :publish_failed, %{branch: workspace.branch, reason: "unsupported provider"})}
+    end
+  end
+
+  defp run_publish_auto_merge_remote(state, config, workspace, provider) do
+    run_publish_with_pr(state, config, workspace, provider, true)
+  end
+
+  defp run_publish_with_pr(state, config, workspace, provider, enable_auto_merge?) do
+    pr_opts = Publisher.pr_opts(config, state.issue)
+
+    with {:ok, pushed_state} <- push_branch(state, workspace) do
+      with {:ok, adapter} <- publisher_adapter(provider),
+           {:ok, pr_opts} <- require_pr_opts(pr_opts),
+           {:ok, pr_url} <- create_pr(adapter, workspace, pr_opts),
+           :ok <- maybe_enable_auto_merge(adapter, workspace, pr_url, enable_auto_merge?),
+           :ok <- tracker_mark_pending_merge(config, pushed_state.issue_id, pr_url) do
+        state =
+          pushed_state
+          |> emit(:publish_pr_created, %{branch: workspace.branch, pr_url: pr_url})
+          |> emit(:publish_succeeded, %{branch: workspace.branch, pr_url: pr_url})
+
+        {:ok, state}
+      else
+        {:error, reason} ->
+          {:error, reason,
+           emit(pushed_state, :publish_failed, %{branch: workspace.branch, reason: reason})}
       end
     else
       {:error, reason} ->
@@ -424,73 +488,129 @@ defmodule Kollywood.AgentRunner do
     end
   end
 
-  defp maybe_auto_merge_local(state, config, workspace) do
-    auto_merge = get_in(config, [Access.key(:publish, %{}), Access.key(:auto_merge, :never)])
-    provider = Config.effective_publish_provider(config)
+  defp run_publish_auto_merge_local(state, config, workspace) do
+    base_branch = get_in(config, [Access.key(:git, %{}), Access.key(:base_branch)]) || "main"
 
-    if auto_merge == :on_pass and provider == :local do
-      base_branch = get_in(config, [Access.key(:git, %{}), Access.key(:base_branch)]) || "main"
-
-      case Workspace.merge_branch_to_main(workspace, base_branch) do
+    with {:ok, pushed_state} <- push_branch(state, workspace) do
+      case merge_branch_to_main(workspace, base_branch) do
         :ok ->
-          emit(state, :publish_merged, %{branch: workspace.branch, base_branch: base_branch})
+          case tracker_mark_merged(config, pushed_state.issue_id, workspace.branch, base_branch) do
+            :ok ->
+              state =
+                pushed_state
+                |> emit(:publish_merged, %{branch: workspace.branch, base_branch: base_branch})
+                |> emit(:publish_succeeded, %{branch: workspace.branch, pr_url: nil})
 
-        {:error, reason} ->
+              {:ok, state}
+
+            {:error, reason} ->
+              {:error, reason,
+               emit(pushed_state, :publish_failed, %{branch: workspace.branch, reason: reason})}
+          end
+
+        {:error, {:merge_failed, reason}} ->
           Logger.warning(
             "publish auto-merge failed for branch #{workspace.branch} -> #{base_branch}: #{reason}"
           )
 
-          emit(state, :publish_merge_failed, %{
-            branch: workspace.branch,
-            base_branch: base_branch,
-            reason: reason
-          })
+          merged_state =
+            emit(pushed_state, :publish_merge_failed, %{
+              branch: workspace.branch,
+              base_branch: base_branch,
+              reason: reason
+            })
+
+          {:ok, emit(merged_state, :publish_succeeded, %{branch: workspace.branch, pr_url: nil})}
+
+        {:error, reason} ->
+          {:error, reason,
+           emit(pushed_state, :publish_failed, %{branch: workspace.branch, reason: reason})}
       end
     else
-      state
+      {:error, reason} ->
+        {:error, reason,
+         emit(state, :publish_failed, %{branch: workspace.branch, reason: reason})}
     end
   end
 
-  defp run_create_pr(state, config, workspace) do
-    provider = Config.effective_publish_provider(config)
-    pr_opts = Publisher.pr_opts(config, state.issue)
-
-    cond do
-      is_nil(pr_opts) ->
-        {:ok, emit(state, :publish_succeeded, %{branch: workspace.branch, pr_url: nil})}
-
-      provider in [:local, nil] ->
-        {:ok,
-         emit(state, :publish_succeeded, %{
-           branch: workspace.branch,
-           pr_url: nil,
-           note: "push complete — PR creation skipped (no git provider configured)"
-         })}
-
-      true ->
-        case Publisher.module_for_provider(provider) do
-          {:ok, adapter} ->
-            case adapter.create_pr(workspace, pr_opts) do
-              {:ok, url} ->
-                {:ok, emit(state, :publish_succeeded, %{branch: workspace.branch, pr_url: url})}
-
-              {:error, reason} ->
-                {:error, "PR creation failed: #{reason}",
-                 emit(state, :publish_failed, %{branch: workspace.branch, reason: reason})}
-            end
-
-          {:error, reason} ->
-            {:error, reason,
-             emit(state, :publish_failed, %{branch: workspace.branch, reason: reason})}
-        end
+  defp push_branch(state, workspace) do
+    case Workspace.push_branch(workspace) do
+      :ok -> {:ok, emit(state, :publish_push_succeeded, %{branch: workspace.branch})}
+      {:error, reason} -> {:error, "push failed: #{reason}"}
     end
   end
 
-  defp check_commit_requirement(:on_pass, 0) do
+  defp merge_branch_to_main(workspace, base_branch) do
+    case Workspace.merge_branch_to_main(workspace, base_branch) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:merge_failed, reason}}
+    end
+  end
+
+  defp publisher_adapter(provider) do
+    case Publisher.module_for_provider(provider) do
+      {:ok, adapter} -> {:ok, adapter}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp require_pr_opts(nil), do: {:error, "failed to build PR options for publish mode"}
+  defp require_pr_opts(pr_opts), do: {:ok, pr_opts}
+
+  defp create_pr(adapter, workspace, pr_opts) do
+    case adapter.create_pr(workspace, pr_opts) do
+      {:ok, url} when is_binary(url) and url != "" -> {:ok, url}
+      {:ok, _other} -> {:error, "PR creation failed: adapter returned an empty URL"}
+      {:error, reason} -> {:error, "PR creation failed: #{reason}"}
+    end
+  end
+
+  defp maybe_enable_auto_merge(_adapter, _workspace, _pr_url, false), do: :ok
+
+  defp maybe_enable_auto_merge(adapter, workspace, pr_url, true) do
+    case adapter.enable_auto_merge(workspace, pr_url) do
+      :ok -> :ok
+      {:error, reason} -> {:error, "auto-merge enable failed: #{reason}"}
+    end
+  end
+
+  defp tracker_mark_pending_merge(config, issue_id, pr_url) do
+    tracker = tracker_module(config)
+
+    case tracker.mark_pending_merge(config, issue_id, %{pr_url: pr_url}) do
+      :ok -> :ok
+      {:error, reason} -> {:error, "failed to mark issue pending_merge: #{reason}"}
+      other -> {:error, "tracker mark_pending_merge returned invalid response: #{inspect(other)}"}
+    end
+  end
+
+  defp tracker_mark_merged(config, issue_id, branch, base_branch) do
+    tracker = tracker_module(config)
+
+    metadata = %{branch: branch, base_branch: base_branch}
+
+    case tracker.mark_merged(config, issue_id, metadata) do
+      :ok -> :ok
+      {:error, reason} -> {:error, "failed to mark issue merged: #{reason}"}
+      other -> {:error, "tracker mark_merged returned invalid response: #{inspect(other)}"}
+    end
+  end
+
+  defp tracker_module(config) do
+    kind = get_in(config, [Access.key(:tracker, %{}), Access.key(:kind)])
+    Tracker.module_for_kind(kind)
+  end
+
+  defp check_commit_requirement(_mode, ahead) when is_integer(ahead) and ahead > 0, do: :ok
+
+  defp check_commit_requirement(_mode, 0) do
     {:error, "no commits found on branch — agent did not commit any changes"}
   end
 
-  defp check_commit_requirement(_auto_push, _ahead), do: :ok
+  defp check_commit_requirement(mode, ahead) do
+    {:error,
+     "invalid publish precondition for mode #{inspect(mode)}: commits_ahead=#{inspect(ahead)}"}
+  end
 
   defp finalize_with_quality_gates(
          state,

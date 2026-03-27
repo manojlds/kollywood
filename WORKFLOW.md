@@ -44,9 +44,7 @@ review:
   enabled: true
   max_cycles: 2
 publish:
-  auto_create_pr: never
-  auto_merge: on_pass
-  auto_push: on_pass
+  mode: auto_merge
 git:
   base_branch: main
 ---
