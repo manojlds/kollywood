@@ -41,43 +41,7 @@ review:
     kind: opencode
     timeout_ms: 7200000
   enabled: true
-  fail_token: REVIEW_FAIL
   max_cycles: 2
-  pass_token: REVIEW_PASS
-  prompt_template: |
-    You are reviewing work for issue {{ issue.identifier }}: {{ issue.title }}.
-    
-    Issue description:
-    {{ issue.description }}
-    
-    Prior implementation output (may be empty):
-    {{ agent_output }}
-    
-    Review the current workspace changes. You may run commands for validation.
-    Do not modify files, do not commit, and do not push.
-    
-    On the FIRST line, return exactly one verdict:
-    REVIEW_PASS
-    or
-    REVIEW_FAIL: <one-line summary of the most critical issue>
-    
-    After the first line, provide a structured review report with the following sections
-    (omit sections with no findings):
-    
-    ## Critical
-    Issues that must be fixed before merging (bugs, broken tests, security issues, missing required functionality).
-    List each as: - [description of issue and where to find it]
-    
-    ## Major
-    Significant quality issues that should be fixed (poor design, missing error handling, test coverage gaps).
-    List each as: - [description of issue and where to find it]
-    
-    ## Minor
-    Nice-to-haves and style issues (naming, code clarity, optional improvements).
-    List each as: - [description of issue and where to find it]
-    
-    ## Summary
-    One or two sentences summarising the overall quality of the changes.
 publish:
   auto_create_pr: never
   auto_push: on_pass
