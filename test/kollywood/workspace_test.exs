@@ -135,6 +135,42 @@ defmodule Kollywood.WorkspaceTest do
     repo
   end
 
+  defp setup_worktree_remote_repo(root) do
+    origin = Path.join(root, "origin.git")
+    source = Path.join(root, "source_repo")
+    seed = Path.join(root, "seed_repo")
+
+    File.mkdir_p!(origin)
+    run_git!(["init", "--bare"], origin)
+    run_git!(["clone", origin, seed], root)
+
+    run_git!(["config", "user.email", "test@test.com"], seed)
+    run_git!(["config", "user.name", "Test"], seed)
+    run_git!(["checkout", "-b", "main"], seed)
+
+    File.write!(Path.join(seed, "README.md"), "# Seed")
+    run_git!(["add", "."], seed)
+    run_git!(["commit", "-m", "init"], seed)
+    run_git!(["push", "-u", "origin", "main"], seed)
+
+    run_git!(["clone", origin, source], root)
+    run_git!(["config", "user.email", "test@test.com"], source)
+    run_git!(["config", "user.name", "Test"], source)
+    run_git!(["checkout", "main"], source)
+
+    %{origin: origin, source: source}
+  end
+
+  defp run_git!(args, cwd) do
+    {output, code} = System.cmd("git", args, cd: cwd, stderr_to_stdout: true)
+
+    if code != 0 do
+      flunk("git #{Enum.join(args, " ")} failed in #{cwd}: #{String.trim(output)}")
+    end
+
+    output
+  end
+
   test "creates worktree workspace", %{root: root} do
     source = setup_git_repo(root)
     wt_root = Path.join(root, "worktrees")
@@ -215,5 +251,29 @@ defmodule Kollywood.WorkspaceTest do
 
     {branches, 0} = System.cmd("git", ["branch"], cd: source, stderr_to_stdout: true)
     refute branches =~ "kw/WT-5"
+  end
+
+  test "merges worktree branch into main and pushes origin", %{root: root} do
+    %{origin: origin, source: source} = setup_worktree_remote_repo(root)
+    wt_root = Path.join(root, "worktrees")
+
+    config = %{
+      workspace: %{root: wt_root, strategy: :worktree, source: source, branch_prefix: "kw/"},
+      hooks: @no_hooks
+    }
+
+    {:ok, workspace} = Workspace.create_for_issue("WT-MERGE", config)
+    run_git!(["config", "user.email", "test@test.com"], workspace.path)
+    run_git!(["config", "user.name", "Test"], workspace.path)
+
+    File.write!(Path.join(workspace.path, "feature.txt"), "merged")
+    run_git!(["add", "feature.txt"], workspace.path)
+    run_git!(["commit", "-m", "add feature"], workspace.path)
+
+    assert :ok = Workspace.merge_branch_to_main(workspace, "main")
+
+    run_git!(["clone", origin, Path.join(root, "verify")], root)
+    run_git!(["checkout", "main"], Path.join(root, "verify"))
+    assert File.read!(Path.join([root, "verify", "feature.txt"])) == "merged"
   end
 end

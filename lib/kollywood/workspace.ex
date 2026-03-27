@@ -107,8 +107,8 @@ defmodule Kollywood.Workspace do
            git(["rev-list", "--count", "#{String.trim(sha)}..HEAD"], workspace.path) do
       {:ok, String.trim(count_str) |> String.to_integer()}
     else
-      {output, _code} -> {:error, "git error: #{String.trim(output)}"}
       {:error, reason} -> {:error, reason}
+      {output, _code} -> {:error, "git error: #{String.trim(output)}"}
     end
   end
 
@@ -131,6 +131,30 @@ defmodule Kollywood.Workspace do
   end
 
   def push_branch(%__MODULE__{}), do: {:error, "push_branch only supported for worktree strategy"}
+
+  @doc """
+  Merges the workspace branch into `base_branch` in the source repo and pushes it to origin.
+  Only applicable for the `:worktree` strategy.
+  """
+  @spec merge_branch_to_main(t(), String.t()) :: :ok | {:error, String.t()}
+  def merge_branch_to_main(
+        %__MODULE__{strategy: :worktree, branch: branch} = workspace,
+        base_branch
+      )
+      when is_binary(branch) and is_binary(base_branch) do
+    with {:ok, source} <- source_repo(workspace),
+         {_, 0} <- git(["checkout", base_branch], source),
+         {_, 0} <- git(["merge", "--no-ff", branch, "-m", "Merge branch '#{branch}'"], source),
+         {_, 0} <- git(["push", "origin", base_branch], source) do
+      :ok
+    else
+      {:error, reason} -> {:error, reason}
+      {output, code} -> {:error, "merge to main failed (exit #{code}): #{String.trim(output)}"}
+    end
+  end
+
+  def merge_branch_to_main(%__MODULE__{}, _base_branch),
+    do: {:error, "merge_branch_to_main only supported for worktree strategy"}
 
   @doc """
   Sanitizes an issue identifier to a safe directory name.

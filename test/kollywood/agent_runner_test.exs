@@ -78,6 +78,24 @@ defmodule Kollywood.AgentRunnerTest do
 
     File.chmod!(review_cli_path, 0o755)
 
+    git_cli_path = Path.join(root, "fake_git_runner_cli.sh")
+
+    File.write!(git_cli_path, """
+    #!/usr/bin/env bash
+    set -eu
+
+    prompt="$(cat)"
+    printf "%s\n" "$prompt" > agent_output.txt
+    printf "%s\n" "${RANDOM:-0}" >> agent_output.txt
+
+    git add agent_output.txt
+    git commit -m "agent commit" >/dev/null
+
+    echo "ok:$prompt"
+    """)
+
+    File.chmod!(git_cli_path, 0o755)
+
     on_exit(fn ->
       File.rm_rf!(root)
     end)
@@ -86,6 +104,7 @@ defmodule Kollywood.AgentRunnerTest do
       root: root,
       workspace_root: workspace_root,
       cli_path: cli_path,
+      git_cli_path: git_cli_path,
       review_cli_path: review_cli_path,
       prompt_log: prompt_log
     }
@@ -625,6 +644,163 @@ defmodule Kollywood.AgentRunnerTest do
     assert result.error =~ "review failed after 1 cycle"
     assert result.error =~ "review complete"
     assert :review_failed in Enum.map(result.events, & &1.type)
+  end
+
+  test "auto_merge on local provider merges branch after push", %{
+    root: root,
+    git_cli_path: git_cli_path
+  } do
+    %{source: source, workspaces_root: workspaces_root, origin: origin} =
+      setup_worktree_repo(root)
+
+    config = %Config{
+      tracker: %{},
+      polling: %{},
+      workspace: %{
+        root: workspaces_root,
+        strategy: :worktree,
+        source: source,
+        branch_prefix: "kw/"
+      },
+      hooks: %{
+        @no_hooks
+        | after_create: "git config user.email test@test.com && git config user.name Test"
+      },
+      checks: %{required: [], timeout_ms: 10_000, fail_fast: true},
+      runtime: %{
+        profile: :checks_only,
+        full_stack: %{
+          command: "devenv",
+          processes: [],
+          env: %{},
+          ports: %{},
+          port_offset_mod: 1000,
+          start_timeout_ms: 120_000,
+          stop_timeout_ms: 60_000
+        }
+      },
+      review: %{enabled: false, max_cycles: 1, agent: %{kind: :amp}},
+      agent: %{
+        kind: :amp,
+        max_concurrent_agents: 1,
+        max_turns: 1,
+        command: git_cli_path,
+        args: [],
+        env: %{},
+        timeout_ms: 10_000
+      },
+      publish: %{auto_push: :on_pass, auto_merge: :on_pass, auto_create_pr: :never},
+      git: %{base_branch: "main"},
+      project_provider: :local,
+      raw: %{}
+    }
+
+    assert {:ok, result} =
+             AgentRunner.run_issue(@issue, config: config, prompt_template: "Implement")
+
+    event_types = Enum.map(result.events, & &1.type)
+    assert :publish_push_succeeded in event_types
+    assert :publish_merged in event_types
+    assert :publish_succeeded in event_types
+
+    verify_path = Path.join(root, "verify_repo")
+    git!(["clone", origin, verify_path], root)
+    git!(["checkout", "main"], verify_path)
+
+    assert File.exists?(Path.join(verify_path, "agent_output.txt"))
+  end
+
+  test "auto_merge failure does not fail publish", %{
+    root: root,
+    git_cli_path: git_cli_path
+  } do
+    %{source: source, workspaces_root: workspaces_root} = setup_worktree_repo(root)
+
+    config = %Config{
+      tracker: %{},
+      polling: %{},
+      workspace: %{
+        root: workspaces_root,
+        strategy: :worktree,
+        source: source,
+        branch_prefix: "kw/"
+      },
+      hooks: %{
+        @no_hooks
+        | after_create: "git config user.email test@test.com && git config user.name Test"
+      },
+      checks: %{required: [], timeout_ms: 10_000, fail_fast: true},
+      runtime: %{
+        profile: :checks_only,
+        full_stack: %{
+          command: "devenv",
+          processes: [],
+          env: %{},
+          ports: %{},
+          port_offset_mod: 1000,
+          start_timeout_ms: 120_000,
+          stop_timeout_ms: 60_000
+        }
+      },
+      review: %{enabled: false, max_cycles: 1, agent: %{kind: :amp}},
+      agent: %{
+        kind: :amp,
+        max_concurrent_agents: 1,
+        max_turns: 1,
+        command: git_cli_path,
+        args: [],
+        env: %{},
+        timeout_ms: 10_000
+      },
+      publish: %{auto_push: :on_pass, auto_merge: :on_pass, auto_create_pr: :never},
+      git: %{base_branch: "does-not-exist"},
+      project_provider: :local,
+      raw: %{}
+    }
+
+    assert {:ok, result} =
+             AgentRunner.run_issue(@issue, config: config, prompt_template: "Implement")
+
+    event_types = Enum.map(result.events, & &1.type)
+    assert :publish_push_succeeded in event_types
+    assert :publish_merge_failed in event_types
+    assert :publish_succeeded in event_types
+    refute :publish_failed in event_types
+  end
+
+  defp setup_worktree_repo(root) do
+    origin = Path.join(root, "origin.git")
+    seed = Path.join(root, "seed_repo")
+    source = Path.join(root, "source_repo")
+    workspaces_root = Path.join(root, "workspaces")
+
+    File.mkdir_p!(origin)
+    git!(["init", "--bare"], origin)
+    git!(["clone", origin, seed], root)
+
+    git!(["config", "user.email", "test@test.com"], seed)
+    git!(["config", "user.name", "Test"], seed)
+    git!(["checkout", "-b", "main"], seed)
+
+    File.write!(Path.join(seed, "README.md"), "# Seed")
+    git!(["add", "."], seed)
+    git!(["commit", "-m", "seed"], seed)
+    git!(["push", "-u", "origin", "main"], seed)
+
+    git!(["clone", origin, source], root)
+    git!(["checkout", "main"], source)
+
+    %{origin: origin, source: source, workspaces_root: workspaces_root}
+  end
+
+  defp git!(args, cwd) do
+    {output, code} = System.cmd("git", args, cd: cwd, stderr_to_stdout: true)
+
+    if code != 0 do
+      flunk("git #{Enum.join(args, " ")} failed in #{cwd}: #{String.trim(output)}")
+    end
+
+    output
   end
 
   defp runner_config(workspace_root, cli_path, prompt_log, hooks \\ %{}, agent_overrides \\ %{}) do

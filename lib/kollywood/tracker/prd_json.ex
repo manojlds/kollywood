@@ -288,7 +288,7 @@ defmodule Kollywood.Tracker.PrdJson do
   defp set_story_status(story, status) do
     story
     |> Map.put("status", status)
-    |> Map.put("passes", status == "done")
+    |> Map.put("passes", status in ["done", "merged"])
   end
 
   defp reset_notes(story, true), do: Map.put(story, "notes", "")
