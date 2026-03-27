@@ -151,6 +151,103 @@ defmodule Kollywood.OrchestratorTest do
     assert reason in [:normal, :noproc]
   end
 
+  test "startup reconciliation skips redispatch for in_progress issues", %{root: root} do
+    %{store: workflow_store} =
+      start_workflow_store!(root, %{
+        max_concurrent_agents: 2,
+        tracker_active_states: ["open", "in_progress"],
+        tracker_terminal_states: ["done", "failed", "cancelled"]
+      })
+
+    test_pid = self()
+
+    in_progress_issue = %{issue("ISS-10", "ABC-10", 1) | state: "in_progress"}
+    open_issue = %{issue("ISS-11", "ABC-11", 2) | state: "open"}
+    issues_agent = start_agent!(fn -> [in_progress_issue, open_issue] end)
+
+    tracker = fn _config -> {:ok, Agent.get(issues_agent, & &1)} end
+
+    runner = fn issue, opts ->
+      issue_id = issue.id
+      send(test_pid, {:runner_started, issue_id, self(), Keyword.get(opts, :attempt)})
+
+      receive do
+        {:complete_runner, ^issue_id, result} ->
+          send(test_pid, {:runner_finished, issue_id})
+          result
+      after
+        5_000 -> {:error, failed_result(issue, "test timed out waiting for completion")}
+      end
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: tracker,
+         runner: runner,
+         auto_poll: false,
+         continuation_delay_ms: 60_000,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_started, "ISS-11", runner_pid, nil}
+    refute_receive {:runner_started, "ISS-10", _, _}, 100
+
+    status = Orchestrator.status(orchestrator)
+    assert status.running_count == 1
+    assert status.claimed_issue_ids == ["ISS-10", "ISS-11"]
+
+    send(runner_pid, {:complete_runner, "ISS-11", {:ok, success_result(open_issue)}})
+    assert_receive {:runner_finished, "ISS-11"}
+
+    _ = :sys.get_state(orchestrator)
+
+    status = Orchestrator.status(orchestrator)
+    assert status.running_count == 0
+    assert status.claimed_issue_ids == ["ISS-10"]
+  end
+
+  test "startup reconciliation failure does not crash orchestrator", %{root: root} do
+    %{store: workflow_store} = start_workflow_store!(root, %{max_concurrent_agents: 1})
+    test_pid = self()
+    open_issue = issue("ISS-12", "ABC-12", 1)
+    calls_agent = start_agent!(fn -> 0 end)
+
+    tracker = fn _config ->
+      call_number = Agent.get_and_update(calls_agent, fn count -> {count + 1, count + 1} end)
+
+      case call_number do
+        1 -> {:error, "tracker unavailable during startup"}
+        _ -> {:ok, [open_issue]}
+      end
+    end
+
+    runner = fn issue, opts ->
+      send(test_pid, {:runner_started, issue.id, self(), Keyword.get(opts, :attempt)})
+      {:ok, success_result(issue)}
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: tracker,
+         runner: runner,
+         auto_poll: false,
+         continuation_delay_ms: 60_000,
+         retry_base_delay_ms: 20}
+      )
+
+    assert Process.alive?(orchestrator)
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_started, "ISS-12", _runner_pid, nil}
+  end
+
   test "persists worker/reviewer/check/runtime logs and metadata per attempt", %{root: root} do
     prd_path = Path.join(root, "prd.json")
 

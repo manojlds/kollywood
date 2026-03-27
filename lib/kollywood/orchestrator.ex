@@ -141,6 +141,8 @@ defmodule Kollywood.Orchestrator do
           )
       }
 
+      state = startup_reconcile(state)
+
       state =
         if state.auto_poll do
           schedule_poll(state, 0)
@@ -231,6 +233,31 @@ defmodule Kollywood.Orchestrator do
   end
 
   # --- Poll cycle ---
+
+  defp startup_reconcile(state) do
+    with {:ok, config} <- fetch_config(state.workflow_store),
+         tracker <- resolve_tracker(state.tracker, config),
+         {:ok, issues} <- list_active_issues(tracker, config) do
+      in_progress_ids =
+        issues
+        |> Enum.filter(fn issue ->
+          normalize_state(field(issue, :state)) == "in_progress"
+        end)
+        |> Enum.map(&issue_id/1)
+        |> Enum.reject(&is_nil/1)
+        |> MapSet.new()
+
+      %{state | claimed: MapSet.union(state.claimed, in_progress_ids)}
+    else
+      {:error, reason} ->
+        Logger.warning("Orchestrator startup reconciliation failed: #{reason}")
+        state
+
+      other ->
+        Logger.warning("Orchestrator startup reconciliation skipped: #{inspect(other)}")
+        state
+    end
+  end
 
   defp run_poll_cycle(state) do
     sync_repo(state.repo_local_path, state.repo_default_branch)
@@ -1123,7 +1150,12 @@ defmodule Kollywood.Orchestrator do
   defp normalize_state(nil), do: ""
 
   defp normalize_state(state_name),
-    do: state_name |> to_string() |> String.trim() |> String.downcase()
+    do:
+      state_name
+      |> to_string()
+      |> String.trim()
+      |> String.downcase()
+      |> String.replace(~r/[\s-]+/u, "_")
 
   defp issue_id(issue) do
     value = field(issue, :id)
