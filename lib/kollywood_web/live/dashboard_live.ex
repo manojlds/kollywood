@@ -390,12 +390,12 @@ defmodule KollywoodWeb.DashboardLive do
           </div>
         </main>
 
-        <%!-- Story Detail Slide-over --%>
+        <%!-- Story Detail Slide-over (stories list only) --%>
         <div
           id="story-backdrop"
           class={[
             "fixed inset-0 bg-black/50 z-40 transition-opacity duration-300",
-            if(@selected_story,
+            if(@selected_story && @live_action == :stories,
               do: "opacity-100 pointer-events-auto",
               else: "opacity-0 pointer-events-none"
             )
@@ -406,7 +406,7 @@ defmodule KollywoodWeb.DashboardLive do
           id="story-slide-over"
           class={[
             "fixed inset-y-0 right-0 w-full sm:w-[480px] bg-base-100 shadow-2xl z-50 overflow-y-auto transform transition-transform duration-300",
-            if(@selected_story, do: "translate-x-0", else: "translate-x-full")
+            if(@selected_story && @live_action == :stories, do: "translate-x-0", else: "translate-x-full")
           ]}
         >
           <%= if @selected_story do %>
