@@ -9,6 +9,7 @@ defmodule KollywoodWeb.DashboardLive do
   alias Kollywood.Orchestrator.RunLogs
   alias Kollywood.Projects
   alias Kollywood.Projects.Project
+  alias Kollywood.Tracker.PrdJson
 
   @impl true
   def mount(params, _session, socket) do
@@ -26,6 +27,10 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:story_detail_tab, "details")
       |> assign(:active_log_tab, "agent")
       |> assign(:log_poll_timer, nil)
+      |> assign(:story_form_mode, nil)
+      |> assign(:story_form_values, %{})
+      |> assign(:story_form_story_id, nil)
+      |> assign(:story_form_error, nil)
       |> assign(:workflow, %{
         yaml: "",
         body: "",
@@ -100,27 +105,28 @@ defmodule KollywoodWeb.DashboardLive do
     {:noreply, assign(socket, :story_detail_tab, tab)}
   end
 
+  def handle_event("close_story", _params, socket) do
+    {:noreply, assign(socket, :selected_story, nil)}
+  end
+
   def handle_event("update_story_status", %{"id" => id, "status" => status}, socket) do
     project = socket.assigns.current_project
 
     socket =
-      with %{tracker_path: path} when is_binary(path) <- project,
-           true <- File.exists?(path),
-           {:ok, content} <- File.read(path),
-           {:ok, data} <- Jason.decode(content) do
-        updated_stories =
-          Enum.map(Map.get(data, "userStories", []), fn story ->
-            if story["id"] == id, do: Map.put(story, "status", status), else: story
-          end)
+      case local_tracker_path(project) do
+        {:ok, tracker_path} ->
+          case PrdJson.set_manual_status(tracker_path, id, status) do
+            :ok ->
+              socket
+              |> load_project_data(project)
+              |> put_flash(:info, "Story status updated.")
 
-        File.write!(
-          path,
-          Jason.encode!(Map.put(data, "userStories", updated_stories), pretty: true)
-        )
+            {:error, reason} ->
+              put_flash(socket, :error, "Status update failed: #{reason}")
+          end
 
-        assign(socket, :stories, read_stories(project))
-      else
-        _ -> socket
+        {:error, reason} ->
+          put_flash(socket, :error, reason)
       end
 
     {:noreply, socket}
@@ -130,13 +136,135 @@ defmodule KollywoodWeb.DashboardLive do
     project = socket.assigns.current_project
 
     socket =
-      with %{tracker_path: path} when is_binary(path) <- project,
-           true <- File.exists?(path),
-           :ok <- Kollywood.Tracker.PrdJson.reset_story(path, id) do
-        cleanup_worktree(project, id)
-        assign(socket, :stories, read_stories(project))
-      else
-        _ -> socket
+      case local_tracker_path(project) do
+        {:ok, tracker_path} ->
+          case PrdJson.reset_story(tracker_path, id) do
+            :ok ->
+              cleanup_worktree(project, id)
+
+              socket
+              |> load_project_data(project)
+              |> put_flash(:info, "Story reset for rerun.")
+
+            {:error, reason} ->
+              put_flash(socket, :error, "Reset failed: #{reason}")
+          end
+
+        {:error, reason} ->
+          put_flash(socket, :error, reason)
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("open_new_story_form", _params, socket) do
+    project = socket.assigns.current_project
+
+    socket =
+      case local_tracker_path(project) do
+        {:ok, _tracker_path} ->
+          socket
+          |> assign(:story_form_mode, :new)
+          |> assign(:story_form_story_id, nil)
+          |> assign(:story_form_error, nil)
+          |> assign(:story_form_values, default_story_form_values(socket.assigns.stories))
+
+        {:error, reason} ->
+          put_flash(socket, :error, reason)
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("open_edit_story_form", %{"id" => story_id}, socket) do
+    story = Enum.find(socket.assigns.stories, &(&1["id"] == story_id))
+
+    socket =
+      case story do
+        nil ->
+          put_flash(socket, :error, "Story not found: #{story_id}")
+
+        story ->
+          socket
+          |> assign(:story_form_mode, :edit)
+          |> assign(:story_form_story_id, story_id)
+          |> assign(:story_form_error, nil)
+          |> assign(:story_form_values, story_to_form_values(story))
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("cancel_story_form", _params, socket) do
+    {:noreply, clear_story_form(socket)}
+  end
+
+  def handle_event("save_story", %{"story" => story_params}, socket) do
+    project = socket.assigns.current_project
+    mode = socket.assigns.story_form_mode
+    story_id = socket.assigns.story_form_story_id
+
+    socket =
+      case local_tracker_path(project) do
+        {:ok, tracker_path} ->
+          attrs = normalize_story_form_params(story_params)
+
+          save_result =
+            case mode do
+              :new ->
+                PrdJson.create_story(tracker_path, attrs)
+
+              :edit when is_binary(story_id) ->
+                PrdJson.update_story(tracker_path, story_id, attrs)
+
+              _other ->
+                {:error, "no story edit in progress"}
+            end
+
+          case save_result do
+            {:ok, _story} ->
+              socket
+              |> clear_story_form()
+              |> load_project_data(project)
+              |> put_flash(:info, "Story saved.")
+
+            {:error, reason} ->
+              socket
+              |> assign(
+                :story_form_values,
+                merge_story_form_values(socket.assigns.story_form_values, attrs)
+              )
+              |> assign(:story_form_error, reason)
+          end
+
+        {:error, reason} ->
+          put_flash(socket, :error, reason)
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("delete_story", %{"id" => story_id}, socket) do
+    project = socket.assigns.current_project
+
+    socket =
+      case local_tracker_path(project) do
+        {:ok, tracker_path} ->
+          case PrdJson.delete_story(tracker_path, story_id) do
+            :ok ->
+              cleanup_worktree(project, story_id)
+
+              socket
+              |> clear_story_form_if_editing(story_id)
+              |> load_project_data(project)
+              |> put_flash(:info, "Story deleted.")
+
+            {:error, reason} ->
+              put_flash(socket, :error, "Delete failed: #{reason}")
+          end
+
+        {:error, reason} ->
+          put_flash(socket, :error, reason)
       end
 
     {:noreply, socket}
@@ -390,6 +518,12 @@ defmodule KollywoodWeb.DashboardLive do
           </div>
         </main>
 
+        <.story_editor_modal
+          mode={@story_form_mode}
+          values={@story_form_values}
+          error={@story_form_error}
+        />
+
         <%!-- Story Detail Slide-over (stories list only) --%>
         <div
           id="story-backdrop"
@@ -406,7 +540,10 @@ defmodule KollywoodWeb.DashboardLive do
           id="story-slide-over"
           class={[
             "fixed inset-y-0 right-0 w-full sm:w-[480px] bg-base-100 shadow-2xl z-50 overflow-y-auto transform transition-transform duration-300",
-            if(@selected_story && @live_action == :stories, do: "translate-x-0", else: "translate-x-full")
+            if(@selected_story && @live_action == :stories,
+              do: "translate-x-0",
+              else: "translate-x-full"
+            )
           ]}
         >
           <%= if @selected_story do %>
@@ -584,7 +721,9 @@ defmodule KollywoodWeb.DashboardLive do
                   <.run_status_badge status={run.status} />
                   <span class="font-mono text-xs text-base-content/60 shrink-0">{run.story_id}</span>
                   <span class="text-sm truncate flex-1">{run.story_title}</span>
-                  <span class="text-xs text-base-content/50 shrink-0">#{run.attempt}</span>
+                  <span class="text-xs text-base-content/50 shrink-0">
+                    Run {run_number(run.attempt)}
+                  </span>
                   <span class="text-xs text-base-content/50 shrink-0">
                     {time_ago(run.ended_at || run.started_at)}
                   </span>
@@ -614,11 +753,21 @@ defmodule KollywoodWeb.DashboardLive do
       "draft" => Enum.filter(assigns.stories, &(normalize_status(&1["status"]) == "draft"))
     }
 
-    assigns = assign(assigns, :groups, groups)
+    assigns =
+      assigns
+      |> assign(:groups, groups)
+      |> assign(:editable, local_provider?(assigns.project))
 
     ~H"""
     <div class="space-y-6">
-      <h2 class="text-2xl font-bold">Stories</h2>
+      <div class="flex items-center justify-between gap-3">
+        <h2 class="text-2xl font-bold">Stories</h2>
+        <%= if @editable do %>
+          <button phx-click="open_new_story_form" class="btn btn-primary btn-sm gap-2">
+            <.icon name="hero-plus" class="size-4" /> Add Story
+          </button>
+        <% end %>
+      </div>
 
       <%= if @stories == [] do %>
         <div class="card bg-base-200 border border-base-300">
@@ -642,6 +791,7 @@ defmodule KollywoodWeb.DashboardLive do
             </h3>
             <div class="space-y-2">
               <%= for story <- stories do %>
+                <% status_targets = manual_status_targets(story["status"]) %>
                 <div id={"story-card-#{story["id"]}"} class="card bg-base-200 border border-base-300">
                   <div class="card-body p-4">
                     <div class="flex items-start justify-between gap-4">
@@ -672,53 +822,74 @@ defmodule KollywoodWeb.DashboardLive do
                           <p class="text-sm text-error mt-2 line-clamp-2">{story["lastError"]}</p>
                         <% end %>
                       </div>
-                      <div class="flex items-center gap-2 shrink-0">
-                        <%= if story["lastAttempt"] do %>
-                          <span class="badge badge-sm badge-ghost">
-                            attempt {story["lastAttempt"]}
-                          </span>
-                        <% end %>
-                        <%= if normalize_status(story["status"]) != "open" do %>
-                          <button
-                            phx-click="reset_story"
-                            phx-value-id={story["id"]}
-                            phx-confirm={"Reset #{story["id"]}? This will clear run data and remove the worktree."}
-                            class="btn btn-ghost btn-xs text-warning"
-                          >
-                            Reset
-                          </button>
-                        <% end %>
-                        <div class="dropdown dropdown-end">
-                          <label tabindex="0" class="btn btn-ghost btn-xs">
-                            <.icon name="hero-pencil-square" class="size-4" />
-                          </label>
-                          <ul
-                            tabindex="0"
-                            class="dropdown-content menu menu-xs bg-base-100 rounded-box shadow-lg border border-base-300 z-50 w-36 p-1"
-                          >
-                            <%= for s <- ["open", "in_progress", "done", "failed", "cancelled", "draft"] do %>
+                      <%= if @editable do %>
+                        <div class="flex items-center gap-2 shrink-0">
+                          <div class="dropdown dropdown-end">
+                            <label tabindex="0" class="btn btn-ghost btn-xs">
+                              <.icon name="hero-ellipsis-horizontal" class="size-4" />
+                            </label>
+                            <ul
+                              tabindex="0"
+                              class="dropdown-content menu menu-xs bg-base-100 rounded-box shadow-lg border border-base-300 z-50 w-44 p-1"
+                            >
                               <li>
                                 <button
-                                  phx-click="update_story_status"
+                                  phx-click="open_edit_story_form"
                                   phx-value-id={story["id"]}
-                                  phx-value-status={s}
                                   class="text-xs"
                                 >
-                                  {s}
+                                  Edit Story
                                 </button>
                               </li>
-                            <% end %>
-                          </ul>
+                              <li>
+                                <button
+                                  phx-click="delete_story"
+                                  phx-value-id={story["id"]}
+                                  phx-confirm={"Delete #{story["id"]}? This cannot be undone."}
+                                  class="text-xs text-error"
+                                >
+                                  Delete Story
+                                </button>
+                              </li>
+                              <%= if normalize_status(story["status"]) != "open" do %>
+                                <li>
+                                  <button
+                                    phx-click="reset_story"
+                                    phx-value-id={story["id"]}
+                                    phx-confirm={"Reset #{story["id"]}? This will clear run data and remove the worktree."}
+                                    class="text-xs text-warning"
+                                  >
+                                    Reset Story
+                                  </button>
+                                </li>
+                                <li><hr class="my-1 border-base-300" /></li>
+                              <% end %>
+                              <li class="menu-title px-2 py-1 text-[10px] tracking-wide uppercase text-base-content/50">
+                                Set Status
+                              </li>
+                              <%= if status_targets == [] do %>
+                                <li>
+                                  <span class="px-2 py-1 text-xs text-base-content/50">
+                                    No manual transitions
+                                  </span>
+                                </li>
+                              <% end %>
+                              <%= for s <- status_targets do %>
+                                <li>
+                                  <button
+                                    phx-click="update_story_status"
+                                    phx-value-id={story["id"]}
+                                    phx-value-status={s}
+                                    class="text-xs"
+                                  >
+                                    {display_status(s)}
+                                  </button>
+                                </li>
+                              <% end %>
+                            </ul>
+                          </div>
                         </div>
-                        <%= if story["lastAttempt"] do %>
-                          <.link
-                            navigate={~p"/projects/#{@project.slug}/stories/#{story["id"]}?tab=runs"}
-                            class="btn btn-ghost btn-xs"
-                          >
-                            Runs →
-                          </.link>
-                        <% end %>
-                      </div>
+                      <% end %>
                     </div>
                   </div>
                 </div>
@@ -736,6 +907,7 @@ defmodule KollywoodWeb.DashboardLive do
           </h3>
           <div class="space-y-2">
             <%= for story <- @groups["draft"] do %>
+              <% status_targets = manual_status_targets(story["status"]) %>
               <div
                 id={"story-card-#{story["id"]}"}
                 class="card bg-base-200 border border-base-300 border-dashed"
@@ -766,30 +938,61 @@ defmodule KollywoodWeb.DashboardLive do
                         </div>
                       <% end %>
                     </div>
-                    <div class="flex items-center gap-2 shrink-0">
-                      <div class="dropdown dropdown-end">
-                        <label tabindex="0" class="btn btn-ghost btn-xs">
-                          <.icon name="hero-pencil-square" class="size-4" />
-                        </label>
-                        <ul
-                          tabindex="0"
-                          class="dropdown-content menu menu-xs bg-base-100 rounded-box shadow-lg border border-base-300 z-50 w-36 p-1"
-                        >
-                          <%= for s <- ["open", "in_progress", "done", "failed", "cancelled", "draft"] do %>
+                    <%= if @editable do %>
+                      <div class="flex items-center gap-2 shrink-0">
+                        <div class="dropdown dropdown-end">
+                          <label tabindex="0" class="btn btn-ghost btn-xs">
+                            <.icon name="hero-ellipsis-horizontal" class="size-4" />
+                          </label>
+                          <ul
+                            tabindex="0"
+                            class="dropdown-content menu menu-xs bg-base-100 rounded-box shadow-lg border border-base-300 z-50 w-44 p-1"
+                          >
                             <li>
                               <button
-                                phx-click="update_story_status"
+                                phx-click="open_edit_story_form"
                                 phx-value-id={story["id"]}
-                                phx-value-status={s}
                                 class="text-xs"
                               >
-                                {s}
+                                Edit Story
                               </button>
                             </li>
-                          <% end %>
-                        </ul>
+                            <li>
+                              <button
+                                phx-click="delete_story"
+                                phx-value-id={story["id"]}
+                                phx-confirm={"Delete #{story["id"]}? This cannot be undone."}
+                                class="text-xs text-error"
+                              >
+                                Delete Story
+                              </button>
+                            </li>
+                            <li class="menu-title px-2 py-1 text-[10px] tracking-wide uppercase text-base-content/50">
+                              Set Status
+                            </li>
+                            <%= if status_targets == [] do %>
+                              <li>
+                                <span class="px-2 py-1 text-xs text-base-content/50">
+                                  No manual transitions
+                                </span>
+                              </li>
+                            <% end %>
+                            <%= for s <- status_targets do %>
+                              <li>
+                                <button
+                                  phx-click="update_story_status"
+                                  phx-value-id={story["id"]}
+                                  phx-value-status={s}
+                                  class="text-xs"
+                                >
+                                  {display_status(s)}
+                                </button>
+                              </li>
+                            <% end %>
+                          </ul>
+                        </div>
                       </div>
-                    </div>
+                    <% end %>
                   </div>
                 </div>
               </div>
@@ -801,6 +1004,148 @@ defmodule KollywoodWeb.DashboardLive do
     """
   end
 
+  attr :mode, :atom, default: nil
+  attr :values, :map, default: %{}
+  attr :error, :string, default: nil
+
+  defp story_editor_modal(assigns) do
+    show = assigns.mode in [:new, :edit]
+    status_options = story_form_status_options(assigns.mode, assigns.values)
+
+    assigns =
+      assigns
+      |> assign(:show, show)
+      |> assign(:status_options, status_options)
+
+    ~H"""
+    <%= if @show do %>
+      <div class="fixed inset-0 z-[60] bg-black/50" phx-click="cancel_story_form" />
+      <div class="fixed inset-0 z-[70] flex items-start justify-center overflow-y-auto p-4 sm:p-6">
+        <div class="w-full max-w-2xl card bg-base-100 border border-base-300 shadow-2xl my-8">
+          <div class="card-body p-4 sm:p-6">
+            <div class="flex items-center justify-between gap-3 mb-2">
+              <h3 class="text-lg font-semibold">
+                <%= if @mode == :new do %>
+                  Add Story
+                <% else %>
+                  Edit Story
+                <% end %>
+              </h3>
+              <button
+                type="button"
+                phx-click="cancel_story_form"
+                class="btn btn-ghost btn-sm btn-circle"
+              >
+                <.icon name="hero-x-mark" class="size-4" />
+              </button>
+            </div>
+
+            <%= if @error do %>
+              <div class="alert alert-error mb-4">
+                <span>{@error}</span>
+              </div>
+            <% end %>
+
+            <form id="story-editor-form" phx-submit="save_story" class="space-y-4">
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label class="label py-1"><span class="label-text text-sm">Story ID</span></label>
+                  <input
+                    type="text"
+                    name="story[id]"
+                    value={Map.get(@values, "id", "")}
+                    class="input input-bordered input-sm w-full"
+                    readonly={@mode != :new}
+                  />
+                </div>
+                <div>
+                  <label class="label py-1"><span class="label-text text-sm">Status</span></label>
+                  <select name="story[status]" class="select select-bordered select-sm w-full">
+                    <%= for status <- @status_options do %>
+                      <option value={status} selected={Map.get(@values, "status", "") == status}>
+                        {display_status(status)}
+                      </option>
+                    <% end %>
+                  </select>
+                </div>
+                <div>
+                  <label class="label py-1"><span class="label-text text-sm">Priority</span></label>
+                  <input
+                    type="number"
+                    min="1"
+                    name="story[priority]"
+                    value={Map.get(@values, "priority", "")}
+                    class="input input-bordered input-sm w-full"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label class="label py-1"><span class="label-text text-sm">Title</span></label>
+                <input
+                  type="text"
+                  name="story[title]"
+                  value={Map.get(@values, "title", "")}
+                  class="input input-bordered input-sm w-full"
+                  required
+                />
+              </div>
+
+              <div>
+                <label class="label py-1">
+                  <span class="label-text text-sm">Depends On (comma-separated IDs)</span>
+                </label>
+                <input
+                  type="text"
+                  name="story[dependsOn]"
+                  value={Map.get(@values, "dependsOn", "")}
+                  class="input input-bordered input-sm w-full"
+                />
+              </div>
+
+              <div>
+                <label class="label py-1">
+                  <span class="label-text text-sm">Acceptance Criteria</span>
+                </label>
+                <textarea
+                  name="story[acceptanceCriteria]"
+                  rows="4"
+                  class="textarea textarea-bordered w-full text-sm"
+                >{Map.get(@values, "acceptanceCriteria", "")}</textarea>
+              </div>
+
+              <div>
+                <label class="label py-1"><span class="label-text text-sm">Description</span></label>
+                <textarea
+                  name="story[description]"
+                  rows="5"
+                  class="textarea textarea-bordered w-full text-sm"
+                >{Map.get(@values, "description", "")}</textarea>
+              </div>
+
+              <div>
+                <label class="label py-1"><span class="label-text text-sm">Notes</span></label>
+                <textarea
+                  name="story[notes]"
+                  rows="3"
+                  class="textarea textarea-bordered w-full text-sm"
+                >{Map.get(@values, "notes", "")}</textarea>
+              </div>
+
+              <div class="flex items-center justify-end gap-2 pt-2">
+                <button type="button" phx-click="cancel_story_form" class="btn btn-ghost btn-sm">
+                  Cancel
+                </button>
+                <button type="submit" class="btn btn-primary btn-sm">Save Story</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    <% end %>
+    """
+  end
+
   # -- Runs Section --
 
   attr :run_attempts, :list, required: true
@@ -808,8 +1153,12 @@ defmodule KollywoodWeb.DashboardLive do
   attr :stories, :list, default: []
 
   defp runs_section(assigns) do
-    # Fall back to stories with lastAttempt when no run_attempts available from disk
-    story_runs = Enum.filter(assigns.stories, &is_binary(&1["lastAttempt"]))
+    # Fall back to tracker run metadata when no run logs are available yet.
+    story_runs =
+      assigns.stories
+      |> Enum.map(fn story -> %{story: story, run_attempt: story_tracker_run_attempt(story)} end)
+      |> Enum.filter(&(&1.run_attempt != nil))
+
     assigns = assign(assigns, :story_runs, story_runs)
 
     ~H"""
@@ -832,7 +1181,7 @@ defmodule KollywoodWeb.DashboardLive do
             <thead>
               <tr>
                 <th>Story</th>
-                <th>Attempt</th>
+                <th>Run #</th>
                 <th>Status</th>
                 <th>Started</th>
                 <th>Ended</th>
@@ -843,7 +1192,7 @@ defmodule KollywoodWeb.DashboardLive do
               <%= for run <- @run_attempts do %>
                 <tr>
                   <td class="font-mono text-sm font-semibold">{run.story_id}</td>
-                  <td>{run.attempt}</td>
+                  <td>{run_number(run.attempt)}</td>
                   <td><.run_status_badge status={run.status} /></td>
                   <td class="text-sm text-base-content/70">{format_time(run.started_at)}</td>
                   <td class="text-sm text-base-content/70">{format_time(run.ended_at)}</td>
@@ -869,12 +1218,13 @@ defmodule KollywoodWeb.DashboardLive do
                 <tr>
                   <th>Story</th>
                   <th>Status</th>
-                  <th>Attempt</th>
+                  <th>Run #</th>
                   <th></th>
                 </tr>
               </thead>
               <tbody>
-                <%= for story <- @story_runs do %>
+                <%= for story_run <- @story_runs do %>
+                  <% story = story_run.story %>
                   <tr id={"run-row-#{story["id"]}"}>
                     <td>
                       <div class="flex items-center gap-2">
@@ -885,11 +1235,11 @@ defmodule KollywoodWeb.DashboardLive do
                     <td>
                       <.status_badge status={story["status"] || "open"} />
                     </td>
-                    <td class="text-sm text-base-content/60">{story["lastAttempt"]}</td>
+                    <td class="text-sm text-base-content/60">{run_number(story_run.run_attempt)}</td>
                     <td>
                       <.link
                         navigate={
-                          ~p"/projects/#{@project.slug}/runs/#{story["id"]}/#{story["lastAttempt"]}"
+                          ~p"/projects/#{@project.slug}/runs/#{story["id"]}/#{story_run.run_attempt}"
                         }
                         class="btn btn-xs btn-outline"
                       >
@@ -1128,7 +1478,7 @@ defmodule KollywoodWeb.DashboardLive do
               >
                 <.icon name="hero-arrow-left" class="size-4" /> All Runs
               </.link>
-              <span class="text-sm text-base-content/60">Attempt #{@selected_attempt}</span>
+              <span class="text-sm text-base-content/60">Run {run_number(@selected_attempt)}</span>
             </div>
 
             <div class="flex gap-0 border-b border-base-300">
@@ -1170,7 +1520,7 @@ defmodule KollywoodWeb.DashboardLive do
                   <table class="table table-sm">
                     <thead>
                       <tr>
-                        <th>Attempt</th>
+                        <th>Run #</th>
                         <th>Status</th>
                         <th>Started</th>
                         <th>Duration</th>
@@ -1186,7 +1536,7 @@ defmodule KollywoodWeb.DashboardLive do
                               }
                               class="font-mono text-sm hover:text-primary"
                             >
-                              #{"#{run.attempt}" |> String.pad_leading(4, "0")}
+                              {run_number(run.attempt)}
                             </.link>
                           </td>
                           <td><.run_status_badge status={run.status} /></td>
@@ -1586,18 +1936,25 @@ defmodule KollywoodWeb.DashboardLive do
                   </div>
                   <div>
                     <label class="label pb-1">
-                      <span class="label-text text-sm">Auto Push</span>
+                      <span class="label-text text-sm">Mode</span>
                     </label>
                     <select
-                      name="settings[publish][auto_push]"
+                      name="settings[publish][mode]"
                       class="select select-bordered select-sm w-full"
                     >
-                      <%= for v <- ["never", "on_pass"] do %>
+                      <option
+                        value=""
+                        selected={
+                          is_nil(get_in(@workflow.parsed, ["publish", "mode"])) or
+                            get_in(@workflow.parsed, ["publish", "mode"]) == ""
+                        }
+                      >
+                        Auto (from provider)
+                      </option>
+                      <%= for v <- ["push", "pr", "auto_merge"] do %>
                         <option
                           value={v}
-                          selected={
-                            to_string(get_in(@workflow.parsed, ["publish", "auto_push"])) == v
-                          }
+                          selected={to_string(get_in(@workflow.parsed, ["publish", "mode"])) == v}
                         >
                           {v}
                         </option>
@@ -1606,17 +1963,22 @@ defmodule KollywoodWeb.DashboardLive do
                   </div>
                   <div>
                     <label class="label pb-1">
-                      <span class="label-text text-sm">Auto Create PR</span>
+                      <span class="label-text text-sm">PR Type</span>
                     </label>
                     <select
-                      name="settings[publish][auto_create_pr]"
+                      name="settings[publish][pr_type]"
                       class="select select-bordered select-sm w-full"
                     >
-                      <%= for v <- ["never", "draft", "ready"] do %>
+                      <%= for v <- ["ready", "draft"] do %>
                         <option
                           value={v}
                           selected={
-                            to_string(get_in(@workflow.parsed, ["publish", "auto_create_pr"])) == v
+                            if(
+                              to_string(get_in(@workflow.parsed, ["publish", "auto_create_pr"])) ==
+                                "draft",
+                              do: v == "draft",
+                              else: v == "ready"
+                            )
                           }
                         >
                           {v}
@@ -1878,6 +2240,177 @@ defmodule KollywoodWeb.DashboardLive do
     <% end %>
     """
   end
+
+  # -- Story Form / Local Tracker Helpers --
+
+  defp local_tracker_path(%Project{provider: :local, tracker_path: path}) when is_binary(path) do
+    path = String.trim(path)
+
+    cond do
+      path == "" ->
+        {:error, "This project does not have a tracker path configured."}
+
+      true ->
+        {:ok, path}
+    end
+  end
+
+  defp local_tracker_path(%Project{}),
+    do: {:error, "Story editing is only available for local tracker projects."}
+
+  defp local_tracker_path(_project), do: {:error, "No project selected."}
+
+  defp default_story_form_values(stories) when is_list(stories) do
+    %{
+      "id" => suggested_story_id(stories),
+      "title" => "",
+      "description" => "",
+      "acceptanceCriteria" => "",
+      "priority" => to_string(next_story_priority(stories)),
+      "status" => "draft",
+      "dependsOn" => "",
+      "notes" => ""
+    }
+  end
+
+  defp default_story_form_values(_stories), do: default_story_form_values([])
+
+  defp story_to_form_values(story) when is_map(story) do
+    %{
+      "id" => to_string(Map.get(story, "id", "")),
+      "title" => to_string(Map.get(story, "title", "")),
+      "description" => to_string(Map.get(story, "description", "")),
+      "acceptanceCriteria" => acceptance_criteria_text(Map.get(story, "acceptanceCriteria")),
+      "priority" => to_string(Map.get(story, "priority", "")),
+      "status" => normalize_status(Map.get(story, "status", "open")),
+      "dependsOn" => depends_on_text(Map.get(story, "dependsOn")),
+      "notes" => to_string(Map.get(story, "notes", ""))
+    }
+  end
+
+  defp story_to_form_values(_story), do: default_story_form_values([])
+
+  defp normalize_story_form_params(params) when is_map(params) do
+    %{
+      "id" => Map.get(params, "id"),
+      "title" => Map.get(params, "title"),
+      "description" => Map.get(params, "description"),
+      "acceptanceCriteria" => Map.get(params, "acceptanceCriteria"),
+      "priority" => Map.get(params, "priority"),
+      "status" => Map.get(params, "status"),
+      "dependsOn" => Map.get(params, "dependsOn"),
+      "notes" => Map.get(params, "notes")
+    }
+  end
+
+  defp normalize_story_form_params(_params), do: %{}
+
+  defp merge_story_form_values(existing, attrs)
+       when is_map(existing) and is_map(attrs) do
+    existing
+    |> Map.merge(
+      Map.take(attrs, [
+        "id",
+        "title",
+        "description",
+        "acceptanceCriteria",
+        "priority",
+        "status",
+        "dependsOn",
+        "notes"
+      ])
+    )
+  end
+
+  defp merge_story_form_values(_existing, attrs) when is_map(attrs), do: attrs
+  defp merge_story_form_values(existing, _attrs) when is_map(existing), do: existing
+  defp merge_story_form_values(_existing, _attrs), do: %{}
+
+  defp clear_story_form(socket) do
+    socket
+    |> assign(:story_form_mode, nil)
+    |> assign(:story_form_story_id, nil)
+    |> assign(:story_form_values, %{})
+    |> assign(:story_form_error, nil)
+  end
+
+  defp clear_story_form_if_editing(socket, story_id) when is_binary(story_id) do
+    if socket.assigns.story_form_story_id == story_id do
+      clear_story_form(socket)
+    else
+      socket
+    end
+  end
+
+  defp clear_story_form_if_editing(socket, _story_id), do: socket
+
+  defp story_form_status_options(:new, _values), do: ["draft", "open"]
+
+  defp story_form_status_options(:edit, values) when is_map(values) do
+    current = normalize_status(Map.get(values, "status", "open"))
+    [current | manual_status_targets(current)] |> Enum.uniq()
+  end
+
+  defp story_form_status_options(_mode, _values), do: ["draft", "open"]
+
+  defp manual_status_targets(status) do
+    PrdJson.manual_transition_targets(status)
+  end
+
+  defp suggested_story_id(stories) when is_list(stories) do
+    next_number =
+      stories
+      |> Enum.map(&Map.get(&1, "id"))
+      |> Enum.map(fn
+        "US-" <> rest ->
+          case Integer.parse(rest) do
+            {num, ""} when num > 0 -> num
+            _other -> nil
+          end
+
+        _other ->
+          nil
+      end)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.max(fn -> 0 end)
+      |> Kernel.+(1)
+
+    "US-" <> String.pad_leading(Integer.to_string(next_number), 3, "0")
+  end
+
+  defp suggested_story_id(_stories), do: "US-001"
+
+  defp next_story_priority(stories) when is_list(stories) do
+    stories
+    |> Enum.map(fn story -> story["priority"] end)
+    |> Enum.map(fn
+      value when is_integer(value) ->
+        value
+
+      value when is_binary(value) ->
+        case Integer.parse(String.trim(value)) do
+          {num, ""} when num > 0 -> num
+          _other -> nil
+        end
+
+      _other ->
+        nil
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.max(fn -> 0 end)
+    |> Kernel.+(1)
+  end
+
+  defp next_story_priority(_stories), do: 1
+
+  defp depends_on_text(values) when is_list(values), do: Enum.map_join(values, ", ", &to_string/1)
+  defp depends_on_text(_values), do: ""
+
+  defp acceptance_criteria_text(values) when is_list(values),
+    do: Enum.map_join(values, "\n", &to_string/1)
+
+  defp acceptance_criteria_text(value) when is_binary(value), do: value
+  defp acceptance_criteria_text(_value), do: ""
 
   # -- Data Loading --
 
@@ -2224,14 +2757,24 @@ defmodule KollywoodWeb.DashboardLive do
       end)
 
     provider_val = Map.get(publish_p, "provider", "")
+    mode_val = Map.get(publish_p, "mode", "") |> String.trim()
+    pr_type_val = Map.get(publish_p, "pr_type", "ready") |> String.trim()
 
     new_publish =
-      %{
-        "auto_push" => Map.get(publish_p, "auto_push", "never"),
-        "auto_create_pr" => Map.get(publish_p, "auto_create_pr", "never")
-      }
+      %{}
       |> then(fn p ->
         if provider_val != "", do: Map.put(p, "provider", provider_val), else: p
+      end)
+      |> then(fn p ->
+        if mode_val != "", do: Map.put(p, "mode", mode_val), else: p
+      end)
+      |> then(fn p ->
+        if mode_val == "pr" do
+          pr_setting = if(pr_type_val == "draft", do: "draft", else: "ready")
+          Map.put(p, "auto_create_pr", pr_setting)
+        else
+          p
+        end
       end)
 
     base_branch =
@@ -2676,6 +3219,35 @@ defmodule KollywoodWeb.DashboardLive do
 
   defp parse_attempt(value) when is_integer(value), do: value
   defp parse_attempt(_), do: nil
+
+  defp run_number(value) do
+    case parse_attempt(value) do
+      num when is_integer(num) and num > 0 -> "##{num}"
+      _other -> to_string(value)
+    end
+  end
+
+  defp story_tracker_run_attempt(story) when is_map(story) do
+    story
+    |> Map.get("lastRunAttempt", Map.get(story, "lastAttempt"))
+    |> normalize_story_attempt()
+  end
+
+  defp story_tracker_run_attempt(_story), do: nil
+
+  defp normalize_story_attempt(value) when is_integer(value) and value > 0, do: value
+
+  defp normalize_story_attempt(value) when is_binary(value) do
+    trimmed = String.trim(value)
+
+    cond do
+      trimmed == "" -> nil
+      is_integer(parse_attempt(trimmed)) -> parse_attempt(trimmed)
+      true -> trimmed
+    end
+  end
+
+  defp normalize_story_attempt(_value), do: nil
 
   defp pad_attempt(num) when is_integer(num) do
     num |> Integer.to_string() |> String.pad_leading(4, "0")

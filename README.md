@@ -80,7 +80,8 @@ Kollywood can run against a local PRD tracker file.
 
 - Default tracker config is in `WORKFLOW.md` (`tracker.kind: prd_json`)
 - Default tracker path is `prd.json`
-- Stories use `status` values: `open`, `in_progress`, `done`, `failed`, `cancelled`
+- Stories use `status` values such as `draft`, `open`, `in_progress`, `done`, `failed`, `pending_merge`, `merged`, `cancelled`
+- Manual UI/API transitions intentionally block setting `in_progress` directly (that status is orchestrator-managed)
 - Default agent kind in `WORKFLOW.md` is `pi`
 
 CLI helpers:
@@ -109,6 +110,46 @@ to remove `<workspace-root>/<story-id>` before retrying.
 
 On success it prints a short summary with total and active story counts.
 On invalid input it raises `Mix.Error` with clear, itemized validation failures.
+
+### Local Story API
+
+For local tracker projects, story CRUD is also available via JSON API:
+
+```bash
+GET    /api/projects/:project_slug/stories
+POST   /api/projects/:project_slug/stories
+PATCH  /api/projects/:project_slug/stories/:story_id
+DELETE /api/projects/:project_slug/stories/:story_id
+```
+
+The dashboard Stories tab now uses the same local tracker rules for add/edit/delete and manual status transitions.
+
+### Rust Story CLI
+
+If you want to manage stories from any project directory, install the Rust CLI once:
+
+```bash
+cargo install --path tools/kollywood-cli
+```
+
+Usage examples:
+
+```bash
+# Defaults to KOLLYWOOD_API=http://127.0.0.1:4000
+kollywood story list                          # auto-detect project from current directory
+kollywood story list --project kollywood      # explicit project override
+kollywood story add --project kollywood --title "Add retry metrics" --status draft
+kollywood story edit --project kollywood US-012 --status done
+kollywood story delete --project kollywood US-012
+kollywood story export --project kollywood --output stories.json
+kollywood story import --project kollywood --input stories.json --mode upsert
+kollywood story import --project kollywood --input stories.json --mode upsert --delete-missing
+```
+
+`story import` accepts JSON in one of these shapes: `[{...}]`, `{ "stories": [{...}] }`, or a single story object.
+Use `--delete-missing` for full sync; it requires `--mode update|upsert` and IDs for every imported story.
+
+Manual transitions still block setting `in_progress` directly; that status is orchestrator-managed.
 
 Orchestrator controls:
 

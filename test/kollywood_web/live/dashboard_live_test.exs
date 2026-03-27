@@ -20,7 +20,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       "id" => "US-002",
       "title" => "Second Story",
       "status" => "in_progress",
-      "lastAttempt" => "20240101_120000",
+      "lastRunAttempt" => 1,
       "lastError" => "Something went wrong"
     },
     %{
@@ -208,6 +208,56 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert content =~ "new review template"
       refute content =~ "old template content"
     end
+
+    test "save settings writes publish.mode instead of legacy auto_push fields", %{
+      conn: conn,
+      project: project,
+      tmp_dir: tmp_dir
+    } do
+      File.write!(Path.join(tmp_dir, "WORKFLOW.md"), """
+      ---
+      agent:
+        kind: claude
+        max_turns: 1
+      workspace:
+        strategy: clone
+      publish:
+        auto_push: on_pass
+        auto_create_pr: ready
+      git:
+        base_branch: main
+      ---
+
+      Body here.
+      """)
+
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/settings")
+
+      view
+      |> element("form[phx-submit='save_settings']")
+      |> render_submit(%{
+        settings: %{
+          agent: %{"kind" => "claude", "max_turns" => "2", "command" => ""},
+          workspace: %{"strategy" => "clone"},
+          checks: %{"required" => "", "timeout_ms" => "10000"},
+          review: %{
+            "enabled" => "false",
+            "max_cycles" => "1",
+            "pass_token" => "REVIEW_PASS",
+            "fail_token" => "REVIEW_FAIL",
+            "agent_custom" => "false",
+            "agent" => %{}
+          },
+          publish: %{"provider" => "", "mode" => "auto_merge", "pr_type" => "ready"},
+          git: %{"base_branch" => "main"}
+        }
+      })
+
+      {:ok, content} = File.read(Path.join(tmp_dir, "WORKFLOW.md"))
+      assert content =~ "mode: auto_merge"
+      refute content =~ "auto_push:"
+      refute content =~ "auto_create_pr:"
+    end
   end
 
   describe "stories section" do
@@ -298,7 +348,93 @@ defmodule KollywoodWeb.DashboardLiveTest do
         )
         |> render_click()
 
-      assert html =~ "done"
+      assert html =~ "Done"
+    end
+
+    test "does not expose manual transition to in_progress", %{conn: conn, project: project} do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories")
+
+      refute has_element?(
+               view,
+               "button[phx-click='update_story_status'][phx-value-id='US-001'][phx-value-status='in_progress']"
+             )
+    end
+  end
+
+  describe "story editor" do
+    test "adds a new story from UI", %{conn: conn, project: project, tmp_dir: tmp_dir} do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories")
+
+      view
+      |> element("button[phx-click='open_new_story_form']")
+      |> render_click()
+
+      view
+      |> element("#story-editor-form")
+      |> render_submit(%{
+        story: %{
+          id: "US-100",
+          title: "Story From UI",
+          description: "New story description",
+          acceptanceCriteria: "Criterion A\nCriterion B",
+          priority: "4",
+          status: "draft",
+          dependsOn: "US-001",
+          notes: "UI note"
+        }
+      })
+
+      {:ok, content} = File.read(Path.join(tmp_dir, "prd.json"))
+      {:ok, data} = Jason.decode(content)
+      story = Enum.find(data["userStories"], &(&1["id"] == "US-100"))
+
+      assert story["title"] == "Story From UI"
+      assert story["status"] == "draft"
+      assert story["dependsOn"] == ["US-001"]
+    end
+
+    test "edits an existing story from UI", %{conn: conn, project: project, tmp_dir: tmp_dir} do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories")
+
+      view
+      |> element("button[phx-click='open_edit_story_form'][phx-value-id='US-001']")
+      |> render_click()
+
+      view
+      |> element("#story-editor-form")
+      |> render_submit(%{
+        story: %{
+          id: "US-001",
+          title: "Updated Story Title",
+          description: "Updated description",
+          acceptanceCriteria: "Updated criterion",
+          priority: "7",
+          status: "done",
+          dependsOn: "",
+          notes: "Updated notes"
+        }
+      })
+
+      {:ok, content} = File.read(Path.join(tmp_dir, "prd.json"))
+      {:ok, data} = Jason.decode(content)
+      story = Enum.find(data["userStories"], &(&1["id"] == "US-001"))
+
+      assert story["title"] == "Updated Story Title"
+      assert story["status"] == "done"
+      assert story["priority"] == 7
+    end
+
+    test "deletes a story from UI", %{conn: conn, project: project, tmp_dir: tmp_dir} do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories")
+
+      view
+      |> element("button[phx-click='delete_story'][phx-value-id='US-003']")
+      |> render_click()
+
+      {:ok, content} = File.read(Path.join(tmp_dir, "prd.json"))
+      {:ok, data} = Jason.decode(content)
+
+      refute Enum.any?(data["userStories"], &(&1["id"] == "US-003"))
     end
   end
 
@@ -356,7 +492,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "phx-click=\"reset_story\""
     end
 
-    test "resets story to open and clears lastAttempt/lastError in tracker file", %{
+    test "resets story to open and clears run-attempt metadata in tracker file", %{
       conn: conn,
       project: project,
       tmp_dir: tmp_dir
@@ -371,6 +507,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       {:ok, data} = Jason.decode(content)
       story = Enum.find(data["userStories"], &(&1["id"] == "US-002"))
       assert story["status"] == "open"
+      assert story["lastRunAttempt"] == nil
       assert story["lastAttempt"] == nil
       assert story["lastError"] == nil
     end
@@ -410,7 +547,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "/projects/#{project.slug}/stories/#{story_id}?tab=runs"
     end
 
-    test "runs list shows view link with attempt number for stories with lastAttempt", %{
+    test "runs list shows view link for stories with tracker run metadata", %{
       conn: conn,
       project: project
     } do
@@ -421,20 +558,78 @@ defmodule KollywoodWeb.DashboardLiveTest do
     end
   end
 
-  describe "stories section runs link" do
-    test "Runs link not shown for stories without lastAttempt", %{conn: conn, project: project} do
+  describe "stories section actions" do
+    test "story cards do not show inline Runs links", %{conn: conn, project: project} do
       {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/stories")
 
       refute html =~ "/projects/#{project.slug}/stories/US-001?tab=runs"
+      refute html =~ "/projects/#{project.slug}/stories/US-002?tab=runs"
     end
 
-    test "Runs link shown for stories with lastAttempt pointing to story runs tab", %{
+    test "story cards use compact actions menu with reset action", %{
       conn: conn,
       project: project
     } do
       {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/stories")
 
-      assert html =~ "/projects/#{project.slug}/stories/US-002?tab=runs"
+      assert html =~ "hero-ellipsis-horizontal"
+      assert html =~ "Reset Story"
+    end
+
+    test "runs page uses latest run logs over stale tracker last-run metadata", %{
+      conn: conn,
+      project: project,
+      tmp_dir: tmp_dir,
+      tmp_root: tmp_root
+    } do
+      stories = [
+        %{
+          "id" => "US-LATEST",
+          "title" => "Latest Attempt Story",
+          "status" => "done",
+          "lastRunAttempt" => 1
+        }
+      ]
+
+      File.write!(
+        Path.join(tmp_dir, "prd.json"),
+        Jason.encode!(%{"userStories" => stories}, pretty: true)
+      )
+
+      _ = prepare_run_logs!(tmp_root, "US-LATEST")
+      _ = prepare_run_logs!(tmp_root, "US-LATEST")
+
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/runs")
+
+      assert html =~ "/projects/#{project.slug}/runs/US-LATEST/2"
+      assert html =~ "/projects/#{project.slug}/runs/US-LATEST/1"
+    end
+
+    test "runs page shows run logs even when tracker lacks lastRunAttempt", %{
+      conn: conn,
+      project: project,
+      tmp_dir: tmp_dir,
+      tmp_root: tmp_root
+    } do
+      stories = [
+        %{
+          "id" => "US-NO-LAST",
+          "title" => "No Last Attempt",
+          "status" => "done"
+        }
+      ]
+
+      File.write!(
+        Path.join(tmp_dir, "prd.json"),
+        Jason.encode!(%{"userStories" => stories}, pretty: true)
+      )
+
+      _ = prepare_run_logs!(tmp_root, "US-NO-LAST")
+
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/runs")
+
+      assert html =~ "/projects/#{project.slug}/runs/US-NO-LAST/1"
+      assert html =~ "#1"
     end
   end
 

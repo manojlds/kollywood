@@ -398,6 +398,9 @@ defmodule Kollywood.Orchestrator do
       :finalize_resumable ->
         dispatch_finalize_resumable_retry(state, issue_id, retry_entry)
 
+      :finalize_pending_merge ->
+        dispatch_finalize_pending_merge_retry(state, issue_id, retry_entry)
+
       other ->
         Logger.warning(
           "Unknown retry kind for issue_id=#{issue_id}; releasing claim: #{inspect(other)}"
@@ -457,7 +460,7 @@ defmodule Kollywood.Orchestrator do
       mark_merged? = Map.get(finalization, :mark_merged?, false)
       run_entry = Map.get(finalization, :run_entry)
 
-      case finalize_successful_run(state, issue_id, run_entry, done_metadata, mark_merged?) do
+      case finalize_done_run(state, issue_id, run_entry, done_metadata, mark_merged?) do
         {:ok, state} ->
           state
 
@@ -502,6 +505,31 @@ defmodule Kollywood.Orchestrator do
             next_retry_attempt(retry_entry.attempt),
             "failed to mark issue resumable: #{reason}",
             kind: :finalize_resumable,
+            finalization: finalization
+          )
+      end
+    end
+  end
+
+  defp dispatch_finalize_pending_merge_retry(state, issue_id, retry_entry) do
+    if retry_attempt_reached_limit?(state, retry_entry.attempt) do
+      stop_retry_after_limit(state, issue_id)
+    else
+      finalization = retry_finalization(retry_entry)
+      pending_merge_metadata = Map.get(finalization, :pending_merge_metadata, %{})
+
+      case finalize_pending_merge_run(state, issue_id, pending_merge_metadata) do
+        {:ok, state} ->
+          state
+
+        {:error, reason, state} ->
+          maybe_schedule_retry(
+            state,
+            issue_id,
+            retry_entry.issue,
+            next_retry_attempt(retry_entry.attempt),
+            "failed to finalize pending-merge run: #{reason}",
+            kind: :finalize_pending_merge,
             finalization: finalization
           )
       end
@@ -730,13 +758,31 @@ defmodule Kollywood.Orchestrator do
     case result.status do
       :ok ->
         mark_merged? = publish_merged?(result)
+        mark_pending_merge? = publish_pending_merge?(result)
 
         with {:ok, state} <-
-               finalize_successful_run(state, issue_id, run_entry, done_metadata, mark_merged?) do
+               finalize_successful_run(
+                 state,
+                 issue_id,
+                 run_entry,
+                 done_metadata,
+                 mark_merged?,
+                 mark_pending_merge?,
+                 result
+               ) do
           state
         else
           {:error, reason, state} ->
             next_attempt = next_retry_attempt(run_entry.attempt)
+
+            {retry_kind, finalization} =
+              successful_run_retry_payload(
+                done_metadata,
+                mark_merged?,
+                mark_pending_merge?,
+                result,
+                run_entry
+              )
 
             maybe_schedule_retry(
               state,
@@ -744,12 +790,8 @@ defmodule Kollywood.Orchestrator do
               run_entry.issue,
               next_attempt,
               "failed to finalize successful run: #{reason}",
-              kind: :finalize_done,
-              finalization: %{
-                done_metadata: done_metadata,
-                mark_merged?: mark_merged?,
-                run_entry: retry_run_entry(run_entry)
-              }
+              kind: retry_kind,
+              finalization: finalization
             )
         end
 
@@ -811,7 +853,30 @@ defmodule Kollywood.Orchestrator do
     maybe_schedule_retry(state, issue_id, run_entry.issue, next_attempt, reason)
   end
 
-  defp finalize_successful_run(state, issue_id, run_entry, done_metadata, mark_merged?) do
+  defp finalize_successful_run(
+         state,
+         issue_id,
+         run_entry,
+         done_metadata,
+         mark_merged?,
+         mark_pending_merge?,
+         result
+       ) do
+    cond do
+      mark_merged? ->
+        finalize_done_run(state, issue_id, run_entry, done_metadata, true)
+
+      mark_pending_merge? ->
+        pending_merge_metadata = pending_merge_metadata(result, done_metadata)
+        finalize_pending_merge_run(state, issue_id, pending_merge_metadata)
+
+      true ->
+        finalize_done_run(state, issue_id, run_entry, done_metadata, false)
+    end
+  end
+
+  defp finalize_done_run(state, issue_id, run_entry, done_metadata, mark_merged?)
+       when is_boolean(mark_merged?) do
     with {:ok, state} <- tracker_mark_done(state, issue_id, done_metadata, run_entry),
          {:ok, state} <- maybe_tracker_mark_merged(state, issue_id, mark_merged?, done_metadata) do
       {:ok, state}
@@ -918,12 +983,14 @@ defmodule Kollywood.Orchestrator do
     end
   end
 
-  defp normalize_retry_kind(kind) when kind in [:run, :finalize_done, :finalize_resumable],
-    do: kind
+  defp normalize_retry_kind(kind)
+       when kind in [:run, :finalize_done, :finalize_resumable, :finalize_pending_merge],
+       do: kind
 
   defp normalize_retry_kind("run"), do: :run
   defp normalize_retry_kind("finalize_done"), do: :finalize_done
   defp normalize_retry_kind("finalize_resumable"), do: :finalize_resumable
+  defp normalize_retry_kind("finalize_pending_merge"), do: :finalize_pending_merge
   defp normalize_retry_kind(_kind), do: :run
 
   defp normalize_ephemeral_kind(kind) when kind in [:claimed, :completed], do: kind
@@ -1699,6 +1766,18 @@ defmodule Kollywood.Orchestrator do
     end
   end
 
+  defp tracker_mark_pending_merge(state, issue_id, pending_merge_metadata)
+       when is_map(pending_merge_metadata) do
+    with {:ok, config} <- fetch_config(state.workflow_store),
+         tracker <- resolve_tracker(state.tracker, config),
+         :ok <-
+           tracker_call(tracker, :mark_pending_merge, [config, issue_id, pending_merge_metadata]) do
+      {:ok, release_claim(state, issue_id)}
+    else
+      {:error, reason} -> {:error, reason, state}
+    end
+  end
+
   defp tracker_call(tracker, _function_name, _args) when is_function(tracker, 1), do: :ok
 
   defp tracker_call(tracker, function_name, args) when is_atom(tracker) do
@@ -1756,6 +1835,87 @@ defmodule Kollywood.Orchestrator do
       type = Map.get(event, :type) || Map.get(event, "type")
       type in [:publish_merged, "publish_merged"]
     end)
+  end
+
+  defp publish_pending_merge?(%Result{} = result) do
+    Enum.any?(result.events || [], fn event ->
+      type = Map.get(event, :type) || Map.get(event, "type")
+
+      type in [
+        :publish_pr_created,
+        "publish_pr_created",
+        :publish_merge_failed,
+        "publish_merge_failed"
+      ]
+    end)
+  end
+
+  defp successful_run_retry_payload(
+         done_metadata,
+         _mark_merged?,
+         true,
+         result,
+         _run_entry
+       ) do
+    {
+      :finalize_pending_merge,
+      %{pending_merge_metadata: pending_merge_metadata(result, done_metadata)}
+    }
+  end
+
+  defp successful_run_retry_payload(
+         done_metadata,
+         mark_merged?,
+         _mark_pending_merge?,
+         _result,
+         run_entry
+       ) do
+    {
+      :finalize_done,
+      %{
+        done_metadata: done_metadata,
+        mark_merged?: mark_merged?,
+        run_entry: retry_run_entry(run_entry)
+      }
+    }
+  end
+
+  defp finalize_pending_merge_run(state, issue_id, pending_merge_metadata)
+       when is_map(pending_merge_metadata) do
+    tracker_mark_pending_merge(state, issue_id, pending_merge_metadata)
+  end
+
+  defp pending_merge_metadata(%Result{} = result, done_metadata) when is_map(done_metadata) do
+    done_metadata
+    |> maybe_put_pending_value(
+      :pr_url,
+      event_field(result, [:publish_pr_created, "publish_pr_created"], :pr_url)
+    )
+    |> maybe_put_pending_value(
+      :merge_failed_reason,
+      event_field(result, [:publish_merge_failed, "publish_merge_failed"], :reason)
+    )
+  end
+
+  defp event_field(%Result{} = result, event_types, field_name)
+       when is_list(event_types) and is_atom(field_name) do
+    result.events
+    |> List.wrap()
+    |> Enum.find_value(fn event ->
+      type = Map.get(event, :type) || Map.get(event, "type")
+
+      if type in event_types do
+        Map.get(event, field_name) || Map.get(event, Atom.to_string(field_name))
+      else
+        nil
+      end
+    end)
+  end
+
+  defp maybe_put_pending_value(metadata, _key, nil) when is_map(metadata), do: metadata
+
+  defp maybe_put_pending_value(metadata, key, value) when is_map(metadata) and is_atom(key) do
+    Map.put(metadata, key, value)
   end
 
   defp list_active_issues(tracker, config) when is_function(tracker, 1) do
