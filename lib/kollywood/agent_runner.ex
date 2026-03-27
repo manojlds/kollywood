@@ -636,11 +636,17 @@ defmodule Kollywood.AgentRunner do
     if review_enabled?(config) do
       review_agent_kind = review_agent_kind(config)
       state = emit(state, :review_started, %{agent_kind: review_agent_kind, cycle: cycle})
-      rjp = review_json_path(state.log_files) || temp_review_json_path()
 
-      with {:ok, prompt} <- build_review_prompt(state, config, cycle, rjp),
+      # Always use a /tmp path so the reviewer agent can write to it without
+      # hitting workspace sandbox restrictions. The attempt-dir path (if any)
+      # is used only for post-run persistence.
+      tmp_rjp = temp_review_json_path()
+
+      with {:ok, prompt} <- build_review_prompt(state, config, cycle, tmp_rjp),
            {:ok, _output} <- run_review_turn(state, config, prompt, state.log_files),
-           {:ok, verdict} <- read_review_json(rjp) do
+           {:ok, verdict} <- read_review_json(tmp_rjp) do
+        persist_review_json(tmp_rjp, state.log_files)
+
         case verdict do
           :pass ->
             {:ok, emit(state, :review_passed, %{agent_kind: review_agent_kind, cycle: cycle})}
@@ -1527,6 +1533,13 @@ defmodule Kollywood.AgentRunner do
       "kollywood_review_#{System.unique_integer([:positive, :monotonic])}.json"
     )
   end
+
+  defp persist_review_json(src, %{review_json: dest}) when is_binary(dest) do
+    File.copy(src, dest)
+    :ok
+  end
+
+  defp persist_review_json(_src, _log_files), do: :ok
 
   defp build_review_remediation_prompt(state, review_feedback, cycle, prompt_template) do
     base_variables = PromptBuilder.build_variables(state.issue, state.attempt)
