@@ -117,7 +117,7 @@ defmodule Kollywood.ConfigTest do
     assert config.tracker.active_states == ["Todo", "In Progress"]
 
     assert config.publish.provider == nil
-    assert config.publish.mode == :push
+    assert config.publish.mode == nil
     assert config.publish.auto_push == :never
     assert config.publish.auto_merge == :never
     assert config.publish.auto_create_pr == :never
@@ -334,6 +334,24 @@ defmodule Kollywood.ConfigTest do
     assert {:ok, config, _} = Config.parse(content)
     assert config.publish.mode == :auto_merge
     assert Config.effective_publish_mode(config) == :auto_merge
+  end
+
+  test "omitting publish.mode preserves provider defaults" do
+    content = """
+    ---
+    publish:
+      provider: github
+    workspace:
+      root: /tmp
+    agent:
+      kind: pi
+    ---
+    prompt
+    """
+
+    assert {:ok, config, _} = Config.parse(content)
+    assert config.publish.mode == nil
+    assert Config.effective_publish_mode(config) == :pr
   end
 
   test "effective_publish_mode uses provider defaults when mode is not set" do

@@ -440,7 +440,13 @@ defmodule Kollywood.Config do
              "publish.auto_create_pr"
            ),
          resolved_mode <-
-           mode || derive_publish_mode_from_legacy(auto_push, auto_create_pr, auto_merge) do
+           resolve_publish_mode(
+             mode,
+             legacy_fields_present?,
+             auto_push,
+             auto_create_pr,
+             auto_merge
+           ) do
       maybe_warn_legacy_publish_fields(legacy_fields_present?)
 
       {:ok,
@@ -475,6 +481,21 @@ defmodule Kollywood.Config do
 
   defp derive_publish_mode_from_legacy(:on_pass, _auto_create_pr, _auto_merge), do: :push
   defp derive_publish_mode_from_legacy(_auto_push, _auto_create_pr, _auto_merge), do: :push
+
+  defp resolve_publish_mode(
+         mode,
+         _legacy_fields_present?,
+         _auto_push,
+         _auto_create_pr,
+         _auto_merge
+       )
+       when mode in @valid_publish_modes,
+       do: mode
+
+  defp resolve_publish_mode(nil, true, auto_push, auto_create_pr, auto_merge),
+    do: derive_publish_mode_from_legacy(auto_push, auto_create_pr, auto_merge)
+
+  defp resolve_publish_mode(nil, false, _auto_push, _auto_create_pr, _auto_merge), do: nil
 
   defp maybe_warn_legacy_publish_fields(true) do
     Logger.warning(
