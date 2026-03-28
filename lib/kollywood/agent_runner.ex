@@ -1827,9 +1827,6 @@ defmodule Kollywood.AgentRunner do
      "reviewer returned unexpected results: turn=#{inspect(other_result)} stop=#{inspect(other_stop_result)}"}
   end
 
-  defp review_json_path(%{review_json: path}) when is_binary(path), do: path
-  defp review_json_path(_), do: nil
-
   defp read_review_json(nil), do: {:error, "review_json path not configured"}
 
   defp read_review_json(path) do
