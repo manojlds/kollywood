@@ -515,6 +515,7 @@ defmodule Kollywood.Orchestrator do
       |> clear_completed_for_open_issues(issues)
       |> reconcile_running(issues, config)
       |> prune_ineligible_retries(issues, config)
+      |> prune_stale_open_claims(issues)
       |> detect_merges(config)
       |> dispatch_available(issues, config, tracker)
       |> Map.put(:last_error, nil)
@@ -872,6 +873,27 @@ defmodule Kollywood.Orchestrator do
         |> cancel_retry(issue_id)
         |> release_claim(issue_id)
       end
+    end)
+  end
+
+  defp prune_stale_open_claims(state, issues) do
+    open_ids_without_active_run_or_retry =
+      issues
+      |> Enum.filter(fn issue ->
+        issue_id = issue_id(issue)
+
+        normalize_state(field(issue, :state)) == "open" and
+          is_binary(issue_id) and
+          not Map.has_key?(state.running, issue_id) and
+          not Map.has_key?(state.retry_attempts, issue_id)
+      end)
+      |> Enum.map(&issue_id/1)
+      |> MapSet.new()
+
+    state.claimed
+    |> MapSet.intersection(open_ids_without_active_run_or_retry)
+    |> Enum.reduce(state, fn issue_id, acc ->
+      release_claim(acc, issue_id)
     end)
   end
 
