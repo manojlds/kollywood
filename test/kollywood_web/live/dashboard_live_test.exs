@@ -894,6 +894,33 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "agent log content"
     end
 
+    test "agent tab renders cursor stream-json logs as readable text", %{
+      conn: conn,
+      project: project
+    } do
+      story_id = "US-CURSOR-STREAM"
+      context = prepare_run_logs!(project.slug, story_id)
+
+      File.write!(
+        context.files.agent_stdout,
+        """
+        {"type":"assistant","message":{"content":[{"type":"text","text":"Working"}]}}
+        {"type":"assistant","message":{"content":[{"type":"text","text":" on"}]}}
+        {"type":"assistant","message":{"content":[{"type":"text","text":" it"}]}}
+        {"type":"tool_call","subtype":"started","tool_call":{"shellToolCall":{"args":{"command":"mix test"}}}}
+        {"type":"tool_call","subtype":"completed","tool_call":{"shellToolCall":{"args":{"command":"mix test"}}}}
+        """
+      )
+
+      {:ok, _view, html} =
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
+
+      assert html =~ "Working on it"
+      assert html =~ "[tool started] shell: mix test"
+      assert html =~ "[tool completed] shell: mix test"
+      refute html =~ "&quot;type&quot;:&quot;assistant&quot;"
+    end
+
     test "log tab switching changes displayed log content", %{
       conn: conn,
       project: project

@@ -44,7 +44,7 @@ defmodule Kollywood.Agent.CursorTest do
     }
   end
 
-  test "streams incremental raw log output and preserves final parsed output", %{
+  test "streams incremental readable log output and preserves final parsed output", %{
     workspace: workspace,
     cli_path: cli_path,
     raw_log_path: raw_log_path,
@@ -67,11 +67,12 @@ defmodule Kollywood.Agent.CursorTest do
     assert :ok = wait_for_file(first_chunk_marker, 2_000)
     assert Task.yield(turn_task, 50) == nil
 
-    assert :ok = wait_for_file_contains(raw_log_path, "\"type\":\"assistant\"", 2_000)
+    assert :ok = wait_for_file_contains(raw_log_path, "working", 2_000)
 
     raw_output_during_turn = File.read!(raw_log_path)
-    assert raw_output_during_turn =~ "\"type\":\"assistant\""
-    refute raw_output_during_turn =~ "\"type\":\"result\""
+    assert raw_output_during_turn =~ "working"
+    refute raw_output_during_turn =~ "\"type\":\"assistant\""
+    refute raw_output_during_turn =~ "final output"
 
     assert {:ok, result} = Task.await(turn_task, 5_000)
     assert result.output == "final output"

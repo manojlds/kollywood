@@ -6,6 +6,7 @@ defmodule KollywoodWeb.DashboardLive do
   use KollywoodWeb, :live_view
   require Logger
 
+  alias Kollywood.Agent.CursorStreamLog
   alias Kollywood.Orchestrator.RunLogs
   alias Kollywood.Projects
   alias Kollywood.Projects.Project
@@ -4411,12 +4412,19 @@ defmodule KollywoodWeb.DashboardLive do
     file_path = Map.get(files, key)
 
     case file_path && File.read(file_path) do
-      {:ok, content} when byte_size(content) > 0 -> content
+      {:ok, content} when byte_size(content) > 0 -> normalize_log_tab_content(content, tab)
       _ -> nil
     end
   end
 
   defp read_log_tab_content(_files, _tab), do: nil
+
+  defp normalize_log_tab_content(content, tab)
+       when tab in ["agent", "review_agent"] and is_binary(content) do
+    CursorStreamLog.render(content)
+  end
+
+  defp normalize_log_tab_content(content, _tab), do: content
 
   defp parse_ansi_segments(<<>>, _style, acc), do: acc
 
