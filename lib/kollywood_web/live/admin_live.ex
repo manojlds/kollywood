@@ -187,6 +187,15 @@ defmodule KollywoodWeb.AdminLive do
                     label="Last poll"
                     value={format_datetime(@status.last_poll_at)}
                   />
+                  <.config_row
+                    label="Poll freshness"
+                    value={watchdog_freshness_value(Map.get(@status, :watchdog, %{}))}
+                  />
+                  <.config_row
+                    :if={watchdog_recovery_attempt_value(Map.get(@status, :watchdog, %{})) != nil}
+                    label="Last recovery"
+                    value={watchdog_recovery_attempt_value(Map.get(@status, :watchdog, %{}))}
+                  />
                 </tbody>
               </table>
             </div>
@@ -401,4 +410,29 @@ defmodule KollywoodWeb.AdminLive do
   defp format_ms(ms) when is_integer(ms) and ms < 1000, do: "#{ms}ms"
   defp format_ms(ms) when is_integer(ms), do: "#{div(ms, 1000)}s"
   defp format_ms(_), do: "—"
+
+  defp watchdog_freshness_value(watchdog) when is_map(watchdog) do
+    stale = Map.get(watchdog, :stale, false)
+    age_ms = format_ms(Map.get(watchdog, :age_ms))
+    threshold_ms = format_ms(Map.get(watchdog, :threshold_ms))
+
+    status = if stale, do: "stale", else: "healthy"
+    "#{status} (age #{age_ms}, threshold #{threshold_ms})"
+  end
+
+  defp watchdog_freshness_value(_watchdog), do: "—"
+
+  defp watchdog_recovery_attempt_value(watchdog) when is_map(watchdog) do
+    case Map.get(watchdog, :last_recovery_attempt) do
+      attempt when is_map(attempt) ->
+        attempted_at = format_datetime(Map.get(attempt, :attempted_at))
+        outcome = Map.get(attempt, :outcome) || "-"
+        "#{attempted_at} (#{outcome})"
+
+      _other ->
+        nil
+    end
+  end
+
+  defp watchdog_recovery_attempt_value(_watchdog), do: nil
 end
