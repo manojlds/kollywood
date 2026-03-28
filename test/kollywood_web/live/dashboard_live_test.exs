@@ -395,7 +395,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories/US-002")
 
       assert render(view) =~
-               "Reset US-002? This will move it to Draft, clear run data, and remove the worktree."
+               "Stop work on US-002? This will stop any in-progress run, move it to Draft, clear run data, and remove the worktree."
 
       html =
         view
@@ -746,7 +746,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/stories")
 
       assert html =~ "hero-ellipsis-horizontal"
-      assert html =~ "Reset Story"
+      assert html =~ "Stop Work"
     end
 
     test "runs page uses latest run logs over stale tracker last-run metadata", %{
@@ -762,7 +762,10 @@ defmodule KollywoodWeb.DashboardLiveTest do
         }
       ]
 
-      File.write!(Projects.tracker_path(project), Jason.encode!(%{"userStories" => stories}, pretty: true))
+      File.write!(
+        Projects.tracker_path(project),
+        Jason.encode!(%{"userStories" => stories}, pretty: true)
+      )
 
       _ = prepare_run_logs!(project.slug, "US-LATEST")
       _ = prepare_run_logs!(project.slug, "US-LATEST")
@@ -785,7 +788,10 @@ defmodule KollywoodWeb.DashboardLiveTest do
         }
       ]
 
-      File.write!(Projects.tracker_path(project), Jason.encode!(%{"userStories" => stories}, pretty: true))
+      File.write!(
+        Projects.tracker_path(project),
+        Jason.encode!(%{"userStories" => stories}, pretty: true)
+      )
 
       _ = prepare_run_logs!(project.slug, "US-NO-LAST")
 
@@ -965,7 +971,10 @@ defmodule KollywoodWeb.DashboardLiveTest do
         }
       ]
 
-      File.write!(Projects.tracker_path(project), Jason.encode!(%{"userStories" => stories}, pretty: true))
+      File.write!(
+        Projects.tracker_path(project),
+        Jason.encode!(%{"userStories" => stories}, pretty: true)
+      )
 
       {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/stories")
 
@@ -988,7 +997,10 @@ defmodule KollywoodWeb.DashboardLiveTest do
         }
       ]
 
-      File.write!(Projects.tracker_path(project), Jason.encode!(%{"userStories" => stories}, pretty: true))
+      File.write!(
+        Projects.tracker_path(project),
+        Jason.encode!(%{"userStories" => stories}, pretty: true)
+      )
 
       {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/stories")
 

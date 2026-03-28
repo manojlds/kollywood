@@ -170,6 +170,8 @@ defmodule KollywoodWeb.DashboardLive do
   def handle_event("reset_story", %{"id" => id}, socket) do
     project = socket.assigns.current_project
 
+    stop_orchestrator_issue(id)
+
     socket =
       case local_tracker_path(project) do
         {:ok, tracker_path} ->
@@ -180,7 +182,7 @@ defmodule KollywoodWeb.DashboardLive do
               socket
               |> load_project_data(project)
               |> sync_story_detail_selection()
-              |> put_flash(:info, "Story reset for rerun.")
+              |> put_flash(:info, "Work stopped and story moved to Draft.")
 
             {:error, reason} ->
               put_flash(socket, :error, "Reset failed: #{reason}")
@@ -1498,7 +1500,7 @@ defmodule KollywoodWeb.DashboardLive do
   defp story_card(assigns) do
     status = normalize_status(assigns.story["status"])
     status_targets = manual_status_targets(assigns.story["status"])
-    show_reset = status not in ["open", "draft"]
+    show_reset = show_reset_action?(status)
     can_drag = assigns.editable && status_targets != []
 
     assigns =
@@ -1506,6 +1508,8 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:status, status)
       |> assign(:status_targets, status_targets)
       |> assign(:show_reset, show_reset)
+      |> assign(:reset_label, reset_action_label(status))
+      |> assign(:reset_confirm, reset_action_confirm(status, assigns.story["id"]))
       |> assign(:can_drag, can_drag)
       |> assign(:status_targets_csv, Enum.join(status_targets, ","))
 
@@ -1588,6 +1592,8 @@ defmodule KollywoodWeb.DashboardLive do
                 story={@story}
                 status_targets={@status_targets}
                 show_reset={@show_reset}
+                reset_label={@reset_label}
+                reset_confirm={@reset_confirm}
               />
             </div>
           <% end %>
@@ -1604,6 +1610,8 @@ defmodule KollywoodWeb.DashboardLive do
   attr :story, :map, required: true
   attr :status_targets, :list, default: []
   attr :show_reset, :boolean, default: false
+  attr :reset_label, :string, default: "Reset Story"
+  attr :reset_confirm, :string, default: nil
 
   defp story_actions_menu(assigns) do
     ~H"""
@@ -1636,10 +1644,10 @@ defmodule KollywoodWeb.DashboardLive do
               <button
                 phx-click="reset_story"
                 phx-value-id={@story["id"]}
-                phx-confirm={"Reset #{@story["id"]}? This will move it to Draft, clear run data, and remove the worktree."}
+                phx-confirm={@reset_confirm}
                 class="text-xs text-warning"
               >
-                Reset Story
+                {@reset_label}
               </button>
             </li>
             <li><hr class="my-1 border-base-300" /></li>
@@ -2035,7 +2043,11 @@ defmodule KollywoodWeb.DashboardLive do
 
         <%= if @editable && @story do %>
           <% story_id = @story["id"] || @story_id %>
+          <% current_status = normalize_status(@story["status"]) %>
           <% status_targets = manual_status_targets(@story["status"]) %>
+          <% show_reset = show_reset_action?(current_status) %>
+          <% reset_label = reset_action_label(current_status) %>
+          <% reset_confirm = reset_action_confirm(current_status, story_id) %>
           <div class="dropdown dropdown-end">
             <label tabindex="0" class="btn btn-ghost btn-sm gap-2">
               Actions <.icon name="hero-chevron-down" class="size-4" />
@@ -2059,15 +2071,15 @@ defmodule KollywoodWeb.DashboardLive do
                   Delete Story
                 </button>
               </li>
-              <%= if normalize_status(@story["status"]) != "open" do %>
+              <%= if show_reset do %>
                 <li>
                   <button
                     phx-click="reset_story"
                     phx-value-id={story_id}
-                    phx-confirm={"Reset #{story_id}? This will move it to Draft, clear run data, and remove the worktree."}
+                    phx-confirm={reset_confirm}
                     class="text-xs text-warning"
                   >
-                    Reset Story
+                    {reset_label}
                   </button>
                 </li>
                 <li><hr class="my-1 border-base-300" /></li>
@@ -3957,6 +3969,18 @@ defmodule KollywoodWeb.DashboardLive do
     _ -> :ok
   end
 
+  defp stop_orchestrator_issue(issue_id) when is_binary(issue_id) do
+    try do
+      Kollywood.Orchestrator.stop_issue(issue_id)
+    catch
+      :exit, _ -> :ok
+    end
+
+    :ok
+  end
+
+  defp stop_orchestrator_issue(_issue_id), do: :ok
+
   # -- Helpers --
 
   defp find_project_by_slug(projects, slug) when is_binary(slug) do
@@ -3977,6 +4001,24 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp normalize_stories_view(_view), do: @default_stories_view
+
+  defp show_reset_action?(status) do
+    normalize_status(status) not in ["open", "draft"]
+  end
+
+  defp reset_action_label(status) do
+    if normalize_status(status) == "in_progress", do: "Stop Work", else: "Reset Story"
+  end
+
+  defp reset_action_confirm(status, story_id) do
+    story_id = story_id || "this story"
+
+    if normalize_status(status) == "in_progress" do
+      "Stop work on #{story_id}? This will stop any in-progress run, move it to Draft, clear run data, and remove the worktree."
+    else
+      "Reset #{story_id}? This will move it to Draft, clear run data, and remove the worktree."
+    end
+  end
 
   defp normalize_status(nil), do: "open"
 
