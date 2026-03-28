@@ -858,6 +858,41 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "/projects/#{project.slug}/runs/US-NO-LAST/1"
       assert html =~ "#1"
     end
+
+    test "runs page shows derived phase label for attempts", %{
+      conn: conn,
+      project: project,
+      tmp_root: tmp_root
+    } do
+      _ =
+        prepare_run_logs!(tmp_root, "US-PHASE-RUN",
+          events: [
+            %{type: :checks_started, check_count: 2},
+            %{type: :check_started, check_index: 1}
+          ]
+        )
+
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/runs")
+
+      assert html =~ "Checks 1/2"
+    end
+
+    test "stories page shows last run phase label", %{
+      conn: conn,
+      project: project,
+      tmp_root: tmp_root
+    } do
+      _ =
+        prepare_run_logs!(tmp_root, "US-001",
+          events: [
+            %{type: :turn_started, turn: 2}
+          ]
+        )
+
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/stories")
+
+      assert html =~ "Last run: Agent turn 2"
+    end
   end
 
   describe "story detail runs tab" do
@@ -1103,6 +1138,12 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
     issue = %{id: story_id, identifier: story_id, title: "Test #{story_id}"}
     {:ok, context} = RunLogs.prepare_attempt(config, issue, nil)
+
+    opts
+    |> Keyword.get(:events, [])
+    |> Enum.each(fn event ->
+      RunLogs.append_event(context, event)
+    end)
 
     status = Keyword.get(opts, :status, "finished")
     RunLogs.complete_attempt(context, %{status: status, turn_count: 1})
