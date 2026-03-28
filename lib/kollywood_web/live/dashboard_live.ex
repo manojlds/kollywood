@@ -7,6 +7,7 @@ defmodule KollywoodWeb.DashboardLive do
   require Logger
 
   alias Kollywood.Agent.CursorStreamLog
+  alias Kollywood.Orchestrator.RunPhase
   alias Kollywood.Orchestrator.RunLogs
   alias Kollywood.Projects
   alias Kollywood.Projects.Project
@@ -536,6 +537,7 @@ defmodule KollywoodWeb.DashboardLive do
                   project={@current_project}
                   stories_view={@stories_view}
                   collapsed_story_groups={@collapsed_story_groups}
+                  run_attempts={@run_attempts}
                 />
               <% :runs -> %>
                 <.runs_section
@@ -783,6 +785,7 @@ defmodule KollywoodWeb.DashboardLive do
                   <.run_status_badge status={run.status} />
                   <span class="font-mono text-xs text-base-content/60 shrink-0">{run.story_id}</span>
                   <span class="text-sm truncate flex-1">{run.story_title}</span>
+                  <span class="text-xs text-base-content/60 shrink-0">{run.phase_label}</span>
                   <span class="text-xs text-base-content/50 shrink-0">
                     Run {run_number(run.attempt)}
                   </span>
@@ -805,6 +808,7 @@ defmodule KollywoodWeb.DashboardLive do
   attr :project, Project, required: true
   attr :stories_view, :string, default: @default_stories_view
   attr :collapsed_story_groups, :any, default: MapSet.new()
+  attr :run_attempts, :list, default: []
 
   defp stories_section(assigns) do
     groups = build_story_groups(assigns.stories)
@@ -812,6 +816,7 @@ defmodule KollywoodWeb.DashboardLive do
     assigns =
       assigns
       |> assign(:groups, groups)
+      |> assign(:latest_run_by_story, latest_run_by_story_id(assigns.run_attempts))
       |> assign(:editable, local_provider?(assigns.project))
       |> assign(:stories_view, normalize_stories_view(assigns.stories_view))
       |> assign(
@@ -1950,6 +1955,7 @@ defmodule KollywoodWeb.DashboardLive do
                 <th>Story</th>
                 <th>Run #</th>
                 <th>Status</th>
+                <th>Phase</th>
                 <th>Started</th>
                 <th>Ended</th>
                 <th></th>
@@ -1961,6 +1967,7 @@ defmodule KollywoodWeb.DashboardLive do
                   <td class="font-mono text-sm font-semibold">{run.story_id}</td>
                   <td>{run_number(run.attempt)}</td>
                   <td><.run_status_badge status={run.status} /></td>
+                  <td class="text-sm text-base-content/70">{run.phase_label}</td>
                   <td class="text-sm text-base-content/70" title={format_time_tooltip(run.started_at)}>
                     {format_relative_time(run.started_at)}
                   </td>
@@ -1989,6 +1996,7 @@ defmodule KollywoodWeb.DashboardLive do
                 <tr>
                   <th>Story</th>
                   <th>Status</th>
+                  <th>Phase</th>
                   <th>Run #</th>
                   <th></th>
                 </tr>
@@ -2006,6 +2014,7 @@ defmodule KollywoodWeb.DashboardLive do
                     <td>
                       <.status_badge status={story["status"] || "open"} />
                     </td>
+                    <td class="text-sm text-base-content/60">Unknown phase</td>
                     <td class="text-sm text-base-content/60">{run_number(story_run.run_attempt)}</td>
                     <td>
                       <.link
@@ -2049,6 +2058,7 @@ defmodule KollywoodWeb.DashboardLive do
         <span class="badge badge-outline font-mono text-sm">{@story_id}</span>
         <%= if @run_detail do %>
           <.run_status_badge status={@run_detail["metadata"]["status"] || "unknown"} />
+          <span class="text-sm text-base-content/60">{@run_detail["phase_label"]}</span>
         <% end %>
       </div>
 
@@ -2377,6 +2387,7 @@ defmodule KollywoodWeb.DashboardLive do
                       <tr>
                         <th>Run #</th>
                         <th>Status</th>
+                        <th>Phase</th>
                         <th>Started</th>
                         <th>Duration</th>
                       </tr>
@@ -2395,6 +2406,7 @@ defmodule KollywoodWeb.DashboardLive do
                             </.link>
                           </td>
                           <td><.run_status_badge status={run.status} /></td>
+                          <td class="text-xs text-base-content/60">{run.phase_label}</td>
                           <td class="text-xs text-base-content/60">
                             {format_time(run.started_at)}
                           </td>
@@ -3136,6 +3148,7 @@ defmodule KollywoodWeb.DashboardLive do
           <span class="text-base-content/50">·</span>
           <%= for run <- @status.running do %>
             <span class="font-mono">{run.identifier}</span>
+            <span class="text-base-content/70">({run.run_phase_label})</span>
           <% end %>
           <span class="text-base-content/50">·</span>
           <span>polled {time_ago(@status.last_poll_at)}</span>
@@ -3544,6 +3557,7 @@ defmodule KollywoodWeb.DashboardLive do
               attempt_dir_name |> String.replace_prefix("attempt-", "") |> String.to_integer()
 
             metadata_path = Path.join([story_dir, attempt_dir_name, "metadata.json"])
+            attempt_dir = Path.join(story_dir, attempt_dir_name)
 
             metadata =
               if File.exists?(metadata_path) do
@@ -3557,13 +3571,17 @@ defmodule KollywoodWeb.DashboardLive do
                 %{}
               end
 
+            phase = derive_phase_map(attempt_dir, metadata)
+
             %{
               story_id: story_dir_name,
               attempt: attempt_num,
               status: metadata["status"] || "unknown",
               started_at: metadata["started_at"],
               ended_at: metadata["ended_at"],
-              error: metadata["error"]
+              error: metadata["error"],
+              phase: phase,
+              phase_label: RunPhase.label(phase)
             }
           end)
         else
@@ -3588,6 +3606,62 @@ defmodule KollywoodWeb.DashboardLive do
     end)
   end
 
+  defp latest_run_by_story_id(run_attempts) when is_list(run_attempts) do
+    run_attempts
+    |> Enum.sort_by(&run_attempt_sort_key/1, :desc)
+    |> Enum.reduce(%{}, fn run, acc -> Map.put_new(acc, run.story_id, run) end)
+  end
+
+  defp latest_run_by_story_id(_run_attempts), do: %{}
+
+  defp run_attempt_sort_key(run) when is_map(run) do
+    {run.ended_at || run.started_at || "", run.attempt || 0}
+  end
+
+  defp run_attempt_sort_key(_run), do: {"", 0}
+
+  defp derive_phase_map(attempt_dir, metadata) when is_binary(attempt_dir) and is_map(metadata) do
+    status_phase = RunPhase.from_status(metadata["status"])
+
+    events =
+      attempt_dir
+      |> Path.join("events.jsonl")
+      |> read_events_jsonl()
+
+    RunPhase.from_events(events, initial_phase: status_phase)
+  end
+
+  defp derive_phase_map(_attempt_dir, metadata) when is_map(metadata) do
+    RunPhase.from_status(metadata["status"])
+  end
+
+  defp derive_phase_map(_attempt_dir, _metadata), do: RunPhase.unknown()
+
+  defp derive_phase_label_for_attempt(attempt_dir, metadata) do
+    attempt_dir
+    |> derive_phase_map(metadata)
+    |> RunPhase.label()
+  end
+
+  defp read_events_jsonl(path) when is_binary(path) do
+    if File.exists?(path) do
+      path
+      |> File.stream!([], :line)
+      |> Enum.reduce([], fn line, acc ->
+        case Jason.decode(String.trim(line)) do
+          {:ok, event} when is_map(event) -> [event | acc]
+          _other -> acc
+        end
+      end)
+      |> Enum.reverse()
+    else
+      []
+    end
+  rescue
+    _ -> []
+  end
+
+  defp read_events_jsonl(_path), do: []
   # -- Settings Helpers --
 
   @workflow_yaml_key_order ~w(tracker workspace agent quality runtime hooks publish git)
@@ -4311,9 +4385,12 @@ defmodule KollywoodWeb.DashboardLive do
       case RunLogs.resolve_attempt(project_root, story_id, :latest) do
         {:ok, %{metadata: metadata, files: files}} ->
           content = read_log_tab_content(files, tab)
+          phase = derive_phase_map(Path.dirname(files.metadata), metadata)
 
           %{
             "metadata" => metadata,
+            "phase" => phase,
+            "phase_label" => RunPhase.label(phase),
             "active_log_content" => content
           }
 
@@ -4336,9 +4413,12 @@ defmodule KollywoodWeb.DashboardLive do
         case RunLogs.resolve_attempt(project_root, story_id, parsed) do
           {:ok, %{metadata: metadata, files: files}} ->
             content = read_log_tab_content(files, tab)
+            phase = derive_phase_map(Path.dirname(files.metadata), metadata)
 
             %{
               "metadata" => metadata,
+              "phase" => phase,
+              "phase_label" => RunPhase.label(phase),
               "active_log_content" => content
             }
 

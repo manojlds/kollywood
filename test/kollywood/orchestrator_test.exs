@@ -715,6 +715,8 @@ defmodule Kollywood.OrchestratorTest do
     assert running_entry.runtime_process_state == :running
     assert running_entry.runtime_last_event_type == :runtime_started
     assert %DateTime{} = running_entry.runtime_last_event_at
+    assert running_entry.run_phase.kind == "runtime"
+    assert running_entry.run_phase_label == "Runtime running"
 
     runner_ref = Process.monitor(runner_pid)
     send(runner_pid, {:complete_runner, "ISS-RT", {:ok, success_result(issue)}})

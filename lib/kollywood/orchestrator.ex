@@ -20,6 +20,7 @@ defmodule Kollywood.Orchestrator do
   alias Kollywood.Config
   alias Kollywood.Orchestrator.ControlState
   alias Kollywood.Orchestrator.EphemeralStore
+  alias Kollywood.Orchestrator.RunPhase
   alias Kollywood.Orchestrator.RetryStore
   alias Kollywood.Orchestrator.RunLogs
   alias Kollywood.Publisher
@@ -1057,6 +1058,7 @@ defmodule Kollywood.Orchestrator do
           runtime_profile: runtime_profile,
           runtime_process_state: initial_runtime_process_state(runtime_profile),
           runtime_last_event: nil,
+          run_phase: RunPhase.from_status(:running),
           run_log_context: run_log_context
         }
 
@@ -1785,6 +1787,9 @@ defmodule Kollywood.Orchestrator do
           state
 
         run_entry ->
+          current_phase = Map.get(run_entry, :run_phase)
+          next_phase = RunPhase.from_event(event, current_phase)
+
           {runtime_process_state, runtime_last_event} =
             runtime_state_from_event(run_entry, event)
 
@@ -1792,6 +1797,7 @@ defmodule Kollywood.Orchestrator do
             run_entry
             |> Map.put(:runtime_process_state, runtime_process_state)
             |> Map.put(:runtime_last_event, runtime_last_event)
+            |> Map.put(:run_phase, next_phase)
 
           put_running(state, issue_id, updated_entry)
       end
@@ -2978,6 +2984,8 @@ defmodule Kollywood.Orchestrator do
           identifier: issue_identifier(entry.issue),
           attempt: entry.attempt,
           started_at: entry.started_at,
+          run_phase: Map.get(entry, :run_phase, RunPhase.unknown()),
+          run_phase_label: entry |> Map.get(:run_phase) |> RunPhase.label(),
           runtime_profile: Map.get(entry, :runtime_profile, :checks_only),
           runtime_process_state: Map.get(entry, :runtime_process_state, :unknown),
           runtime_last_event_type: runtime_last_event_type(runtime_last_event),
