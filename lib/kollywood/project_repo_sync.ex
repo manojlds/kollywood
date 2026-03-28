@@ -31,8 +31,9 @@ defmodule Kollywood.ProjectRepoSync do
   end
 
   defp sync_project(project, sync_fun) do
-    if enabled_project?(project) and non_empty_string?(field(project, :local_path)) do
-      local_path = field(project, :local_path)
+    local_path = Projects.local_path(project)
+
+    if enabled_project?(project) and non_empty_string?(local_path) do
       branch = field(project, :default_branch) || @default_branch
       slug = field(project, :slug) || "unknown"
 

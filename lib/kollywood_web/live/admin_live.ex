@@ -59,7 +59,7 @@ defmodule KollywoodWeb.AdminLive do
 
   def handle_event("sync_repo", %{"slug" => slug}, socket) do
     project = Enum.find(socket.assigns.projects, &(&1.slug == slug))
-    local_path = project && project.local_path
+    local_path = project && Projects.local_path(project)
 
     if is_binary(local_path) and File.dir?(local_path) do
       parent = self()
@@ -329,7 +329,8 @@ defmodule KollywoodWeb.AdminLive do
               </thead>
               <tbody>
                 <%= for project <- @projects do %>
-                  <% clone_exists = is_binary(project.local_path) and File.dir?(project.local_path) %>
+                  <% local_path = Projects.local_path(project) %>
+                  <% clone_exists = is_binary(local_path) and File.dir?(local_path) %>
                   <% sync = Map.get(@sync_status, project.slug) %>
                   <tr>
                     <td>
@@ -356,9 +357,9 @@ defmodule KollywoodWeb.AdminLive do
                     <td class="max-w-0 w-48">
                       <div
                         class="font-mono text-xs text-base-content/60 truncate"
-                        title={project.local_path || "—"}
+                        title={local_path || "—"}
                       >
-                        {project.local_path || "—"}
+                        {local_path || "—"}
                       </div>
                     </td>
                     <td>

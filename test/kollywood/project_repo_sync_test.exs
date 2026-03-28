@@ -2,15 +2,16 @@ defmodule Kollywood.ProjectRepoSyncTest do
   use ExUnit.Case, async: true
 
   alias Kollywood.ProjectRepoSync
+  alias Kollywood.ServiceConfig
 
-  test "syncs only enabled projects with valid local paths" do
+  test "syncs only enabled projects with valid slugs" do
     parent = self()
 
     projects = [
-      %{slug: "one", enabled: true, local_path: "/tmp/repo_one", default_branch: "main"},
-      %{slug: "two", enabled: true, local_path: "/tmp/repo_two", default_branch: nil},
-      %{slug: "three", enabled: false, local_path: "/tmp/repo_three", default_branch: "main"},
-      %{slug: "four", enabled: true, local_path: nil, default_branch: "main"}
+      %{slug: "one", enabled: true, default_branch: "main"},
+      %{slug: "two", enabled: true, default_branch: nil},
+      %{slug: "three", enabled: false, default_branch: "main"},
+      %{slug: nil, enabled: true, default_branch: "main"}
     ]
 
     assert :ok =
@@ -19,31 +20,35 @@ defmodule Kollywood.ProjectRepoSyncTest do
                :ok
              end)
 
-    assert_receive {:synced, "/tmp/repo_one", "main"}
-    assert_receive {:synced, "/tmp/repo_two", "main"}
-    refute_receive {:synced, "/tmp/repo_three", _branch}
+    assert_receive {:synced, path_one, "main"}
+    assert_receive {:synced, path_two, "main"}
+    assert path_one == ServiceConfig.project_repos_path("one")
+    assert path_two == ServiceConfig.project_repos_path("two")
+    refute_receive {:synced, _, _branch}
   end
 
   test "continues syncing even when one project fails" do
     parent = self()
 
     projects = [
-      %{slug: "one", enabled: true, local_path: "/tmp/repo_one", default_branch: "main"},
-      %{slug: "two", enabled: true, local_path: "/tmp/repo_two", default_branch: "main"}
+      %{slug: "one", enabled: true, default_branch: "main"},
+      %{slug: "two", enabled: true, default_branch: "main"}
     ]
 
     assert :ok =
              ProjectRepoSync.sync_projects(projects, fn local_path, branch ->
                send(parent, {:synced, local_path, branch})
 
-               if local_path == "/tmp/repo_one" do
+               if local_path == ServiceConfig.project_repos_path("one") do
                  {:error, "forced failure"}
                else
                  :ok
                end
              end)
 
-    assert_receive {:synced, "/tmp/repo_one", "main"}
-    assert_receive {:synced, "/tmp/repo_two", "main"}
+    assert_receive {:synced, path_one, "main"}
+    assert_receive {:synced, path_two, "main"}
+    assert path_one == ServiceConfig.project_repos_path("one")
+    assert path_two == ServiceConfig.project_repos_path("two")
   end
 end

@@ -36,7 +36,6 @@ defmodule KollywoodWeb.StoryControllerTest do
         slug: "story-api-#{System.unique_integer([:positive])}",
         provider: :local,
         repository: root,
-        local_path: root,
         tracker_path: tracker_path
       })
 
