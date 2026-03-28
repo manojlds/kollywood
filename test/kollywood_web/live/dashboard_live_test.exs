@@ -316,6 +316,10 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert ip_pos < done_pos
       assert done_pos < merged_pos
       assert merged_pos < failed_pos
+
+      assert html =~ "auto-cols-[minmax(17.5rem,_1fr)]"
+      refute html =~ "w-[17.5rem]"
+      refute Regex.match?(~r/restoreViewPreference\(\)\s*this\.persistCurrentView\(\)/, html)
     end
 
     test "switches between kanban and list views", %{conn: conn, project: project} do
@@ -425,6 +429,8 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert has_element?(view, "button[phx-click='open_edit_story_form'][phx-value-id='US-001']")
       assert has_element?(view, "button[phx-click='delete_story'][phx-value-id='US-001']")
       assert html =~ "Delete US-001? This cannot be undone."
+      assert html =~ "whitespace-nowrap"
+      assert html =~ "flex items-start justify-between"
 
       assert has_element?(
                view,
