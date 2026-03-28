@@ -293,6 +293,36 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "Second Story"
     end
 
+    test "renders kanban by default with grouped status columns", %{conn: conn, project: project} do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories")
+
+      assert has_element?(view, "#stories-view-toggle")
+      assert has_element?(view, "#stories-kanban-view")
+      refute has_element?(view, "#stories-list-view")
+
+      assert has_element?(view, "#stories-column-open #story-card-US-001")
+      assert has_element?(view, "#stories-column-in_progress #story-card-US-002")
+      assert has_element?(view, "#stories-column-draft #story-card-US-003")
+    end
+
+    test "switches between kanban and list views", %{conn: conn, project: project} do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories")
+
+      view
+      |> element("button[phx-click='set_stories_view'][phx-value-view='list']")
+      |> render_click()
+
+      assert has_element?(view, "#stories-list-view")
+      refute has_element?(view, "#stories-kanban-view")
+
+      view
+      |> element("button[phx-click='set_stories_view'][phx-value-view='kanban']")
+      |> render_click()
+
+      assert has_element?(view, "#stories-kanban-view")
+      refute has_element?(view, "#stories-list-view")
+    end
+
     test "shows status change dropdown for each story", %{conn: conn, project: project} do
       {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/stories")
 
