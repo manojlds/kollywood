@@ -33,6 +33,12 @@ defmodule Kollywood.WorkflowStoreTest do
     assert template =~ "{{ issue.identifier }}"
 
     assert WorkflowStore.get_last_error(pid) == nil
+
+    identity = WorkflowStore.get_workflow_identity(pid)
+    assert identity.path == Path.expand(path)
+    assert is_binary(identity.sha256)
+    assert identity.identity_source == "workflow_store"
+    assert is_map(identity.file_stamp)
   end
 
   test "detects file changes", %{path: path} do
@@ -40,6 +46,7 @@ defmodule Kollywood.WorkflowStoreTest do
       start_supervised!({WorkflowStore, path: path, name: :"store_#{System.unique_integer()}"})
 
     assert WorkflowStore.get_config(pid).agent.kind == :amp
+    original_identity = WorkflowStore.get_workflow_identity(pid)
 
     updated = """
     ---
@@ -58,6 +65,9 @@ defmodule Kollywood.WorkflowStoreTest do
     assert WorkflowStore.get_config(pid).agent.kind == :claude
     assert WorkflowStore.get_config(pid).workspace.root == "/tmp/updated"
     assert WorkflowStore.get_prompt_template(pid) =~ "Updated prompt"
+
+    updated_identity = WorkflowStore.get_workflow_identity(pid)
+    assert updated_identity.sha256 != original_identity.sha256
   end
 
   test "keeps last good config on bad reload", %{path: path} do
