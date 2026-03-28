@@ -23,7 +23,9 @@ phx_server_enabled? =
   |> String.downcase()
   |> then(&(&1 in ["1", "true", "yes", "on"]))
 
-if config_env() != :test and phx_server_enabled? do
+# Limit PHX_SERVER toggling to prod/release usage so ad-hoc dev/test
+# commands never bind the HTTP port unexpectedly.
+if config_env() == :prod and phx_server_enabled? do
   config :kollywood, KollywoodWeb.Endpoint, server: true
 end
 

@@ -13,6 +13,8 @@
 - Start server: `vaibhav dev start kollywood server`
 - Restart server: `vaibhav dev restart kollywood server`
 - Stop server: `vaibhav dev stop kollywood server`
+- Never stop/restart shared dev services only to make tests pass.
+- Prefer isolated test commands instead: `PHX_SERVER= MIX_ENV=test ...`.
 
 ## Stable Server Deployment
 
