@@ -52,6 +52,9 @@ defmodule Mix.Tasks.Kollywood.OrchTasksTest do
     assert output =~ "Orchestrator status"
     assert output =~ "running=0"
     assert output =~ "retrying=0"
+    assert output =~ "max_concurrent_agents_requested=5"
+    assert output =~ "max_concurrent_agents_effective=5"
+    assert output =~ "max_concurrent_agents_hard_cap=5"
     assert output =~ "poll_stale=false"
     assert output =~ "last_recovery_attempt=none"
   end
