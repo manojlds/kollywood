@@ -209,6 +209,10 @@ defmodule Kollywood.Orchestrator.RunPhase do
   def label(%{label: label}) when is_binary(label), do: label
   def label(_phase), do: unknown().label
 
+  @spec terminal?(t() | nil) :: boolean()
+  def terminal?(%{kind: kind}) when is_binary(kind), do: kind in ["finished", "failed"]
+  def terminal?(_phase), do: false
+
   defp agent_phase(turn, event_type) do
     label = if turn, do: "Agent turn #{turn}", else: "Agent turn"
     phase(%{kind: "agent", label: label, turn: turn, event_type: event_type})
@@ -255,10 +259,15 @@ defmodule Kollywood.Orchestrator.RunPhase do
   defp choose_phase(phase, nil), do: phase
 
   defp choose_phase(phase, last_phase) do
-    if stale_phase?(phase, last_phase) do
-      last_phase
-    else
-      phase
+    cond do
+      terminal?(last_phase) and not terminal?(phase) ->
+        last_phase
+
+      stale_phase?(phase, last_phase) ->
+        last_phase
+
+      true ->
+        phase
     end
   end
 

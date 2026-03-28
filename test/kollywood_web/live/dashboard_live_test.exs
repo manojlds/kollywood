@@ -869,12 +869,33 @@ defmodule KollywoodWeb.DashboardLiveTest do
           events: [
             %{type: :checks_started, check_count: 2},
             %{type: :check_started, check_index: 1}
-          ]
+          ],
+          status: "running"
         )
 
       {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/runs")
 
       assert html =~ "Checks 1/2"
+    end
+
+    test "runs page preserves failed terminal status when terminal event is missing", %{
+      conn: conn,
+      project: project,
+      tmp_root: tmp_root
+    } do
+      _ =
+        prepare_run_logs!(tmp_root, "US-FAILED-PHASE",
+          events: [
+            %{type: :checks_started, check_count: 2},
+            %{type: :check_started, check_index: 1}
+          ],
+          status: "failed"
+        )
+
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/runs")
+
+      assert html =~ "Run failed"
+      refute html =~ "Checks 1/2"
     end
 
     test "stories page shows last run phase label", %{
@@ -886,7 +907,8 @@ defmodule KollywoodWeb.DashboardLiveTest do
         prepare_run_logs!(tmp_root, "US-001",
           events: [
             %{type: :turn_started, turn: 2}
-          ]
+          ],
+          status: "running"
         )
 
       {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/stories")
