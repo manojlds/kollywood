@@ -12,14 +12,13 @@ tracker:
 workspace:
   strategy: worktree
 agent:
-  kind: opencode
+  kind: cursor
   max_attempts: 1
   max_concurrent_agents: 1
   max_turns: 20
   retries_enabled: false
   timeout_ms: 7200000
 quality:
-  max_cycles: 2
   checks:
     fail_fast: true
     max_cycles: 2
@@ -27,12 +26,15 @@ quality:
       - "devenv shell -- mix format --check-formatted"
       - "devenv shell -- bash -c \"MIX_ENV=test mix test\""
     timeout_ms: 1800000
+  max_cycles: 4
   review:
     agent:
-      kind: opencode
+      kind: cursor
       timeout_ms: 7200000
     enabled: true
+    fail_token: REVIEW_FAIL
     max_cycles: 2
+    pass_token: REVIEW_PASS
 runtime:
   full_stack:
     command: devenv
