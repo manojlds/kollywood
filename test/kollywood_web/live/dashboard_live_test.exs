@@ -164,6 +164,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "Project Settings"
       assert html =~ project.name
       assert html =~ "WORKFLOW.md"
+      assert html =~ "value=\"cursor\""
     end
 
     test "shows workflow editor with frontmatter and body textareas when WORKFLOW.md exists", %{

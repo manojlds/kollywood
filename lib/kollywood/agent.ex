@@ -8,6 +8,7 @@ defmodule Kollywood.Agent do
 
   alias Kollywood.Agent.Amp
   alias Kollywood.Agent.Claude
+  alias Kollywood.Agent.Cursor
   alias Kollywood.Agent.OpenCode
   alias Kollywood.Agent.Pi
   alias Kollywood.Agent.Session
@@ -33,6 +34,7 @@ defmodule Kollywood.Agent do
   @spec adapter_module(Config.agent_kind()) :: module()
   def adapter_module(:amp), do: Amp
   def adapter_module(:claude), do: Claude
+  def adapter_module(:cursor), do: Cursor
   def adapter_module(:opencode), do: OpenCode
   def adapter_module(:pi), do: Pi
 

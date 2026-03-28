@@ -2,19 +2,19 @@ defmodule Kollywood.Config do
   @moduledoc """
   Parses and validates the YAML front matter from WORKFLOW.md.
 
-  Supports multiple agent kinds: amp, claude, opencode, pi.
+  Supports multiple agent kinds: amp, claude, cursor, opencode, pi.
   """
 
   require Logger
 
-  @type agent_kind :: :amp | :claude | :opencode | :pi
+  @type agent_kind :: :amp | :claude | :cursor | :opencode | :pi
   @type publish_provider :: :github | :gitlab
   @type publish_mode :: :push | :pr | :auto_merge
   @type auto_push_policy :: :never | :on_pass
   @type auto_merge_policy :: :never | :on_pass
   @type auto_create_pr_policy :: :never | :draft | :ready
 
-  @valid_agent_kinds ~w(amp claude opencode pi)a
+  @valid_agent_kinds ~w(amp claude cursor opencode pi)a
   @valid_publish_providers ~w(github gitlab)a
   @valid_publish_modes ~w(push pr auto_merge)a
   @valid_auto_push_policies ~w(never on_pass)a
@@ -147,7 +147,7 @@ defmodule Kollywood.Config do
 
     cond do
       is_nil(kind_str) ->
-        {:error, "agent.kind is required (amp, claude, opencode, or pi)"}
+        {:error, "agent.kind is required (amp, claude, cursor, opencode, or pi)"}
 
       true ->
         parse_agent_kind_value(kind_str)
@@ -178,6 +178,9 @@ defmodule Kollywood.Config do
 
       "claude" ->
         {:ok, :claude}
+
+      "cursor" ->
+        {:ok, :cursor}
 
       "opencode" ->
         {:ok, :opencode}

@@ -47,7 +47,7 @@ defmodule Kollywood.ConfigTest do
   end
 
   test "supports all agent kinds" do
-    for kind <- ~w(amp claude opencode pi) do
+    for kind <- ~w(amp claude cursor opencode pi) do
       content = """
       ---
       workspace:
