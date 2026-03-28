@@ -169,9 +169,9 @@ defmodule KollywoodWeb.DashboardLiveTest do
     test "shows workflow editor with frontmatter and body textareas when WORKFLOW.md exists", %{
       conn: conn,
       project: project,
-      tmp_dir: tmp_dir
+      tmp_dir: _tmp_dir
     } do
-      File.write!(Path.join(tmp_dir, "WORKFLOW.md"), """
+      write_workflow!(project, """
       ---
       agent:
         kind: claude
@@ -194,9 +194,9 @@ defmodule KollywoodWeb.DashboardLiveTest do
     test "saves review template into WORKFLOW.md", %{
       conn: conn,
       project: project,
-      tmp_dir: tmp_dir
+      tmp_dir: _tmp_dir
     } do
-      File.write!(Path.join(tmp_dir, "WORKFLOW.md"), """
+      write_workflow!(project, """
       ---
       review:
         enabled: true
@@ -213,7 +213,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       |> element("form[phx-submit='save_review_template']")
       |> render_submit(%{review_template: "new review template"})
 
-      {:ok, content} = File.read(Path.join(tmp_dir, "WORKFLOW.md"))
+      {:ok, content} = File.read(project.workflow_path)
       assert content =~ "new review template"
       refute content =~ "old template content"
     end
@@ -221,9 +221,9 @@ defmodule KollywoodWeb.DashboardLiveTest do
     test "save settings writes publish.mode instead of legacy auto_push fields", %{
       conn: conn,
       project: project,
-      tmp_dir: tmp_dir
+      tmp_dir: _tmp_dir
     } do
-      File.write!(Path.join(tmp_dir, "WORKFLOW.md"), """
+      write_workflow!(project, """
       ---
       agent:
         kind: claude
@@ -262,7 +262,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
         }
       })
 
-      {:ok, content} = File.read(Path.join(tmp_dir, "WORKFLOW.md"))
+      {:ok, content} = File.read(project.workflow_path)
       assert content =~ "mode: auto_merge"
       refute content =~ "auto_push:"
       refute content =~ "auto_create_pr:"
@@ -916,5 +916,10 @@ defmodule KollywoodWeb.DashboardLiveTest do
     RunLogs.complete_attempt(context, %{status: status, turn_count: 1})
 
     context
+  end
+
+  defp write_workflow!(project, content) do
+    File.mkdir_p!(Path.dirname(project.workflow_path))
+    File.write!(project.workflow_path, content)
   end
 end

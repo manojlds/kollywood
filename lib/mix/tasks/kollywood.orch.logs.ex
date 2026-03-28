@@ -14,6 +14,7 @@ defmodule Mix.Tasks.Kollywood.Orch.Logs do
   alias Kollywood.Config
   alias Kollywood.Orchestrator.RunLogs
   alias Kollywood.Projects
+  alias Kollywood.ServiceConfig
   alias Mix.Tasks.Kollywood.Orch.Shared
 
   @default_follow_poll_ms 200
@@ -66,11 +67,11 @@ defmodule Mix.Tasks.Kollywood.Orch.Logs do
 
   defp resolve_project_root! do
     workflow_path =
-      Application.get_env(:kollywood, :workflow_path, Path.join(File.cwd!(), "WORKFLOW.md"))
+      Application.get_env(:kollywood, :workflow_path, ServiceConfig.default_workflow_path())
       |> Path.expand()
 
     with {:ok, content} <- File.read(workflow_path),
-          {:ok, config, _prompt_template} <- Config.parse(content) do
+         {:ok, config, _prompt_template} <- Config.parse(content) do
       config
       |> maybe_inject_project_slug(workflow_path)
       |> RunLogs.project_root()

@@ -58,4 +58,11 @@ defmodule Kollywood.ServiceConfig do
   def project_run_logs_path(slug) when is_binary(slug) and slug != "" do
     Path.join([project_data_dir(slug), "run_logs"])
   end
+
+  @doc "Default workflow path in a repo (.kollywood/WORKFLOW.md)."
+  @spec default_workflow_path(String.t()) :: String.t()
+  def default_workflow_path(base_dir \\ File.cwd!())
+      when is_binary(base_dir) and base_dir != "" do
+    Path.join([Path.expand(base_dir), ".kollywood", "WORKFLOW.md"])
+  end
 end

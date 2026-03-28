@@ -36,7 +36,7 @@ runtime:
       - server
   profile: checks_only
 hooks:
-  before_run: "devenv shell -- sh -c \"mix deps.get && MIX_ENV=test mix deps.compile\""
+  before_run: "bash -lc 'if [ -f .kollywood/AGENTS.md ]; then cp .kollywood/AGENTS.md AGENTS.md; fi; devenv shell -- sh -c \"mix deps.get && MIX_ENV=test mix deps.compile\"'"
 review:
   agent:
     kind: opencode

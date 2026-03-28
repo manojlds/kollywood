@@ -17,7 +17,10 @@ defmodule Kollywood.ProjectsTest do
     assert project.provider == :local
     assert project.default_branch == "main"
     assert project.local_path == Path.expand(managed_root)
-    assert project.workflow_path == Path.join(Path.expand(managed_root), "WORKFLOW.md")
+
+    assert project.workflow_path ==
+             Path.join([Path.expand(managed_root), ".kollywood", "WORKFLOW.md"])
+
     assert project.tracker_path == Kollywood.ServiceConfig.project_tracker_path("my-local-app")
   end
 

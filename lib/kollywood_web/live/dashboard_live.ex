@@ -2948,7 +2948,7 @@ defmodule KollywoodWeb.DashboardLive do
         project.workflow_path
 
       is_binary(project.local_path) ->
-        Path.join(project.local_path, "WORKFLOW.md")
+        Path.join([project.local_path, ".kollywood", "WORKFLOW.md"])
 
       true ->
         nil

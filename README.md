@@ -78,11 +78,11 @@ mix kollywood.projects add-gitlab --name "Payments" --repo group/payments
 
 Kollywood can run against a local PRD tracker file.
 
-- Default tracker config is in `WORKFLOW.md` (`tracker.kind: prd_json`)
+- Default tracker config is in `.kollywood/WORKFLOW.md` (`tracker.kind: prd_json`)
 - Default tracker path is `prd.json`
 - Stories use `status` values such as `draft`, `open`, `in_progress`, `done`, `failed`, `pending_merge`, `merged`, `cancelled`
 - Manual UI/API transitions intentionally block setting `in_progress` directly (that status is orchestrator-managed)
-- Default agent kind in `WORKFLOW.md` is `pi`
+- Default agent kind in `.kollywood/WORKFLOW.md` is `pi`
 
 CLI helpers:
 
@@ -162,7 +162,7 @@ mix kollywood.orch.logs US-001 --attempt 2
 mix kollywood.orch.logs US-001 --follow
 ```
 
-Quality gates are configured in `WORKFLOW.md`:
+Quality gates are configured in `.kollywood/WORKFLOW.md`:
 
 - `checks.required`: shell commands that must pass before a story can be marked done
 - `runtime.profile`: runtime isolation profile (`checks_only` or `full_stack`)
@@ -172,6 +172,9 @@ Quality gates are configured in `WORKFLOW.md`:
 - `review.max_cycles`: maximum worker/reviewer feedback cycles before failing the run
 - `review.agent`: reviewer adapter settings (kind/command/args/env/timeout)
 - default command timeouts are 30 minutes unless overridden in workflow config
+
+Repo-specific agent guidance can live in `.kollywood/AGENTS.md`.
+The default `before_run` hook copies it to `AGENTS.md` in each workspace when present.
 
 Publish policy controls whether successful runs can publish branches and open pull requests.
 Defaults are conservative so nothing is pushed remotely unless explicitly enabled.
