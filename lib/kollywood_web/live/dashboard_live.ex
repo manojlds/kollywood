@@ -14,20 +14,14 @@ defmodule KollywoodWeb.DashboardLive do
 
   @default_stories_view "kanban"
   @story_status_columns [
-    {"in_progress", "In Progress"},
+    {"draft", "Draft"},
     {"open", "Open"},
-    {"done", "Done"},
-    {"merged", "Merged"},
-    {"failed", "Failed"},
-    {"draft", "Draft"}
-  ]
-  @primary_story_status_columns [
     {"in_progress", "In Progress"},
-    {"open", "Open"},
     {"done", "Done"},
     {"merged", "Merged"},
     {"failed", "Failed"}
   ]
+  @story_status_order Enum.map(@story_status_columns, fn {status, _label} -> status end)
 
   @impl true
   def mount(params, _session, socket) do
@@ -50,6 +44,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:story_form_story_id, nil)
       |> assign(:story_form_error, nil)
       |> assign(:stories_view, @default_stories_view)
+      |> assign(:collapsed_story_groups, MapSet.new())
       |> assign(:workflow, %{
         yaml: "",
         body: "",
@@ -78,7 +73,11 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:page_title, if(current_project, do: current_project.name, else: "Dashboard"))
       |> assign(:run_detail_story_id, params["story_id"])
       |> assign(:run_detail_attempt, params["attempt"])
-      |> assign(:stories_view, @default_stories_view)
+      |> assign(:stories_view, Map.get(socket.assigns, :stories_view, @default_stories_view))
+      |> assign(
+        :collapsed_story_groups,
+        Map.get(socket.assigns, :collapsed_story_groups, MapSet.new())
+      )
       |> load_project_data(current_project)
       |> handle_live_action(socket.assigns[:live_action], params)
 
@@ -128,6 +127,21 @@ defmodule KollywoodWeb.DashboardLive do
 
   def handle_event("set_stories_view", %{"view" => view}, socket) do
     {:noreply, assign(socket, :stories_view, normalize_stories_view(view))}
+  end
+
+  def handle_event("toggle_story_group", %{"status" => status}, socket) do
+    normalized_status = normalize_status(status)
+
+    if normalized_status in @story_status_order do
+      collapsed_story_groups =
+        socket.assigns
+        |> Map.get(:collapsed_story_groups, MapSet.new())
+        |> toggle_collapsed_story_group(normalized_status)
+
+      {:noreply, assign(socket, :collapsed_story_groups, collapsed_story_groups)}
+    else
+      {:noreply, socket}
+    end
   end
 
   def handle_event("close_story", _params, socket) do
@@ -520,6 +534,7 @@ defmodule KollywoodWeb.DashboardLive do
                   stories={@stories}
                   project={@current_project}
                   stories_view={@stories_view}
+                  collapsed_story_groups={@collapsed_story_groups}
                 />
               <% :runs -> %>
                 <.runs_section
@@ -788,6 +803,7 @@ defmodule KollywoodWeb.DashboardLive do
   attr :stories, :list, required: true
   attr :project, Project, required: true
   attr :stories_view, :string, default: @default_stories_view
+  attr :collapsed_story_groups, :any, default: MapSet.new()
 
   defp stories_section(assigns) do
     groups = build_story_groups(assigns.stories)
@@ -797,6 +813,10 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:groups, groups)
       |> assign(:editable, local_provider?(assigns.project))
       |> assign(:stories_view, normalize_stories_view(assigns.stories_view))
+      |> assign(
+        :collapsed_story_groups,
+        normalize_collapsed_story_groups(assigns.collapsed_story_groups)
+      )
 
     ~H"""
     <div
@@ -870,7 +890,12 @@ defmodule KollywoodWeb.DashboardLive do
         <%= if @stories_view == "kanban" do %>
           <.stories_kanban_view groups={@groups} project={@project} editable={@editable} />
         <% else %>
-          <.stories_list_view groups={@groups} project={@project} editable={@editable} />
+          <.stories_list_view
+            groups={@groups}
+            project={@project}
+            editable={@editable}
+            collapsed_story_groups={@collapsed_story_groups}
+          />
         <% end %>
       <% end %>
     </div>
@@ -931,43 +956,58 @@ defmodule KollywoodWeb.DashboardLive do
   attr :groups, :map, required: true
   attr :project, Project, required: true
   attr :editable, :boolean, default: false
+  attr :collapsed_story_groups, :any, default: MapSet.new()
 
   defp stories_list_view(assigns) do
-    assigns = assign(assigns, :status_columns, @primary_story_status_columns)
+    assigns =
+      assigns
+      |> assign(:status_columns, @story_status_columns)
+      |> assign(
+        :collapsed_story_groups,
+        normalize_collapsed_story_groups(assigns.collapsed_story_groups)
+      )
 
     ~H"""
-    <div id="stories-list-view" class="space-y-6">
+    <div id="stories-list-view" class="space-y-4">
       <%= for {status, label} <- @status_columns do %>
         <% stories = Map.get(@groups, status, []) %>
         <%= if stories != [] do %>
-          <section id={"stories-list-group-#{status}"}>
-            <h3 class="mb-3 flex items-center gap-2 text-lg font-semibold">
-              <.status_badge status={status} />
-              {label}
-              <span class="badge badge-sm badge-ghost">{length(stories)}</span>
-            </h3>
-            <div class="space-y-2">
-              <%= for story <- stories do %>
-                <.story_card story={story} project={@project} editable={@editable} />
-              <% end %>
-            </div>
+          <% collapsed = MapSet.member?(@collapsed_story_groups, status) %>
+          <section
+            id={"stories-list-group-#{status}"}
+            class={[
+              "rounded-xl border border-base-300 bg-base-200/60",
+              status == "draft" && "opacity-80"
+            ]}
+          >
+            <button
+              type="button"
+              id={"stories-list-group-toggle-#{status}"}
+              phx-click="toggle_story_group"
+              phx-value-status={status}
+              aria-expanded={to_string(!collapsed)}
+              class="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
+            >
+              <span class="flex items-center gap-2 text-sm font-semibold sm:text-base">
+                <.status_badge status={status} />
+                {label}
+                <span class="badge badge-sm badge-ghost">{length(stories)}</span>
+              </span>
+              <.icon
+                name={if(collapsed, do: "hero-chevron-right", else: "hero-chevron-down")}
+                class="size-4 text-base-content/60"
+              />
+            </button>
+
+            <%= unless collapsed do %>
+              <div id={"stories-list-group-content-#{status}"} class="space-y-2 px-4 pb-4">
+                <%= for story <- stories do %>
+                  <.story_card story={story} project={@project} editable={@editable} />
+                <% end %>
+              </div>
+            <% end %>
           </section>
         <% end %>
-      <% end %>
-
-      <% draft_stories = Map.get(@groups, "draft", []) %>
-      <%= if draft_stories != [] do %>
-        <section id="stories-list-group-draft" class="opacity-70">
-          <h3 class="mb-3 flex items-center gap-2 text-lg font-semibold">
-            <.status_badge status="draft" /> Draft
-            <span class="badge badge-sm badge-ghost">{length(draft_stories)}</span>
-          </h3>
-          <div class="space-y-2">
-            <%= for story <- draft_stories do %>
-              <.story_card story={story} project={@project} editable={@editable} />
-            <% end %>
-          </div>
-        </section>
       <% end %>
     </div>
     """
@@ -1687,6 +1727,28 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp build_story_groups(_stories), do: build_story_groups([])
+
+  defp normalize_collapsed_story_groups(%MapSet{} = collapsed_story_groups),
+    do: collapsed_story_groups
+
+  defp normalize_collapsed_story_groups(collapsed_story_groups)
+       when is_list(collapsed_story_groups) do
+    collapsed_story_groups
+    |> Enum.map(&normalize_status/1)
+    |> MapSet.new()
+  end
+
+  defp normalize_collapsed_story_groups(_collapsed_story_groups), do: MapSet.new()
+
+  defp toggle_collapsed_story_group(collapsed_story_groups, status) do
+    collapsed_story_groups = normalize_collapsed_story_groups(collapsed_story_groups)
+
+    if MapSet.member?(collapsed_story_groups, status) do
+      MapSet.delete(collapsed_story_groups, status)
+    else
+      MapSet.put(collapsed_story_groups, status)
+    end
+  end
 
   attr :mode, :atom, default: nil
   attr :values, :map, default: %{}
@@ -3359,7 +3421,7 @@ defmodule KollywoodWeb.DashboardLive do
     assign(socket, :run_detail, run_detail)
   end
 
-  @status_group_order ~w(in_progress open failed done merged draft)
+  @status_group_order @story_status_order
 
   defp read_stories(project) do
     path = Projects.tracker_path(project)
