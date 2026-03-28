@@ -83,6 +83,7 @@ defmodule Kollywood.Orchestrator do
           run_timeout_ms: pos_integer() | nil,
           project_limit_fetcher: (-> map() | list()) | module() | nil,
           project_max_concurrent_agents: %{optional(String.t()) => pos_integer()},
+          dispatch_rotation: non_neg_integer(),
           running: %{optional(String.t()) => map()},
           running_by_ref: %{optional(reference()) => String.t()},
           claimed: MapSet.t(String.t()),
@@ -146,6 +147,7 @@ defmodule Kollywood.Orchestrator do
     :poll_stale_detected_at,
     :poll_stale_recovery_attempted,
     :last_recovery_attempt,
+    dispatch_rotation: 0,
     running: %{},
     running_by_ref: %{},
     claimed: MapSet.new(),
@@ -281,6 +283,7 @@ defmodule Kollywood.Orchestrator do
         project_limit_fetcher:
           Keyword.get(opts, :project_limit_fetcher, &default_project_limit_fetcher/0),
         project_max_concurrent_agents: %{},
+        dispatch_rotation: 0,
         last_poll_monotonic_ms: monotonic_now_ms(),
         poll_stale: false,
         poll_stale_detected_at: nil,
@@ -1110,9 +1113,12 @@ defmodule Kollywood.Orchestrator do
       if available_slots == 0 do
         state
       else
-        issues
-        |> fair_dispatch_candidates(state, config, available_slots)
-        |> Enum.reduce(state, fn issue, acc ->
+        {dispatch_candidates, next_rotation} =
+          fair_dispatch_candidates(issues, state, config, available_slots)
+
+        state = %{state | dispatch_rotation: next_rotation}
+
+        Enum.reduce(dispatch_candidates, state, fn issue, acc ->
           start_issue_run(acc, issue, nil, config, tracker)
         end)
       end
@@ -1337,13 +1343,45 @@ defmodule Kollywood.Orchestrator do
         {project_key, max(project_limit - running_count, 0)}
       end)
 
-    project_order = project_queues |> Map.keys() |> Enum.sort()
+    project_order =
+      project_queues
+      |> Map.keys()
+      |> Enum.sort()
+      |> rotate_project_order(state.dispatch_rotation)
 
-    select_fair_issues(project_order, project_queues, project_remaining, available_slots, [])
-    |> Enum.reverse()
+    dispatch_candidates =
+      select_fair_issues(project_order, project_queues, project_remaining, available_slots, [])
+      |> Enum.reverse()
+
+    next_rotation =
+      if dispatch_candidates == [] do
+        state.dispatch_rotation
+      else
+        state.dispatch_rotation + 1
+      end
+
+    {dispatch_candidates, next_rotation}
   end
 
-  defp fair_dispatch_candidates(_issues, _state, _config, _available_slots), do: []
+  defp fair_dispatch_candidates(_issues, state, _config, _available_slots),
+    do: {[], state.dispatch_rotation}
+
+  defp rotate_project_order([], _rotation), do: []
+
+  defp rotate_project_order(project_order, rotation) do
+    project_count = length(project_order)
+
+    normalized_rotation =
+      if is_integer(rotation) and rotation >= 0 do
+        rotation
+      else
+        0
+      end
+
+    offset = rem(normalized_rotation, project_count)
+    {leading_projects, trailing_projects} = Enum.split(project_order, offset)
+    trailing_projects ++ leading_projects
+  end
 
   defp select_fair_issues(_project_order, _queues, _remaining, available_slots, acc)
        when available_slots <= 0,
