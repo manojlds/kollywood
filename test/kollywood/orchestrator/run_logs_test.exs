@@ -139,4 +139,32 @@ defmodule Kollywood.Orchestrator.RunLogsTest do
       assert content == ""
     end
   end
+
+  describe "settings snapshot compatibility" do
+    test "returns nil when metadata has no snapshot key" do
+      assert RunLogs.settings_snapshot(%{"status" => "ok"}) == nil
+    end
+
+    test "list_attempts keeps legacy attempts readable without snapshots", %{context: context} do
+      project_root = context.project_root
+      story_dir = Path.join([project_root, "run_logs", "US-LEGACY"])
+      attempt_dir = Path.join(story_dir, "attempt-0001")
+      File.mkdir_p!(attempt_dir)
+
+      metadata = %{
+        "story_id" => "US-LEGACY",
+        "attempt" => 1,
+        "status" => "failed",
+        "started_at" => "2026-03-28T00:00:00Z",
+        "ended_at" => "2026-03-28T00:00:10Z",
+        "error" => "legacy fixture"
+      }
+
+      File.write!(Path.join(attempt_dir, "metadata.json"), Jason.encode!(metadata, pretty: true))
+
+      assert {:ok, [attempt]} = RunLogs.list_attempts(project_root, "US-LEGACY")
+      assert attempt.metadata["status"] == "failed"
+      assert attempt.settings_snapshot == nil
+    end
+  end
 end

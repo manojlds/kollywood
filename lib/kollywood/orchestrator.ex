@@ -23,6 +23,7 @@ defmodule Kollywood.Orchestrator do
   alias Kollywood.Orchestrator.RunPhase
   alias Kollywood.Orchestrator.RetryStore
   alias Kollywood.Orchestrator.RunLogs
+  alias Kollywood.Orchestrator.RunSettingsSnapshot
   alias Kollywood.Publisher
   alias Kollywood.RepoSync
   alias Kollywood.Tracker
@@ -1021,7 +1022,7 @@ defmodule Kollywood.Orchestrator do
     with :ok <- tracker_prepare_issue_for_run(tracker, config, issue_id) do
       orchestrator_pid = self()
       {user_on_event, runner_opts} = Keyword.pop(state.runner_opts, :on_event)
-      run_log_context = prepare_run_log_context(config, issue, attempt)
+      run_log_context = prepare_run_log_context(config, issue, attempt, state.workflow_store)
 
       session_opts = if field(issue, :resumable), do: %{resumable: true}, else: %{}
 
@@ -1034,11 +1035,14 @@ defmodule Kollywood.Orchestrator do
       run_opts =
         [
           workflow_store: state.workflow_store,
+          config: config,
           attempt: attempt,
           session_opts: session_opts,
           log_files: log_files,
           on_event: runner_on_event(orchestrator_pid, issue_id, run_log_context, user_on_event)
         ] ++ runner_opts
+
+      run_opts = maybe_put_prompt_template(run_opts, state.workflow_store)
 
       run_fun = fn -> invoke_runner(state.runner, issue, run_opts) end
 
@@ -2475,8 +2479,15 @@ defmodule Kollywood.Orchestrator do
     end
   end
 
-  defp prepare_run_log_context(config, issue, attempt) do
-    case RunLogs.prepare_attempt(config, issue, attempt) do
+  defp prepare_run_log_context(config, issue, attempt, workflow_store) do
+    metadata_overrides = %{
+      "settings_snapshot" =>
+        RunSettingsSnapshot.build(config,
+          workflow_identity: RunSettingsSnapshot.workflow_identity(workflow_store, config)
+        )
+    }
+
+    case RunLogs.prepare_attempt(config, issue, attempt, metadata_overrides) do
       {:ok, context} ->
         context
 
@@ -2487,6 +2498,26 @@ defmodule Kollywood.Orchestrator do
 
         nil
     end
+  end
+
+  defp maybe_put_prompt_template(run_opts, workflow_store) when is_list(run_opts) do
+    case prompt_template_from_workflow_store(workflow_store) do
+      template when is_binary(template) and template != "" ->
+        Keyword.put(run_opts, :prompt_template, template)
+
+      _other ->
+        run_opts
+    end
+  end
+
+  defp prompt_template_from_workflow_store(%Config{}), do: nil
+
+  defp prompt_template_from_workflow_store(workflow_store) do
+    WorkflowStore.get_prompt_template(workflow_store)
+  rescue
+    _error -> nil
+  catch
+    :exit, _reason -> nil
   end
 
   defp persist_run_log_event(nil, _event), do: :ok
