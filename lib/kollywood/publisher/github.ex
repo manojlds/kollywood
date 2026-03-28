@@ -58,4 +58,20 @@ defmodule Kollywood.Publisher.GitHub do
   rescue
     e -> {:error, "gh pr merge --auto failed: #{Exception.message(e)}"}
   end
+
+  @impl true
+  def merged?(workspace, pr_url) when is_binary(pr_url) do
+    args = ["pr", "view", pr_url, "--json", "state,mergedAt", "--jq", ".state"]
+
+    case System.cmd("gh", args, cd: workspace.path, stderr_to_stdout: true) do
+      {output, 0} ->
+        state = output |> String.trim() |> String.upcase()
+        {:ok, state == "MERGED"}
+
+      {output, code} ->
+        {:error, "gh pr view exited #{code}: #{String.trim(output)}"}
+    end
+  rescue
+    e -> {:error, "gh pr view failed: #{Exception.message(e)}"}
+  end
 end

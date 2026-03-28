@@ -59,4 +59,26 @@ defmodule Kollywood.Publisher.GitLab do
   rescue
     e -> {:error, "glab mr merge --auto-merge failed: #{Exception.message(e)}"}
   end
+
+  @impl true
+  def merged?(workspace, pr_url) when is_binary(pr_url) do
+    args = ["mr", "view", pr_url, "--output", "json"]
+
+    case System.cmd("glab", args, cd: workspace.path, stderr_to_stdout: true) do
+      {output, 0} ->
+        case Jason.decode(output) do
+          {:ok, payload} ->
+            state = payload |> Map.get("state", "") |> to_string() |> String.downcase()
+            {:ok, state == "merged"}
+
+          {:error, reason} ->
+            {:error, "glab mr view returned invalid JSON: #{inspect(reason)}"}
+        end
+
+      {output, code} ->
+        {:error, "glab mr view exited #{code}: #{String.trim(output)}"}
+    end
+  rescue
+    e -> {:error, "glab mr view failed: #{Exception.message(e)}"}
+  end
 end
