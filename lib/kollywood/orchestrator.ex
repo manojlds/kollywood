@@ -36,6 +36,7 @@ defmodule Kollywood.Orchestrator do
   @default_max_retry_backoff_ms 300_000
   @default_retry_base_delay_ms 10_000
   @default_continuation_delay_ms 1_000
+  @default_stale_threshold_multiplier 3
 
   @type state :: %__MODULE__{
           workflow_store: WorkflowStore.server() | Config.t(),
@@ -49,7 +50,10 @@ defmodule Kollywood.Orchestrator do
           runner_opts: keyword(),
           auto_poll: boolean(),
           poll_timer_ref: reference() | nil,
+          watchdog_timer_ref: reference() | nil,
           poll_interval_ms: pos_integer(),
+          stale_threshold_multiplier: pos_integer(),
+          watchdog_check_interval_ms: pos_integer(),
           repo_sync_interval_ms: pos_integer(),
           repo_sync_timeout_ms: pos_integer(),
           last_repo_sync_at_ms: integer() | nil,
@@ -74,7 +78,12 @@ defmodule Kollywood.Orchestrator do
           completed: MapSet.t(String.t()),
           completed_until: %{optional(String.t()) => integer()},
           last_error: String.t() | nil,
-          last_poll_at: DateTime.t() | nil
+          last_poll_at: DateTime.t() | nil,
+          last_poll_monotonic_ms: integer() | nil,
+          poll_stale: boolean(),
+          poll_stale_detected_at: DateTime.t() | nil,
+          poll_stale_recovery_attempted: boolean(),
+          last_recovery_attempt: map() | nil
         }
 
   defstruct [
@@ -88,7 +97,10 @@ defmodule Kollywood.Orchestrator do
     :runner_opts,
     :auto_poll,
     :poll_timer_ref,
+    :watchdog_timer_ref,
     :poll_interval_ms,
+    :stale_threshold_multiplier,
+    :watchdog_check_interval_ms,
     :repo_sync_interval_ms,
     :repo_sync_timeout_ms,
     :last_repo_sync_at_ms,
@@ -110,6 +122,11 @@ defmodule Kollywood.Orchestrator do
     :repo_default_branch,
     :last_error,
     :last_poll_at,
+    :last_poll_monotonic_ms,
+    :poll_stale,
+    :poll_stale_detected_at,
+    :poll_stale_recovery_attempted,
+    :last_recovery_attempt,
     running: %{},
     running_by_ref: %{},
     claimed: MapSet.new(),
@@ -150,6 +167,12 @@ defmodule Kollywood.Orchestrator do
   @impl true
   def init(opts) do
     with {:ok, agent_pool} <- resolve_agent_pool(Keyword.get(opts, :agent_pool, AgentPool)) do
+      poll_interval_ms =
+        positive_integer(Keyword.get(opts, :poll_interval_ms), @default_poll_interval_ms)
+
+      watchdog_check_interval_ms =
+        positive_integer(Keyword.get(opts, :watchdog_check_interval_ms), poll_interval_ms)
+
       state = %__MODULE__{
         workflow_store: Keyword.get(opts, :workflow_store, WorkflowStore),
         tracker: Keyword.get(opts, :tracker, :auto),
@@ -162,8 +185,14 @@ defmodule Kollywood.Orchestrator do
         runner_opts: Keyword.get(opts, :runner_opts, []),
         auto_poll: Keyword.get(opts, :auto_poll, true),
         poll_timer_ref: nil,
-        poll_interval_ms:
-          positive_integer(Keyword.get(opts, :poll_interval_ms), @default_poll_interval_ms),
+        watchdog_timer_ref: nil,
+        poll_interval_ms: poll_interval_ms,
+        stale_threshold_multiplier:
+          positive_integer(
+            Keyword.get(opts, :stale_threshold_multiplier),
+            @default_stale_threshold_multiplier
+          ),
+        watchdog_check_interval_ms: watchdog_check_interval_ms,
         repo_sync_interval_ms:
           positive_integer(
             Keyword.get(opts, :repo_sync_interval_ms),
@@ -204,7 +233,12 @@ defmodule Kollywood.Orchestrator do
         claim_ttl_ms: positive_integer(Keyword.get(opts, :claim_ttl_ms), @default_claim_ttl_ms),
         completed_ttl_ms:
           positive_integer(Keyword.get(opts, :completed_ttl_ms), @default_completed_ttl_ms),
-        run_timeout_ms: positive_integer(Keyword.get(opts, :run_timeout_ms), nil)
+        run_timeout_ms: positive_integer(Keyword.get(opts, :run_timeout_ms), nil),
+        last_poll_monotonic_ms: monotonic_now_ms(),
+        poll_stale: false,
+        poll_stale_detected_at: nil,
+        poll_stale_recovery_attempted: false,
+        last_recovery_attempt: nil
       }
 
       state =
@@ -216,7 +250,9 @@ defmodule Kollywood.Orchestrator do
 
       state =
         if state.auto_poll do
-          schedule_poll(state, 0)
+          state
+          |> schedule_poll(0)
+          |> schedule_watchdog_tick(0)
         else
           state
         end
@@ -231,7 +267,9 @@ defmodule Kollywood.Orchestrator do
 
     state =
       if state.auto_poll do
-        schedule_poll(state, state.poll_interval_ms)
+        state
+        |> schedule_poll(state.poll_interval_ms)
+        |> schedule_watchdog_tick(state.watchdog_check_interval_ms)
       else
         state
       end
@@ -252,7 +290,26 @@ defmodule Kollywood.Orchestrator do
   def handle_info(:poll, state) do
     state = %{state | poll_timer_ref: nil}
     state = run_poll_cycle(state)
-    state = schedule_poll(state, state.poll_interval_ms)
+
+    state =
+      state
+      |> schedule_poll(state.poll_interval_ms)
+      |> schedule_watchdog_tick(state.watchdog_check_interval_ms)
+
+    {:noreply, state}
+  end
+
+  def handle_info(:watchdog_tick, state) do
+    state = %{state | watchdog_timer_ref: nil}
+    state = run_poll_watchdog(state)
+
+    state =
+      if state.auto_poll do
+        schedule_watchdog_tick(state, state.watchdog_check_interval_ms)
+      else
+        state
+      end
+
     {:noreply, state}
   end
 
@@ -454,7 +511,7 @@ defmodule Kollywood.Orchestrator do
       state
       |> prune_expired_ephemeral()
       |> apply_runtime_limits(config)
-      |> Map.put(:last_poll_at, DateTime.utc_now())
+      |> record_poll_heartbeat()
       |> clear_completed_for_open_issues(issues)
       |> reconcile_running(issues, config)
       |> prune_ineligible_retries(issues, config)
@@ -464,7 +521,10 @@ defmodule Kollywood.Orchestrator do
     else
       {:error, reason} ->
         Logger.error("Orchestrator poll failed: #{reason}")
-        %{state | last_error: reason, last_poll_at: DateTime.utc_now()}
+
+        state
+        |> Map.put(:last_error, reason)
+        |> record_poll_heartbeat()
     end
   end
 
@@ -2389,6 +2449,18 @@ defmodule Kollywood.Orchestrator do
         state.run_timeout_ms
       )
 
+    stale_threshold_multiplier =
+      positive_integer(
+        get_in(config, [Access.key(:polling, %{}), Access.key(:stale_threshold_multiplier)]),
+        state.stale_threshold_multiplier
+      )
+
+    watchdog_check_interval_ms =
+      positive_integer(
+        get_in(config, [Access.key(:polling, %{}), Access.key(:watchdog_check_interval_ms)]),
+        state.watchdog_check_interval_ms
+      )
+
     %{
       state
       | poll_interval_ms: poll_interval_ms,
@@ -2400,7 +2472,9 @@ defmodule Kollywood.Orchestrator do
         max_attempts: max_attempts,
         claim_ttl_ms: claim_ttl_ms,
         completed_ttl_ms: completed_ttl_ms,
-        run_timeout_ms: run_timeout_ms
+        run_timeout_ms: run_timeout_ms,
+        stale_threshold_multiplier: stale_threshold_multiplier,
+        watchdog_check_interval_ms: watchdog_check_interval_ms
     }
   end
 
@@ -2510,8 +2584,135 @@ defmodule Kollywood.Orchestrator do
     %{state | poll_timer_ref: ref}
   end
 
+  defp schedule_watchdog_tick(state, delay_ms) do
+    if state.watchdog_timer_ref do
+      Process.cancel_timer(state.watchdog_timer_ref)
+    end
+
+    ref = Process.send_after(self(), :watchdog_tick, delay_ms)
+    %{state | watchdog_timer_ref: ref}
+  end
+
+  defp run_poll_watchdog(state) do
+    age_ms = poll_age_ms(state)
+    threshold_ms = stale_threshold_ms(state)
+    stale? = stale_poll?(age_ms, threshold_ms)
+
+    cond do
+      not stale? ->
+        maybe_clear_stale_state(state, age_ms, threshold_ms)
+
+      state.poll_stale_recovery_attempted ->
+        diagnostics = stale_diagnostics(state, age_ms, threshold_ms)
+
+        Logger.error(
+          "orchestrator_event=poll_watchdog_restart reason=persistent_stale diagnostics=#{inspect(diagnostics)}"
+        )
+
+        exit({:poll_watchdog_stale, diagnostics})
+
+      true ->
+        state =
+          if state.poll_stale do
+            state
+          else
+            Logger.warning(
+              "orchestrator_event=poll_watchdog_stale_detected diagnostics=#{inspect(stale_diagnostics(state, age_ms, threshold_ms))}"
+            )
+
+            %{state | poll_stale: true, poll_stale_detected_at: now()}
+          end
+
+        run_watchdog_recovery_poll(state, age_ms, threshold_ms)
+    end
+  end
+
+  defp run_watchdog_recovery_poll(state, age_ms, threshold_ms) do
+    attempted_at = now()
+
+    Logger.warning(
+      "orchestrator_event=poll_watchdog_recovery_attempt diagnostics=#{inspect(stale_diagnostics(state, age_ms, threshold_ms))}"
+    )
+
+    state =
+      state
+      |> Map.put(:poll_stale_recovery_attempted, true)
+      |> run_poll_cycle()
+      |> maybe_reschedule_poll_after_watchdog_recovery()
+
+    post_recovery_age_ms = poll_age_ms(state)
+    still_stale? = stale_poll?(post_recovery_age_ms, threshold_ms)
+
+    outcome = if still_stale?, do: :still_stale, else: :recovered
+
+    state =
+      Map.put(state, :last_recovery_attempt, %{
+        attempted_at: attempted_at,
+        stale_age_ms: age_ms,
+        threshold_ms: threshold_ms,
+        post_recovery_age_ms: post_recovery_age_ms,
+        outcome: outcome
+      })
+
+    if still_stale? do
+      state
+    else
+      Logger.info(
+        "orchestrator_event=poll_watchdog_recovery_succeeded diagnostics=#{inspect(stale_diagnostics(state, post_recovery_age_ms, threshold_ms))}"
+      )
+
+      %{
+        state
+        | poll_stale: false,
+          poll_stale_detected_at: nil,
+          poll_stale_recovery_attempted: false
+      }
+    end
+  end
+
+  defp maybe_reschedule_poll_after_watchdog_recovery(state) do
+    if state.auto_poll do
+      schedule_poll(state, state.poll_interval_ms)
+    else
+      state
+    end
+  end
+
+  defp maybe_clear_stale_state(state, age_ms, threshold_ms) do
+    if state.poll_stale do
+      Logger.info(
+        "orchestrator_event=poll_watchdog_stale_cleared diagnostics=#{inspect(stale_diagnostics(state, age_ms, threshold_ms))}"
+      )
+
+      %{
+        state
+        | poll_stale: false,
+          poll_stale_detected_at: nil,
+          poll_stale_recovery_attempted: false
+      }
+    else
+      state
+    end
+  end
+
+  defp stale_diagnostics(state, age_ms, threshold_ms) do
+    %{
+      stale: stale_poll?(age_ms, threshold_ms),
+      age_ms: age_ms,
+      threshold_ms: threshold_ms,
+      poll_interval_ms: state.poll_interval_ms,
+      stale_threshold_multiplier: state.stale_threshold_multiplier,
+      last_poll_at: state.last_poll_at,
+      stale_detected_at: state.poll_stale_detected_at,
+      recovery_attempted: state.poll_stale_recovery_attempted
+    }
+  end
+
   defp status_snapshot(state) do
     now_ms = System.monotonic_time(:millisecond)
+    poll_age_ms = poll_age_ms(state, now_ms)
+    stale_threshold_ms = stale_threshold_ms(state)
+    poll_stale = stale_poll?(poll_age_ms, stale_threshold_ms)
 
     running =
       state.running
@@ -2568,7 +2769,17 @@ defmodule Kollywood.Orchestrator do
       completed_ttl_ms: state.completed_ttl_ms,
       run_timeout_ms: state.run_timeout_ms,
       last_error: state.last_error,
-      last_poll_at: state.last_poll_at
+      last_poll_at: state.last_poll_at,
+      watchdog: %{
+        stale: poll_stale,
+        age_ms: poll_age_ms,
+        threshold_ms: stale_threshold_ms,
+        stale_threshold_multiplier: state.stale_threshold_multiplier,
+        check_interval_ms: state.watchdog_check_interval_ms,
+        stale_detected_at: state.poll_stale_detected_at,
+        recovery_attempted: state.poll_stale_recovery_attempted,
+        last_recovery_attempt: state.last_recovery_attempt
+      }
     }
   end
 
@@ -2590,6 +2801,32 @@ defmodule Kollywood.Orchestrator do
         0
     end
   end
+
+  defp record_poll_heartbeat(state) do
+    %{state | last_poll_at: now(), last_poll_monotonic_ms: monotonic_now_ms()}
+  end
+
+  defp stale_threshold_ms(state) do
+    state.poll_interval_ms * state.stale_threshold_multiplier
+  end
+
+  defp poll_age_ms(state, now_ms \\ monotonic_now_ms()) do
+    case state.last_poll_monotonic_ms do
+      last_ms when is_integer(last_ms) and is_integer(now_ms) ->
+        max(now_ms - last_ms, 0)
+
+      _other ->
+        nil
+    end
+  end
+
+  defp stale_poll?(age_ms, threshold_ms)
+       when is_integer(age_ms) and is_integer(threshold_ms) and threshold_ms > 0,
+       do: age_ms >= threshold_ms
+
+  defp stale_poll?(_age_ms, _threshold_ms), do: false
+
+  defp monotonic_now_ms, do: System.monotonic_time(:millisecond)
 
   defp maybe_cleanup_terminal_workspace(state, _run_entry, _config), do: state
 
