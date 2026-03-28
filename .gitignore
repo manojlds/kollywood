@@ -38,5 +38,7 @@ npm-debug.log
 erl_crash.dump
 .process-compose.log
 .devenv/
-.kollywood/
+.kollywood/*
+!.kollywood/AGENTS.md
+!.kollywood/WORKFLOW.md
 *.beam

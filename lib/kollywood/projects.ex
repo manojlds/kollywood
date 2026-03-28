@@ -144,7 +144,7 @@ defmodule Kollywood.Projects do
         end
 
       attrs
-      |> Map.put_new("workflow_path", Path.join(local_path, "WORKFLOW.md"))
+      |> Map.put_new("workflow_path", Path.join([local_path, ".kollywood", "WORKFLOW.md"]))
       |> Map.put_new("tracker_path", tracker_path)
       |> Map.put("local_path", local_path)
     else

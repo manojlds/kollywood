@@ -6,13 +6,14 @@ defmodule Kollywood.Application do
   use Application
 
   alias Kollywood.AppMode
+  alias Kollywood.ServiceConfig
 
   @impl true
   def start(_type, _args) do
     app_mode = AppMode.normalize(Application.get_env(:kollywood, :app_mode, :all))
 
     workflow_path =
-      Application.get_env(:kollywood, :workflow_path, Path.join(File.cwd!(), "WORKFLOW.md"))
+      Application.get_env(:kollywood, :workflow_path, ServiceConfig.default_workflow_path())
 
     workflow_store_opts = [path: workflow_path]
 
