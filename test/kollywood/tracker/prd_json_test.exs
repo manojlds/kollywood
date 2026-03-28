@@ -198,6 +198,37 @@ defmodule Kollywood.Tracker.PrdJsonTest do
     assert story_after_merge["notes"] =~ ~r/\[\d{4}-\d{2}-\d{2}T[^\]]+\] merged to main/
   end
 
+  test "lists pending_merge stories with pr_url", %{root: root} do
+    path = Path.join(root, "prd.json")
+
+    write_prd!(path, [
+      %{
+        "id" => "US-040",
+        "title" => "Pending merge story",
+        "status" => "pending_merge",
+        "priority" => 1,
+        "pr_url" => "https://example.test/pulls/40"
+      },
+      %{
+        "id" => "US-041",
+        "title" => "Pending merge without url",
+        "status" => "pending_merge",
+        "priority" => 2
+      },
+      %{"id" => "US-042", "title" => "Open story", "status" => "open", "priority" => 3}
+    ])
+
+    cfg = config(path)
+
+    assert {:ok, issues} = PrdJson.list_pending_merge_issues(cfg)
+    assert length(issues) == 1
+
+    issue = hd(issues)
+    assert issue.id == "US-040"
+    assert issue.state == "pending_merge"
+    assert issue.pr_url == "https://example.test/pulls/40"
+  end
+
   test "create, update, and delete story helpers", %{root: root} do
     path = Path.join(root, "prd.json")
 

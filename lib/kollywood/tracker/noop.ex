@@ -10,6 +10,10 @@ defmodule Kollywood.Tracker.Noop do
   def list_active_issues(_config), do: {:ok, []}
 
   @impl true
+  @spec list_pending_merge_issues(Kollywood.Config.t()) :: {:ok, [map()]}
+  def list_pending_merge_issues(_config), do: {:ok, []}
+
+  @impl true
   @spec claim_issue(Kollywood.Config.t(), String.t()) :: :ok
   def claim_issue(_config, _issue_id), do: :ok
 
