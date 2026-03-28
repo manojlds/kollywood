@@ -94,6 +94,34 @@ defmodule Kollywood.Orchestrator.RunPhaseTest do
       assert phase.label == "Review cycle 2"
       assert phase.event_type == "review_started"
     end
+
+    test "preserves terminal initial phase when replayed events are non-terminal" do
+      phase =
+        RunPhase.from_events(
+          [
+            %{type: :checks_started, check_count: 2},
+            %{type: :check_started, check_index: 1}
+          ],
+          initial_phase: RunPhase.from_status("failed")
+        )
+
+      assert phase.kind == "failed"
+      assert phase.label == "Run failed"
+    end
+
+    test "preserves finished initial phase when replayed events are non-terminal" do
+      phase =
+        RunPhase.from_events(
+          [
+            %{type: :checks_started, check_count: 2},
+            %{type: :check_started, check_index: 1}
+          ],
+          initial_phase: RunPhase.from_status("finished")
+        )
+
+      assert phase.kind == "finished"
+      assert phase.label == "Run finished"
+    end
   end
 
   describe "from_status/2" do
