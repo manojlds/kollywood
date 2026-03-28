@@ -1840,13 +1840,7 @@ defmodule Kollywood.Orchestrator do
   defp publish_pending_merge?(%Result{} = result) do
     Enum.any?(result.events || [], fn event ->
       type = Map.get(event, :type) || Map.get(event, "type")
-
-      type in [
-        :publish_pr_created,
-        "publish_pr_created",
-        :publish_merge_failed,
-        "publish_merge_failed"
-      ]
+      type in [:publish_pr_created, "publish_pr_created"]
     end)
   end
 

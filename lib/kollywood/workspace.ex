@@ -133,7 +133,11 @@ defmodule Kollywood.Workspace do
   def push_branch(%__MODULE__{}), do: {:error, "push_branch only supported for worktree strategy"}
 
   @doc """
-  Merges the workspace branch into `base_branch` in the source repo and pushes it to origin.
+  Merges the workspace branch into `base_branch`.
+
+  Default path merges in the source repo and pushes to origin.
+  For local non-bare origins with `base_branch` checked out, merges directly in the origin
+  repository (stashing and restoring local changes) to avoid `denyCurrentBranch` push rejection.
   Only applicable for the `:worktree` strategy.
   """
   @spec merge_branch_to_main(t(), String.t()) :: :ok | {:error, String.t()}
@@ -142,10 +146,10 @@ defmodule Kollywood.Workspace do
         base_branch
       )
       when is_binary(branch) and is_binary(base_branch) do
+    base_branch = String.trim(base_branch)
+
     with {:ok, source} <- source_repo(workspace),
-         {_, 0} <- git(["checkout", base_branch], source),
-         {_, 0} <- git(["merge", "--no-ff", branch, "-m", "Merge branch '#{branch}'"], source),
-         {_, 0} <- git(["push", "origin", base_branch], source) do
+         :ok <- merge_branch_into_base(source, branch, base_branch) do
       :ok
     else
       {:error, reason} -> {:error, reason}
@@ -297,6 +301,140 @@ defmodule Kollywood.Workspace do
     else
       {:error, "Workspace path #{path} is outside root #{root} (path traversal blocked)"}
     end
+  end
+
+  defp merge_branch_into_base(source, branch, base_branch) do
+    case resolve_checked_out_origin(source, base_branch) do
+      {:ok, origin_repo} ->
+        merge_in_origin_repo(origin_repo, branch, base_branch)
+
+      :error ->
+        merge_in_source_repo(source, branch, base_branch)
+    end
+  end
+
+  defp merge_in_source_repo(source, branch, base_branch) do
+    with {_, 0} <- git(["checkout", base_branch], source),
+         {_, 0} <- git(["merge", "--no-ff", branch, "-m", "Merge branch '#{branch}'"], source),
+         {_, 0} <- git(["push", "origin", base_branch], source) do
+      :ok
+    else
+      {output, code} -> {:error, "merge to main failed (exit #{code}): #{String.trim(output)}"}
+    end
+  end
+
+  defp merge_in_origin_repo(origin_repo, branch, base_branch) do
+    stashed? = stash_local_changes?(origin_repo, branch)
+
+    with {_, 0} <- git(["checkout", base_branch], origin_repo),
+         {_, 0} <-
+           git(["merge", "--no-ff", branch, "-m", "Merge branch '#{branch}'"], origin_repo),
+         :ok <- maybe_restore_stash(origin_repo, stashed?) do
+      :ok
+    else
+      {output, code} ->
+        _ = maybe_abort_merge(origin_repo)
+        _ = maybe_restore_stash(origin_repo, stashed?)
+        {:error, "merge to main failed (exit #{code}): #{String.trim(output)}"}
+    end
+  end
+
+  defp resolve_checked_out_origin(source, base_branch) do
+    with {:ok, origin_repo} <- resolve_local_origin_repo(source),
+         true <- File.dir?(origin_repo),
+         false <- bare_repo?(origin_repo),
+         {:ok, current_branch} <- current_branch(origin_repo),
+         true <- current_branch == base_branch do
+      {:ok, origin_repo}
+    else
+      _ -> :error
+    end
+  end
+
+  defp resolve_local_origin_repo(source) do
+    case git(["config", "--get", "remote.origin.url"], source) do
+      {url, 0} ->
+        parse_local_origin_repo(String.trim(url), source)
+
+      {_output, _code} ->
+        {:error, "could not resolve origin for #{source}"}
+    end
+  end
+
+  defp parse_local_origin_repo("", _source), do: {:error, "origin URL is empty"}
+
+  defp parse_local_origin_repo("file://" <> rest, _source) do
+    {:ok, Path.expand(URI.decode(rest))}
+  end
+
+  defp parse_local_origin_repo(url, source) do
+    if local_origin_path?(url) do
+      {:ok, Path.expand(url, source)}
+    else
+      {:error, "origin is not a local repository path"}
+    end
+  end
+
+  defp local_origin_path?(url) when is_binary(url) do
+    not String.contains?(url, "://") and
+      not Regex.match?(~r/^[^\/]+@[^:]+:.+$/, url)
+  end
+
+  defp bare_repo?(repo) do
+    case git(["rev-parse", "--is-bare-repository"], repo) do
+      {output, 0} -> String.trim(output) == "true"
+      _ -> false
+    end
+  end
+
+  defp current_branch(repo) do
+    case git(["rev-parse", "--abbrev-ref", "HEAD"], repo) do
+      {branch, 0} ->
+        {:ok, String.trim(branch)}
+
+      {output, code} ->
+        {:error, "failed to read current branch (exit #{code}): #{String.trim(output)}"}
+    end
+  end
+
+  defp stash_local_changes?(repo, branch) do
+    case git(["status", "--porcelain"], repo) do
+      {"", 0} ->
+        false
+
+      {changes, 0} when is_binary(changes) ->
+        case git(
+               ["stash", "push", "--include-untracked", "-m", "kollywood auto-merge #{branch}"],
+               repo
+             ) do
+          {_output, 0} -> true
+          _ -> false
+        end
+
+      _ ->
+        false
+    end
+  end
+
+  defp maybe_restore_stash(_repo, false), do: :ok
+
+  defp maybe_restore_stash(repo, true) do
+    case git(["stash", "pop"], repo) do
+      {_output, 0} ->
+        :ok
+
+      {output, _code} ->
+        Logger.warning(
+          "Merged main but could not restore stashed changes in #{repo}; run `git stash list` and resolve manually: #{String.trim(output)}"
+        )
+
+        :ok
+    end
+  end
+
+  defp maybe_abort_merge(repo) do
+    _ = git(["merge", "--abort"], repo)
+    :ok
   end
 
   defp run_hook(nil, _cwd, _name), do: :ok

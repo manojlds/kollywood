@@ -161,6 +161,27 @@ defmodule Kollywood.WorkspaceTest do
     %{origin: origin, source: source}
   end
 
+  defp setup_worktree_checked_out_origin_repo(root) do
+    origin = Path.join(root, "origin_repo")
+    source = Path.join(root, "source_repo")
+
+    File.mkdir_p!(origin)
+    run_git!(["init", "-b", "main"], origin)
+    run_git!(["config", "user.email", "test@test.com"], origin)
+    run_git!(["config", "user.name", "Test"], origin)
+
+    File.write!(Path.join(origin, "README.md"), "# Origin")
+    run_git!(["add", "."], origin)
+    run_git!(["commit", "-m", "init"], origin)
+
+    run_git!(["clone", origin, source], root)
+    run_git!(["config", "user.email", "test@test.com"], source)
+    run_git!(["config", "user.name", "Test"], source)
+    run_git!(["checkout", "main"], source)
+
+    %{origin: origin, source: source}
+  end
+
   defp run_git!(args, cwd) do
     {output, code} = System.cmd("git", args, cd: cwd, stderr_to_stdout: true)
 
@@ -275,5 +296,38 @@ defmodule Kollywood.WorkspaceTest do
     run_git!(["clone", origin, Path.join(root, "verify")], root)
     run_git!(["checkout", "main"], Path.join(root, "verify"))
     assert File.read!(Path.join([root, "verify", "feature.txt"])) == "merged"
+  end
+
+  test "merges into checked-out local origin by stashing and restoring changes", %{root: root} do
+    %{origin: origin, source: source} = setup_worktree_checked_out_origin_repo(root)
+    wt_root = Path.join(root, "worktrees")
+
+    config = %{
+      workspace: %{root: wt_root, strategy: :worktree, source: source, branch_prefix: "kw/"},
+      hooks: @no_hooks
+    }
+
+    {:ok, workspace} = Workspace.create_for_issue("WT-LOCAL-MERGE", config)
+    run_git!(["config", "user.email", "test@test.com"], workspace.path)
+    run_git!(["config", "user.name", "Test"], workspace.path)
+
+    File.write!(Path.join(workspace.path, "feature.txt"), "merged")
+    run_git!(["add", "feature.txt"], workspace.path)
+    run_git!(["commit", "-m", "add feature"], workspace.path)
+
+    assert :ok = Workspace.push_branch(workspace)
+
+    File.write!(Path.join(origin, "local_dirty.txt"), "dirty")
+    File.write!(Path.join(origin, "local_untracked.txt"), "untracked")
+
+    assert :ok = Workspace.merge_branch_to_main(workspace, "main")
+
+    assert File.read!(Path.join(origin, "feature.txt")) == "merged"
+    assert File.read!(Path.join(origin, "local_dirty.txt")) == "dirty"
+    assert File.read!(Path.join(origin, "local_untracked.txt")) == "untracked"
+
+    {status, 0} = System.cmd("git", ["status", "--porcelain"], cd: origin, stderr_to_stdout: true)
+    assert status =~ " local_dirty.txt"
+    assert status =~ "?? local_untracked.txt"
   end
 end
