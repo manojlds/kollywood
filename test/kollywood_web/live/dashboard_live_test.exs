@@ -859,13 +859,9 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "#1"
     end
 
-    test "runs page shows derived phase label for attempts", %{
-      conn: conn,
-      project: project,
-      tmp_root: tmp_root
-    } do
+    test "runs page shows derived phase label for attempts", %{conn: conn, project: project} do
       _ =
-        prepare_run_logs!(tmp_root, "US-PHASE-RUN",
+        prepare_run_logs!(project.slug, "US-PHASE-RUN",
           events: [
             %{type: :checks_started, check_count: 2},
             %{type: :check_started, check_index: 1}
@@ -878,13 +874,31 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "Checks 1/2"
     end
 
-    test "runs page preserves failed terminal status when terminal event is missing", %{
+    test "runs page moves past transient checks_failed once remediation turn starts", %{
       conn: conn,
-      project: project,
-      tmp_root: tmp_root
+      project: project
     } do
       _ =
-        prepare_run_logs!(tmp_root, "US-FAILED-PHASE",
+        prepare_run_logs!(project.slug, "US-REMEDIATION-PHASE",
+          events: [
+            %{type: :checks_failed, error_count: 1},
+            %{type: :turn_started, turn: 2}
+          ],
+          status: "running"
+        )
+
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/runs")
+
+      assert html =~ "Agent turn 2"
+      refute html =~ "Checks failed"
+    end
+
+    test "runs page preserves failed terminal status when terminal event is missing", %{
+      conn: conn,
+      project: project
+    } do
+      _ =
+        prepare_run_logs!(project.slug, "US-FAILED-PHASE",
           events: [
             %{type: :checks_started, check_count: 2},
             %{type: :check_started, check_index: 1}
@@ -898,13 +912,9 @@ defmodule KollywoodWeb.DashboardLiveTest do
       refute html =~ "Checks 1/2"
     end
 
-    test "stories page shows last run phase label", %{
-      conn: conn,
-      project: project,
-      tmp_root: tmp_root
-    } do
+    test "stories page shows last run phase label", %{conn: conn, project: project} do
       _ =
-        prepare_run_logs!(tmp_root, "US-001",
+        prepare_run_logs!(project.slug, "US-001",
           events: [
             %{type: :turn_started, turn: 2}
           ],

@@ -260,7 +260,8 @@ defmodule Kollywood.Orchestrator.RunPhase do
 
   defp choose_phase(phase, last_phase) do
     cond do
-      terminal?(last_phase) and not terminal?(phase) ->
+      terminal?(last_phase) and not terminal?(phase) and
+          not recoverable_terminal_phase?(last_phase) ->
         last_phase
 
       stale_phase?(phase, last_phase) ->
@@ -299,6 +300,26 @@ defmodule Kollywood.Orchestrator.RunPhase do
   end
 
   defp normalize_timestamp(_timestamp), do: nil
+
+  defp recoverable_terminal_phase?(%{} = phase) do
+    phase
+    |> map_get(:event_type)
+    |> recoverable_terminal_event_type?()
+  end
+
+  defp recoverable_terminal_phase?(_phase), do: false
+
+  defp recoverable_terminal_event_type?(value) when is_binary(value) do
+    value in ["checks_failed", "review_failed"]
+  end
+
+  defp recoverable_terminal_event_type?(value) when is_atom(value) do
+    value
+    |> Atom.to_string()
+    |> recoverable_terminal_event_type?()
+  end
+
+  defp recoverable_terminal_event_type?(_value), do: false
 
   defp normalize_status(value) when is_binary(value),
     do: value |> String.trim() |> String.downcase()

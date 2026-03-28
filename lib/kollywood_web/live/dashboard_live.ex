@@ -894,13 +894,19 @@ defmodule KollywoodWeb.DashboardLive do
         </div>
       <% else %>
         <%= if @stories_view == "kanban" do %>
-          <.stories_kanban_view groups={@groups} project={@project} editable={@editable} />
+          <.stories_kanban_view
+            groups={@groups}
+            project={@project}
+            editable={@editable}
+            latest_run_by_story={@latest_run_by_story}
+          />
         <% else %>
           <.stories_list_view
             groups={@groups}
             project={@project}
             editable={@editable}
             collapsed_story_groups={@collapsed_story_groups}
+            latest_run_by_story={@latest_run_by_story}
           />
         <% end %>
       <% end %>
@@ -983,6 +989,7 @@ defmodule KollywoodWeb.DashboardLive do
   attr :project, Project, required: true
   attr :editable, :boolean, default: false
   attr :collapsed_story_groups, :any, default: MapSet.new()
+  attr :latest_run_by_story, :map, default: %{}
 
   defp stories_list_view(assigns) do
     assigns =
@@ -1028,7 +1035,12 @@ defmodule KollywoodWeb.DashboardLive do
             <%= unless collapsed do %>
               <div id={"stories-list-group-content-#{status}"} class="space-y-2 px-4 pb-4">
                 <%= for story <- stories do %>
-                  <.story_card story={story} project={@project} editable={@editable} />
+                  <.story_card
+                    story={story}
+                    project={@project}
+                    editable={@editable}
+                    latest_run={Map.get(@latest_run_by_story, story["id"])}
+                  />
                 <% end %>
               </div>
             <% end %>
@@ -1042,6 +1054,7 @@ defmodule KollywoodWeb.DashboardLive do
   attr :groups, :map, required: true
   attr :project, Project, required: true
   attr :editable, :boolean, default: false
+  attr :latest_run_by_story, :map, default: %{}
 
   defp stories_kanban_view(assigns) do
     assigns = assign(assigns, :status_columns, @story_status_columns)
@@ -1060,6 +1073,7 @@ defmodule KollywoodWeb.DashboardLive do
             stories={Map.get(@groups, status, [])}
             project={@project}
             editable={@editable}
+            latest_run_by_story={@latest_run_by_story}
           />
         <% end %>
       </div>
@@ -1521,6 +1535,7 @@ defmodule KollywoodWeb.DashboardLive do
   attr :stories, :list, default: []
   attr :project, Project, required: true
   attr :editable, :boolean, default: false
+  attr :latest_run_by_story, :map, default: %{}
 
   defp stories_kanban_column(assigns) do
     assigns =
@@ -1551,7 +1566,12 @@ defmodule KollywoodWeb.DashboardLive do
           <p class="px-1 py-4 text-xs text-base-content/40">No stories</p>
         <% else %>
           <%= for story <- @stories do %>
-            <.story_card story={story} project={@project} editable={@editable} />
+            <.story_card
+              story={story}
+              project={@project}
+              editable={@editable}
+              latest_run={Map.get(@latest_run_by_story, story["id"])}
+            />
           <% end %>
         <% end %>
       </div>
@@ -1562,6 +1582,7 @@ defmodule KollywoodWeb.DashboardLive do
   attr :story, :map, required: true
   attr :project, Project, required: true
   attr :editable, :boolean, default: false
+  attr :latest_run, :map, default: nil
 
   defp story_card(assigns) do
     status = normalize_status(assigns.story["status"])
@@ -1626,6 +1647,14 @@ defmodule KollywoodWeb.DashboardLive do
             <%= if @story["priority"] do %>
               <p class="text-xs text-base-content/60">
                 Priority: <span class="capitalize">{to_string(@story["priority"])}</span>
+              </p>
+            <% end %>
+
+            <%= if @latest_run do %>
+              <p class="text-xs text-base-content/60">
+                Last run: {Map.get(@latest_run, :phase_label, "Unknown phase")} · {run_number(
+                  Map.get(@latest_run, :attempt)
+                )}
               </p>
             <% end %>
           </div>
@@ -3636,12 +3665,6 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp derive_phase_map(_attempt_dir, _metadata), do: RunPhase.unknown()
-
-  defp derive_phase_label_for_attempt(attempt_dir, metadata) do
-    attempt_dir
-    |> derive_phase_map(metadata)
-    |> RunPhase.label()
-  end
 
   defp read_events_jsonl(path) when is_binary(path) do
     if File.exists?(path) do
