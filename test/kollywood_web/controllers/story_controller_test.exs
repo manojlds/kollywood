@@ -1,6 +1,8 @@
 defmodule KollywoodWeb.StoryControllerTest do
   use KollywoodWeb.ConnCase, async: true
 
+  alias Kollywood.Config
+  alias Kollywood.Orchestrator.RunLogs
   alias Kollywood.Projects
 
   setup do
@@ -93,6 +95,61 @@ defmodule KollywoodWeb.StoryControllerTest do
     assert error =~ "depended on by US-002"
   end
 
+  test "retry_step triggers a checks retry for a failed attempt", %{
+    conn: conn,
+    project: project
+  } do
+    write_workflow!(project, """
+    ---
+    tracker:
+      kind: prd_json
+    workspace:
+      strategy: clone
+    agent:
+      kind: amp
+      command: /bin/true
+    quality:
+      max_cycles: 1
+      checks:
+        required:
+          - test -f ready.txt
+        timeout_ms: 10000
+        fail_fast: true
+        max_cycles: 1
+      review:
+        enabled: false
+        max_cycles: 1
+    publish:
+      mode: push
+    orchestrator:
+      retries_enabled: false
+    git:
+      base_branch: main
+    ---
+
+    Work on {{ issue.identifier }}.
+    """)
+
+    workspace_path =
+      Path.join(System.tmp_dir!(), "story-controller-retry-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(workspace_path)
+    File.write!(Path.join(workspace_path, "ready.txt"), "ok\n")
+
+    seed_failed_attempt!(project.slug, "US-001", workspace_path)
+
+    conn =
+      post(conn, ~p"/api/projects/#{project.slug}/stories/US-001/retries", %{
+        "attempt" => "1",
+        "step" => "checks"
+      })
+
+    assert %{"data" => data} = json_response(conn, 202)
+    assert data["retry_step"] == "checks"
+    assert data["parent_attempt"] == 1
+    assert data["attempt"] == 2
+  end
+
   defp write_prd!(path, stories) do
     payload = %{
       "project" => "kollywood",
@@ -112,5 +169,42 @@ defmodule KollywoodWeb.StoryControllerTest do
     decoded
     |> Map.fetch!("userStories")
     |> Enum.map(& &1["id"])
+  end
+
+  defp write_workflow!(project, content) do
+    workflow_path = Projects.workflow_path(project)
+    File.mkdir_p!(Path.dirname(workflow_path))
+    File.write!(workflow_path, content)
+  end
+
+  defp seed_failed_attempt!(project_slug, story_id, workspace_path) do
+    config = %Config{
+      workspace: %{root: Path.join(System.tmp_dir!(), "kollywood_story_controller_workspaces")},
+      tracker: %{project_slug: project_slug}
+    }
+
+    issue = %{id: story_id, identifier: story_id, title: "Story #{story_id}"}
+    {:ok, context} = RunLogs.prepare_attempt(config, issue, nil)
+
+    :ok = RunLogs.append_event(context, %{type: :turn_succeeded, turn: 1, output: "agent output"})
+    :ok = RunLogs.append_event(context, %{type: :checks_started, check_count: 1})
+
+    :ok =
+      RunLogs.append_event(context, %{
+        type: :check_failed,
+        check_index: 1,
+        command: "test -f ready.txt",
+        reason: "missing"
+      })
+
+    :ok = RunLogs.append_event(context, %{type: :checks_failed, error_count: 1})
+
+    :ok =
+      RunLogs.complete_attempt(context, %{
+        status: "failed",
+        turn_count: 1,
+        workspace_path: workspace_path,
+        error: "checks failed"
+      })
   end
 end

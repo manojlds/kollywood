@@ -25,6 +25,7 @@ defmodule Kollywood.AgentRunner do
           | {:config, Config.t()}
           | {:prompt_template, String.t()}
           | {:attempt, non_neg_integer() | nil}
+          | {:workspace, Workspace.t()}
           | {:mode, mode()}
           | {:turn_limit, pos_integer()}
           | {:session_opts, map() | keyword()}
@@ -125,6 +126,152 @@ defmodule Kollywood.AgentRunner do
 
     {:error, result}
   end
+
+  @doc """
+  Retries a failed terminal step (`checks`, `review`, or `publish`) using an
+  existing workspace and skipping agent turns.
+  """
+  @spec retry_step(map(), :checks | :review | :publish, run_opts()) ::
+          {:ok, Result.t()} | {:error, Result.t()}
+  def retry_step(issue, step, opts \\ [])
+
+  def retry_step(issue, step, opts) when is_map(issue) and is_list(opts) do
+    started_at = DateTime.utc_now()
+
+    with {:ok, on_event} <- parse_on_event(Keyword.get(opts, :on_event, &default_on_event/1)),
+         {:ok, attempt} <- parse_attempt(Keyword.get(opts, :attempt)),
+         {:ok, issue_meta} <- issue_meta(issue),
+         {:ok, config, prompt_template} <- resolve_workflow(opts),
+         {:ok, retry_step} <- parse_retry_step(step),
+         {:ok, session_opts} <-
+           normalize_opts(Keyword.get(opts, :session_opts, %{}), "session_opts"),
+         {:ok, turn_opts} <- normalize_opts(Keyword.get(opts, :turn_opts, %{}), "turn_opts"),
+         {:ok, workspace} <- resolve_retry_workspace(Keyword.get(opts, :workspace)) do
+      log_files = Keyword.get(opts, :log_files)
+
+      runtime = runtime_for_workspace(config, workspace)
+
+      state = %{
+        issue: issue,
+        issue_id: issue_meta.id,
+        identifier: issue_meta.identifier,
+        started_at: started_at,
+        workspace: workspace,
+        runtime: runtime,
+        session: nil,
+        turn_count: 0,
+        last_output: nil,
+        events_rev: [],
+        on_event: on_event,
+        attempt: attempt,
+        log_files: log_files
+      }
+
+      state =
+        state
+        |> emit(:run_started, %{attempt: attempt, mode: :step_retry, retry_step: retry_step})
+        |> emit(:workspace_ready, %{
+          workspace_path: workspace.path,
+          runtime_profile: runtime.profile
+        })
+
+      outcome =
+        case run_retry_step_pipeline(
+               state,
+               config,
+               prompt_template,
+               retry_step,
+               session_opts,
+               turn_opts
+             ) do
+          {:ok, pipeline_state} ->
+            {:ok, :ok, pipeline_state}
+
+          {:error, reason, pipeline_state} ->
+            {:error, reason, pipeline_state}
+        end
+
+      finalize_run_with_runtime(outcome)
+    else
+      {:error, reason} ->
+        result = %Result{
+          status: :failed,
+          started_at: started_at,
+          ended_at: DateTime.utc_now(),
+          error: reason
+        }
+
+        {:error, result}
+    end
+  end
+
+  def retry_step(_issue, _step, _opts) do
+    started_at = DateTime.utc_now()
+
+    result = %Result{
+      status: :failed,
+      started_at: started_at,
+      ended_at: DateTime.utc_now(),
+      error: "Issue must be a map and options must be a keyword list"
+    }
+
+    {:error, result}
+  end
+
+  defp run_retry_step_pipeline(
+         state,
+         config,
+         _prompt_template,
+         :checks,
+         _session_opts,
+         _turn_opts
+       ) do
+    with {:ok, state} <- run_required_checks(state, config),
+         {:ok, state} <- run_review_if_enabled(state, config, 1),
+         {:ok, state} <- run_publish(state, config) do
+      {:ok, state}
+    else
+      {:checks_failed, reason, state} -> {:error, reason, state}
+      {:review_failed, reason, state} -> {:error, reason, state}
+      {:error, reason, state} -> {:error, reason, state}
+      {:error, reason} -> {:error, reason, state}
+    end
+  end
+
+  defp run_retry_step_pipeline(
+         state,
+         config,
+         _prompt_template,
+         :review,
+         _session_opts,
+         _turn_opts
+       ) do
+    with {:ok, state} <- run_review_if_enabled(state, config, 1),
+         {:ok, state} <- run_publish(state, config) do
+      {:ok, state}
+    else
+      {:review_failed, reason, state} -> {:error, reason, state}
+      {:error, reason, state} -> {:error, reason, state}
+      {:error, reason} -> {:error, reason, state}
+    end
+  end
+
+  defp run_retry_step_pipeline(
+         state,
+         config,
+         _prompt_template,
+         :publish,
+         _session_opts,
+         _turn_opts
+       ) do
+    case run_publish(state, config) do
+      {:ok, state} -> {:ok, state}
+      {:error, reason, state} -> {:error, reason, state}
+    end
+  end
+
+  defp resolve_retry_workspace(%Workspace{} = workspace), do: {:ok, workspace}
+  defp resolve_retry_workspace(_workspace), do: {:error, "workspace is required for step retries"}
 
   defp run_with_session(state, config, prompt_template, mode, turn_limit, session_opts, turn_opts) do
     case Agent.start_session(config, state.workspace, session_opts) do
@@ -2276,6 +2423,11 @@ defmodule Kollywood.AgentRunner do
 
   defp parse_mode(mode) when mode in [:single_turn, :max_turns], do: {:ok, mode}
   defp parse_mode(_mode), do: {:error, "mode must be :single_turn or :max_turns"}
+
+  defp parse_retry_step(step) when step in [:checks, :review, :publish], do: {:ok, step}
+
+  defp parse_retry_step(_step),
+    do: {:error, "retry step must be one of: :checks, :review, :publish"}
 
   defp parse_attempt(nil), do: {:ok, nil}
   defp parse_attempt(value) when is_integer(value) and value >= 0, do: {:ok, value}
