@@ -16,12 +16,21 @@ import Config
 #
 # Alternatively, you can use `mix phx.gen.release` to generate a `bin/server`
 # script that automatically sets the env var above.
-if System.get_env("PHX_SERVER") do
+phx_server_enabled? =
+  System.get_env("PHX_SERVER")
+  |> to_string()
+  |> String.trim()
+  |> String.downcase()
+  |> then(&(&1 in ["1", "true", "yes", "on"]))
+
+if config_env() != :test and phx_server_enabled? do
   config :kollywood, KollywoodWeb.Endpoint, server: true
 end
 
-config :kollywood, KollywoodWeb.Endpoint,
-  http: [port: String.to_integer(System.get_env("PORT", "4000"))]
+if config_env() != :test do
+  config :kollywood, KollywoodWeb.Endpoint,
+    http: [port: String.to_integer(System.get_env("PORT", "4000"))]
+end
 
 app_mode =
   case System.get_env("KOLLYWOOD_APP_MODE") do
