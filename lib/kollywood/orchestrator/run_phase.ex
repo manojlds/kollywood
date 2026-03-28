@@ -172,7 +172,7 @@ defmodule Kollywood.Orchestrator.RunPhase do
 
     phase
     |> maybe_put_timestamp(map_get(event, :timestamp))
-    |> Kernel.||(last_phase)
+    |> choose_phase(last_phase)
   end
 
   def from_event(_event, last_phase), do: last_phase
@@ -250,6 +250,46 @@ defmodule Kollywood.Orchestrator.RunPhase do
   defp maybe_put_timestamp(phase, timestamp) do
     Map.put(phase, :timestamp, timestamp)
   end
+
+  defp choose_phase(nil, last_phase), do: last_phase
+  defp choose_phase(phase, nil), do: phase
+
+  defp choose_phase(phase, last_phase) do
+    if stale_phase?(phase, last_phase) do
+      last_phase
+    else
+      phase
+    end
+  end
+
+  defp stale_phase?(phase, last_phase) do
+    case {timestamp_datetime(phase), timestamp_datetime(last_phase)} do
+      {%DateTime{} = phase_timestamp, %DateTime{} = last_timestamp} ->
+        DateTime.compare(phase_timestamp, last_timestamp) == :lt
+
+      _other ->
+        false
+    end
+  end
+
+  defp timestamp_datetime(%{} = phase) do
+    phase
+    |> map_get(:timestamp)
+    |> normalize_timestamp()
+  end
+
+  defp timestamp_datetime(_phase), do: nil
+
+  defp normalize_timestamp(%DateTime{} = timestamp), do: timestamp
+
+  defp normalize_timestamp(timestamp) when is_binary(timestamp) do
+    case DateTime.from_iso8601(String.trim(timestamp)) do
+      {:ok, parsed, _offset} -> parsed
+      _other -> nil
+    end
+  end
+
+  defp normalize_timestamp(_timestamp), do: nil
 
   defp normalize_status(value) when is_binary(value),
     do: value |> String.trim() |> String.downcase()
