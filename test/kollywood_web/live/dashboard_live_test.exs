@@ -351,19 +351,21 @@ defmodule KollywoodWeb.DashboardLiveTest do
       tmp_dir: tmp_dir
     } do
       {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories/US-002")
-      assert render(view) =~ "Reset US-002? This will clear run data and remove the worktree."
+
+      assert render(view) =~
+               "Reset US-002? This will move it to Draft, clear run data, and remove the worktree."
 
       html =
         view
         |> element("button[phx-click='reset_story'][phx-value-id='US-002']")
         |> render_click()
 
-      assert html =~ "Open"
+      assert html =~ "Draft"
 
       {:ok, content} = File.read(Path.join(tmp_dir, "prd.json"))
       {:ok, data} = Jason.decode(content)
       story = Enum.find(data["userStories"], &(&1["id"] == "US-002"))
-      assert story["status"] == "open"
+      assert story["status"] == "draft"
     end
 
     test "deletes story from detail page and shows not found state", %{
@@ -555,7 +557,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "phx-click=\"reset_story\""
     end
 
-    test "resets story to open and clears run-attempt metadata in tracker file", %{
+    test "resets story to draft and clears run-attempt metadata in tracker file", %{
       conn: conn,
       project: project,
       tmp_dir: tmp_dir
@@ -569,7 +571,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       {:ok, content} = File.read(Path.join(tmp_dir, "prd.json"))
       {:ok, data} = Jason.decode(content)
       story = Enum.find(data["userStories"], &(&1["id"] == "US-002"))
-      assert story["status"] == "open"
+      assert story["status"] == "draft"
       assert story["lastRunAttempt"] == nil
       assert story["lastAttempt"] == nil
       assert story["lastError"] == nil

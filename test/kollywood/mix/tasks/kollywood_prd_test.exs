@@ -123,7 +123,7 @@ defmodule Mix.Tasks.Kollywood.PrdTest do
     end
   end
 
-  test "reset reopens story and clears previous run metadata", %{root: root} do
+  test "reset moves story to draft and clears previous run metadata", %{root: root} do
     path = Path.join(root, "prd.json")
     workspace_root = Path.join(root, "workspaces")
     workspace_path = Path.join(workspace_root, "US-200")
@@ -148,7 +148,7 @@ defmodule Mix.Tasks.Kollywood.PrdTest do
     _output = capture_io(fn -> Prd.run(["reset", "US-200", "--path", path]) end)
 
     story = find_story!(path, "US-200")
-    assert story["status"] == "open"
+    assert story["status"] == "draft"
     assert story["passes"] == false
     refute Map.has_key?(story, "startedAt")
     refute Map.has_key?(story, "completedAt")
@@ -179,7 +179,7 @@ defmodule Mix.Tasks.Kollywood.PrdTest do
       end)
 
     story = find_story!(path, "US-201")
-    assert story["status"] == "open"
+    assert story["status"] == "draft"
     assert story["notes"] == ""
   end
 
@@ -216,7 +216,7 @@ defmodule Mix.Tasks.Kollywood.PrdTest do
     refute File.exists?(workspace_path)
 
     story = find_story!(path, "US-202")
-    assert story["status"] == "open"
+    assert story["status"] == "draft"
     assert story["passes"] == false
   end
 

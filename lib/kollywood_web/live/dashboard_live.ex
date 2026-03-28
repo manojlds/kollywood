@@ -862,7 +862,7 @@ defmodule KollywoodWeb.DashboardLive do
                                   <button
                                     phx-click="reset_story"
                                     phx-value-id={story["id"]}
-                                    phx-confirm={"Reset #{story["id"]}? This will clear run data and remove the worktree."}
+                                    phx-confirm={"Reset #{story["id"]}? This will move it to Draft, clear run data, and remove the worktree."}
                                     class="text-xs text-warning"
                                   >
                                     Reset Story
@@ -1394,7 +1394,7 @@ defmodule KollywoodWeb.DashboardLive do
                   <button
                     phx-click="reset_story"
                     phx-value-id={story_id}
-                    phx-confirm={"Reset #{story_id}? This will clear run data and remove the worktree."}
+                    phx-confirm={"Reset #{story_id}? This will move it to Draft, clear run data, and remove the worktree."}
                     class="text-xs text-warning"
                   >
                     Reset Story

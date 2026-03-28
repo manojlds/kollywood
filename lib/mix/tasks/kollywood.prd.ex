@@ -20,14 +20,26 @@ defmodule Mix.Tasks.Kollywood.Prd do
 
   ## Status values
 
-  Supported statuses are `open`, `in_progress`, `done`, `failed`, and `cancelled`.
+  Supported statuses are `draft`, `open`, `in_progress`, `done`, `failed`,
+  `pending_merge`, `merged`, and `cancelled`.
+
+  `reset`/`rerun` move the story back to `draft` and clear prior run metadata.
   """
 
   use Mix.Task
 
   @default_path "prd.json"
   @default_workspace_root "~/kollywood-workspaces"
-  @valid_statuses ["open", "in_progress", "done", "failed", "cancelled"]
+  @valid_statuses [
+    "draft",
+    "open",
+    "in_progress",
+    "done",
+    "failed",
+    "pending_merge",
+    "merged",
+    "cancelled"
+  ]
 
   @impl Mix.Task
   def run(args) do
