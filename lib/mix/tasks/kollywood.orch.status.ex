@@ -35,9 +35,32 @@ defmodule Mix.Tasks.Kollywood.Orch.Status do
     Mix.shell().info("- last_poll_at=#{Shared.format_datetime(status.last_poll_at)}")
     Mix.shell().info("- last_error=#{status.last_error || "-"}")
 
+    watchdog = Map.get(status, :watchdog, %{})
+
+    Mix.shell().info(
+      "- poll_stale=#{Map.get(watchdog, :stale, false)} poll_age_ms=#{format_integer(Map.get(watchdog, :age_ms))} stale_threshold_ms=#{format_integer(Map.get(watchdog, :threshold_ms))}"
+    )
+
+    Mix.shell().info(
+      "- watchdog_check_interval_ms=#{format_integer(Map.get(watchdog, :check_interval_ms))} stale_threshold_multiplier=#{format_integer(Map.get(watchdog, :stale_threshold_multiplier))}"
+    )
+
+    case Map.get(watchdog, :last_recovery_attempt) do
+      nil ->
+        Mix.shell().info("- last_recovery_attempt=none")
+
+      attempt when is_map(attempt) ->
+        Mix.shell().info(
+          "- last_recovery_attempt_at=#{Shared.format_datetime(Map.get(attempt, :attempted_at))} outcome=#{Map.get(attempt, :outcome) || "-"} stale_age_ms=#{format_integer(Map.get(attempt, :stale_age_ms))} post_recovery_age_ms=#{format_integer(Map.get(attempt, :post_recovery_age_ms))}"
+        )
+    end
+
     print_running(status.running)
     print_retrying(status.retrying)
   end
+
+  defp format_integer(value) when is_integer(value), do: Integer.to_string(value)
+  defp format_integer(_value), do: "-"
 
   defp print_running([]) do
     Mix.shell().info("- running_issues: none")

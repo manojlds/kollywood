@@ -1202,6 +1202,131 @@ defmodule Kollywood.OrchestratorTest do
     send(runner_pid, {:complete_runner, "ISS-5", {:ok, success_result(issue)}})
   end
 
+  test "watchdog keeps healthy auto polling loop marked fresh", %{root: root} do
+    %{store: workflow_store} =
+      start_workflow_store!(root, %{
+        poll_interval_ms: 25,
+        stale_threshold_multiplier: 4,
+        watchdog_check_interval_ms: 10
+      })
+
+    test_pid = self()
+
+    tracker = fn _config ->
+      send(test_pid, :tracker_polled)
+      {:ok, []}
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: tracker,
+         auto_poll: true,
+         retry_base_delay_ms: 20}
+      )
+
+    assert_receive :tracker_polled, 500
+    assert_receive :tracker_polled, 500
+
+    status = Orchestrator.status(orchestrator)
+
+    assert status.watchdog.stale == false
+    assert is_integer(status.watchdog.age_ms)
+    assert status.watchdog.last_recovery_attempt == nil
+  end
+
+  test "watchdog forces one recovery poll for transient stale loop", %{root: root} do
+    %{store: workflow_store} =
+      start_workflow_store!(root, %{
+        poll_interval_ms: 200,
+        stale_threshold_multiplier: 1,
+        watchdog_check_interval_ms: 15
+      })
+
+    test_pid = self()
+
+    tracker = fn _config ->
+      send(test_pid, :tracker_polled)
+      {:ok, []}
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: tracker,
+         auto_poll: true,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive :tracker_polled, 500
+
+    force_stale_state!(orchestrator, 1_000)
+    send(orchestrator, :watchdog_tick)
+
+    status =
+      wait_until!(fn ->
+        status = Orchestrator.status(orchestrator)
+
+        if is_map(status.watchdog.last_recovery_attempt) do
+          {:ok, status}
+        else
+          :retry
+        end
+      end)
+
+    assert status.watchdog.stale == false
+    assert %{} = status.watchdog.last_recovery_attempt
+    assert status.watchdog.last_recovery_attempt.outcome == :recovered
+  end
+
+  test "watchdog escalates to restart when stale persists after recovery", %{root: root} do
+    %{store: workflow_store} =
+      start_workflow_store!(root, %{
+        poll_interval_ms: 10,
+        stale_threshold_multiplier: 1,
+        watchdog_check_interval_ms: 10
+      })
+
+    name = unique_name(:orchestrator_watchdog)
+    supervisor = start_supervised!({DynamicSupervisor, strategy: :one_for_one})
+
+    {:ok, orchestrator} =
+      DynamicSupervisor.start_child(supervisor, {
+        Orchestrator,
+        [
+          name: name,
+          workflow_store: workflow_store,
+          tracker: fn _config -> {:ok, []} end,
+          auto_poll: true,
+          retry_base_delay_ms: 20
+        ]
+      })
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+
+    log =
+      capture_log(fn ->
+        ref = Process.monitor(orchestrator)
+        force_persistent_stale_state!(orchestrator, 1_000)
+        send(orchestrator, :watchdog_tick)
+
+        assert_receive {:DOWN, ^ref, :process, ^orchestrator,
+                        {:poll_watchdog_stale, _diagnostics}},
+                       1_500
+      end)
+
+    assert log =~ "orchestrator_event=poll_watchdog_restart"
+
+    restarted = wait_for_registered_restart!(name, orchestrator)
+    assert is_pid(restarted)
+    assert restarted != orchestrator
+  end
+
   test "marks prd_json story done after successful run", %{root: root} do
     prd_path = Path.join(root, "prd.json")
     write_prd!(prd_path)
@@ -1701,6 +1826,82 @@ defmodule Kollywood.OrchestratorTest do
     String.to_atom("#{prefix}_#{System.unique_integer([:positive, :monotonic])}")
   end
 
+  defp force_stale_state!(orchestrator, age_ms) when is_integer(age_ms) and age_ms > 0 do
+    :sys.replace_state(orchestrator, fn state ->
+      if state.poll_timer_ref, do: Process.cancel_timer(state.poll_timer_ref)
+
+      %{
+        state
+        | poll_timer_ref: nil,
+          last_poll_at: DateTime.add(DateTime.utc_now(), -1, :second),
+          last_poll_monotonic_ms: System.monotonic_time(:millisecond) - age_ms,
+          poll_stale: false,
+          poll_stale_detected_at: nil,
+          poll_stale_recovery_attempted: false
+      }
+    end)
+  end
+
+  defp force_persistent_stale_state!(orchestrator, age_ms)
+       when is_integer(age_ms) and age_ms > 0 do
+    :sys.replace_state(orchestrator, fn state ->
+      if state.poll_timer_ref, do: Process.cancel_timer(state.poll_timer_ref)
+
+      %{
+        state
+        | poll_timer_ref: nil,
+          last_poll_at: DateTime.add(DateTime.utc_now(), -1, :second),
+          last_poll_monotonic_ms: System.monotonic_time(:millisecond) - age_ms,
+          poll_stale: true,
+          poll_stale_detected_at: DateTime.add(DateTime.utc_now(), -1, :second),
+          poll_stale_recovery_attempted: true
+      }
+    end)
+  end
+
+  defp wait_for_registered_restart!(name, previous_pid, timeout_ms \\ 2_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_for_registered_restart(name, previous_pid, deadline)
+  end
+
+  defp wait_until!(fun, timeout_ms \\ 2_000) when is_function(fun, 0) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_until(fun, deadline)
+  end
+
+  defp do_wait_until(fun, deadline) do
+    case fun.() do
+      {:ok, value} ->
+        value
+
+      :retry ->
+        if System.monotonic_time(:millisecond) > deadline do
+          flunk("expected condition to become true")
+        else
+          Process.sleep(20)
+          do_wait_until(fun, deadline)
+        end
+
+      other ->
+        flunk("wait_until callback must return {:ok, value} or :retry, got: #{inspect(other)}")
+    end
+  end
+
+  defp do_wait_for_registered_restart(name, previous_pid, deadline) do
+    case Process.whereis(name) do
+      pid when is_pid(pid) and pid != previous_pid ->
+        pid
+
+      _other ->
+        if System.monotonic_time(:millisecond) > deadline do
+          flunk("expected orchestrator #{inspect(name)} to restart")
+        else
+          Process.sleep(20)
+          do_wait_for_registered_restart(name, previous_pid, deadline)
+        end
+    end
+  end
+
   defp start_agent!(initializer) when is_function(initializer, 0) do
     start_supervised!(%{
       id: unique_name(:agent),
@@ -1722,6 +1923,8 @@ defmodule Kollywood.OrchestratorTest do
         max_concurrent_agents: Map.get(opts, :max_concurrent_agents, 2),
         max_retry_backoff_ms: Map.get(opts, :max_retry_backoff_ms, 300_000),
         retries_enabled: Map.get(opts, :retries_enabled, true),
+        stale_threshold_multiplier: Map.get(opts, :stale_threshold_multiplier),
+        watchdog_check_interval_ms: Map.get(opts, :watchdog_check_interval_ms),
         runtime_profile: Map.get(opts, :runtime_profile, "checks_only")
       })
 
@@ -1751,6 +1954,24 @@ defmodule Kollywood.OrchestratorTest do
       |> Map.get(:tracker_terminal_states, ["Done", "Cancelled"])
       |> yaml_list(4)
 
+    stale_threshold_multiplier_line =
+      case Map.get(opts, :stale_threshold_multiplier) do
+        value when is_integer(value) and value > 0 ->
+          "\n  stale_threshold_multiplier: #{value}"
+
+        _other ->
+          ""
+      end
+
+    watchdog_check_interval_line =
+      case Map.get(opts, :watchdog_check_interval_ms) do
+        value when is_integer(value) and value > 0 ->
+          "\n  watchdog_check_interval_ms: #{value}"
+
+        _other ->
+          ""
+      end
+
     """
     ---
     tracker:
@@ -1760,7 +1981,7 @@ defmodule Kollywood.OrchestratorTest do
       terminal_states:
     #{tracker_terminal_states}
     polling:
-      interval_ms: #{Map.get(opts, :poll_interval_ms, 1000)}
+      interval_ms: #{Map.get(opts, :poll_interval_ms, 1000)}#{stale_threshold_multiplier_line}#{watchdog_check_interval_line}
     runtime:
       profile: #{Map.get(opts, :runtime_profile, "checks_only")}
     workspace:
