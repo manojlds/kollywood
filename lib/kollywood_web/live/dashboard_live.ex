@@ -135,21 +135,30 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   def handle_event("update_story_status", %{"id" => id, "status" => status}, socket) do
-    project = socket.assigns.current_project
+    socket =
+      case validate_manual_story_transition(socket.assigns.stories, id, nil, status) do
+        {:ok, normalized_status} ->
+          update_story_status(socket, id, normalized_status)
+
+        {:error, reason} ->
+          put_flash(socket, :error, reason)
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("move_story_card", %{"id" => id, "to_status" => to_status} = params, socket) do
+    from_status = Map.get(params, "from_status")
 
     socket =
-      case local_tracker_path(project) do
-        {:ok, tracker_path} ->
-          case PrdJson.set_manual_status(tracker_path, id, status) do
-            :ok ->
-              socket
-              |> load_project_data(project)
-              |> sync_story_detail_selection()
-              |> put_flash(:info, "Story status updated.")
-
-            {:error, reason} ->
-              put_flash(socket, :error, "Status update failed: #{reason}")
-          end
+      case validate_manual_story_transition(socket.assigns.stories, id, from_status, to_status) do
+        {:ok, normalized_status} ->
+          update_story_status(
+            socket,
+            id,
+            normalized_status,
+            "Moved #{id} to #{display_status(normalized_status)}."
+          )
 
         {:error, reason} ->
           put_flash(socket, :error, reason)
@@ -832,6 +841,18 @@ defmodule KollywoodWeb.DashboardLive do
         <% end %>
       </div>
 
+      <%= if @editable && @stories_view == "kanban" do %>
+        <p
+          id="stories-dnd-feedback"
+          data-dnd-feedback
+          role="status"
+          aria-live="polite"
+          class="min-h-[1.25rem] text-sm text-base-content/60"
+        >
+        </p>
+        <span data-dnd-live-region class="sr-only" aria-live="assertive"></span>
+      <% end %>
+
       <%= if @stories == [] do %>
         <div class="card bg-base-200 border border-base-300">
           <div class="card-body items-center text-center py-12">
@@ -956,7 +977,11 @@ defmodule KollywoodWeb.DashboardLive do
     assigns = assign(assigns, :status_columns, @story_status_columns)
 
     ~H"""
-    <div id="stories-kanban-view" class="-mx-2 overflow-x-auto px-2 pb-2">
+    <div
+      id="stories-kanban-view"
+      class="-mx-2 overflow-x-auto px-2 pb-2"
+      phx-hook={@editable && ".KanbanBoardDnD"}
+    >
       <div class="flex min-w-max gap-3 lg:min-w-0 lg:grid lg:grid-cols-3 xl:grid-cols-6">
         <%= for {status, label} <- @status_columns do %>
           <.stories_kanban_column
@@ -969,6 +994,455 @@ defmodule KollywoodWeb.DashboardLive do
         <% end %>
       </div>
     </div>
+
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".KanbanBoardDnD">
+      const DRAGGING_CARD_CLASSES = ["opacity-70"]
+      const TARGET_ALLOWED_CLASSES = ["border-success", "bg-base-100"]
+      const TARGET_DISABLED_CLASSES = ["opacity-70"]
+      const TARGET_HOVER_ALLOWED_CLASSES = ["border-primary", "shadow-lg"]
+      const TARGET_HOVER_DENIED_CLASSES = ["border-error"]
+
+      export default {
+        mounted() {
+          this.activeDrag = null
+          this.hoverTarget = null
+          this.touchDrag = null
+          this.feedbackTimeout = null
+          this.feedbackEl = document.getElementById("stories-dnd-feedback")
+          this.liveRegionEl = null
+
+          const storiesSection = this.el.closest("#stories-section")
+          if (storiesSection) {
+            this.liveRegionEl = storiesSection.querySelector("[data-dnd-live-region]")
+          }
+
+          this.onDragStart = (event) => this.handleDragStart(event)
+          this.onDragOver = (event) => this.handleDragOver(event)
+          this.onDrop = (event) => this.handleDrop(event)
+          this.onDragLeave = (event) => this.handleDragLeave(event)
+          this.onDragEnd = (_event) => this.endDragSession()
+          this.onPointerDown = (event) => this.handlePointerDown(event)
+
+          this.el.addEventListener("dragstart", this.onDragStart)
+          this.el.addEventListener("dragover", this.onDragOver)
+          this.el.addEventListener("drop", this.onDrop)
+          this.el.addEventListener("dragleave", this.onDragLeave)
+          this.el.addEventListener("dragend", this.onDragEnd)
+          this.el.addEventListener("pointerdown", this.onPointerDown)
+        },
+
+        updated() {
+          if (this.activeDrag && !this.findStoryCard(this.activeDrag.storyId)) {
+            this.endDragSession()
+          }
+        },
+
+        destroyed() {
+          clearTimeout(this.feedbackTimeout)
+          this.removeTouchListeners()
+          this.removeTouchGhost()
+
+          this.el.removeEventListener("dragstart", this.onDragStart)
+          this.el.removeEventListener("dragover", this.onDragOver)
+          this.el.removeEventListener("drop", this.onDrop)
+          this.el.removeEventListener("dragleave", this.onDragLeave)
+          this.el.removeEventListener("dragend", this.onDragEnd)
+          this.el.removeEventListener("pointerdown", this.onPointerDown)
+        },
+
+        storyCards() {
+          return Array.from(this.el.querySelectorAll("[data-story-card='true']"))
+        },
+
+        dropTargets() {
+          return Array.from(this.el.querySelectorAll("[data-story-drop-target='true']"))
+        },
+
+        findStoryCard(storyId) {
+          return this.el.querySelector(`[data-story-card='true'][data-story-id='${storyId}']`)
+        },
+
+        normalizeStatus(value) {
+          if (typeof value !== "string") return ""
+          return value.trim().toLowerCase().replace(/[\s-]+/g, "_")
+        },
+
+        statusLabel(status) {
+          return this.normalizeStatus(status)
+            .split("_")
+            .filter((part) => part !== "")
+            .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+            .join(" ")
+        },
+
+        parseTargets(rawTargets) {
+          if (typeof rawTargets !== "string" || rawTargets.trim() === "") return []
+
+          return rawTargets
+            .split(",")
+            .map((target) => this.normalizeStatus(target))
+            .filter((target) => target !== "")
+        },
+
+        addClasses(el, classes) {
+          classes.forEach((className) => el.classList.add(className))
+        },
+
+        removeClasses(el, classes) {
+          classes.forEach((className) => el.classList.remove(className))
+        },
+
+        startDragSession(card) {
+          const storyId = card.dataset.storyId
+          if (!storyId) return false
+
+          const fromStatus = this.normalizeStatus(card.dataset.storyStatus)
+          const allowedTargets = this.parseTargets(card.dataset.storyManualTargets)
+
+          if (allowedTargets.length === 0) {
+            this.showFeedback(`No manual transitions available for ${storyId}.`, "error")
+            return false
+          }
+
+          this.activeDrag = {storyId, fromStatus, allowedTargets, card}
+          this.addClasses(card, DRAGGING_CARD_CLASSES)
+          card.setAttribute("aria-grabbed", "true")
+          this.applyDropTargetState()
+          return true
+        },
+
+        endDragSession() {
+          if (this.activeDrag && this.activeDrag.card) {
+            this.removeClasses(this.activeDrag.card, DRAGGING_CARD_CLASSES)
+            this.activeDrag.card.setAttribute("aria-grabbed", "false")
+          }
+
+          this.activeDrag = null
+          this.clearHoverTarget()
+          this.resetDropTargetState()
+        },
+
+        applyDropTargetState() {
+          if (!this.activeDrag) return
+
+          this.dropTargets().forEach((target) => {
+            const status = this.normalizeStatus(target.dataset.storyStatus)
+            const allowed = this.activeDrag.allowedTargets.includes(status)
+            target.dataset.dropAllowed = allowed ? "true" : "false"
+            this.removeClasses(target, TARGET_ALLOWED_CLASSES)
+            this.removeClasses(target, TARGET_DISABLED_CLASSES)
+            this.addClasses(target, allowed ? TARGET_ALLOWED_CLASSES : TARGET_DISABLED_CLASSES)
+          })
+        },
+
+        resetDropTargetState() {
+          this.dropTargets().forEach((target) => {
+            delete target.dataset.dropAllowed
+            this.removeClasses(target, TARGET_ALLOWED_CLASSES)
+            this.removeClasses(target, TARGET_DISABLED_CLASSES)
+            this.removeClasses(target, TARGET_HOVER_ALLOWED_CLASSES)
+            this.removeClasses(target, TARGET_HOVER_DENIED_CLASSES)
+          })
+        },
+
+        allowedStatusList() {
+          if (!this.activeDrag) return ""
+          return this.activeDrag.allowedTargets.map((status) => this.statusLabel(status)).join(", ")
+        },
+
+        setHoverTarget(target) {
+          if (this.hoverTarget === target) return
+          this.clearHoverTarget()
+
+          if (!target || !this.activeDrag) return
+
+          const status = this.normalizeStatus(target.dataset.storyStatus)
+          const classes = this.activeDrag.allowedTargets.includes(status)
+            ? TARGET_HOVER_ALLOWED_CLASSES
+            : TARGET_HOVER_DENIED_CLASSES
+
+          this.addClasses(target, classes)
+          this.hoverTarget = target
+        },
+
+        clearHoverTarget() {
+          if (!this.hoverTarget) return
+
+          this.removeClasses(this.hoverTarget, TARGET_HOVER_ALLOWED_CLASSES)
+          this.removeClasses(this.hoverTarget, TARGET_HOVER_DENIED_CLASSES)
+          this.hoverTarget = null
+        },
+
+        commitDrop(target) {
+          if (!this.activeDrag) return
+
+          const targetStatus = this.normalizeStatus(target.dataset.storyStatus)
+          const {storyId, fromStatus, allowedTargets} = this.activeDrag
+
+          if (!targetStatus) {
+            this.showFeedback("Drop target is missing a status.", "error")
+            return
+          }
+
+          if (targetStatus === fromStatus) {
+            this.showFeedback(`${storyId} is already ${this.statusLabel(targetStatus)}.`, "error")
+            return
+          }
+
+          if (!allowedTargets.includes(targetStatus)) {
+            this.showFeedback(
+              `Cannot move ${storyId} to ${this.statusLabel(targetStatus)}. Allowed: ${this.allowedStatusList()}.`,
+              "error"
+            )
+            return
+          }
+
+          this.pushEvent("move_story_card", {
+            id: storyId,
+            from_status: fromStatus,
+            to_status: targetStatus
+          })
+
+          this.showFeedback(`Moved ${storyId} to ${this.statusLabel(targetStatus)}.`, "success")
+        },
+
+        showFeedback(message, level) {
+          if (this.feedbackEl) {
+            this.feedbackEl.textContent = message
+            this.feedbackEl.classList.remove("text-error", "text-success", "text-base-content/60")
+            this.feedbackEl.classList.add(level === "success" ? "text-success" : "text-error")
+          }
+
+          if (this.liveRegionEl) {
+            this.liveRegionEl.textContent = message
+          }
+
+          clearTimeout(this.feedbackTimeout)
+          this.feedbackTimeout = window.setTimeout(() => {
+            if (this.feedbackEl) {
+              this.feedbackEl.textContent = ""
+              this.feedbackEl.classList.remove("text-error", "text-success")
+              this.feedbackEl.classList.add("text-base-content/60")
+            }
+          }, 3500)
+        },
+
+        handleDragStart(event) {
+          const card = event.target.closest("[data-story-card='true']")
+          if (!card || !this.startDragSession(card)) {
+            event.preventDefault()
+            return
+          }
+
+          if (event.dataTransfer) {
+            event.dataTransfer.effectAllowed = "move"
+            event.dataTransfer.setData("text/plain", this.activeDrag.storyId)
+          }
+        },
+
+        handleDragOver(event) {
+          if (!this.activeDrag) return
+          const target = event.target.closest("[data-story-drop-target='true']")
+          if (!target) return
+
+          event.preventDefault()
+          this.setHoverTarget(target)
+
+          if (event.dataTransfer) {
+            const targetStatus = this.normalizeStatus(target.dataset.storyStatus)
+            event.dataTransfer.dropEffect = this.activeDrag.allowedTargets.includes(targetStatus)
+              ? "move"
+              : "none"
+          }
+        },
+
+        handleDrop(event) {
+          if (!this.activeDrag) return
+          const target = event.target.closest("[data-story-drop-target='true']")
+          if (!target) return
+
+          event.preventDefault()
+          this.commitDrop(target)
+          this.endDragSession()
+        },
+
+        handleDragLeave(event) {
+          if (!this.hoverTarget) return
+          const target = event.target.closest("[data-story-drop-target='true']")
+          if (!target || target !== this.hoverTarget) return
+
+          const related = event.relatedTarget
+          if (!related || !target.contains(related)) {
+            this.clearHoverTarget()
+          }
+        },
+
+        handlePointerDown(event) {
+          const handle = event.target.closest("[data-story-touch-handle='true']")
+          if (!handle) return
+          if (event.pointerType === "mouse") return
+
+          const card = handle.closest("[data-story-card='true']")
+          if (!card) return
+
+          event.preventDefault()
+          if (!this.startDragSession(card)) return
+
+          this.touchDrag = {
+            pointerId: event.pointerId,
+            handle,
+            ghost: null,
+            offsetX: 18,
+            offsetY: 18
+          }
+
+          if (typeof handle.setPointerCapture === "function") {
+            try {
+              handle.setPointerCapture(event.pointerId)
+            } catch (_error) {
+              // Some devices disallow pointer capture; drag still works without it.
+            }
+          }
+
+          this.createTouchGhost(card)
+          this.addTouchListeners()
+          this.updateTouchGhostPosition(event.clientX, event.clientY)
+          this.updateHoverTargetFromPoint(event.clientX, event.clientY)
+        },
+
+        handlePointerMove(event) {
+          if (!this.touchDrag || event.pointerId !== this.touchDrag.pointerId) return
+
+          event.preventDefault()
+          this.updateTouchGhostPosition(event.clientX, event.clientY)
+          this.autoScrollKanban(event.clientX)
+          this.updateHoverTargetFromPoint(event.clientX, event.clientY)
+        },
+
+        handlePointerUp(event) {
+          if (!this.touchDrag || event.pointerId !== this.touchDrag.pointerId) return
+
+          event.preventDefault()
+          const target = this.dropTargetFromPoint(event.clientX, event.clientY)
+
+          if (target) {
+            this.commitDrop(target)
+          } else if (this.activeDrag) {
+            this.showFeedback("Drop the story on a status column.", "error")
+          }
+
+          this.endTouchDrag()
+        },
+
+        handlePointerCancel(event) {
+          if (!this.touchDrag || event.pointerId !== this.touchDrag.pointerId) return
+          this.endTouchDrag()
+        },
+
+        addTouchListeners() {
+          this.onPointerMove = (event) => this.handlePointerMove(event)
+          this.onPointerUp = (event) => this.handlePointerUp(event)
+          this.onPointerCancel = (event) => this.handlePointerCancel(event)
+
+          window.addEventListener("pointermove", this.onPointerMove, {passive: false})
+          window.addEventListener("pointerup", this.onPointerUp, {passive: false})
+          window.addEventListener("pointercancel", this.onPointerCancel, {passive: false})
+        },
+
+        removeTouchListeners() {
+          if (this.onPointerMove) {
+            window.removeEventListener("pointermove", this.onPointerMove)
+            this.onPointerMove = null
+          }
+
+          if (this.onPointerUp) {
+            window.removeEventListener("pointerup", this.onPointerUp)
+            this.onPointerUp = null
+          }
+
+          if (this.onPointerCancel) {
+            window.removeEventListener("pointercancel", this.onPointerCancel)
+            this.onPointerCancel = null
+          }
+        },
+
+        createTouchGhost(card) {
+          const rect = card.getBoundingClientRect()
+          const ghost = card.cloneNode(true)
+
+          ghost.removeAttribute("id")
+          ghost.querySelectorAll("[id]").forEach((node) => node.removeAttribute("id"))
+          ghost.style.position = "fixed"
+          ghost.style.top = "0"
+          ghost.style.left = "0"
+          ghost.style.width = `${rect.width}px`
+          ghost.style.pointerEvents = "none"
+          ghost.style.opacity = "0.92"
+          ghost.style.zIndex = "90"
+          ghost.style.transform = "translate(-9999px, -9999px)"
+          this.addClasses(ghost, ["shadow-xl"])
+          document.body.appendChild(ghost)
+
+          if (this.touchDrag) {
+            this.touchDrag.ghost = ghost
+          }
+        },
+
+        removeTouchGhost() {
+          if (!this.touchDrag || !this.touchDrag.ghost) return
+          this.touchDrag.ghost.remove()
+          this.touchDrag.ghost = null
+        },
+
+        updateTouchGhostPosition(clientX, clientY) {
+          if (!this.touchDrag || !this.touchDrag.ghost) return
+
+          const left = clientX + this.touchDrag.offsetX
+          const top = clientY + this.touchDrag.offsetY
+          this.touchDrag.ghost.style.transform = `translate(${left}px, ${top}px)`
+        },
+
+        dropTargetFromPoint(clientX, clientY) {
+          const target = document.elementFromPoint(clientX, clientY)
+          if (!target) return null
+          return target.closest("[data-story-drop-target='true']")
+        },
+
+        updateHoverTargetFromPoint(clientX, clientY) {
+          this.setHoverTarget(this.dropTargetFromPoint(clientX, clientY))
+        },
+
+        autoScrollKanban(clientX) {
+          const rect = this.el.getBoundingClientRect()
+          const edge = 56
+
+          if (clientX < rect.left + edge) {
+            this.el.scrollLeft -= 18
+          } else if (clientX > rect.right - edge) {
+            this.el.scrollLeft += 18
+          }
+        },
+
+        endTouchDrag() {
+          if (this.touchDrag && this.touchDrag.handle) {
+            const {handle, pointerId} = this.touchDrag
+
+            if (typeof handle.releasePointerCapture === "function") {
+              try {
+                handle.releasePointerCapture(pointerId)
+              } catch (_error) {
+                // Ignore if pointer capture is already released.
+              }
+            }
+          }
+
+          this.removeTouchListeners()
+          this.removeTouchGhost()
+          this.touchDrag = null
+          this.endDragSession()
+        }
+      }
+    </script>
     """
   end
 
@@ -987,7 +1461,13 @@ defmodule KollywoodWeb.DashboardLive do
       ])
 
     ~H"""
-    <section id={"stories-column-#{@status}"} class={@column_classes}>
+    <section
+      id={"stories-column-#{@status}"}
+      class={[@column_classes, @editable && "transition-colors duration-150"]}
+      data-story-drop-target={@editable && "true"}
+      data-story-status={@status}
+      aria-disabled={if(@editable, do: "false", else: "true")}
+    >
       <header class="flex items-center justify-between gap-2 border-b border-base-300 px-3 py-2">
         <div class="flex items-center gap-2">
           <.status_badge status={@status} />
@@ -1017,20 +1497,30 @@ defmodule KollywoodWeb.DashboardLive do
     status = normalize_status(assigns.story["status"])
     status_targets = manual_status_targets(assigns.story["status"])
     show_reset = status not in ["open", "draft"]
+    can_drag = assigns.editable && status_targets != []
 
     assigns =
       assigns
       |> assign(:status, status)
       |> assign(:status_targets, status_targets)
       |> assign(:show_reset, show_reset)
+      |> assign(:can_drag, can_drag)
+      |> assign(:status_targets_csv, Enum.join(status_targets, ","))
 
     ~H"""
     <div
       id={"story-card-#{@story["id"]}"}
       class={[
         "card border border-base-300 bg-base-200 shadow-sm",
-        @status == "draft" && "border-dashed"
+        @status == "draft" && "border-dashed",
+        @can_drag && "cursor-grab active:cursor-grabbing"
       ]}
+      data-story-card="true"
+      data-story-id={@story["id"]}
+      data-story-status={@status}
+      data-story-manual-targets={@status_targets_csv}
+      draggable={@can_drag}
+      aria-grabbed="false"
     >
       <div class="card-body gap-3 p-4">
         <div class="flex items-start justify-between gap-3">
@@ -1069,11 +1559,35 @@ defmodule KollywoodWeb.DashboardLive do
           </div>
 
           <%= if @editable do %>
-            <.story_actions_menu
-              story={@story}
-              status_targets={@status_targets}
-              show_reset={@show_reset}
-            />
+            <div class="flex shrink-0 items-start gap-1">
+              <button
+                type="button"
+                class={[
+                  "btn btn-ghost btn-xs touch-manipulation",
+                  @can_drag && "cursor-grab active:cursor-grabbing",
+                  !@can_drag && "btn-disabled pointer-events-none opacity-60"
+                ]}
+                data-story-touch-handle={@can_drag && "true"}
+                style={@can_drag && "touch-action: none;"}
+                title={
+                  if @can_drag do
+                    "Drag to move story"
+                  else
+                    "No manual transitions available"
+                  end
+                }
+                aria-label={"Drag #{@story["id"]} to another status"}
+                disabled={!@can_drag}
+              >
+                <.icon name="hero-bars-3" class="size-4" />
+              </button>
+
+              <.story_actions_menu
+                story={@story}
+                status_targets={@status_targets}
+                show_reset={@show_reset}
+              />
+            </div>
           <% end %>
         </div>
 
@@ -2655,6 +3169,83 @@ defmodule KollywoodWeb.DashboardLive do
   defp manual_status_targets(status) do
     PrdJson.manual_transition_targets(status)
   end
+
+  defp update_story_status(socket, id, status, success_message \\ "Story status updated.") do
+    project = socket.assigns.current_project
+
+    case local_tracker_path(project) do
+      {:ok, tracker_path} ->
+        case PrdJson.set_manual_status(tracker_path, id, status) do
+          :ok ->
+            socket
+            |> load_project_data(project)
+            |> sync_story_detail_selection()
+            |> put_flash(:info, success_message)
+
+          {:error, reason} ->
+            put_flash(socket, :error, "Status update failed: #{reason}")
+        end
+
+      {:error, reason} ->
+        put_flash(socket, :error, reason)
+    end
+  end
+
+  defp validate_manual_story_transition(stories, id, from_status, to_status)
+       when is_list(stories) and is_binary(id) do
+    case Enum.find(stories, &(&1["id"] == id)) do
+      nil ->
+        {:error, "Story not found: #{id}"}
+
+      story ->
+        current_status = normalize_status(story["status"])
+        normalized_from_status = normalize_optional_status(from_status)
+        normalized_to_status = normalize_optional_status(to_status)
+        allowed_statuses = manual_status_targets(current_status)
+        allowed_display = format_allowed_statuses(allowed_statuses)
+
+        cond do
+          normalized_to_status in [nil, ""] ->
+            {:error, "Target status is required."}
+
+          normalized_from_status && normalized_from_status != current_status ->
+            {:error,
+             "Story #{id} changed from #{display_status(normalized_from_status)} to #{display_status(current_status)}. Try dragging again."}
+
+          normalized_to_status == current_status ->
+            {:error, "Story #{id} is already #{display_status(current_status)}."}
+
+          normalized_to_status in allowed_statuses ->
+            {:ok, normalized_to_status}
+
+          true ->
+            {:error,
+             "Cannot move #{id} from #{display_status(current_status)} to #{display_status(normalized_to_status)}. Allowed: #{allowed_display}"}
+        end
+    end
+  end
+
+  defp validate_manual_story_transition(_stories, id, _from_status, _to_status)
+       when is_binary(id),
+       do: {:error, "Story not found: #{id}"}
+
+  defp validate_manual_story_transition(_stories, _id, _from_status, _to_status),
+    do: {:error, "Story ID is required."}
+
+  defp format_allowed_statuses(statuses) when is_list(statuses) and statuses != [] do
+    Enum.map_join(statuses, ", ", &display_status/1)
+  end
+
+  defp format_allowed_statuses(_statuses), do: "none"
+
+  defp normalize_optional_status(status) when is_binary(status) do
+    case normalize_status(status) do
+      "" -> nil
+      normalized -> normalized
+    end
+  end
+
+  defp normalize_optional_status(_status), do: nil
 
   defp suggested_story_id(stories) when is_list(stories) do
     next_number =
