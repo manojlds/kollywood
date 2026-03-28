@@ -29,6 +29,10 @@ defmodule Mix.Tasks.Kollywood.Orch.Status do
     )
 
     Mix.shell().info(
+      "- maintenance_mode=#{status.maintenance_mode} dispatch_paused=#{status.dispatch_paused} drain_ready=#{status.drain_ready}"
+    )
+
+    Mix.shell().info(
       "- poll_interval_ms=#{status.poll_interval_ms} max_concurrent_agents_requested=#{status.max_concurrent_agents_requested} max_concurrent_agents_effective=#{status.max_concurrent_agents_effective} max_concurrent_agents_hard_cap=#{status.max_concurrent_agents_hard_cap} retries_enabled=#{status.retries_enabled}"
     )
 

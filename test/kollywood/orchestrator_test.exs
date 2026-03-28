@@ -321,9 +321,18 @@ defmodule Kollywood.OrchestratorTest do
         "kollywood_orchestrator_test_#{System.unique_integer([:positive])}"
       )
 
+    previous_home = System.get_env("KOLLYWOOD_HOME")
+    kollywood_home = Path.join(root, ".kollywood-home")
+    System.put_env("KOLLYWOOD_HOME", kollywood_home)
+
     File.mkdir_p!(root)
 
     on_exit(fn ->
+      case previous_home do
+        nil -> System.delete_env("KOLLYWOOD_HOME")
+        value -> System.put_env("KOLLYWOOD_HOME", value)
+      end
+
       File.rm_rf!(root)
     end)
 
@@ -713,6 +722,116 @@ defmodule Kollywood.OrchestratorTest do
     assert reason in [:normal, :noproc]
   end
 
+  test "maintenance drain pauses new dispatch and reports drain status", %{root: root} do
+    %{store: workflow_store} = start_workflow_store!(root, %{max_concurrent_agents: 1})
+    issue = issue("ISS-MAINT-1", "ABC-MAINT-1", 1)
+    issues_agent = start_agent!(fn -> [issue] end)
+    test_pid = self()
+
+    tracker = fn _config -> {:ok, Agent.get(issues_agent, & &1)} end
+
+    runner = fn issue, _opts ->
+      issue_id = issue.id
+      send(test_pid, {:runner_started, issue_id, self()})
+
+      receive do
+        {:complete_runner, ^issue_id, result} -> result
+      end
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: tracker,
+         runner: runner,
+         auto_poll: false,
+         continuation_delay_ms: 60_000,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.set_maintenance_mode(orchestrator, :drain)
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    refute_receive {:runner_started, "ISS-MAINT-1", _runner_pid}, 150
+
+    status = Orchestrator.status(orchestrator)
+    assert status.maintenance_mode == :drain
+    assert status.dispatch_paused == true
+    assert status.drain_ready == true
+    assert status.running_count == 0
+
+    assert :ok = Orchestrator.set_maintenance_mode(orchestrator, :normal)
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_started, "ISS-MAINT-1", runner_pid}
+
+    runner_ref = Process.monitor(runner_pid)
+    send(runner_pid, {:complete_runner, "ISS-MAINT-1", {:ok, success_result(issue)}})
+    assert_receive {:DOWN, ^runner_ref, :process, ^runner_pid, reason}
+    assert reason in [:normal, :noproc]
+  end
+
+  test "maintenance drain lets current run finish but blocks follow-up dispatch", %{root: root} do
+    %{store: workflow_store} = start_workflow_store!(root, %{max_concurrent_agents: 1})
+    issue_one = issue("ISS-MAINT-2", "ABC-MAINT-2", 1)
+    issue_two = issue("ISS-MAINT-3", "ABC-MAINT-3", 2)
+    issues_agent = start_agent!(fn -> [issue_one, issue_two] end)
+    test_pid = self()
+
+    tracker = fn _config -> {:ok, Agent.get(issues_agent, & &1)} end
+
+    runner = fn issue, _opts ->
+      issue_id = issue.id
+      send(test_pid, {:runner_started, issue_id, self()})
+
+      receive do
+        {:complete_runner, ^issue_id, result} -> result
+      end
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: tracker,
+         runner: runner,
+         auto_poll: false,
+         continuation_delay_ms: 60_000,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_started, "ISS-MAINT-2", first_runner_pid}
+
+    assert :ok = Orchestrator.set_maintenance_mode(orchestrator, :drain)
+
+    first_ref = Process.monitor(first_runner_pid)
+    send(first_runner_pid, {:complete_runner, "ISS-MAINT-2", {:ok, success_result(issue_one)}})
+    assert_receive {:DOWN, ^first_ref, :process, ^first_runner_pid, reason}
+    assert reason in [:normal, :noproc]
+
+    _ = :sys.get_state(orchestrator)
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    refute_receive {:runner_started, "ISS-MAINT-3", _runner_pid}, 150
+
+    status = Orchestrator.status(orchestrator)
+    assert status.maintenance_mode == :drain
+    assert status.dispatch_paused == true
+    assert status.running_count == 0
+    assert status.drain_ready == true
+
+    assert :ok = Orchestrator.set_maintenance_mode(orchestrator, :normal)
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_started, "ISS-MAINT-3", second_runner_pid}
+
+    second_ref = Process.monitor(second_runner_pid)
+    send(second_runner_pid, {:complete_runner, "ISS-MAINT-3", {:ok, success_result(issue_two)}})
+    assert_receive {:DOWN, ^second_ref, :process, ^second_runner_pid, reason}
+    assert reason in [:normal, :noproc]
+  end
+
   test "ignores stale run_worker_result messages from another pid", %{root: root} do
     %{store: workflow_store} = start_workflow_store!(root, %{max_concurrent_agents: 1})
     issue = issue("ISS-STALE", "ABC-STALE", 1)
@@ -927,7 +1046,9 @@ defmodule Kollywood.OrchestratorTest do
     assert File.exists?(Path.join(attempt_dir, "runtime.log"))
     assert File.exists?(Path.join(attempt_dir, "events.jsonl"))
 
-    assert File.read!(Path.join(attempt_dir, "worker.log")) =~ "worker-output"
+    worker_log = File.read!(Path.join(attempt_dir, "worker.log"))
+    assert worker_log =~ "turn_succeeded"
+    refute worker_log =~ "worker-output"
     assert File.read!(Path.join(attempt_dir, "reviewer.log")) =~ "review-output"
     assert File.read!(Path.join(attempt_dir, "checks.log")) =~ "checks-output"
     assert File.read!(Path.join(attempt_dir, "runtime.log")) =~ "runtime-output"

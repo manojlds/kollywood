@@ -5,6 +5,7 @@ defmodule Mix.Tasks.Kollywood.OrchTasksTest do
 
   alias Kollywood.Config
   alias Kollywood.Orchestrator
+  alias Kollywood.Orchestrator.ControlState
   alias Kollywood.Orchestrator.RunLogs
 
   setup do
@@ -62,6 +63,9 @@ defmodule Mix.Tasks.Kollywood.OrchTasksTest do
     assert output =~ "Orchestrator status"
     assert output =~ "running=0"
     assert output =~ "retrying=0"
+    assert output =~ "maintenance_mode=normal"
+    assert output =~ "dispatch_paused=false"
+    assert output =~ "drain_ready=true"
     assert output =~ "max_concurrent_agents_requested=5"
     assert output =~ "max_concurrent_agents_effective=5"
     assert output =~ "max_concurrent_agents_hard_cap=5"
@@ -219,6 +223,38 @@ defmodule Mix.Tasks.Kollywood.OrchTasksTest do
 
     assert output =~ "[seed] line"
     assert output =~ "[tail] line"
+  end
+
+  test "kollywood.orch.maintenance toggles maintenance mode file" do
+    output = run_task("kollywood.orch.maintenance", ["--mode", "drain"])
+
+    assert output =~ "Maintenance mode set to drain"
+    assert output =~ "Current maintenance mode: drain"
+    assert {:ok, :drain} = ControlState.read_maintenance_mode()
+
+    output = run_task("kollywood.orch.maintenance", ["--mode", "normal"])
+
+    assert output =~ "Maintenance mode set to normal"
+    assert output =~ "Current maintenance mode: normal"
+    assert {:ok, :normal} = ControlState.read_maintenance_mode()
+  end
+
+  test "kollywood.orch.maintenance waits until drain is ready" do
+    assert :ok = ControlState.write_status(%{maintenance_mode: "drain", running_count: 0})
+
+    output =
+      run_task("kollywood.orch.maintenance", [
+        "--mode",
+        "drain",
+        "--wait",
+        "--timeout",
+        "2",
+        "--interval",
+        "25"
+      ])
+
+    assert output =~ "Current maintenance mode: drain"
+    assert output =~ "Drain complete (running=0)"
   end
 
   defp run_task(task_name, args) do
