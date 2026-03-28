@@ -99,7 +99,8 @@ defmodule KollywoodWeb.StoryController do
               {:error, "project tracker path is not configured"}
             end
 
-          _other -> {:error, "project tracker path is not configured"}
+          _other ->
+            {:error, "project tracker path is not configured"}
         end
 
       %Project{} ->
