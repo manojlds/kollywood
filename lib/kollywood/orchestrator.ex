@@ -990,13 +990,15 @@ defmodule Kollywood.Orchestrator do
       else
         {:error, reason} ->
           retry_attempt = retry_attempt_from_run_attempt(attempt)
+          failure_reason = "run worker failed to start: #{reason}"
 
           state
+          |> tracker_mark_failed(issue_id, failure_reason, retry_attempt)
           |> schedule_retry(
             issue_id,
             issue,
             retry_attempt,
-            "run worker failed to start: #{reason}",
+            failure_reason,
             retry_backoff_delay_ms(state, retry_attempt)
           )
           |> release_claim(issue_id)
@@ -1570,6 +1572,12 @@ defmodule Kollywood.Orchestrator do
       {:error, reason} ->
         {:error, inspect(reason)}
     end
+  rescue
+    error ->
+      {:error, Exception.message(error)}
+  catch
+    :exit, reason ->
+      {:error, Exception.format_exit(reason)}
   end
 
   # --- Running workers ---

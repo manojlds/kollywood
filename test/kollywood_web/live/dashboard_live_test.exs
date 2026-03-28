@@ -34,6 +34,10 @@ defmodule KollywoodWeb.DashboardLiveTest do
     tmp_dir =
       Path.join(System.tmp_dir!(), "kollywood_test_#{System.unique_integer([:positive])}")
 
+    previous_home = System.get_env("KOLLYWOOD_HOME")
+    kollywood_home = Path.join(tmp_dir, ".kollywood-home")
+    System.put_env("KOLLYWOOD_HOME", kollywood_home)
+
     File.mkdir_p!(tmp_dir)
 
     File.write!(
@@ -49,9 +53,16 @@ defmodule KollywoodWeb.DashboardLiveTest do
         local_path: tmp_dir
       })
 
-    on_exit(fn -> File.rm_rf!(tmp_dir) end)
+    on_exit(fn ->
+      case previous_home do
+        nil -> System.delete_env("KOLLYWOOD_HOME")
+        value -> System.put_env("KOLLYWOOD_HOME", value)
+      end
 
-    %{project: project, tmp_dir: tmp_dir, tmp_root: tmp_dir}
+      File.rm_rf!(tmp_dir)
+    end)
+
+    %{project: project, tmp_dir: tmp_dir}
   end
 
   describe "projects index" do
@@ -124,10 +135,9 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
     test "shows completed run attempt in recent activity", %{
       conn: conn,
-      project: project,
-      tmp_root: tmp_root
+      project: project
     } do
-      prepare_run_logs!(tmp_root, "US-001")
+      prepare_run_logs!(project.slug, "US-001")
 
       {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}")
 
@@ -137,10 +147,9 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
     test "recent activity shows story title when available", %{
       conn: conn,
-      project: project,
-      tmp_root: tmp_root
+      project: project
     } do
-      prepare_run_logs!(tmp_root, "US-001")
+      prepare_run_logs!(project.slug, "US-001")
 
       {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}")
 
@@ -589,11 +598,10 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
     test "run detail back link points to story runs tab", %{
       conn: conn,
-      project: project,
-      tmp_root: tmp_root
+      project: project
     } do
       story_id = "US-BACK-LINK"
-      prepare_run_logs!(tmp_root, story_id)
+      prepare_run_logs!(project.slug, story_id)
 
       {:ok, _view, html} =
         live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
@@ -633,8 +641,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
     test "runs page uses latest run logs over stale tracker last-run metadata", %{
       conn: conn,
       project: project,
-      tmp_dir: tmp_dir,
-      tmp_root: tmp_root
+      tmp_dir: tmp_dir
     } do
       stories = [
         %{
@@ -650,8 +657,8 @@ defmodule KollywoodWeb.DashboardLiveTest do
         Jason.encode!(%{"userStories" => stories}, pretty: true)
       )
 
-      _ = prepare_run_logs!(tmp_root, "US-LATEST")
-      _ = prepare_run_logs!(tmp_root, "US-LATEST")
+      _ = prepare_run_logs!(project.slug, "US-LATEST")
+      _ = prepare_run_logs!(project.slug, "US-LATEST")
 
       {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/runs")
 
@@ -662,8 +669,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
     test "runs page shows run logs even when tracker lacks lastRunAttempt", %{
       conn: conn,
       project: project,
-      tmp_dir: tmp_dir,
-      tmp_root: tmp_root
+      tmp_dir: tmp_dir
     } do
       stories = [
         %{
@@ -678,7 +684,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
         Jason.encode!(%{"userStories" => stories}, pretty: true)
       )
 
-      _ = prepare_run_logs!(tmp_root, "US-NO-LAST")
+      _ = prepare_run_logs!(project.slug, "US-NO-LAST")
 
       {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/runs")
 
@@ -701,11 +707,10 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
     test "shows log tab bar when run logs exist", %{
       conn: conn,
-      project: project,
-      tmp_root: tmp_root
+      project: project
     } do
       story_id = "US-TAB-TEST"
-      context = prepare_run_logs!(tmp_root, story_id)
+      context = prepare_run_logs!(project.slug, story_id)
       File.write!(context.files.agent_stdout, "agent output here")
 
       {:ok, _view, html} =
@@ -718,11 +723,10 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
     test "agent tab shows agent_stdout.log content by default in runs tab", %{
       conn: conn,
-      project: project,
-      tmp_root: tmp_root
+      project: project
     } do
       story_id = "US-AGENT-TAB"
-      context = prepare_run_logs!(tmp_root, story_id)
+      context = prepare_run_logs!(project.slug, story_id)
       File.write!(context.files.agent_stdout, "agent log content")
 
       {:ok, _view, html} =
@@ -733,11 +737,10 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
     test "log tab switching changes displayed log content", %{
       conn: conn,
-      project: project,
-      tmp_root: tmp_root
+      project: project
     } do
       story_id = "US-SWITCH-TAB"
-      context = prepare_run_logs!(tmp_root, story_id)
+      context = prepare_run_logs!(project.slug, story_id)
       File.write!(context.files.agent_stdout, "agent content")
       File.write!(context.files.run, "worker log content")
 
@@ -754,11 +757,10 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
     test "renders ANSI colors and intensity across agent/review/worker tabs", %{
       conn: conn,
-      project: project,
-      tmp_root: tmp_root
+      project: project
     } do
       story_id = "US-ANSI-TABS"
-      context = prepare_run_logs!(tmp_root, story_id)
+      context = prepare_run_logs!(project.slug, story_id)
 
       File.write!(context.files.agent_stdout, "start\n\e[31magent error\e[0m\n")
       File.write!(context.files.reviewer_stdout, "\e[1;33mreview warning\e[0m")
@@ -788,11 +790,10 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
     test "escapes log HTML and strips malformed ANSI control characters", %{
       conn: conn,
-      project: project,
-      tmp_root: tmp_root
+      project: project
     } do
       story_id = "US-ANSI-SAFE"
-      context = prepare_run_logs!(tmp_root, story_id)
+      context = prepare_run_logs!(project.slug, story_id)
 
       File.write!(
         context.files.agent_stdout,
@@ -811,11 +812,10 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
     test "shows no output placeholder when active log file is empty", %{
       conn: conn,
-      project: project,
-      tmp_root: tmp_root
+      project: project
     } do
       story_id = "US-EMPTY-LOG"
-      _context = prepare_run_logs!(tmp_root, story_id)
+      _context = prepare_run_logs!(project.slug, story_id)
 
       {:ok, _view, html} =
         live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
@@ -825,11 +825,10 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
     test "poll_logs handle_info updates log content", %{
       conn: conn,
-      project: project,
-      tmp_root: tmp_root
+      project: project
     } do
       story_id = "US-POLL-TEST"
-      context = prepare_run_logs!(tmp_root, story_id, status: "running")
+      context = prepare_run_logs!(project.slug, story_id, status: "running")
 
       {:ok, view, _html} =
         live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
@@ -904,10 +903,10 @@ defmodule KollywoodWeb.DashboardLiveTest do
     end
   end
 
-  defp prepare_run_logs!(root, story_id, opts \\ []) do
+  defp prepare_run_logs!(project_slug, story_id, opts \\ []) do
     config = %Config{
-      workspace: %{root: root},
-      tracker: %{path: nil}
+      workspace: %{root: Path.join(System.tmp_dir!(), "kollywood_dashboard_workspaces")},
+      tracker: %{path: nil, project_slug: project_slug}
     }
 
     issue = %{id: story_id, identifier: story_id, title: "Test #{story_id}"}

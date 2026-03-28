@@ -7,6 +7,14 @@
 # General application configuration
 import Config
 
+kollywood_home =
+  System.get_env("KOLLYWOOD_HOME") ||
+    Path.join(System.user_home!(), ".kollywood")
+
+default_db_path =
+  System.get_env("KOLLYWOOD_DB_PATH") ||
+    Path.join(Path.expand(kollywood_home), "kollywood.db")
+
 config :kollywood,
   generators: [timestamp_type: :utc_datetime],
   app_mode: :all,
@@ -20,7 +28,7 @@ config :kollywood,
 
 config :kollywood, Kollywood.Repo,
   adapter: Ecto.Adapters.SQLite3,
-  database: ".kollywood/kollywood.db",
+  database: default_db_path,
   pool_size: 5,
   busy_timeout: 5_000,
   stacktrace: true,
