@@ -535,6 +535,112 @@ defmodule Kollywood.OrchestratorTest do
     assert_receive {:runner_finished, "ISS-2"}
   end
 
+  test "clamps requested max concurrency to the server hard cap", %{root: root} do
+    %{store: workflow_store} = start_workflow_store!(root, %{max_concurrent_agents: 3})
+    test_pid = self()
+
+    issue_one = issue("ISS-CAP-1", "ABC-CAP-1", 1)
+    issue_two = issue("ISS-CAP-2", "ABC-CAP-2", 2)
+    issue_three = issue("ISS-CAP-3", "ABC-CAP-3", 3)
+    issues_agent = start_agent!(fn -> [issue_three, issue_two, issue_one] end)
+
+    tracker = fn _config -> {:ok, Agent.get(issues_agent, & &1)} end
+
+    runner = fn issue, opts ->
+      issue_id = issue.id
+      send(test_pid, {:runner_started, issue_id, self(), Keyword.get(opts, :attempt)})
+
+      receive do
+        {:complete_runner, ^issue_id, result} ->
+          send(test_pid, {:runner_finished, issue_id})
+          result
+      after
+        5_000 -> {:error, failed_result(issue, "test timed out waiting for completion")}
+      end
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: tracker,
+         runner: runner,
+         global_max_concurrent_agents: 1,
+         auto_poll: false,
+         continuation_delay_ms: 60_000,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_started, "ISS-CAP-1", first_runner_pid, nil}
+    refute_receive {:runner_started, "ISS-CAP-2", _, _}, 100
+    refute_receive {:runner_started, "ISS-CAP-3", _, _}, 100
+
+    status = Orchestrator.status(orchestrator)
+    assert status.max_concurrent_agents_requested == 3
+    assert status.max_concurrent_agents_effective == 1
+    assert status.max_concurrent_agents_hard_cap == 1
+    assert status.max_concurrent_agents == 1
+    assert status.running_count == 1
+    assert status.claimed_issue_ids == ["ISS-CAP-1"]
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    refute_receive {:runner_started, "ISS-CAP-2", _, _}, 100
+
+    first_runner_ref = Process.monitor(first_runner_pid)
+    send(first_runner_pid, {:complete_runner, "ISS-CAP-1", {:ok, success_result(issue_one)}})
+    assert_receive {:runner_finished, "ISS-CAP-1"}
+    assert_receive {:DOWN, ^first_runner_ref, :process, ^first_runner_pid, reason}
+    assert reason in [:normal, :noproc]
+
+    _ = :sys.get_state(orchestrator)
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_started, "ISS-CAP-2", second_runner_pid, nil}
+
+    send(second_runner_pid, {:complete_runner, "ISS-CAP-2", {:ok, success_result(issue_two)}})
+    assert_receive {:runner_finished, "ISS-CAP-2"}
+  end
+
+  test "uses default hard cap when server hard cap is invalid", %{root: root} do
+    %{store: workflow_store} = start_workflow_store!(root, %{max_concurrent_agents: 9})
+    test_pid = self()
+    issue = issue("ISS-CAP-INVALID", "ABC-CAP-INVALID", 1)
+    issues_agent = start_agent!(fn -> [issue] end)
+
+    tracker = fn _config -> {:ok, Agent.get(issues_agent, & &1)} end
+
+    runner = fn issue, _opts ->
+      send(test_pid, {:runner_started, issue.id})
+      {:ok, success_result(issue)}
+    end
+
+    log =
+      capture_log(fn ->
+        orchestrator =
+          start_supervised!(
+            {Orchestrator,
+             name: unique_name(:orchestrator),
+             workflow_store: workflow_store,
+             tracker: tracker,
+             runner: runner,
+             global_max_concurrent_agents: 0,
+             auto_poll: false}
+          )
+
+        assert :ok = Orchestrator.poll_now(orchestrator)
+        assert_receive {:runner_started, "ISS-CAP-INVALID"}
+
+        status = Orchestrator.status(orchestrator)
+        assert status.max_concurrent_agents_requested == 9
+        assert status.max_concurrent_agents_effective == 5
+        assert status.max_concurrent_agents_hard_cap == 5
+      end)
+
+    assert log =~ "Invalid orchestrator.global_max_concurrent_agents=0; using 5"
+  end
+
   test "status shows runtime process state for running issues", %{root: root} do
     %{store: workflow_store} = start_workflow_store!(root, %{runtime_profile: "full_stack"})
     issue = issue("ISS-RT", "ABC-RT", 1)

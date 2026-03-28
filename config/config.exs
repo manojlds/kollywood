@@ -13,7 +13,7 @@ config :kollywood,
   orchestrator_enabled: true,
   orchestrator_ephemeral_store: Kollywood.Orchestrator.EphemeralStore,
   orchestrator_retry_store: Kollywood.Orchestrator.RetryStore,
-  orchestrator: []
+  orchestrator: [global_max_concurrent_agents: 5]
 
 config :kollywood,
   ecto_repos: [Kollywood.Repo]

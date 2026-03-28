@@ -33,6 +33,7 @@ defmodule Kollywood.Orchestrator do
   @default_claim_ttl_ms 86_400_000
   @default_completed_ttl_ms 60_000
   @default_max_concurrent_agents 5
+  @default_global_max_concurrent_agents 5
   @default_max_retry_backoff_ms 300_000
   @default_retry_base_delay_ms 10_000
   @default_continuation_delay_ms 1_000
@@ -61,6 +62,8 @@ defmodule Kollywood.Orchestrator do
           repo_sync_task_pid: pid() | nil,
           repo_sync_timeout_timer_ref: reference() | nil,
           repo_sync_started_at_ms: integer() | nil,
+          requested_max_concurrent_agents: pos_integer(),
+          global_max_concurrent_agents: pos_integer(),
           max_concurrent_agents: pos_integer(),
           max_retry_backoff_ms: pos_integer(),
           retries_enabled: boolean(),
@@ -108,6 +111,8 @@ defmodule Kollywood.Orchestrator do
     :repo_sync_task_pid,
     :repo_sync_timeout_timer_ref,
     :repo_sync_started_at_ms,
+    :requested_max_concurrent_agents,
+    :global_max_concurrent_agents,
     :max_concurrent_agents,
     :max_retry_backoff_ms,
     :retries_enabled,
@@ -173,6 +178,22 @@ defmodule Kollywood.Orchestrator do
       watchdog_check_interval_ms =
         positive_integer(Keyword.get(opts, :watchdog_check_interval_ms), poll_interval_ms)
 
+      requested_max_concurrent_agents =
+        positive_integer(
+          Keyword.get(opts, :max_concurrent_agents),
+          @default_max_concurrent_agents
+        )
+
+      global_max_concurrent_agents =
+        positive_integer_with_default(
+          Keyword.get(opts, :global_max_concurrent_agents),
+          @default_global_max_concurrent_agents,
+          "orchestrator.global_max_concurrent_agents"
+        )
+
+      effective_max_concurrent_agents =
+        clamp_max_concurrent_agents(requested_max_concurrent_agents, global_max_concurrent_agents)
+
       state = %__MODULE__{
         workflow_store: Keyword.get(opts, :workflow_store, WorkflowStore),
         tracker: Keyword.get(opts, :tracker, :auto),
@@ -208,11 +229,9 @@ defmodule Kollywood.Orchestrator do
         repo_sync_task_pid: nil,
         repo_sync_timeout_timer_ref: nil,
         repo_sync_started_at_ms: nil,
-        max_concurrent_agents:
-          positive_integer(
-            Keyword.get(opts, :max_concurrent_agents),
-            @default_max_concurrent_agents
-          ),
+        requested_max_concurrent_agents: requested_max_concurrent_agents,
+        global_max_concurrent_agents: global_max_concurrent_agents,
+        max_concurrent_agents: effective_max_concurrent_agents,
         max_retry_backoff_ms:
           positive_integer(
             Keyword.get(opts, :max_retry_backoff_ms),
@@ -2426,10 +2445,16 @@ defmodule Kollywood.Orchestrator do
         state.repo_sync_timeout_ms
       )
 
-    max_concurrent_agents =
+    requested_max_concurrent_agents =
       positive_integer(
         get_in(config, [Access.key(:agent, %{}), Access.key(:max_concurrent_agents)]),
-        state.max_concurrent_agents
+        state.requested_max_concurrent_agents
+      )
+
+    max_concurrent_agents =
+      clamp_max_concurrent_agents(
+        requested_max_concurrent_agents,
+        state.global_max_concurrent_agents
       )
 
     max_retry_backoff_ms =
@@ -2488,6 +2513,7 @@ defmodule Kollywood.Orchestrator do
       | poll_interval_ms: poll_interval_ms,
         repo_sync_interval_ms: repo_sync_interval_ms,
         repo_sync_timeout_ms: repo_sync_timeout_ms,
+        requested_max_concurrent_agents: requested_max_concurrent_agents,
         max_concurrent_agents: max_concurrent_agents,
         max_retry_backoff_ms: max_retry_backoff_ms,
         retries_enabled: retries_enabled,
@@ -2596,6 +2622,34 @@ defmodule Kollywood.Orchestrator do
   end
 
   defp positive_integer(_value, fallback), do: fallback
+
+  defp positive_integer_with_default(nil, default, _field), do: default
+
+  defp positive_integer_with_default(value, default, field) do
+    case positive_integer(value, nil) do
+      int when is_integer(int) and int > 0 ->
+        int
+
+      _other ->
+        Logger.warning("Invalid #{field}=#{inspect(value)}; using #{default}")
+        default
+    end
+  end
+
+  defp clamp_max_concurrent_agents(requested_max, hard_cap)
+       when is_integer(requested_max) and requested_max > 0 and is_integer(hard_cap) and
+              hard_cap > 0,
+       do: min(requested_max, hard_cap)
+
+  defp clamp_max_concurrent_agents(requested_max, _hard_cap)
+       when is_integer(requested_max) and requested_max > 0,
+       do: requested_max
+
+  defp clamp_max_concurrent_agents(_requested_max, hard_cap)
+       when is_integer(hard_cap) and hard_cap > 0,
+       do: hard_cap
+
+  defp clamp_max_concurrent_agents(_requested_max, _hard_cap), do: @default_max_concurrent_agents
 
   defp schedule_poll(state, delay_ms) do
     if state.poll_timer_ref do
@@ -2781,6 +2835,9 @@ defmodule Kollywood.Orchestrator do
       repo_sync_timeout_ms: state.repo_sync_timeout_ms,
       repo_sync_due_in_ms: repo_sync_due_in_ms(state, now_ms),
       repo_sync_in_progress: repo_sync_in_progress?(state),
+      max_concurrent_agents_requested: state.requested_max_concurrent_agents,
+      max_concurrent_agents_effective: state.max_concurrent_agents,
+      max_concurrent_agents_hard_cap: state.global_max_concurrent_agents,
       max_concurrent_agents: state.max_concurrent_agents,
       retries_enabled: state.retries_enabled,
       max_attempts: state.max_attempts,
