@@ -12,6 +12,23 @@ defmodule KollywoodWeb.DashboardLive do
   alias Kollywood.ServiceConfig
   alias Kollywood.Tracker.PrdJson
 
+  @default_stories_view "kanban"
+  @story_status_columns [
+    {"in_progress", "In Progress"},
+    {"open", "Open"},
+    {"done", "Done"},
+    {"merged", "Merged"},
+    {"failed", "Failed"},
+    {"draft", "Draft"}
+  ]
+  @primary_story_status_columns [
+    {"in_progress", "In Progress"},
+    {"open", "Open"},
+    {"done", "Done"},
+    {"merged", "Merged"},
+    {"failed", "Failed"}
+  ]
+
   @impl true
   def mount(params, _session, socket) do
     projects = Projects.list_enabled_projects()
@@ -32,6 +49,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:story_form_values, %{})
       |> assign(:story_form_story_id, nil)
       |> assign(:story_form_error, nil)
+      |> assign(:stories_view, @default_stories_view)
       |> assign(:workflow, %{
         yaml: "",
         body: "",
@@ -60,6 +78,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:page_title, if(current_project, do: current_project.name, else: "Dashboard"))
       |> assign(:run_detail_story_id, params["story_id"])
       |> assign(:run_detail_attempt, params["attempt"])
+      |> assign(:stories_view, @default_stories_view)
       |> load_project_data(current_project)
       |> handle_live_action(socket.assigns[:live_action], params)
 
@@ -105,6 +124,10 @@ defmodule KollywoodWeb.DashboardLive do
 
   def handle_event("set_story_tab", %{"tab" => tab}, socket) do
     {:noreply, assign(socket, :story_detail_tab, tab)}
+  end
+
+  def handle_event("set_stories_view", %{"view" => view}, socket) do
+    {:noreply, assign(socket, :stories_view, normalize_stories_view(view))}
   end
 
   def handle_event("close_story", _params, socket) do
@@ -480,7 +503,11 @@ defmodule KollywoodWeb.DashboardLive do
                   recent_runs={@recent_runs}
                 />
               <% :stories -> %>
-                <.stories_section stories={@stories} project={@current_project} />
+                <.stories_section
+                  stories={@stories}
+                  project={@current_project}
+                  stories_view={@stories_view}
+                />
               <% :runs -> %>
                 <.runs_section
                   run_attempts={@run_attempts}
@@ -747,27 +774,57 @@ defmodule KollywoodWeb.DashboardLive do
 
   attr :stories, :list, required: true
   attr :project, Project, required: true
+  attr :stories_view, :string, default: @default_stories_view
 
   defp stories_section(assigns) do
-    groups = %{
-      "in_progress" =>
-        Enum.filter(assigns.stories, &(normalize_status(&1["status"]) == "in_progress")),
-      "open" => Enum.filter(assigns.stories, &(normalize_status(&1["status"]) == "open")),
-      "done" => Enum.filter(assigns.stories, &(normalize_status(&1["status"]) == "done")),
-      "merged" => Enum.filter(assigns.stories, &(normalize_status(&1["status"]) == "merged")),
-      "failed" => Enum.filter(assigns.stories, &(normalize_status(&1["status"]) == "failed")),
-      "draft" => Enum.filter(assigns.stories, &(normalize_status(&1["status"]) == "draft"))
-    }
+    groups = build_story_groups(assigns.stories)
 
     assigns =
       assigns
       |> assign(:groups, groups)
       |> assign(:editable, local_provider?(assigns.project))
+      |> assign(:stories_view, normalize_stories_view(assigns.stories_view))
 
     ~H"""
-    <div class="space-y-6">
-      <div class="flex items-center justify-between gap-3">
+    <div
+      id="stories-section"
+      class="space-y-6"
+      phx-hook=".StoriesViewPreference"
+      data-project-slug={@project.slug}
+      data-current-view={@stories_view}
+    >
+      <div class="flex flex-wrap items-center justify-between gap-3">
         <h2 class="text-2xl font-bold">Stories</h2>
+
+        <div id="stories-view-toggle" class="join order-last sm:order-none">
+          <button
+            type="button"
+            phx-click="set_stories_view"
+            phx-value-view="list"
+            class={[
+              "btn btn-sm join-item",
+              @stories_view == "list" && "btn-primary",
+              @stories_view != "list" && "btn-ghost"
+            ]}
+            aria-pressed={@stories_view == "list"}
+          >
+            List
+          </button>
+          <button
+            type="button"
+            phx-click="set_stories_view"
+            phx-value-view="kanban"
+            class={[
+              "btn btn-sm join-item",
+              @stories_view == "kanban" && "btn-primary",
+              @stories_view != "kanban" && "btn-ghost"
+            ]}
+            aria-pressed={@stories_view == "kanban"}
+          >
+            Kanban
+          </button>
+        </div>
+
         <%= if @editable do %>
           <button phx-click="open_new_story_form" class="btn btn-primary btn-sm gap-2">
             <.icon name="hero-plus" class="size-4" /> Add Story
@@ -784,231 +841,328 @@ defmodule KollywoodWeb.DashboardLive do
             </p>
           </div>
         </div>
+      <% else %>
+        <%= if @stories_view == "kanban" do %>
+          <.stories_kanban_view groups={@groups} project={@project} editable={@editable} />
+        <% else %>
+          <.stories_list_view groups={@groups} project={@project} editable={@editable} />
+        <% end %>
       <% end %>
+    </div>
 
-      <%= for {status, label} <- [{"in_progress", "In Progress"}, {"open", "Open"}, {"done", "Done"}, {"merged", "Merged"}, {"failed", "Failed"}] do %>
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".StoriesViewPreference">
+      export default {
+        mounted() {
+          this.restoreViewPreference()
+          this.persistCurrentView()
+        },
+
+        updated() {
+          this.persistCurrentView()
+        },
+
+        normalizeView(view) {
+          if (view === "list" || view === "kanban") return view
+          return null
+        },
+
+        preferenceKey() {
+          const slug = this.el.dataset.projectSlug
+          return slug ? `kollywood:stories-view:${slug}` : null
+        },
+
+        restoreViewPreference() {
+          const key = this.preferenceKey()
+          if (!key) return
+
+          try {
+            const stored = this.normalizeView(window.localStorage.getItem(key))
+            const current = this.normalizeView(this.el.dataset.currentView)
+
+            if (stored && stored !== current) {
+              this.pushEvent("set_stories_view", {view: stored})
+            }
+          } catch (_error) {
+            // Ignore localStorage errors.
+          }
+        },
+
+        persistCurrentView() {
+          const key = this.preferenceKey()
+          const current = this.normalizeView(this.el.dataset.currentView)
+          if (!key || !current) return
+
+          try {
+            window.localStorage.setItem(key, current)
+          } catch (_error) {
+            // Ignore localStorage errors.
+          }
+        }
+      }
+    </script>
+    """
+  end
+
+  attr :groups, :map, required: true
+  attr :project, Project, required: true
+  attr :editable, :boolean, default: false
+
+  defp stories_list_view(assigns) do
+    assigns = assign(assigns, :status_columns, @primary_story_status_columns)
+
+    ~H"""
+    <div id="stories-list-view" class="space-y-6">
+      <%= for {status, label} <- @status_columns do %>
         <% stories = Map.get(@groups, status, []) %>
         <%= if stories != [] do %>
-          <div>
-            <h3 class="text-lg font-semibold mb-3 flex items-center gap-2">
+          <section id={"stories-list-group-#{status}"}>
+            <h3 class="mb-3 flex items-center gap-2 text-lg font-semibold">
               <.status_badge status={status} />
               {label}
               <span class="badge badge-sm badge-ghost">{length(stories)}</span>
             </h3>
             <div class="space-y-2">
               <%= for story <- stories do %>
-                <% status_targets = manual_status_targets(story["status"]) %>
-                <div id={"story-card-#{story["id"]}"} class="card bg-base-200 border border-base-300">
-                  <div class="card-body p-4">
-                    <div class="flex items-start justify-between gap-4">
-                      <div class="flex-1 min-w-0">
-                        <div class="flex items-center gap-2">
-                          <.link
-                            navigate={~p"/projects/#{@project.slug}/stories/#{story["id"]}"}
-                            class="font-mono text-sm font-semibold text-primary hover:underline"
-                          >
-                            {story["id"]}
-                          </.link>
-                          <.link
-                            navigate={~p"/projects/#{@project.slug}/stories/#{story["id"]}"}
-                            class="font-medium hover:text-primary text-left"
-                          >
-                            {story["title"]}
-                          </.link>
-                        </div>
-                        <%= if story["dependsOn"] && story["dependsOn"] != [] do %>
-                          <div class="flex items-center gap-1 mt-1">
-                            <span class="text-xs text-base-content/50">depends on:</span>
-                            <%= for dep <- story["dependsOn"] do %>
-                              <span class="badge badge-xs badge-outline">{dep}</span>
-                            <% end %>
-                          </div>
-                        <% end %>
-                        <%= if story["lastError"] do %>
-                          <p class="text-sm text-error mt-2 line-clamp-2">{story["lastError"]}</p>
-                        <% end %>
-                      </div>
-                      <%= if @editable do %>
-                        <div class="flex items-center gap-2 shrink-0">
-                          <div class="dropdown dropdown-end">
-                            <label tabindex="0" class="btn btn-ghost btn-xs">
-                              <.icon name="hero-ellipsis-horizontal" class="size-4" />
-                            </label>
-                            <ul
-                              tabindex="0"
-                              class="dropdown-content menu menu-xs bg-base-100 rounded-box shadow-lg border border-base-300 z-50 w-44 p-1"
-                            >
-                              <li>
-                                <button
-                                  phx-click="open_edit_story_form"
-                                  phx-value-id={story["id"]}
-                                  class="text-xs"
-                                >
-                                  Edit Story
-                                </button>
-                              </li>
-                              <li>
-                                <button
-                                  phx-click="delete_story"
-                                  phx-value-id={story["id"]}
-                                  phx-confirm={"Delete #{story["id"]}? This cannot be undone."}
-                                  class="text-xs text-error"
-                                >
-                                  Delete Story
-                                </button>
-                              </li>
-                              <%= if normalize_status(story["status"]) != "open" do %>
-                                <li>
-                                  <button
-                                    phx-click="reset_story"
-                                    phx-value-id={story["id"]}
-                                    phx-confirm={"Reset #{story["id"]}? This will move it to Draft, clear run data, and remove the worktree."}
-                                    class="text-xs text-warning"
-                                  >
-                                    Reset Story
-                                  </button>
-                                </li>
-                                <li><hr class="my-1 border-base-300" /></li>
-                              <% end %>
-                              <li class="menu-title px-2 py-1 text-[10px] tracking-wide uppercase text-base-content/50">
-                                Set Status
-                              </li>
-                              <%= if status_targets == [] do %>
-                                <li>
-                                  <span class="px-2 py-1 text-xs text-base-content/50">
-                                    No manual transitions
-                                  </span>
-                                </li>
-                              <% end %>
-                              <%= for s <- status_targets do %>
-                                <li>
-                                  <button
-                                    phx-click="update_story_status"
-                                    phx-value-id={story["id"]}
-                                    phx-value-status={s}
-                                    class="text-xs"
-                                  >
-                                    {display_status(s)}
-                                  </button>
-                                </li>
-                              <% end %>
-                            </ul>
-                          </div>
-                        </div>
-                      <% end %>
-                    </div>
-                  </div>
-                </div>
+                <.story_card story={story} project={@project} editable={@editable} />
               <% end %>
             </div>
-          </div>
+          </section>
         <% end %>
       <% end %>
 
-      <%= if @groups["draft"] != [] do %>
-        <div class="opacity-60">
-          <h3 class="text-lg font-semibold mb-3 flex items-center gap-2">
+      <% draft_stories = Map.get(@groups, "draft", []) %>
+      <%= if draft_stories != [] do %>
+        <section id="stories-list-group-draft" class="opacity-70">
+          <h3 class="mb-3 flex items-center gap-2 text-lg font-semibold">
             <.status_badge status="draft" /> Draft
-            <span class="badge badge-sm badge-ghost">{length(@groups["draft"])}</span>
+            <span class="badge badge-sm badge-ghost">{length(draft_stories)}</span>
           </h3>
           <div class="space-y-2">
-            <%= for story <- @groups["draft"] do %>
-              <% status_targets = manual_status_targets(story["status"]) %>
-              <div
-                id={"story-card-#{story["id"]}"}
-                class="card bg-base-200 border border-base-300 border-dashed"
-              >
-                <div class="card-body p-4">
-                  <div class="flex items-start justify-between gap-4">
-                    <div class="flex-1 min-w-0">
-                      <div class="flex items-center gap-2">
-                        <.link
-                          navigate={~p"/projects/#{@project.slug}/stories/#{story["id"]}"}
-                          class="font-mono text-sm font-semibold text-primary hover:underline"
-                        >
-                          {story["id"]}
-                        </.link>
-                        <.link
-                          navigate={~p"/projects/#{@project.slug}/stories/#{story["id"]}"}
-                          class="font-medium hover:text-primary text-left"
-                        >
-                          {story["title"]}
-                        </.link>
-                      </div>
-                      <%= if story["dependsOn"] && story["dependsOn"] != [] do %>
-                        <div class="flex items-center gap-1 mt-1">
-                          <span class="text-xs text-base-content/50">depends on:</span>
-                          <%= for dep <- story["dependsOn"] do %>
-                            <span class="badge badge-xs badge-outline">{dep}</span>
-                          <% end %>
-                        </div>
-                      <% end %>
-                    </div>
-                    <%= if @editable do %>
-                      <div class="flex items-center gap-2 shrink-0">
-                        <div class="dropdown dropdown-end">
-                          <label tabindex="0" class="btn btn-ghost btn-xs">
-                            <.icon name="hero-ellipsis-horizontal" class="size-4" />
-                          </label>
-                          <ul
-                            tabindex="0"
-                            class="dropdown-content menu menu-xs bg-base-100 rounded-box shadow-lg border border-base-300 z-50 w-44 p-1"
-                          >
-                            <li>
-                              <button
-                                phx-click="open_edit_story_form"
-                                phx-value-id={story["id"]}
-                                class="text-xs"
-                              >
-                                Edit Story
-                              </button>
-                            </li>
-                            <li>
-                              <button
-                                phx-click="delete_story"
-                                phx-value-id={story["id"]}
-                                phx-confirm={"Delete #{story["id"]}? This cannot be undone."}
-                                class="text-xs text-error"
-                              >
-                                Delete Story
-                              </button>
-                            </li>
-                            <li class="menu-title px-2 py-1 text-[10px] tracking-wide uppercase text-base-content/50">
-                              Set Status
-                            </li>
-                            <%= if status_targets == [] do %>
-                              <li>
-                                <span class="px-2 py-1 text-xs text-base-content/50">
-                                  No manual transitions
-                                </span>
-                              </li>
-                            <% end %>
-                            <%= for s <- status_targets do %>
-                              <li>
-                                <button
-                                  phx-click="update_story_status"
-                                  phx-value-id={story["id"]}
-                                  phx-value-status={s}
-                                  class="text-xs"
-                                >
-                                  {display_status(s)}
-                                </button>
-                              </li>
-                            <% end %>
-                          </ul>
-                        </div>
-                      </div>
-                    <% end %>
-                  </div>
-                </div>
-              </div>
+            <%= for story <- draft_stories do %>
+              <.story_card story={story} project={@project} editable={@editable} />
             <% end %>
           </div>
-        </div>
+        </section>
       <% end %>
     </div>
     """
   end
+
+  attr :groups, :map, required: true
+  attr :project, Project, required: true
+  attr :editable, :boolean, default: false
+
+  defp stories_kanban_view(assigns) do
+    assigns = assign(assigns, :status_columns, @story_status_columns)
+
+    ~H"""
+    <div id="stories-kanban-view" class="-mx-2 overflow-x-auto px-2 pb-2">
+      <div class="flex min-w-max gap-3 lg:min-w-0 lg:grid lg:grid-cols-3 xl:grid-cols-6">
+        <%= for {status, label} <- @status_columns do %>
+          <.stories_kanban_column
+            status={status}
+            label={label}
+            stories={Map.get(@groups, status, [])}
+            project={@project}
+            editable={@editable}
+          />
+        <% end %>
+      </div>
+    </div>
+    """
+  end
+
+  attr :status, :string, required: true
+  attr :label, :string, required: true
+  attr :stories, :list, default: []
+  attr :project, Project, required: true
+  attr :editable, :boolean, default: false
+
+  defp stories_kanban_column(assigns) do
+    assigns =
+      assign(assigns, :column_classes, [
+        "w-[17.5rem] shrink-0 rounded-xl border border-base-300 bg-base-200/60 sm:w-[19rem]",
+        "lg:w-auto lg:min-w-0",
+        assigns.status == "draft" && "opacity-80"
+      ])
+
+    ~H"""
+    <section id={"stories-column-#{@status}"} class={@column_classes}>
+      <header class="flex items-center justify-between gap-2 border-b border-base-300 px-3 py-2">
+        <div class="flex items-center gap-2">
+          <.status_badge status={@status} />
+          <span class="text-sm font-semibold">{@label}</span>
+        </div>
+        <span class="badge badge-sm badge-ghost">{length(@stories)}</span>
+      </header>
+
+      <div class="space-y-2 p-3">
+        <%= if @stories == [] do %>
+          <p class="px-1 py-4 text-xs text-base-content/40">No stories</p>
+        <% else %>
+          <%= for story <- @stories do %>
+            <.story_card story={story} project={@project} editable={@editable} />
+          <% end %>
+        <% end %>
+      </div>
+    </section>
+    """
+  end
+
+  attr :story, :map, required: true
+  attr :project, Project, required: true
+  attr :editable, :boolean, default: false
+
+  defp story_card(assigns) do
+    status = normalize_status(assigns.story["status"])
+    status_targets = manual_status_targets(assigns.story["status"])
+    show_reset = status not in ["open", "draft"]
+
+    assigns =
+      assigns
+      |> assign(:status, status)
+      |> assign(:status_targets, status_targets)
+      |> assign(:show_reset, show_reset)
+
+    ~H"""
+    <div
+      id={"story-card-#{@story["id"]}"}
+      class={[
+        "card border border-base-300 bg-base-200 shadow-sm",
+        @status == "draft" && "border-dashed"
+      ]}
+    >
+      <div class="card-body gap-3 p-4">
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0 flex-1 space-y-2">
+            <div class="flex items-center justify-between gap-2">
+              <.link
+                navigate={~p"/projects/#{@project.slug}/stories/#{@story["id"]}"}
+                class="font-mono text-sm font-semibold text-primary hover:underline"
+              >
+                {@story["id"]}
+              </.link>
+              <.status_badge status={@status} />
+            </div>
+
+            <.link
+              navigate={~p"/projects/#{@project.slug}/stories/#{@story["id"]}"}
+              class="line-clamp-2 text-left font-medium hover:text-primary"
+            >
+              {@story["title"]}
+            </.link>
+
+            <%= if @story["dependsOn"] && @story["dependsOn"] != [] do %>
+              <div class="flex flex-wrap items-center gap-1">
+                <span class="text-xs text-base-content/50">depends on:</span>
+                <%= for dep <- @story["dependsOn"] do %>
+                  <span class="badge badge-xs badge-outline">{dep}</span>
+                <% end %>
+              </div>
+            <% end %>
+
+            <%= if @story["priority"] do %>
+              <p class="text-xs text-base-content/60">
+                Priority: <span class="capitalize">{to_string(@story["priority"])}</span>
+              </p>
+            <% end %>
+          </div>
+
+          <%= if @editable do %>
+            <.story_actions_menu
+              story={@story}
+              status_targets={@status_targets}
+              show_reset={@show_reset}
+            />
+          <% end %>
+        </div>
+
+        <%= if @story["lastError"] do %>
+          <p class="line-clamp-2 text-sm text-error">{@story["lastError"]}</p>
+        <% end %>
+      </div>
+    </div>
+    """
+  end
+
+  attr :story, :map, required: true
+  attr :status_targets, :list, default: []
+  attr :show_reset, :boolean, default: false
+
+  defp story_actions_menu(assigns) do
+    ~H"""
+    <div class="shrink-0">
+      <div class="dropdown dropdown-end">
+        <label tabindex="0" class="btn btn-ghost btn-xs">
+          <.icon name="hero-ellipsis-horizontal" class="size-4" />
+        </label>
+        <ul
+          tabindex="0"
+          class="dropdown-content menu menu-xs z-50 w-44 rounded-box border border-base-300 bg-base-100 p-1 shadow-lg"
+        >
+          <li>
+            <button phx-click="open_edit_story_form" phx-value-id={@story["id"]} class="text-xs">
+              Edit Story
+            </button>
+          </li>
+          <li>
+            <button
+              phx-click="delete_story"
+              phx-value-id={@story["id"]}
+              phx-confirm={"Delete #{@story["id"]}? This cannot be undone."}
+              class="text-xs text-error"
+            >
+              Delete Story
+            </button>
+          </li>
+          <%= if @show_reset do %>
+            <li>
+              <button
+                phx-click="reset_story"
+                phx-value-id={@story["id"]}
+                phx-confirm={"Reset #{@story["id"]}? This will move it to Draft, clear run data, and remove the worktree."}
+                class="text-xs text-warning"
+              >
+                Reset Story
+              </button>
+            </li>
+            <li><hr class="my-1 border-base-300" /></li>
+          <% end %>
+          <li class="menu-title px-2 py-1 text-[10px] uppercase tracking-wide text-base-content/50">
+            Set Status
+          </li>
+          <%= if @status_targets == [] do %>
+            <li>
+              <span class="px-2 py-1 text-xs text-base-content/50">No manual transitions</span>
+            </li>
+          <% end %>
+          <%= for status <- @status_targets do %>
+            <li>
+              <button
+                phx-click="update_story_status"
+                phx-value-id={@story["id"]}
+                phx-value-status={status}
+                class="text-xs"
+              >
+                {display_status(status)}
+              </button>
+            </li>
+          <% end %>
+        </ul>
+      </div>
+    </div>
+    """
+  end
+
+  defp build_story_groups(stories) when is_list(stories) do
+    grouped = Enum.group_by(stories, &normalize_status(&1["status"]))
+
+    Enum.into(@story_status_columns, %{}, fn {status, _label} ->
+      {status, Map.get(grouped, status, [])}
+    end)
+  end
+
+  defp build_story_groups(_stories), do: build_story_groups([])
 
   attr :mode, :atom, default: nil
   attr :values, :map, default: %{}
@@ -3212,6 +3366,19 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp find_project_by_slug(_projects, _slug), do: nil
+
+  defp normalize_stories_view("list"), do: "list"
+  defp normalize_stories_view("kanban"), do: "kanban"
+
+  defp normalize_stories_view(view) when is_binary(view) do
+    case view |> String.trim() |> String.downcase() do
+      "list" -> "list"
+      "kanban" -> "kanban"
+      _other -> @default_stories_view
+    end
+  end
+
+  defp normalize_stories_view(_view), do: @default_stories_view
 
   defp normalize_status(nil), do: "open"
 
