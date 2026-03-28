@@ -9,6 +9,7 @@ defmodule KollywoodWeb.DashboardLive do
   alias Kollywood.Orchestrator.RunLogs
   alias Kollywood.Projects
   alias Kollywood.Projects.Project
+  alias Kollywood.ServiceConfig
   alias Kollywood.Tracker.PrdJson
 
   @impl true
@@ -2606,8 +2607,19 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp list_run_attempts(project) do
-    log_root = run_logs_dir(project)
+    project
+    |> run_logs_dirs()
+    |> Enum.flat_map(&list_run_attempts_in_dir/1)
+    |> Enum.reduce(%{}, fn run, acc ->
+      Map.put_new(acc, {run.story_id, run.attempt}, run)
+    end)
+    |> Map.values()
+    |> Enum.sort_by(& &1.started_at, :desc)
+  rescue
+    _ -> []
+  end
 
+  defp list_run_attempts_in_dir(log_root) when is_binary(log_root) do
     if File.dir?(log_root) do
       log_root
       |> File.ls!()
@@ -2649,13 +2661,12 @@ defmodule KollywoodWeb.DashboardLive do
           []
         end
       end)
-      |> Enum.sort_by(& &1.started_at, :desc)
     else
       []
     end
-  rescue
-    _ -> []
   end
+
+  defp list_run_attempts_in_dir(_), do: []
 
   defp build_recent_runs(run_attempts, stories) do
     title_by_id = Map.new(stories, &{&1["id"], &1["title"]})
@@ -2666,87 +2677,6 @@ defmodule KollywoodWeb.DashboardLive do
     |> Enum.map(fn r ->
       Map.put(r, :story_title, Map.get(title_by_id, r.story_id, r.story_id))
     end)
-  end
-
-  defp load_run_detail(project, story_id, attempt) when is_binary(attempt) do
-    # Try new string-based path first (local_path/runs/story_id/attempt)
-    # then fall back to old numeric padded path (.kollywood/run_logs/story_id/attempt-NNNN)
-    local_runs_dir =
-      if is_binary(project.local_path) do
-        Path.join([project.local_path, "runs", story_id, attempt])
-      end
-
-    parsed_attempt = parse_attempt(attempt)
-
-    old_attempt_dir =
-      if parsed_attempt do
-        Path.join([run_logs_dir(project), story_id, "attempt-#{pad_attempt(parsed_attempt)}"])
-      end
-
-    attempt_dir =
-      cond do
-        local_runs_dir && File.dir?(local_runs_dir) -> local_runs_dir
-        old_attempt_dir && File.dir?(old_attempt_dir) -> old_attempt_dir
-        true -> nil
-      end
-
-    if attempt_dir do
-      metadata_path = Path.join(attempt_dir, "metadata.json")
-
-      metadata =
-        if File.exists?(metadata_path) do
-          with {:ok, content} <- File.read(metadata_path),
-               {:ok, decoded} <- Jason.decode(content) do
-            decoded
-          else
-            _ -> %{}
-          end
-        else
-          %{}
-        end
-
-      metadata
-      |> Map.put("run_log", safe_read(Path.join(attempt_dir, "run.log")))
-      |> Map.put("worker_log", safe_read(Path.join(attempt_dir, "worker.log")))
-      |> Map.put("reviewer_log", safe_read(Path.join(attempt_dir, "reviewer.log")))
-      |> Map.put("checks_log", safe_read(Path.join(attempt_dir, "checks.log")))
-    else
-      nil
-    end
-  end
-
-  defp load_run_detail(project, story_id, attempt) do
-    parsed = parse_attempt(attempt)
-
-    if parsed do
-      attempt_dir = Path.join([run_logs_dir(project), story_id, "attempt-#{pad_attempt(parsed)}"])
-
-      if File.dir?(attempt_dir) do
-        metadata_path = Path.join(attempt_dir, "metadata.json")
-
-        metadata =
-          if File.exists?(metadata_path) do
-            with {:ok, content} <- File.read(metadata_path),
-                 {:ok, decoded} <- Jason.decode(content) do
-              decoded
-            else
-              _ -> %{}
-            end
-          else
-            %{}
-          end
-
-        metadata
-        |> Map.put("run_log", safe_read(Path.join(attempt_dir, "run.log")))
-        |> Map.put("worker_log", safe_read(Path.join(attempt_dir, "worker.log")))
-        |> Map.put("reviewer_log", safe_read(Path.join(attempt_dir, "reviewer.log")))
-        |> Map.put("checks_log", safe_read(Path.join(attempt_dir, "checks.log")))
-      else
-        nil
-      end
-    else
-      nil
-    end
   end
 
   # -- Settings Helpers --
@@ -3236,18 +3166,11 @@ defmodule KollywoodWeb.DashboardLive do
     Enum.join(result, "\n")
   end
 
-  defp run_logs_dir(project) do
-    if is_binary(project.local_path) do
-      Path.join(project.local_path, ".kollywood/run_logs")
+  defp run_logs_dirs(project) do
+    if is_binary(project.slug) and String.trim(project.slug) != "" do
+      [ServiceConfig.project_run_logs_path(project.slug)]
     else
-      ""
-    end
-  end
-
-  defp safe_read(path) do
-    case File.read(path) do
-      {:ok, content} -> content
-      _ -> nil
+      []
     end
   end
 
@@ -3259,11 +3182,14 @@ defmodule KollywoodWeb.DashboardLive do
       _ -> :ok
     end
 
-    story_logs_dir = Path.join(run_logs_dir(project), story_id)
+    run_logs_dirs(project)
+    |> Enum.each(fn logs_root ->
+      story_logs_dir = Path.join(logs_root, story_id)
 
-    if File.dir?(story_logs_dir) do
-      File.rm_rf!(story_logs_dir)
-    end
+      if File.dir?(story_logs_dir) do
+        File.rm_rf!(story_logs_dir)
+      end
+    end)
 
     :ok
   rescue
@@ -3336,12 +3262,6 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp normalize_story_attempt(_value), do: nil
-
-  defp pad_attempt(num) when is_integer(num) do
-    num |> Integer.to_string() |> String.pad_leading(4, "0")
-  end
-
-  defp pad_attempt(_), do: "0001"
 
   defp format_time(nil), do: "—"
 
@@ -3475,31 +3395,10 @@ defmodule KollywoodWeb.DashboardLive do
   defp load_run_detail_latest(_project, nil, _tab), do: nil
 
   defp load_run_detail_latest(project, story_id, tab) do
-    project_root = derive_project_root(project)
-
-    case RunLogs.resolve_attempt(project_root, story_id, :latest) do
-      {:ok, %{metadata: metadata, files: files}} ->
-        content = read_log_tab_content(files, tab)
-
-        %{
-          "metadata" => metadata,
-          "active_log_content" => content
-        }
-
-      {:error, _} ->
-        nil
-    end
-  end
-
-  defp load_run_detail_for_attempt(nil, _story_id, _attempt, _tab), do: nil
-  defp load_run_detail_for_attempt(_project, nil, _attempt, _tab), do: nil
-
-  defp load_run_detail_for_attempt(project, story_id, attempt, tab) do
-    project_root = derive_project_root(project)
-    parsed = parse_attempt(attempt)
-
-    if parsed do
-      case RunLogs.resolve_attempt(project_root, story_id, parsed) do
+    project
+    |> derive_project_roots()
+    |> Enum.find_value(fn project_root ->
+      case RunLogs.resolve_attempt(project_root, story_id, :latest) do
         {:ok, %{metadata: metadata, files: files}} ->
           content = read_log_tab_content(files, tab)
 
@@ -3511,16 +3410,40 @@ defmodule KollywoodWeb.DashboardLive do
         {:error, _} ->
           nil
       end
+    end)
+  end
+
+  defp load_run_detail_for_attempt(nil, _story_id, _attempt, _tab), do: nil
+  defp load_run_detail_for_attempt(_project, nil, _attempt, _tab), do: nil
+
+  defp load_run_detail_for_attempt(project, story_id, attempt, tab) do
+    parsed = parse_attempt(attempt)
+
+    if parsed do
+      project
+      |> derive_project_roots()
+      |> Enum.find_value(fn project_root ->
+        case RunLogs.resolve_attempt(project_root, story_id, parsed) do
+          {:ok, %{metadata: metadata, files: files}} ->
+            content = read_log_tab_content(files, tab)
+
+            %{
+              "metadata" => metadata,
+              "active_log_content" => content
+            }
+
+          {:error, _} ->
+            nil
+        end
+      end)
     end
   end
 
-  defp derive_project_root(project) do
-    cond do
-      is_binary(project.local_path) and String.trim(project.local_path) != "" ->
-        Path.expand(project.local_path)
-
-      true ->
-        File.cwd!()
+  defp derive_project_roots(project) do
+    if is_binary(project.slug) and String.trim(project.slug) != "" do
+      [ServiceConfig.project_data_dir(project.slug)]
+    else
+      []
     end
   end
 

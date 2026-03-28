@@ -6,6 +6,7 @@ defmodule Kollywood.OrchestratorTest do
   alias Kollywood.AgentRunner.Result
   alias Kollywood.Config
   alias Kollywood.Orchestrator
+  alias Kollywood.Orchestrator.RunLogs
   alias Kollywood.WorkflowStore
 
   defmodule ResumableTracker do
@@ -916,7 +917,9 @@ defmodule Kollywood.OrchestratorTest do
 
     _ = :sys.get_state(orchestrator)
 
-    attempt_dir = Path.join([root, ".kollywood", "run_logs", "US-LOG", "attempt-0001"])
+    config = WorkflowStore.get_config(workflow_store)
+    project_root = RunLogs.project_root(config)
+    attempt_dir = Path.join([project_root, "run_logs", "US-LOG", "attempt-0001"])
 
     assert File.exists?(Path.join(attempt_dir, "worker.log"))
     assert File.exists?(Path.join(attempt_dir, "reviewer.log"))
@@ -1088,6 +1091,51 @@ defmodule Kollywood.OrchestratorTest do
     runner_ref = Process.monitor(runner_pid)
     assert_receive {:DOWN, ^runner_ref, :process, ^runner_pid, reason}
     assert reason in [:normal, :noproc]
+  end
+
+  test "marks issue failed when run worker cannot start and retries are disabled", %{root: root} do
+    %{store: workflow_store} =
+      start_workflow_store!(root, %{retries_enabled: false, max_attempts: 1})
+
+    issue = issue("ISS-START-FAIL", "ABC-START-FAIL", 1)
+    agent_pool_name = unique_name(:agent_pool)
+    {:ok, pool_pid} = Kollywood.AgentPool.start_link(name: agent_pool_name)
+    Process.unlink(pool_pid)
+
+    ResumableTracker.put_state(self(), issue)
+
+    on_exit(fn ->
+      ResumableTracker.clear_state()
+
+      if Process.alive?(pool_pid) do
+        Process.exit(pool_pid, :kill)
+      end
+    end)
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: ResumableTracker,
+         runner: fn _issue, _opts -> flunk("runner should not be invoked") end,
+         agent_pool: agent_pool_name,
+         auto_poll: false,
+         continuation_delay_ms: 60_000,
+         retry_base_delay_ms: 20}
+      )
+
+    Process.exit(pool_pid, :kill)
+    Process.sleep(20)
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+
+    assert_receive {:tracker_mark_failed, "ISS-START-FAIL", reason, 1}
+    assert reason =~ "run worker failed to start"
+
+    status = Orchestrator.status(orchestrator)
+    assert status.running_count == 0
+    assert status.retry_count == 0
   end
 
   test "retries done finalization without rerunning a successful worker", %{root: root} do

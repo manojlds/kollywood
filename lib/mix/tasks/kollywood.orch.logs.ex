@@ -13,6 +13,7 @@ defmodule Mix.Tasks.Kollywood.Orch.Logs do
 
   alias Kollywood.Config
   alias Kollywood.Orchestrator.RunLogs
+  alias Kollywood.Projects
   alias Mix.Tasks.Kollywood.Orch.Shared
 
   @default_follow_poll_ms 200
@@ -69,12 +70,43 @@ defmodule Mix.Tasks.Kollywood.Orch.Logs do
       |> Path.expand()
 
     with {:ok, content} <- File.read(workflow_path),
-         {:ok, config, _prompt_template} <- Config.parse(content) do
-      RunLogs.project_root(config)
+          {:ok, config, _prompt_template} <- Config.parse(content) do
+      config
+      |> maybe_inject_project_slug(workflow_path)
+      |> RunLogs.project_root()
     else
       {:error, reason} ->
         Mix.raise("Failed to resolve workflow config from #{workflow_path}: #{reason}")
     end
+  end
+
+  defp maybe_inject_project_slug(%Config{} = config, workflow_path) do
+    tracker = config.tracker || %{}
+
+    case tracker[:project_slug] do
+      slug when is_binary(slug) and slug != "" ->
+        config
+
+      _other ->
+        case Projects.get_project_by_workflow_path(workflow_path) do
+          nil ->
+            config
+
+          %{slug: slug} when is_binary(slug) and slug != "" ->
+            normalized = String.trim(slug)
+
+            if normalized == "" do
+              config
+            else
+              %{config | tracker: Map.put(tracker, :project_slug, normalized)}
+            end
+
+          _other ->
+            config
+        end
+    end
+  rescue
+    _ -> config
   end
 
   defp resolve_attempt!(project_root, story_id, attempt_selector) do

@@ -5,6 +5,7 @@ defmodule Mix.Tasks.Kollywood.OrchTasksTest do
 
   alias Kollywood.Config
   alias Kollywood.Orchestrator
+  alias Kollywood.Orchestrator.RunLogs
 
   setup do
     root =
@@ -12,6 +13,10 @@ defmodule Mix.Tasks.Kollywood.OrchTasksTest do
         System.tmp_dir!(),
         "kollywood_orch_task_test_#{System.unique_integer([:positive])}"
       )
+
+    previous_home = System.get_env("KOLLYWOOD_HOME")
+    kollywood_home = Path.join(root, ".kollywood-home")
+    System.put_env("KOLLYWOOD_HOME", kollywood_home)
 
     File.mkdir_p!(root)
 
@@ -27,6 +32,11 @@ defmodule Mix.Tasks.Kollywood.OrchTasksTest do
     Application.put_env(:kollywood, :orch_logs_follow_poll_ms, 25)
 
     on_exit(fn ->
+      case previous_home do
+        nil -> System.delete_env("KOLLYWOOD_HOME")
+        value -> System.put_env("KOLLYWOOD_HOME", value)
+      end
+
       File.rm_rf!(root)
 
       restore_env(:orchestrator_server, previous_server_env)
@@ -241,10 +251,14 @@ defmodule Mix.Tasks.Kollywood.OrchTasksTest do
   end
 
   defp write_attempt_log_fixture(root, story_id, attempt, run_log_content, status) do
+    project_root =
+      root
+      |> workflow_config()
+      |> RunLogs.project_root()
+
     attempt_dir =
       Path.join([
-        root,
-        ".kollywood",
+        project_root,
         "run_logs",
         story_id,
         "attempt-" <> String.pad_leading(Integer.to_string(attempt), 4, "0")

@@ -9,6 +9,7 @@ defmodule Kollywood.ServiceConfig do
   Directory layout under home:
     repos/        — Kollywood-managed source clones (one per project)
     workspaces/   — Per-issue agent workspaces (subdirectory per project slug)
+    projects/     — Per-project data (tracker, run logs, etc)
   """
 
   @default_home "~/.kollywood"
@@ -34,6 +35,12 @@ defmodule Kollywood.ServiceConfig do
     Path.join(workspaces_dir(), slug)
   end
 
+  @doc "Directory for project-scoped data (projects/<slug>/)."
+  @spec project_data_dir(String.t()) :: String.t()
+  def project_data_dir(slug) when is_binary(slug) and slug != "" do
+    Path.join([kollywood_home(), "projects", slug])
+  end
+
   @doc "Managed clone path for a specific project (repos/<slug>/)."
   @spec project_repos_path(String.t()) :: String.t()
   def project_repos_path(slug) when is_binary(slug) and slug != "" do
@@ -43,6 +50,12 @@ defmodule Kollywood.ServiceConfig do
   @doc "Tracker file path for a specific project (projects/<slug>/prd.json)."
   @spec project_tracker_path(String.t()) :: String.t()
   def project_tracker_path(slug) when is_binary(slug) and slug != "" do
-    Path.join([kollywood_home(), "projects", slug, "prd.json"])
+    Path.join([project_data_dir(slug), "prd.json"])
+  end
+
+  @doc "Run-log root directory for a specific project (projects/<slug>/run_logs/)."
+  @spec project_run_logs_path(String.t()) :: String.t()
+  def project_run_logs_path(slug) when is_binary(slug) and slug != "" do
+    Path.join([project_data_dir(slug), "run_logs"])
   end
 end

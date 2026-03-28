@@ -66,9 +66,14 @@ case System.get_env("KOLLYWOOD_GLOBAL_MAX_CONCURRENT_AGENTS") do
 end
 
 if config_env() != :test do
+  kollywood_home =
+    System.get_env("KOLLYWOOD_HOME") ||
+      Path.join(System.user_home!(), ".kollywood")
+
+  default_db_path = Path.join(Path.expand(kollywood_home), "kollywood.db")
+
   config :kollywood, Kollywood.Repo,
-    database:
-      System.get_env("KOLLYWOOD_DB_PATH", Path.join(File.cwd!(), ".kollywood/kollywood.db")),
+    database: System.get_env("KOLLYWOOD_DB_PATH", default_db_path),
     pool_size: String.to_integer(System.get_env("POOL_SIZE", "5"))
 end
 

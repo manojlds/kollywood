@@ -4,7 +4,7 @@ defmodule Kollywood.Orchestrator.RunLogs do
 
   Log layout:
 
-      <project_root>/.kollywood/run_logs/<story_id>/
+      <project_data_root>/run_logs/<story_id>/
         attempts.jsonl
         attempt-0001/
           metadata.json
@@ -21,8 +21,9 @@ defmodule Kollywood.Orchestrator.RunLogs do
 
   alias Kollywood.AgentRunner.Result
   alias Kollywood.Config
+  alias Kollywood.ServiceConfig
 
-  @base_log_dir [".kollywood", "run_logs"]
+  @base_log_dir ["run_logs"]
 
   @worker_events [
     "run_started",
@@ -78,9 +79,32 @@ defmodule Kollywood.Orchestrator.RunLogs do
           files: map()
         }
 
-  @doc "Resolves the project root used for run-log persistence."
+  @doc "Resolves the project data root used for run-log persistence."
   @spec project_root(Config.t()) :: String.t()
   def project_root(%Config{} = config) do
+    slug = project_slug(config) || inferred_project_slug(config)
+    ServiceConfig.project_data_dir(slug)
+  end
+
+  defp project_slug(%Config{} = config) do
+    config
+    |> get_in([Access.key(:tracker, %{}), Access.key(:project_slug)])
+    |> optional_string()
+  end
+
+  defp inferred_project_slug(%Config{} = config) do
+    basis = inferred_project_slug_basis(config)
+
+    hash =
+      :sha256
+      |> :crypto.hash(basis)
+      |> Base.encode16(case: :lower)
+      |> binary_part(0, 12)
+
+    "adhoc-#{hash}"
+  end
+
+  defp inferred_project_slug_basis(%Config{} = config) do
     source =
       config
       |> get_in([Access.key(:workspace, %{}), Access.key(:source)])
@@ -97,10 +121,10 @@ defmodule Kollywood.Orchestrator.RunLogs do
       |> optional_string()
 
     cond do
-      source -> expand_path(source)
-      tracker_path -> tracker_path |> expand_path() |> Path.dirname()
-      workspace_root -> expand_path(workspace_root)
-      true -> File.cwd!()
+      source -> "source:" <> expand_path(source)
+      tracker_path -> "tracker:" <> expand_path(tracker_path)
+      workspace_root -> "workspace:" <> expand_path(workspace_root)
+      true -> "cwd:" <> File.cwd!()
     end
   end
 

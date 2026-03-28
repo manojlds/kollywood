@@ -1,5 +1,5 @@
 defmodule Kollywood.Orchestrator.RunLogsTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Kollywood.Config
   alias Kollywood.Orchestrator.RunLogs
@@ -11,13 +11,24 @@ defmodule Kollywood.Orchestrator.RunLogsTest do
         "kollywood_run_logs_test_#{System.unique_integer([:positive])}"
       )
 
+    previous_home = System.get_env("KOLLYWOOD_HOME")
+    kollywood_home = Path.join(root, ".kollywood-home")
+    System.put_env("KOLLYWOOD_HOME", kollywood_home)
+
     File.mkdir_p!(root)
 
-    on_exit(fn -> File.rm_rf!(root) end)
+    on_exit(fn ->
+      case previous_home do
+        nil -> System.delete_env("KOLLYWOOD_HOME")
+        value -> System.put_env("KOLLYWOOD_HOME", value)
+      end
+
+      File.rm_rf!(root)
+    end)
 
     config = %Config{
       workspace: %{root: root},
-      tracker: %{path: nil}
+      tracker: %{path: nil, project_slug: "run-logs-test"}
     }
 
     issue = %{id: "US-TEST", identifier: "US-TEST", title: "Test issue"}
