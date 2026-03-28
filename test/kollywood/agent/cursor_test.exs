@@ -1,0 +1,115 @@
+defmodule Kollywood.Agent.CursorTest do
+  use ExUnit.Case, async: true
+
+  alias Kollywood.Agent.Cursor
+  alias Kollywood.Agent.Session
+
+  setup do
+    root =
+      Path.join(System.tmp_dir!(), "kollywood_cursor_test_#{System.unique_integer([:positive])}")
+
+    workspace = Path.join(root, "workspace")
+    cli_path = Path.join(root, "fake_cursor.sh")
+    raw_log_path = Path.join(root, "agent_stdout.log")
+    first_chunk_marker = Path.join(root, "first_chunk.marker")
+
+    File.mkdir_p!(workspace)
+
+    File.write!(cli_path, """
+    #!/usr/bin/env bash
+    set -eu
+
+    printf '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"working"}]}}\\n'
+
+    if [ -n "${CURSOR_FIRST_CHUNK_MARKER:-}" ]; then
+      : > "$CURSOR_FIRST_CHUNK_MARKER"
+    fi
+
+    sleep "${CURSOR_STREAM_DELAY_SECS:-1}"
+
+    printf '{"type":"result","subtype":"success","is_error":false,"duration_ms":1000,"duration_api_ms":900,"result":"final output","session_id":"session-1"}\\n'
+    """)
+
+    File.chmod!(cli_path, 0o755)
+
+    on_exit(fn ->
+      File.rm_rf!(root)
+    end)
+
+    %{
+      workspace: workspace,
+      cli_path: cli_path,
+      raw_log_path: raw_log_path,
+      first_chunk_marker: first_chunk_marker
+    }
+  end
+
+  test "streams incremental raw log output and preserves final parsed output", %{
+    workspace: workspace,
+    cli_path: cli_path,
+    raw_log_path: raw_log_path,
+    first_chunk_marker: first_chunk_marker
+  } do
+    assert {:ok, %Session{} = session} =
+             Cursor.start_session(workspace, %{
+               command: cli_path,
+               env: %{
+                 "CURSOR_FIRST_CHUNK_MARKER" => first_chunk_marker,
+                 "CURSOR_STREAM_DELAY_SECS" => "1"
+               }
+             })
+
+    turn_task =
+      Task.async(fn ->
+        Cursor.run_turn(session, "stream this turn", %{raw_log: raw_log_path})
+      end)
+
+    assert :ok = wait_for_file(first_chunk_marker, 2_000)
+    assert Task.yield(turn_task, 50) == nil
+
+    assert :ok = wait_for_file_contains(raw_log_path, "\"type\":\"assistant\"", 2_000)
+
+    raw_output_during_turn = File.read!(raw_log_path)
+    assert raw_output_during_turn =~ "\"type\":\"assistant\""
+    refute raw_output_during_turn =~ "\"type\":\"result\""
+
+    assert {:ok, result} = Task.await(turn_task, 5_000)
+    assert result.output == "final output"
+    assert result.raw_output =~ "\"type\":\"assistant\""
+    assert result.raw_output =~ "\"type\":\"result\""
+
+    assert :ok = Cursor.stop_session(session)
+  end
+
+  defp wait_for_file(path, timeout_ms) do
+    wait_until(timeout_ms, fn -> File.exists?(path) end)
+  end
+
+  defp wait_for_file_contains(path, needle, timeout_ms) do
+    wait_until(timeout_ms, fn ->
+      case File.read(path) do
+        {:ok, content} -> String.contains?(content, needle)
+        {:error, _reason} -> false
+      end
+    end)
+  end
+
+  defp wait_until(timeout_ms, predicate) when is_integer(timeout_ms) and timeout_ms > 0 do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    wait_until_deadline(deadline, predicate)
+  end
+
+  defp wait_until_deadline(deadline, predicate) do
+    cond do
+      predicate.() ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        {:error, :timeout}
+
+      true ->
+        Process.sleep(20)
+        wait_until_deadline(deadline, predicate)
+    end
+  end
+end
