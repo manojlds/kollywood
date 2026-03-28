@@ -888,6 +888,76 @@ defmodule Kollywood.OrchestratorTest do
     assert status.running_count == 0
   end
 
+  test "status run phase does not regress on out-of-order runner events", %{root: root} do
+    %{store: workflow_store} = start_workflow_store!(root, %{runtime_profile: "checks_only"})
+    issue = issue("ISS-PHASE-ORDER", "ABC-PHASE-ORDER", 1)
+    test_pid = self()
+    issues_agent = start_agent!(fn -> [issue] end)
+
+    tracker = fn _config -> {:ok, Agent.get(issues_agent, & &1)} end
+
+    runner = fn issue, opts ->
+      issue_id = issue.id
+      on_event = Keyword.fetch!(opts, :on_event)
+      send(test_pid, {:runner_started, issue_id, self(), Keyword.get(opts, :attempt)})
+
+      on_event.(%{
+        type: :check_started,
+        check_index: 1,
+        check_count: 2,
+        timestamp: ~U[2026-01-01 00:00:03Z],
+        issue_id: issue_id,
+        identifier: issue.identifier
+      })
+
+      on_event.(%{
+        type: :turn_started,
+        turn: 1,
+        timestamp: ~U[2026-01-01 00:00:01Z],
+        issue_id: issue_id,
+        identifier: issue.identifier
+      })
+
+      send(test_pid, {:runner_events_sent, issue_id})
+
+      receive do
+        {:complete_runner, ^issue_id, result} ->
+          result
+      after
+        5_000 -> {:error, failed_result(issue, "test timed out waiting for completion")}
+      end
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: tracker,
+         runner: runner,
+         auto_poll: false,
+         continuation_delay_ms: 60_000,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_started, "ISS-PHASE-ORDER", runner_pid, nil}
+    assert_receive {:runner_events_sent, "ISS-PHASE-ORDER"}
+
+    _ = :sys.get_state(orchestrator)
+
+    status = Orchestrator.status(orchestrator)
+    assert status.running_count == 1
+    [running_entry] = status.running
+    assert running_entry.run_phase.kind == "checks"
+    assert running_entry.run_phase_label == "Checks 1/2"
+
+    runner_ref = Process.monitor(runner_pid)
+    send(runner_pid, {:complete_runner, "ISS-PHASE-ORDER", {:ok, success_result(issue)}})
+    assert_receive {:DOWN, ^runner_ref, :process, ^runner_pid, reason}
+    assert reason in [:normal, :noproc]
+  end
+
   test "startup reconciliation skips redispatch for in_progress issues", %{root: root} do
     %{store: workflow_store} =
       start_workflow_store!(root, %{

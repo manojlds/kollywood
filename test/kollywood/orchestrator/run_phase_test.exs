@@ -61,6 +61,39 @@ defmodule Kollywood.Orchestrator.RunPhaseTest do
       assert phase.kind == "failed"
       assert phase.label == "Publishing failed"
     end
+
+    test "keeps last known phase when a recognized stale event arrives later" do
+      phase =
+        RunPhase.from_events([
+          %{type: :checks_started, check_count: 2, timestamp: ~U[2026-01-01 00:00:02Z]},
+          %{type: :check_started, check_index: 1, timestamp: ~U[2026-01-01 00:00:03Z]},
+          %{type: :turn_started, turn: 1, timestamp: ~U[2026-01-01 00:00:01Z]}
+        ])
+
+      assert phase.kind == "checks"
+      assert phase.check_index == 1
+      assert phase.check_count == 2
+      assert phase.label == "Checks 1/2"
+      assert phase.event_type == "check_started"
+    end
+
+    test "compares ISO8601 timestamps when resolving out-of-order events" do
+      phase =
+        RunPhase.from_events([
+          %{type: :review_started, cycle: 2, timestamp: "2026-01-01T00:00:05Z"},
+          %{
+            type: :check_started,
+            check_index: 2,
+            check_count: 2,
+            timestamp: "2026-01-01T00:00:04Z"
+          }
+        ])
+
+      assert phase.kind == "review"
+      assert phase.review_cycle == 2
+      assert phase.label == "Review cycle 2"
+      assert phase.event_type == "review_started"
+    end
   end
 
   describe "from_status/2" do
