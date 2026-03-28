@@ -1317,7 +1317,7 @@ defmodule KollywoodWeb.DashboardLive do
             id="log-output"
             phx-hook=".LogScroll"
             class="font-mono text-xs leading-relaxed bg-base-300 p-4 rounded-lg overflow-auto max-h-[75vh] whitespace-pre-wrap"
-          >{@run_detail["active_log_content"]}</pre>
+          ><.ansi_log content={@run_detail["active_log_content"]} /></pre>
         <% else %>
           <p class="text-base-content/50 text-sm italic">No output yet.</p>
         <% end %>
@@ -1585,7 +1585,7 @@ defmodule KollywoodWeb.DashboardLive do
                 id="log-output"
                 phx-hook=".LogScroll"
                 class="font-mono text-xs leading-relaxed bg-base-300 p-4 rounded-lg overflow-auto max-h-[75vh] whitespace-pre-wrap"
-              >{@run_detail["active_log_content"]}</pre>
+              ><.ansi_log content={@run_detail["active_log_content"]} /></pre>
             <% else %>
               <p class="text-base-content/50 text-sm italic">No output yet.</p>
             <% end %>
@@ -3530,6 +3530,81 @@ defmodule KollywoodWeb.DashboardLive do
     "worker" => :run
   }
 
+  @ansi_color_palette %{
+    black: "#111827",
+    red: "#dc2626",
+    green: "#16a34a",
+    yellow: "#ca8a04",
+    blue: "#2563eb",
+    magenta: "#c026d3",
+    cyan: "#0891b2",
+    white: "#d1d5db",
+    bright_black: "#6b7280",
+    bright_red: "#ef4444",
+    bright_green: "#22c55e",
+    bright_yellow: "#facc15",
+    bright_blue: "#60a5fa",
+    bright_magenta: "#e879f9",
+    bright_cyan: "#22d3ee",
+    bright_white: "#f9fafb"
+  }
+
+  @ansi_fg_codes %{
+    30 => :black,
+    31 => :red,
+    32 => :green,
+    33 => :yellow,
+    34 => :blue,
+    35 => :magenta,
+    36 => :cyan,
+    37 => :white,
+    90 => :bright_black,
+    91 => :bright_red,
+    92 => :bright_green,
+    93 => :bright_yellow,
+    94 => :bright_blue,
+    95 => :bright_magenta,
+    96 => :bright_cyan,
+    97 => :bright_white
+  }
+
+  @ansi_bg_codes %{
+    40 => :black,
+    41 => :red,
+    42 => :green,
+    43 => :yellow,
+    44 => :blue,
+    45 => :magenta,
+    46 => :cyan,
+    47 => :white,
+    100 => :bright_black,
+    101 => :bright_red,
+    102 => :bright_green,
+    103 => :bright_yellow,
+    104 => :bright_blue,
+    105 => :bright_magenta,
+    106 => :bright_cyan,
+    107 => :bright_white
+  }
+
+  @ansi_default_style %{fg: nil, bg: nil, bold: false, dim: false}
+
+  attr :content, :string, default: nil
+
+  defp ansi_log(assigns) do
+    assigns = assign(assigns, :segments, ansi_segments(assigns.content))
+
+    ~H"""
+    <%= for segment <- @segments do %>
+      <%= if segment.style do %>
+        <span style={segment.style}>{segment.text}</span>
+      <% else %>
+        {segment.text}
+      <% end %>
+    <% end %>
+    """
+  end
+
   defp read_log_tab_content(files, tab) when is_map(files) and is_binary(tab) do
     key = Map.get(@log_tab_file_keys, tab, String.to_atom(tab))
     file_path = Map.get(files, key)
@@ -3541,6 +3616,137 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp read_log_tab_content(_files, _tab), do: nil
+
+  defp parse_ansi_segments(<<>>, _style, acc), do: acc
+
+  defp parse_ansi_segments(content, style, acc) do
+    case :binary.match(content, <<27, 91>>) do
+      :nomatch ->
+        append_segment(acc, sanitize_log_chunk(content), style)
+
+      {index, _length} ->
+        prefix = binary_part(content, 0, index)
+        rest = binary_part(content, index + 2, byte_size(content) - index - 2)
+        acc = append_segment(acc, sanitize_log_chunk(prefix), style)
+
+        case take_ansi_sequence(rest, <<>>) do
+          {:ok, params, ?m, remaining} ->
+            parse_ansi_segments(remaining, apply_sgr(params, style), acc)
+
+          {:ok, params, terminator, remaining} ->
+            acc = append_segment(acc, sanitize_log_chunk(<<params::binary, terminator>>), style)
+            parse_ansi_segments(remaining, style, acc)
+
+          :error ->
+            parse_ansi_segments(rest, style, acc)
+        end
+    end
+  end
+
+  defp take_ansi_sequence(<<>>, _acc), do: :error
+
+  defp take_ansi_sequence(<<byte, rest::binary>>, acc) when byte >= 0x40 and byte <= 0x7E do
+    {:ok, acc, byte, rest}
+  end
+
+  defp take_ansi_sequence(<<byte, rest::binary>>, acc) do
+    take_ansi_sequence(rest, <<acc::binary, byte>>)
+  end
+
+  defp apply_sgr(params, style) do
+    params
+    |> decode_sgr_codes()
+    |> apply_sgr_codes(style)
+  end
+
+  defp decode_sgr_codes("") do
+    [0]
+  end
+
+  defp decode_sgr_codes(params) do
+    params
+    |> String.split(";", trim: false)
+    |> Enum.map(fn
+      "" ->
+        0
+
+      part ->
+        case Integer.parse(part) do
+          {code, ""} -> code
+          _ -> :invalid
+        end
+    end)
+  end
+
+  defp apply_sgr_codes([], style), do: style
+
+  defp apply_sgr_codes([:invalid | rest], style), do: apply_sgr_codes(rest, style)
+
+  defp apply_sgr_codes([0 | rest], _style), do: apply_sgr_codes(rest, @ansi_default_style)
+
+  defp apply_sgr_codes([1 | rest], style),
+    do: apply_sgr_codes(rest, %{style | bold: true, dim: false})
+
+  defp apply_sgr_codes([2 | rest], style),
+    do: apply_sgr_codes(rest, %{style | dim: true, bold: false})
+
+  defp apply_sgr_codes([22 | rest], style),
+    do: apply_sgr_codes(rest, %{style | dim: false, bold: false})
+
+  defp apply_sgr_codes([39 | rest], style), do: apply_sgr_codes(rest, %{style | fg: nil})
+
+  defp apply_sgr_codes([49 | rest], style), do: apply_sgr_codes(rest, %{style | bg: nil})
+
+  defp apply_sgr_codes([code | rest], style) when is_integer(code) do
+    cond do
+      fg = Map.get(@ansi_fg_codes, code) ->
+        apply_sgr_codes(rest, %{style | fg: fg})
+
+      bg = Map.get(@ansi_bg_codes, code) ->
+        apply_sgr_codes(rest, %{style | bg: bg})
+
+      true ->
+        apply_sgr_codes(rest, style)
+    end
+  end
+
+  defp append_segment(acc, "", _style), do: acc
+
+  defp append_segment([{text, same_style} | rest], chunk, same_style) do
+    [{text <> chunk, same_style} | rest]
+  end
+
+  defp append_segment(acc, chunk, style) do
+    [{chunk, style} | acc]
+  end
+
+  defp sanitize_log_chunk(chunk) do
+    String.replace(chunk, ~r/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u, "")
+  end
+
+  defp ansi_style_to_attr(%{fg: nil, bg: nil, bold: false, dim: false}), do: nil
+
+  defp ansi_style_to_attr(style) do
+    [
+      style.fg && "color: #{Map.get(@ansi_color_palette, style.fg)}",
+      style.bg && "background-color: #{Map.get(@ansi_color_palette, style.bg)}",
+      style.bold && "font-weight: 700",
+      style.dim && "opacity: 0.7"
+    ]
+    |> Enum.filter(& &1)
+    |> Enum.join("; ")
+  end
+
+  defp ansi_segments(nil), do: []
+
+  defp ansi_segments(content) when is_binary(content) do
+    content
+    |> parse_ansi_segments(@ansi_default_style, [])
+    |> Enum.reverse()
+    |> Enum.map(fn {text, style} -> %{text: text, style: ansi_style_to_attr(style)} end)
+  end
+
+  defp ansi_segments(_), do: []
 
   defp markdown_to_html(nil), do: ""
 
