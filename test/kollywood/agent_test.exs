@@ -122,7 +122,16 @@ defmodule Kollywood.AgentTest do
 
     assert {:ok, %Session{} = session} = Agent.start_session(config, workspace)
     assert session.adapter == Kollywood.Agent.Cursor
-    assert session.args == ["agent", "--print", "--output-format", "text", "--force", "--trust"]
+
+    assert session.args == [
+             "agent",
+             "--print",
+             "--output-format",
+             "stream-json",
+             "--stream-partial-output",
+             "--force",
+             "--trust"
+           ]
 
     assert :ok = Agent.stop_session(session)
   end
