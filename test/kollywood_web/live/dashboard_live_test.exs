@@ -752,6 +752,63 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "worker log content"
     end
 
+    test "renders ANSI colors and intensity across agent/review/worker tabs", %{
+      conn: conn,
+      project: project,
+      tmp_root: tmp_root
+    } do
+      story_id = "US-ANSI-TABS"
+      context = prepare_run_logs!(tmp_root, story_id)
+
+      File.write!(context.files.agent_stdout, "start\n\e[31magent error\e[0m\n")
+      File.write!(context.files.reviewer_stdout, "\e[1;33mreview warning\e[0m")
+      File.write!(context.files.run, "\e[30;42mworker ok\e[0m")
+
+      {:ok, view, html} =
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
+
+      assert html =~ "<span style=\"color: #dc2626\">agent error</span>"
+
+      review_html =
+        view
+        |> element("button[phx-click='set_log_tab'][phx-value-tab='review_agent']")
+        |> render_click()
+
+      assert review_html =~
+               "<span style=\"color: #ca8a04; font-weight: 700\">review warning</span>"
+
+      worker_html =
+        view
+        |> element("button[phx-click='set_log_tab'][phx-value-tab='worker']")
+        |> render_click()
+
+      assert worker_html =~
+               "<span style=\"color: #111827; background-color: #16a34a\">worker ok</span>"
+    end
+
+    test "escapes log HTML and strips malformed ANSI control characters", %{
+      conn: conn,
+      project: project,
+      tmp_root: tmp_root
+    } do
+      story_id = "US-ANSI-SAFE"
+      context = prepare_run_logs!(tmp_root, story_id)
+
+      File.write!(
+        context.files.agent_stdout,
+        "<script>alert('x')</script>\n\e[31mboom\e[0m\nmalformed:\e[33oops"
+      )
+
+      {:ok, _view, html} =
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
+
+      assert html =~ "&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt;"
+      refute html =~ "<script>alert('x')</script>"
+      assert html =~ "<span style=\"color: #dc2626\">boom</span>"
+      assert html =~ "malformed:33oops"
+      refute html =~ "\e"
+    end
+
     test "shows no output placeholder when active log file is empty", %{
       conn: conn,
       project: project,
