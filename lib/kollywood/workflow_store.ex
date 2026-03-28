@@ -29,6 +29,7 @@ defmodule Kollywood.WorkflowStore do
     :config,
     :prompt_template,
     :file_stamp,
+    :content_sha256,
     :last_error
   ]
 
@@ -64,6 +65,12 @@ defmodule Kollywood.WorkflowStore do
   @spec get_last_error(GenServer.server()) :: String.t() | nil
   def get_last_error(server \\ __MODULE__) do
     GenServer.call(server, :get_last_error)
+  end
+
+  @doc "Returns workflow identity metadata used for run snapshots."
+  @spec get_workflow_identity(GenServer.server()) :: map()
+  def get_workflow_identity(server \\ __MODULE__) do
+    GenServer.call(server, :get_workflow_identity)
   end
 
   # --- GenServer callbacks ---
@@ -104,6 +111,17 @@ defmodule Kollywood.WorkflowStore do
 
   def handle_call(:get_last_error, _from, state) do
     {:reply, state.last_error, state}
+  end
+
+  def handle_call(:get_workflow_identity, _from, state) do
+    identity = %{
+      path: state.path,
+      sha256: state.content_sha256,
+      file_stamp: format_file_stamp(state.file_stamp),
+      identity_source: "workflow_store"
+    }
+
+    {:reply, identity, state}
   end
 
   @impl true
@@ -148,6 +166,11 @@ defmodule Kollywood.WorkflowStore do
     with {:ok, content} <- File.read(state.path),
          {:ok, stamp} <- file_stamp(state.path),
          {:ok, config, prompt_template} <- Kollywood.Config.parse(content) do
+      content_sha256 =
+        :sha256
+        |> :crypto.hash(content)
+        |> Base.encode16(case: :lower)
+
       config =
         config
         |> Map.put(:project_provider, state.project_provider)
@@ -160,6 +183,7 @@ defmodule Kollywood.WorkflowStore do
          | config: config,
            prompt_template: prompt_template,
            file_stamp: stamp,
+           content_sha256: content_sha256,
            last_error: nil
        }}
     else
@@ -170,6 +194,15 @@ defmodule Kollywood.WorkflowStore do
         {:error, reason}
     end
   end
+
+  defp format_file_stamp({mtime, size}) do
+    %{
+      mtime: inspect(mtime),
+      size: size
+    }
+  end
+
+  defp format_file_stamp(_stamp), do: nil
 
   # Fills in tracker.project_slug from the DB project slug (unless already set in YAML).
   # This allows the prd_json tracker to resolve its path via ServiceConfig rather than
