@@ -904,10 +904,24 @@ defmodule KollywoodWeb.DashboardLive do
     <script :type={Phoenix.LiveView.ColocatedHook} name=".StoriesViewPreference">
       export default {
         mounted() {
+          this.restoringPreference = false
+          this.pendingPreferenceView = null
           this.restoreViewPreference()
         },
 
         updated() {
+          const current = this.normalizeView(this.el.dataset.currentView)
+
+          if (this.restoringPreference) {
+            if (current && current === this.pendingPreferenceView) {
+              this.restoringPreference = false
+              this.pendingPreferenceView = null
+              this.persistCurrentView()
+            }
+
+            return
+          }
+
           this.persistCurrentView()
         },
 
@@ -930,8 +944,15 @@ defmodule KollywoodWeb.DashboardLive do
             const current = this.normalizeView(this.el.dataset.currentView)
 
             if (stored && stored !== current) {
+              this.restoringPreference = true
+              this.pendingPreferenceView = stored
               this.pushEvent("set_stories_view", {view: stored})
+              return
             }
+
+            this.restoringPreference = false
+            this.pendingPreferenceView = null
+            this.persistCurrentView()
           } catch (_error) {
             // Ignore localStorage errors.
           }
@@ -1026,7 +1047,7 @@ defmodule KollywoodWeb.DashboardLive do
       class="-mx-2 overflow-x-auto px-2 pb-2"
       phx-hook={@editable && ".KanbanBoardDnD"}
     >
-      <div class="grid min-w-max grid-flow-col auto-cols-[minmax(17.5rem,_1fr)] gap-3 sm:auto-cols-[minmax(19rem,_1fr)]">
+      <div class="flex min-w-max gap-3">
         <%= for {status, label} <- @status_columns do %>
           <.stories_kanban_column
             status={status}
@@ -1499,7 +1520,8 @@ defmodule KollywoodWeb.DashboardLive do
   defp stories_kanban_column(assigns) do
     assigns =
       assign(assigns, :column_classes, [
-        "min-w-0 rounded-xl border border-base-300 bg-base-200/60",
+        "w-[17.5rem] shrink-0 rounded-xl border border-base-300 bg-base-200/60 sm:w-[19rem]",
+        "xl:w-0 xl:basis-0 xl:flex-1 xl:min-w-0",
         assigns.status == "draft" && "opacity-80"
       ])
 
