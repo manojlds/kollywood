@@ -1268,6 +1268,58 @@ defmodule Kollywood.OrchestratorTest do
     refute_receive {:tracker_mark_done, "ISS-PENDING"}, 100
   end
 
+  test "marks done when merge fails without PR", %{root: root} do
+    issue = issue("ISS-MERGE-FAIL", "ABC-MERGE-FAIL", 1)
+
+    config = %Config{
+      tracker: %{
+        kind: "merge_test",
+        active_states: ["Todo", "In Progress"],
+        terminal_states: ["Done", "Merged", "Cancelled"],
+        test_pid: self(),
+        test_issues: [issue]
+      },
+      polling: %{interval_ms: 1000},
+      workspace: %{root: Path.join(root, "workspaces"), strategy: :clone},
+      hooks: %{},
+      checks: %{},
+      runtime: %{},
+      review: %{},
+      agent: %{
+        kind: :amp,
+        max_concurrent_agents: 1,
+        max_turns: 1,
+        retries_enabled: false,
+        max_attempts: 1,
+        max_retry_backoff_ms: 1000
+      },
+      publish: %{},
+      git: %{base_branch: "main"},
+      raw: %{}
+    }
+
+    runner = fn issue, _opts ->
+      {:ok,
+       %{success_result(issue) | events: [%{type: :publish_merge_failed, reason: "conflict"}]}}
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: config,
+         tracker: MergeTracker,
+         runner: runner,
+         auto_poll: false,
+         continuation_delay_ms: 60_000,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:tracker_mark_done, "ISS-MERGE-FAIL"}
+    refute_receive {:tracker_mark_pending_merge, "ISS-MERGE-FAIL"}, 100
+  end
+
   test "dispatches issue when blocker state is merged", %{root: root} do
     %{store: workflow_store} =
       start_workflow_store!(root, %{
