@@ -3484,12 +3484,6 @@ defmodule KollywoodWeb.DashboardLive do
 
   defp format_duration(_, _), do: "—"
 
-  defp truncate(str, max) when is_binary(str) and byte_size(str) > max do
-    String.slice(str, 0, max) <> "…"
-  end
-
-  defp truncate(str, _max), do: str
-
   defp handle_live_action(socket, :settings, _params) do
     assign(socket, :workflow, load_workflow(socket.assigns.current_project))
   end
