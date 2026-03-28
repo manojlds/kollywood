@@ -21,8 +21,10 @@ defmodule Kollywood.Orchestrator do
   alias Kollywood.Orchestrator.EphemeralStore
   alias Kollywood.Orchestrator.RetryStore
   alias Kollywood.Orchestrator.RunLogs
+  alias Kollywood.Publisher
   alias Kollywood.RepoSync
   alias Kollywood.Tracker
+  alias Kollywood.Workspace
   alias Kollywood.WorkflowStore
 
   @default_poll_interval_ms 5_000
@@ -41,6 +43,8 @@ defmodule Kollywood.Orchestrator do
           agent_pool: GenServer.server(),
           ephemeral_store: module() | nil,
           retry_store: module() | nil,
+          merge_checker:
+            (Config.t(), String.t() -> {:ok, boolean()} | {:error, String.t()}) | nil,
           runner_opts: keyword(),
           auto_poll: boolean(),
           poll_timer_ref: reference() | nil,
@@ -74,6 +78,7 @@ defmodule Kollywood.Orchestrator do
     :agent_pool,
     :ephemeral_store,
     :retry_store,
+    :merge_checker,
     :runner_opts,
     :auto_poll,
     :poll_timer_ref,
@@ -142,6 +147,7 @@ defmodule Kollywood.Orchestrator do
         ephemeral_store:
           resolve_ephemeral_store(Keyword.get(opts, :ephemeral_store, :__default__)),
         retry_store: resolve_retry_store(Keyword.get(opts, :retry_store, :__default__)),
+        merge_checker: Keyword.get(opts, :merge_checker),
         runner_opts: Keyword.get(opts, :runner_opts, []),
         auto_poll: Keyword.get(opts, :auto_poll, true),
         poll_timer_ref: nil,
@@ -359,6 +365,7 @@ defmodule Kollywood.Orchestrator do
       |> clear_completed_for_open_issues(issues)
       |> reconcile_running(issues, config)
       |> prune_ineligible_retries(issues, config)
+      |> detect_merges(config)
       |> dispatch_available(issues, config, tracker)
       |> Map.put(:last_error, nil)
     else
@@ -386,6 +393,125 @@ defmodule Kollywood.Orchestrator do
         )
     end
   end
+
+  defp detect_merges(state, config) do
+    tracker = resolve_tracker(state.tracker, config)
+
+    case list_pending_merge_issues(tracker, config) do
+      {:ok, pending_merge_issues} ->
+        Enum.reduce(pending_merge_issues, state, fn issue, acc ->
+          maybe_mark_issue_merged(acc, config, issue)
+        end)
+
+      {:error, reason} ->
+        Logger.warning("Failed to list pending_merge issues: #{reason}")
+        state
+    end
+  end
+
+  defp maybe_mark_issue_merged(state, config, issue) do
+    issue_id = issue_id(issue)
+    pr_url = issue_pr_url(issue)
+
+    if non_empty_string?(issue_id) and non_empty_string?(pr_url) do
+      case merged?(state, config, pr_url) do
+        {:ok, true} ->
+          Logger.info("orchestrator_event=merge_detected issue_id=#{issue_id} pr_url=#{pr_url}")
+
+          case tracker_mark_merged(state, issue_id, %{pr_url: pr_url}) do
+            {:ok, state} ->
+              state
+
+            {:error, reason, state} ->
+              Logger.warning(
+                "Failed to mark pending_merge issue as merged issue_id=#{issue_id}: #{reason}"
+              )
+
+              state
+          end
+
+        {:ok, false} ->
+          state
+
+        {:error, reason} ->
+          Logger.warning(
+            "Failed to check merge status issue_id=#{issue_id} pr_url=#{pr_url}: #{reason}"
+          )
+
+          state
+      end
+    else
+      state
+    end
+  end
+
+  defp merged?(state, config, pr_url) do
+    case state.merge_checker do
+      merge_checker when is_function(merge_checker, 2) ->
+        merge_checker.(config, pr_url)
+
+      _other ->
+        default_merged_check(state, config, pr_url)
+    end
+  rescue
+    error -> {:error, "merge checker failed: #{Exception.message(error)}"}
+  end
+
+  defp default_merged_check(state, config, pr_url) do
+    provider = Config.effective_publish_provider(config)
+
+    with {:ok, adapter} <- Publisher.module_for_provider(provider),
+         {:ok, workspace} <- merge_check_workspace(state, config),
+         response <- adapter.merged?(workspace, pr_url) do
+      normalize_merged_response(response)
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp merge_check_workspace(state, config) do
+    path =
+      state.repo_local_path ||
+        get_in(config, [Access.key(:workspace, %{}), Access.key(:source)])
+
+    if non_empty_string?(path) do
+      expanded = Path.expand(path)
+
+      {:ok,
+       %Workspace{
+         path: expanded,
+         key: "managed",
+         root: Path.dirname(expanded),
+         strategy: :clone,
+         branch: nil
+       }}
+    else
+      {:error, "cannot determine repository path for merge detection"}
+    end
+  end
+
+  defp normalize_merged_response({:ok, value}) when is_boolean(value), do: {:ok, value}
+  defp normalize_merged_response({:error, reason}), do: {:error, to_string(reason)}
+
+  defp normalize_merged_response(other) do
+    {:error, "invalid publisher merged? response: #{inspect(other)}"}
+  end
+
+  defp list_pending_merge_issues(tracker, _config) when is_function(tracker, 1), do: {:ok, []}
+
+  defp list_pending_merge_issues(tracker, config) when is_atom(tracker) do
+    if function_exported?(tracker, :list_pending_merge_issues, 1) do
+      normalize_issue_response(tracker.list_pending_merge_issues(config))
+    else
+      {:ok, []}
+    end
+  rescue
+    error ->
+      {:error,
+       "tracker module #{inspect(tracker)} failed in list_pending_merge_issues/1: #{Exception.message(error)}"}
+  end
+
+  defp list_pending_merge_issues(_tracker, _config), do: {:error, "invalid tracker adapter"}
 
   defp dispatch_retry_by_kind(state, issue_id, retry_entry, config, tracker) do
     case retry_kind(retry_entry) do
@@ -2165,6 +2291,11 @@ defmodule Kollywood.Orchestrator do
 
   defp issue_identifier(issue) do
     value = field(issue, :identifier)
+    if non_empty_string?(value), do: value, else: nil
+  end
+
+  defp issue_pr_url(issue) do
+    value = field(issue, :pr_url)
     if non_empty_string?(value), do: value, else: nil
   end
 

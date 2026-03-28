@@ -1,6 +1,8 @@
 defmodule Kollywood.OrchestratorTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias Kollywood.AgentRunner.Result
   alias Kollywood.Config
   alias Kollywood.Orchestrator
@@ -166,6 +168,91 @@ defmodule Kollywood.OrchestratorTest do
 
     @impl true
     def mark_failed(_config, @issue_id, _reason, _attempt), do: :ok
+  end
+
+  defmodule MergeDetectionTracker do
+    @behaviour Kollywood.Tracker
+
+    def put_state(test_pid, issues) when is_pid(test_pid) and is_list(issues) do
+      :persistent_term.put({__MODULE__, :state}, %{test_pid: test_pid, issues: issues})
+    end
+
+    def clear_state do
+      :persistent_term.erase({__MODULE__, :state})
+    end
+
+    @impl true
+    def list_active_issues(_config) do
+      state = :persistent_term.get({__MODULE__, :state}, %{issues: []})
+      {:ok, state.issues}
+    end
+
+    @impl true
+    def list_pending_merge_issues(_config) do
+      state = :persistent_term.get({__MODULE__, :state}, %{issues: []})
+
+      issues =
+        Enum.filter(state.issues, fn issue ->
+          issue[:state] == "pending_merge" and is_binary(issue[:pr_url]) and issue[:pr_url] != ""
+        end)
+
+      {:ok, issues}
+    end
+
+    @impl true
+    def claim_issue(_config, _issue_id), do: :ok
+
+    @impl true
+    def mark_in_progress(_config, _issue_id), do: :ok
+
+    @impl true
+    def mark_resumable(_config, _issue_id, _metadata), do: :ok
+
+    @impl true
+    def mark_done(_config, _issue_id, _metadata), do: :ok
+
+    @impl true
+    def mark_pending_merge(_config, _issue_id, _metadata), do: :ok
+
+    @impl true
+    def mark_merged(_config, issue_id, _metadata) do
+      state = :persistent_term.get({__MODULE__, :state}, %{issues: []})
+
+      issues =
+        Enum.map(state.issues, fn issue ->
+          if issue[:id] == issue_id do
+            %{issue | state: "merged"}
+          else
+            update_blockers(issue, issue_id)
+          end
+        end)
+
+      :persistent_term.put({__MODULE__, :state}, %{state | issues: issues})
+
+      if is_pid(state[:test_pid]) do
+        send(state.test_pid, {:tracker_mark_merged, issue_id})
+      end
+
+      :ok
+    end
+
+    @impl true
+    def mark_failed(_config, _issue_id, _reason, _attempt), do: :ok
+
+    defp update_blockers(issue, merged_issue_id) do
+      blockers = Map.get(issue, :blocked_by, [])
+
+      updated_blockers =
+        Enum.map(blockers, fn blocker ->
+          if blocker[:id] == merged_issue_id do
+            %{blocker | state: "merged"}
+          else
+            blocker
+          end
+        end)
+
+      Map.put(issue, :blocked_by, updated_blockers)
+    end
   end
 
   defmodule FlakyMarkDoneTracker do
@@ -1318,6 +1405,195 @@ defmodule Kollywood.OrchestratorTest do
     assert :ok = Orchestrator.poll_now(orchestrator)
     assert_receive {:tracker_mark_done, "ISS-MERGE-FAIL"}
     refute_receive {:tracker_mark_pending_merge, "ISS-MERGE-FAIL"}, 100
+  end
+
+  test "detects merged pending_merge story and marks tracker merged", %{root: root} do
+    pending_issue =
+      issue("ISS-PM-1", "ABC-PM-1", 1)
+      |> Map.put(:state, "pending_merge")
+      |> Map.put(:pr_url, "https://example.test/pulls/1")
+
+    dependent_issue =
+      issue("ISS-DEP-1", "ABC-DEP-1", 2)
+      |> Map.put(:blocked_by, [%{id: "ISS-PM-1", state: "pending_merge"}])
+
+    MergeDetectionTracker.put_state(self(), [pending_issue, dependent_issue])
+    on_exit(&MergeDetectionTracker.clear_state/0)
+
+    config = %Config{
+      tracker: %{
+        kind: "merge_detection_test",
+        active_states: ["Todo", "In Progress", "pending_merge", "merged"],
+        terminal_states: ["Done", "Merged", "Cancelled"]
+      },
+      polling: %{interval_ms: 1000},
+      workspace: %{root: Path.join(root, "workspaces"), strategy: :clone},
+      hooks: %{},
+      checks: %{},
+      runtime: %{},
+      review: %{},
+      agent: %{
+        kind: :amp,
+        max_concurrent_agents: 1,
+        max_turns: 1,
+        retries_enabled: false,
+        max_attempts: 1,
+        max_retry_backoff_ms: 1000
+      },
+      publish: %{provider: :github},
+      git: %{base_branch: "main"},
+      raw: %{}
+    }
+
+    test_pid = self()
+
+    runner = fn issue, _opts ->
+      send(test_pid, {:runner_started, issue.id})
+      {:ok, success_result(issue)}
+    end
+
+    merge_checker = fn _config, "https://example.test/pulls/1" -> {:ok, true} end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: config,
+         tracker: MergeDetectionTracker,
+         runner: runner,
+         merge_checker: merge_checker,
+         auto_poll: false,
+         continuation_delay_ms: 60_000,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+
+    assert_receive {:tracker_mark_merged, "ISS-PM-1"}
+    refute_receive {:runner_started, "ISS-DEP-1"}, 100
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_started, "ISS-DEP-1"}
+  end
+
+  test "keeps pending_merge story when PR remains open", %{root: root} do
+    pending_issue =
+      issue("ISS-PM-OPEN", "ABC-PM-OPEN", 1)
+      |> Map.put(:state, "pending_merge")
+      |> Map.put(:pr_url, "https://example.test/pulls/2")
+
+    dependent_issue =
+      issue("ISS-DEP-OPEN", "ABC-DEP-OPEN", 2)
+      |> Map.put(:blocked_by, [%{id: "ISS-PM-OPEN", state: "pending_merge"}])
+
+    MergeDetectionTracker.put_state(self(), [pending_issue, dependent_issue])
+    on_exit(&MergeDetectionTracker.clear_state/0)
+
+    config = %Config{
+      tracker: %{
+        kind: "merge_detection_test",
+        active_states: ["Todo", "In Progress", "pending_merge", "merged"],
+        terminal_states: ["Done", "Merged", "Cancelled"]
+      },
+      polling: %{interval_ms: 1000},
+      workspace: %{root: Path.join(root, "workspaces"), strategy: :clone},
+      hooks: %{},
+      checks: %{},
+      runtime: %{},
+      review: %{},
+      agent: %{
+        kind: :amp,
+        max_concurrent_agents: 1,
+        max_turns: 1,
+        retries_enabled: false,
+        max_attempts: 1,
+        max_retry_backoff_ms: 1000
+      },
+      publish: %{provider: :github},
+      git: %{base_branch: "main"},
+      raw: %{}
+    }
+
+    runner = fn issue, _opts -> {:ok, success_result(issue)} end
+    merge_checker = fn _config, _pr_url -> {:ok, false} end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: config,
+         tracker: MergeDetectionTracker,
+         runner: runner,
+         merge_checker: merge_checker,
+         auto_poll: false,
+         continuation_delay_ms: 60_000,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    refute_receive {:tracker_mark_merged, "ISS-PM-OPEN"}, 100
+    refute_receive {:runner_started, "ISS-DEP-OPEN"}, 100
+  end
+
+  test "continues poll cycle when merge check fails", %{root: root} do
+    pending_issue =
+      issue("ISS-PM-ERR", "ABC-PM-ERR", 1)
+      |> Map.put(:state, "pending_merge")
+      |> Map.put(:pr_url, "https://example.test/pulls/3")
+
+    dependent_issue =
+      issue("ISS-DEP-ERR", "ABC-DEP-ERR", 2)
+      |> Map.put(:blocked_by, [%{id: "ISS-PM-ERR", state: "pending_merge"}])
+
+    MergeDetectionTracker.put_state(self(), [pending_issue, dependent_issue])
+    on_exit(&MergeDetectionTracker.clear_state/0)
+
+    config = %Config{
+      tracker: %{
+        kind: "merge_detection_test",
+        active_states: ["Todo", "In Progress", "pending_merge", "merged"],
+        terminal_states: ["Done", "Merged", "Cancelled"]
+      },
+      polling: %{interval_ms: 1000},
+      workspace: %{root: Path.join(root, "workspaces"), strategy: :clone},
+      hooks: %{},
+      checks: %{},
+      runtime: %{},
+      review: %{},
+      agent: %{
+        kind: :amp,
+        max_concurrent_agents: 1,
+        max_turns: 1,
+        retries_enabled: false,
+        max_attempts: 1,
+        max_retry_backoff_ms: 1000
+      },
+      publish: %{provider: :github},
+      git: %{base_branch: "main"},
+      raw: %{}
+    }
+
+    runner = fn issue, _opts -> {:ok, success_result(issue)} end
+    merge_checker = fn _config, _pr_url -> {:error, "forced cli failure"} end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: config,
+         tracker: MergeDetectionTracker,
+         runner: runner,
+         merge_checker: merge_checker,
+         auto_poll: false,
+         continuation_delay_ms: 60_000,
+         retry_base_delay_ms: 20}
+      )
+
+    log = capture_log(fn -> assert :ok = Orchestrator.poll_now(orchestrator) end)
+
+    assert log =~ "Failed to check merge status"
+    refute_receive {:tracker_mark_merged, "ISS-PM-ERR"}, 100
+    refute_receive {:runner_started, "ISS-DEP-ERR"}, 100
   end
 
   test "dispatches issue when blocker state is merged", %{root: root} do

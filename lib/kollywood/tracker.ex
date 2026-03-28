@@ -13,6 +13,8 @@ defmodule Kollywood.Tracker do
 
   @callback list_active_issues(Config.t()) :: {:ok, [issue()]} | {:error, String.t()}
 
+  @callback list_pending_merge_issues(Config.t()) :: {:ok, [issue()]} | {:error, String.t()}
+
   @callback claim_issue(Config.t(), issue_id()) :: :ok | {:error, String.t()}
 
   @callback mark_in_progress(Config.t(), issue_id()) :: :ok | {:error, String.t()}
@@ -28,6 +30,8 @@ defmodule Kollywood.Tracker do
 
   @callback mark_failed(Config.t(), issue_id(), failure_reason(), failure_attempt()) ::
               :ok | {:error, String.t()}
+
+  @optional_callbacks list_pending_merge_issues: 1
 
   @doc "Returns the tracker module for a tracker kind string/atom."
   @spec module_for_kind(String.t() | atom() | nil) :: module()
