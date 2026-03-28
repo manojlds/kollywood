@@ -1058,7 +1058,7 @@ defmodule Kollywood.OrchestratorTest do
   test "persists worker/reviewer/check/runtime logs and metadata per attempt", %{root: root} do
     prd_path = Path.join(root, "prd.json")
 
-    %{store: workflow_store} =
+    %{store: workflow_store, path: workflow_path} =
       start_workflow_store!(root, %{tracker_kind: "prd_json", tracker_path: prd_path})
 
     issue = issue("ISS-LOG", "US-LOG", 1)
@@ -1132,6 +1132,106 @@ defmodule Kollywood.OrchestratorTest do
     assert metadata["runner_attempt"] == nil
     assert metadata["turn_count"] == 1
     assert metadata["story_id"] == "US-LOG"
+
+    settings_snapshot = metadata["settings_snapshot"]
+    assert is_map(settings_snapshot)
+    assert settings_snapshot["schema_version"] == 1
+    assert get_in(settings_snapshot, ["workflow", "path"]) == workflow_path
+    assert is_binary(get_in(settings_snapshot, ["workflow", "sha256"]))
+    assert get_in(settings_snapshot, ["resolved", "agent", "kind"]) == "amp"
+    assert get_in(settings_snapshot, ["resolved", "runtime", "profile"]) == "checks_only"
+    assert get_in(settings_snapshot, ["sources", "publish", "mode"]) == "provider_default"
+  end
+
+  test "keeps prior attempt settings snapshot immutable across workflow drift", %{root: root} do
+    %{store: workflow_store, path: workflow_path} =
+      start_workflow_store!(root, %{max_retry_backoff_ms: 10_000, max_turns: 5})
+
+    issue = issue("ISS-DRIFT", "US-DRIFT", 1)
+    test_pid = self()
+    issues_agent = start_agent!(fn -> [issue] end)
+    runner_calls = start_agent!(fn -> 0 end)
+
+    tracker = fn _config -> {:ok, Agent.get(issues_agent, & &1)} end
+
+    runner = fn issue, opts ->
+      call_number = Agent.get_and_update(runner_calls, fn count -> {count + 1, count + 1} end)
+      send(test_pid, {:runner_attempt, call_number, issue.id, Keyword.get(opts, :attempt)})
+
+      case call_number do
+        1 -> {:error, failed_result(issue, "forced drift failure")}
+        _ -> {:ok, success_result(issue)}
+      end
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: tracker,
+         runner: runner,
+         auto_poll: false,
+         continuation_delay_ms: 60_000,
+         retry_base_delay_ms: 1_500}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_attempt, 1, "ISS-DRIFT", nil}
+
+    project_root = workflow_store |> WorkflowStore.get_config() |> RunLogs.project_root()
+
+    attempt_one_metadata_path =
+      Path.join([project_root, "run_logs", "US-DRIFT", "attempt-0001", "metadata.json"])
+
+    snapshot_one =
+      wait_until!(fn ->
+        if File.exists?(attempt_one_metadata_path) do
+          metadata = read_json!(attempt_one_metadata_path)
+
+          case get_in(metadata, ["settings_snapshot", "workflow", "sha256"]) do
+            sha when is_binary(sha) and sha != "" ->
+              {:ok, metadata["settings_snapshot"]}
+
+            _other ->
+              :retry
+          end
+        else
+          :retry
+        end
+      end)
+
+    write_workflow_max_turns!(workflow_path, 12)
+
+    _ =
+      wait_until!(
+        fn ->
+          case WorkflowStore.get_config(workflow_store) do
+            %Config{agent: %{max_turns: 12}} -> {:ok, :reloaded}
+            _other -> :retry
+          end
+        end,
+        4_000
+      )
+
+    assert_receive {:runner_attempt, 2, "ISS-DRIFT", 1}, 3_000
+
+    _ = :sys.get_state(orchestrator)
+
+    attempt_one_snapshot_after = read_json!(attempt_one_metadata_path)["settings_snapshot"]
+
+    attempt_two_metadata_path =
+      Path.join([project_root, "run_logs", "US-DRIFT", "attempt-0002", "metadata.json"])
+
+    snapshot_two = read_json!(attempt_two_metadata_path)["settings_snapshot"]
+
+    assert get_in(snapshot_one, ["resolved", "agent", "max_turns"]) == 5
+    assert get_in(snapshot_two, ["resolved", "agent", "max_turns"]) == 12
+
+    assert get_in(snapshot_one, ["workflow", "sha256"]) !=
+             get_in(snapshot_two, ["workflow", "sha256"])
+
+    assert attempt_one_snapshot_after == snapshot_one
   end
 
   test "retries failed runs with backoff and increments attempt", %{root: root} do
@@ -2358,6 +2458,7 @@ defmodule Kollywood.OrchestratorTest do
         tracker_active_states: Map.get(opts, :tracker_active_states, ["Todo", "In Progress"]),
         tracker_terminal_states: Map.get(opts, :tracker_terminal_states, ["Done", "Cancelled"]),
         max_concurrent_agents: Map.get(opts, :max_concurrent_agents, 2),
+        max_turns: Map.get(opts, :max_turns, 5),
         max_retry_backoff_ms: Map.get(opts, :max_retry_backoff_ms, 300_000),
         retries_enabled: Map.get(opts, :retries_enabled, true),
         stale_threshold_multiplier: Map.get(opts, :stale_threshold_multiplier),
@@ -2427,7 +2528,7 @@ defmodule Kollywood.OrchestratorTest do
     agent:
       kind: amp
       max_concurrent_agents: #{Map.get(opts, :max_concurrent_agents, 2)}
-      max_turns: 5
+      max_turns: #{Map.get(opts, :max_turns, 5)}
       max_retry_backoff_ms: #{Map.get(opts, :max_retry_backoff_ms, 300_000)}
       retries_enabled: #{Map.get(opts, :retries_enabled, true)}
       max_attempts: #{Map.get(opts, :max_attempts, 10)}
@@ -2441,6 +2542,16 @@ defmodule Kollywood.OrchestratorTest do
 
     values
     |> Enum.map_join("\n", fn value -> "#{prefix}- #{value}" end)
+  end
+
+  defp write_workflow_max_turns!(workflow_path, max_turns)
+       when is_binary(workflow_path) and is_integer(max_turns) and max_turns > 0 do
+    updated =
+      workflow_path
+      |> File.read!()
+      |> String.replace(~r/max_turns:\s*\d+/, "max_turns: #{max_turns}")
+
+    File.write!(workflow_path, updated)
   end
 
   defp write_prd!(path) do

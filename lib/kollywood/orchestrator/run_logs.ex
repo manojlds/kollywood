@@ -300,6 +300,24 @@ defmodule Kollywood.Orchestrator.RunLogs do
     }
   end
 
+  @doc """
+  Extracts the immutable settings snapshot from attempt metadata.
+
+  Returns `nil` for legacy attempts that predate settings snapshots.
+  """
+  @spec settings_snapshot(map()) :: map() | nil
+  def settings_snapshot(%{metadata: metadata}) when is_map(metadata),
+    do: settings_snapshot(metadata)
+
+  def settings_snapshot(metadata) when is_map(metadata) do
+    case Map.get(metadata, "settings_snapshot") do
+      snapshot when is_map(snapshot) -> snapshot
+      _other -> nil
+    end
+  end
+
+  def settings_snapshot(_metadata), do: nil
+
   @doc "Lists available persisted attempts for a story."
   @spec list_attempts(String.t(), String.t()) :: {:ok, [map()]} | {:error, String.t()}
   def list_attempts(project_root, story_id)
@@ -323,6 +341,9 @@ defmodule Kollywood.Orchestrator.RunLogs do
               files: files,
               metadata: read_json_file(files.metadata)
             }
+            |> then(fn attempt_entry ->
+              Map.put(attempt_entry, :settings_snapshot, settings_snapshot(attempt_entry))
+            end)
           end)
 
         {:ok, attempts}

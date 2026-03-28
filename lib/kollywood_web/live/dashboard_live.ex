@@ -4537,6 +4537,7 @@ defmodule KollywoodWeb.DashboardLive do
 
     %{
       "metadata" => metadata,
+      "settings_snapshot" => RunLogs.settings_snapshot(metadata),
       "phase" => phase,
       "phase_label" => RunPhase.label(phase),
       "retry_action" => StepRetry.retry_action(project, story_id, Map.get(metadata, "attempt")),

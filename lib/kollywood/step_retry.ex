@@ -12,6 +12,7 @@ defmodule Kollywood.StepRetry do
   alias Kollywood.AgentRunner.Result
   alias Kollywood.Config
   alias Kollywood.Orchestrator.RunLogs
+  alias Kollywood.Orchestrator.RunSettingsSnapshot
   alias Kollywood.Projects
   alias Kollywood.ServiceConfig
   alias Kollywood.Tracker
@@ -37,7 +38,7 @@ defmodule Kollywood.StepRetry do
          {:ok, source} <- load_source_attempt(project, story_id, parsed_attempt),
          {:ok, retry_step} <- failed_step(source.events) do
       reason =
-        with {:ok, config, _prompt_template} <- load_workflow(project),
+        with {:ok, config, _prompt_template, _workflow_identity} <- load_workflow(project),
              :ok <- ensure_common_preconditions(config, source.metadata),
              :ok <- ensure_prior_phase_outputs(retry_step, config, source.events),
              {:ok, issue} <- load_issue(project, story_id),
@@ -70,13 +71,14 @@ defmodule Kollywood.StepRetry do
     with {:ok, retry_step} <- parse_step(step),
          {:ok, parsed_attempt} <- parse_attempt(source_attempt),
          {:ok, source} <- load_source_attempt(project, story_id, parsed_attempt),
-         {:ok, config, prompt_template} <- load_workflow(project),
+         {:ok, config, prompt_template, workflow_identity} <- load_workflow(project),
          :ok <- ensure_retry_step_failed(source.events, retry_step),
          :ok <- ensure_common_preconditions(config, source.metadata),
          :ok <- ensure_prior_phase_outputs(retry_step, config, source.events),
          {:ok, issue} <- load_issue(project, story_id),
          {:ok, workspace} <- build_workspace(config, issue.identifier, source.metadata),
-         {:ok, run_log_context} <- prepare_retry_logs(config, project, issue, source, retry_step) do
+         {:ok, run_log_context} <-
+           prepare_retry_logs(config, project, issue, source, retry_step, workflow_identity) do
       on_event = fn event ->
         case RunLogs.append_event(run_log_context, event) do
           :ok ->
@@ -254,12 +256,14 @@ defmodule Kollywood.StepRetry do
     Tracker.module_for_kind(kind)
   end
 
-  defp prepare_retry_logs(config, project, issue, source, retry_step) do
+  defp prepare_retry_logs(config, project, issue, source, retry_step, workflow_identity) do
     log_config = config_for_run_logs(config, project)
 
     metadata = %{
       "parent_attempt" => source.attempt,
-      "retry_step" => Atom.to_string(retry_step)
+      "retry_step" => Atom.to_string(retry_step),
+      "settings_snapshot" =>
+        RunSettingsSnapshot.build(log_config, workflow_identity: workflow_identity)
     }
 
     case RunLogs.prepare_attempt(log_config, issue, source.runner_attempt, metadata) do
@@ -408,7 +412,9 @@ defmodule Kollywood.StepRetry do
       true ->
         with {:ok, content} <- File.read(path),
              {:ok, config, prompt_template} <- Config.parse(content) do
-          {:ok, inject_project_context(config, project), prompt_template}
+          workflow_identity = RunSettingsSnapshot.workflow_identity_from_file(path, content)
+          config = inject_project_context(config, project)
+          {:ok, config, prompt_template, workflow_identity}
         else
           {:error, reason} -> {:error, "failed to load workflow: #{reason}"}
         end
