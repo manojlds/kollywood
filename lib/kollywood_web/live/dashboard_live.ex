@@ -1748,7 +1748,7 @@ defmodule KollywoodWeb.DashboardLive do
                       name="settings[agent][kind]"
                       class="select select-bordered select-sm w-full"
                     >
-                      <%= for k <- ["amp", "claude", "opencode", "pi"] do %>
+                      <%= for k <- ["amp", "claude", "cursor", "opencode", "pi"] do %>
                         <option value={k} selected={get_in(@workflow.parsed, ["agent", "kind"]) == k}>
                           {k}
                         </option>
@@ -1986,7 +1986,7 @@ defmodule KollywoodWeb.DashboardLive do
                             name="settings[quality][review][agent][kind]"
                             class="select select-bordered select-sm w-full"
                           >
-                            <%= for k <- ["amp", "claude", "opencode", "pi"] do %>
+                            <%= for k <- ["amp", "claude", "cursor", "opencode", "pi"] do %>
                               <option
                                 value={k}
                                 selected={

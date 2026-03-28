@@ -37,6 +37,7 @@ defmodule Kollywood.AgentTest do
   test "maps agent kind to adapter module" do
     assert Agent.adapter_module(:amp) == Kollywood.Agent.Amp
     assert Agent.adapter_module(:claude) == Kollywood.Agent.Claude
+    assert Agent.adapter_module(:cursor) == Kollywood.Agent.Cursor
     assert Agent.adapter_module(:opencode) == Kollywood.Agent.OpenCode
     assert Agent.adapter_module(:pi) == Kollywood.Agent.Pi
   end
@@ -97,6 +98,32 @@ defmodule Kollywood.AgentTest do
     assert {:ok, result} = Agent.run_turn(session, "quick check")
     assert result.output =~ "args:--print"
     assert result.output =~ "prompt:quick check"
+    assert :ok = Agent.stop_session(session)
+  end
+
+  test "cursor adapter uses non-interactive default args", %{
+    workspace: workspace,
+    cli_path: cli_path
+  } do
+    config = %Config{
+      tracker: %{},
+      polling: %{},
+      workspace: %{},
+      hooks: %{},
+      raw: %{},
+      agent: %{
+        kind: :cursor,
+        command: cli_path,
+        env: %{},
+        timeout_ms: 10_000,
+        args: []
+      }
+    }
+
+    assert {:ok, %Session{} = session} = Agent.start_session(config, workspace)
+    assert session.adapter == Kollywood.Agent.Cursor
+    assert session.args == ["agent", "--print", "--output-format", "text", "--force", "--trust"]
+
     assert :ok = Agent.stop_session(session)
   end
 end
