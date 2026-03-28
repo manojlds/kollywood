@@ -18,6 +18,7 @@ defmodule Kollywood.Projects.Project do
     field(:default_branch, :string, default: "main")
     field(:tracker_path, :string)
     field(:enabled, :boolean, default: true)
+    field(:max_concurrent_agents, :integer)
 
     timestamps(type: :utc_datetime_usec)
   end
@@ -33,7 +34,8 @@ defmodule Kollywood.Projects.Project do
       :repository,
       :default_branch,
       :tracker_path,
-      :enabled
+      :enabled,
+      :max_concurrent_agents
     ])
     |> update_change(:name, &trim/1)
     |> update_change(:slug, &trim/1)
@@ -45,6 +47,7 @@ defmodule Kollywood.Projects.Project do
     |> validate_length(:slug, min: 2, max: 80)
     |> validate_format(:slug, ~r/^[a-z0-9][a-z0-9\-_]*$/)
     |> validate_length(:default_branch, min: 1, max: 120)
+    |> validate_number(:max_concurrent_agents, greater_than: 0)
     |> validate_provider_fields()
     |> unique_constraint(:slug)
   end

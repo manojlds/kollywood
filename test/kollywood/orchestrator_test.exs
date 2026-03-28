@@ -2715,6 +2715,171 @@ defmodule Kollywood.OrchestratorTest do
     assert_receive {:runner_started, "ISS-BLOCKED"}
   end
 
+  test "enforces per-project cap even when global slots remain", %{root: root} do
+    %{store: workflow_store} = start_workflow_store!(root, %{max_concurrent_agents: 3})
+    test_pid = self()
+
+    issue_one = issue("ISS-PROJ-1", "ABC-PROJ-1", 1, "alpha")
+    issue_two = issue("ISS-PROJ-2", "ABC-PROJ-2", 2, "alpha")
+    issues_agent = start_agent!(fn -> [issue_one, issue_two] end)
+    tracker = fn _config -> {:ok, Agent.get(issues_agent, & &1)} end
+
+    runner = fn issue, _opts ->
+      issue_id = issue.id
+      send(test_pid, {:runner_started, issue_id, self()})
+
+      receive do
+        {:complete_runner, ^issue_id, result} -> result
+      after
+        5_000 -> {:error, failed_result(issue, "test timed out waiting for completion")}
+      end
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: tracker,
+         runner: runner,
+         project_limit_fetcher: fn -> %{"alpha" => 1} end,
+         auto_poll: false,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_started, "ISS-PROJ-1", runner_pid}
+    refute_receive {:runner_started, "ISS-PROJ-2", _}, 100
+
+    status = Orchestrator.status(orchestrator)
+
+    assert Enum.any?(status.project_limits, fn entry ->
+             entry.project_slug == "alpha" and entry.configured_max_concurrent_agents == 1 and
+               entry.effective_max_concurrent_agents == 1 and entry.running_count == 1
+           end)
+
+    send(runner_pid, {:complete_runner, "ISS-PROJ-1", {:ok, success_result(issue_one)}})
+  end
+
+  test "dispatch stays fair under mixed project caps", %{root: root} do
+    %{store: workflow_store} = start_workflow_store!(root, %{max_concurrent_agents: 3})
+    test_pid = self()
+
+    issues = [
+      issue("ISS-FAIR-A1", "ABC-FAIR-A1", 1, "alpha"),
+      issue("ISS-FAIR-A2", "ABC-FAIR-A2", 2, "alpha"),
+      issue("ISS-FAIR-A3", "ABC-FAIR-A3", 3, "alpha"),
+      issue("ISS-FAIR-B1", "ABC-FAIR-B1", 4, "beta")
+    ]
+
+    issues_agent = start_agent!(fn -> issues end)
+    tracker = fn _config -> {:ok, Agent.get(issues_agent, & &1)} end
+
+    runner = fn issue, _opts ->
+      issue_id = issue.id
+      send(test_pid, {:runner_started, issue_id, self()})
+
+      receive do
+        {:complete_runner, ^issue_id, result} -> result
+      after
+        5_000 -> {:error, failed_result(issue, "test timed out waiting for completion")}
+      end
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: tracker,
+         runner: runner,
+         project_limit_fetcher: fn -> %{"alpha" => 3, "beta" => 1} end,
+         auto_poll: false,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+
+    started =
+      for _ <- 1..3 do
+        assert_receive {:runner_started, issue_id, runner_pid}
+        {issue_id, runner_pid}
+      end
+
+    started_issue_ids = Enum.map(started, &elem(&1, 0))
+
+    assert "ISS-FAIR-B1" in started_issue_ids
+    assert Enum.count(started_issue_ids, &String.starts_with?(&1, "ISS-FAIR-A")) == 2
+
+    Enum.each(started, fn {issue_id, runner_pid} ->
+      issue = Enum.find(issues, &(&1.id == issue_id))
+      send(runner_pid, {:complete_runner, issue_id, {:ok, success_result(issue)}})
+    end)
+  end
+
+  test "retry dispatch also respects per-project caps", %{root: root} do
+    %{store: workflow_store} = start_workflow_store!(root, %{max_concurrent_agents: 2})
+    test_pid = self()
+
+    issue_a = issue("ISS-RETRY-A", "ABC-RETRY-A", 1, "alpha")
+    issue_b = issue("ISS-RETRY-B", "ABC-RETRY-B", 2, "alpha")
+    issues_agent = start_agent!(fn -> [issue_a, issue_b] end)
+    tracker = fn _config -> {:ok, Agent.get(issues_agent, & &1)} end
+
+    runner = fn issue, _opts ->
+      issue_id = issue.id
+      send(test_pid, {:runner_started, issue_id, self()})
+
+      receive do
+        {:complete_runner, ^issue_id, result} -> result
+      after
+        5_000 -> {:error, failed_result(issue, "test timed out waiting for completion")}
+      end
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: tracker,
+         runner: runner,
+         project_limit_fetcher: fn -> %{"alpha" => 1} end,
+         auto_poll: false,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_started, "ISS-RETRY-A", runner_pid}
+    refute_receive {:runner_started, "ISS-RETRY-B", _}, 100
+
+    :sys.replace_state(orchestrator, fn state ->
+      retry_entry = %{
+        issue: issue_b,
+        attempt: 1,
+        reason: "forced retry",
+        kind: :run,
+        finalization: nil,
+        timer_ref: nil,
+        due_at_ms: System.monotonic_time(:millisecond)
+      }
+
+      %{state | retry_attempts: Map.put(state.retry_attempts, issue_b.id, retry_entry)}
+    end)
+
+    send(orchestrator, {:retry_due, issue_b.id})
+    refute_receive {:runner_started, "ISS-RETRY-B", _}, 100
+
+    status = Orchestrator.status(orchestrator)
+    assert status.retry_count == 1
+
+    assert Enum.any?(status.retrying, fn entry ->
+             entry.issue_id == "ISS-RETRY-B" and entry.reason == "no available project slots"
+           end)
+
+    send(runner_pid, {:complete_runner, "ISS-RETRY-A", {:ok, success_result(issue_a)}})
+  end
+
   defp issue(id, identifier, priority) do
     %{
       id: id,
@@ -2726,6 +2891,11 @@ defmodule Kollywood.OrchestratorTest do
       created_at: "2026-01-01T00:00:00Z",
       blocked_by: []
     }
+  end
+
+  defp issue(id, identifier, priority, project_slug) do
+    issue(id, identifier, priority)
+    |> Map.put(:project_slug, project_slug)
   end
 
   defp success_result(issue) do

@@ -61,6 +61,7 @@ defmodule Mix.Tasks.Kollywood.Orch.Status do
 
     print_running(status.running)
     print_retrying(status.retrying)
+    print_project_limits(Map.get(status, :project_limits, []))
   end
 
   defp format_integer(value) when is_integer(value), do: Integer.to_string(value)
@@ -90,6 +91,22 @@ defmodule Mix.Tasks.Kollywood.Orch.Status do
     Enum.each(retrying, fn item ->
       Mix.shell().info(
         "  #{item.issue_id} (#{item.identifier || "-"}) attempt=#{item.attempt} kind=#{item.kind} due_in_ms=#{item.due_in_ms} reason=#{item.reason || "-"}"
+      )
+    end)
+  end
+
+  defp print_project_limits([]) do
+    Mix.shell().info("- project_limits: none")
+  end
+
+  defp print_project_limits(project_limits) do
+    Mix.shell().info("- project_limits:")
+
+    Enum.each(project_limits, fn entry ->
+      configured = Map.get(entry, :configured_max_concurrent_agents) || "global"
+
+      Mix.shell().info(
+        "  #{entry.project_slug} configured=#{configured} effective=#{entry.effective_max_concurrent_agents} running=#{entry.running_count} retrying=#{entry.retry_count}"
       )
     end)
   end

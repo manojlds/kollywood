@@ -81,6 +81,8 @@ defmodule Kollywood.Orchestrator do
           claim_ttl_ms: pos_integer(),
           completed_ttl_ms: pos_integer(),
           run_timeout_ms: pos_integer() | nil,
+          project_limit_fetcher: (-> map() | list()) | module() | nil,
+          project_max_concurrent_agents: %{optional(String.t()) => pos_integer()},
           running: %{optional(String.t()) => map()},
           running_by_ref: %{optional(reference()) => String.t()},
           claimed: MapSet.t(String.t()),
@@ -132,6 +134,8 @@ defmodule Kollywood.Orchestrator do
     :claim_ttl_ms,
     :completed_ttl_ms,
     :run_timeout_ms,
+    :project_limit_fetcher,
+    :project_max_concurrent_agents,
     :repo_syncer,
     :repo_local_path,
     :repo_default_branch,
@@ -274,6 +278,9 @@ defmodule Kollywood.Orchestrator do
         completed_ttl_ms:
           positive_integer(Keyword.get(opts, :completed_ttl_ms), @default_completed_ttl_ms),
         run_timeout_ms: positive_integer(Keyword.get(opts, :run_timeout_ms), nil),
+        project_limit_fetcher:
+          Keyword.get(opts, :project_limit_fetcher, &default_project_limit_fetcher/0),
+        project_max_concurrent_agents: %{},
         last_poll_monotonic_ms: monotonic_now_ms(),
         poll_stale: false,
         poll_stale_detected_at: nil,
@@ -605,6 +612,7 @@ defmodule Kollywood.Orchestrator do
       state
       |> prune_expired_ephemeral()
       |> apply_runtime_limits(config)
+      |> refresh_project_limits()
       |> record_poll_heartbeat()
       |> clear_completed_for_open_issues(issues)
       |> reconcile_running(issues, config)
@@ -629,7 +637,7 @@ defmodule Kollywood.Orchestrator do
     else
       with {:ok, config} <- fetch_config(state.workflow_store),
            tracker <- resolve_tracker(state.tracker, config) do
-        state = apply_runtime_limits(state, config)
+        state = state |> apply_runtime_limits(config) |> refresh_project_limits()
         dispatch_retry_by_kind(state, issue_id, retry_entry, config, tracker)
       else
         {:error, reason} ->
@@ -812,6 +820,17 @@ defmodule Kollywood.Orchestrator do
               issue,
               retry_entry.attempt,
               "no available orchestrator slots",
+              retry_backoff_delay_ms(state, retry_entry.attempt)
+            )
+
+          project_running_count(state, issue, config) >=
+              effective_project_max_concurrent_agents(state, issue, config) ->
+            schedule_retry(
+              state,
+              issue_id,
+              issue,
+              retry_entry.attempt,
+              "no available project slots",
               retry_backoff_delay_ms(state, retry_entry.attempt)
             )
 
@@ -1092,9 +1111,7 @@ defmodule Kollywood.Orchestrator do
         state
       else
         issues
-        |> Enum.filter(&eligible_for_new_dispatch?(&1, state, config))
-        |> sort_issues_for_dispatch()
-        |> Enum.take(available_slots)
+        |> fair_dispatch_candidates(state, config, available_slots)
         |> Enum.reduce(state, fn issue, acc ->
           start_issue_run(acc, issue, nil, config, tracker)
         end)
@@ -1297,6 +1314,78 @@ defmodule Kollywood.Orchestrator do
         issue_identifier(issue) || ""
       }
     end)
+  end
+
+  defp fair_dispatch_candidates(issues, state, config, available_slots)
+       when is_integer(available_slots) and available_slots > 0 do
+    eligible_issues =
+      issues
+      |> Enum.filter(&eligible_for_new_dispatch?(&1, state, config))
+      |> sort_issues_for_dispatch()
+
+    project_queues = Enum.group_by(eligible_issues, &issue_project_key(&1, config))
+    running_counts = running_counts_by_project(state, config)
+
+    project_remaining =
+      Map.new(project_queues, fn {project_key, project_issues} ->
+        representative_issue = List.first(project_issues)
+        running_count = Map.get(running_counts, project_key, 0)
+
+        project_limit =
+          effective_project_max_concurrent_agents(state, representative_issue, config)
+
+        {project_key, max(project_limit - running_count, 0)}
+      end)
+
+    project_order = project_queues |> Map.keys() |> Enum.sort()
+
+    select_fair_issues(project_order, project_queues, project_remaining, available_slots, [])
+    |> Enum.reverse()
+  end
+
+  defp fair_dispatch_candidates(_issues, _state, _config, _available_slots), do: []
+
+  defp select_fair_issues(_project_order, _queues, _remaining, available_slots, acc)
+       when available_slots <= 0,
+       do: acc
+
+  defp select_fair_issues(project_order, queues, remaining, available_slots, acc) do
+    {queues, remaining, available_slots, acc, dispatched_any?} =
+      Enum.reduce(project_order, {queues, remaining, available_slots, acc, false}, fn
+        _project_key, {queues_acc, remaining_acc, 0, acc_acc, dispatched_any?} ->
+          {queues_acc, remaining_acc, 0, acc_acc, dispatched_any?}
+
+        project_key, {queues_acc, remaining_acc, available_slots_acc, acc_acc, dispatched_any?} ->
+          project_queue = Map.get(queues_acc, project_key, [])
+          project_remaining = Map.get(remaining_acc, project_key, 0)
+
+          cond do
+            project_remaining <= 0 or project_queue == [] ->
+              {queues_acc, remaining_acc, available_slots_acc, acc_acc, dispatched_any?}
+
+            true ->
+              [issue | rest] = project_queue
+
+              {
+                Map.put(queues_acc, project_key, rest),
+                Map.put(remaining_acc, project_key, project_remaining - 1),
+                available_slots_acc - 1,
+                [issue | acc_acc],
+                true
+              }
+          end
+      end)
+
+    cond do
+      available_slots <= 0 ->
+        acc
+
+      dispatched_any? ->
+        select_fair_issues(project_order, queues, remaining, available_slots, acc)
+
+      true ->
+        acc
+    end
   end
 
   # --- Runner result handling ---
@@ -3205,6 +3294,160 @@ defmodule Kollywood.Orchestrator do
     }
   end
 
+  defp refresh_project_limits(state) do
+    %{
+      state
+      | project_max_concurrent_agents: normalize_project_limits(fetch_project_limits(state))
+    }
+  end
+
+  defp fetch_project_limits(state) do
+    case state.project_limit_fetcher do
+      fetcher when is_function(fetcher, 0) ->
+        fetcher.()
+
+      fetcher when is_atom(fetcher) ->
+        if function_exported?(fetcher, :project_max_concurrent_agents, 0) do
+          fetcher.project_max_concurrent_agents()
+        else
+          %{}
+        end
+
+      _other ->
+        %{}
+    end
+  rescue
+    error ->
+      Logger.warning("failed to refresh project concurrency limits: #{Exception.message(error)}")
+      %{}
+  catch
+    :exit, reason ->
+      Logger.warning("failed to refresh project concurrency limits: #{inspect(reason)}")
+      %{}
+  end
+
+  defp default_project_limit_fetcher do
+    if Code.ensure_loaded?(Kollywood.Projects) and
+         function_exported?(Kollywood.Projects, :list_projects, 0) do
+      Kollywood.Projects.list_projects()
+      |> Enum.reduce(%{}, fn project, acc ->
+        project_slug = optional_trimmed_string(Map.get(project, :slug))
+        limit = positive_integer(Map.get(project, :max_concurrent_agents), nil)
+
+        if is_binary(project_slug) and is_integer(limit) do
+          Map.put(acc, project_slug, limit)
+        else
+          acc
+        end
+      end)
+    else
+      %{}
+    end
+  rescue
+    _ -> %{}
+  catch
+    :exit, _ -> %{}
+  end
+
+  defp normalize_project_limits(limits) when is_map(limits) do
+    Enum.reduce(limits, %{}, fn {project_key, value}, acc ->
+      project_slug = optional_trimmed_string(project_key)
+      limit = positive_integer(value, nil)
+
+      if is_binary(project_slug) and is_integer(limit) do
+        Map.put(acc, project_slug, limit)
+      else
+        acc
+      end
+    end)
+  end
+
+  defp normalize_project_limits(limits) when is_list(limits) do
+    Enum.reduce(limits, %{}, fn item, acc ->
+      case item do
+        {project_key, value} ->
+          normalize_project_limits(Map.put(acc, project_key, value))
+
+        %{project_slug: project_key, max_concurrent_agents: value} ->
+          normalize_project_limits(Map.put(acc, project_key, value))
+
+        _other ->
+          acc
+      end
+    end)
+  end
+
+  defp normalize_project_limits(_limits), do: %{}
+
+  defp issue_project_key(issue, config) do
+    issue_project_slug =
+      issue
+      |> field(:project_slug)
+      |> optional_trimmed_string()
+
+    config_project_slug =
+      config
+      |> get_in([Access.key(:tracker, %{}), Access.key(:project_slug)])
+      |> optional_trimmed_string()
+
+    issue_project_slug || config_project_slug || "default"
+  end
+
+  defp configured_project_max_concurrent_agents(state, issue, config) do
+    project_key = issue_project_key(issue, config)
+
+    workflow_project_limits =
+      get_in(config, [Access.key(:agent, %{}), Access.key(:project_max_concurrent_agents)]) || %{}
+
+    Map.get(workflow_project_limits, project_key) ||
+      Map.get(state.project_max_concurrent_agents, project_key)
+  end
+
+  defp effective_project_max_concurrent_agents(state, issue, config) do
+    configured_limit = configured_project_max_concurrent_agents(state, issue, config)
+
+    case positive_integer(configured_limit, state.max_concurrent_agents) do
+      value when is_integer(value) and value > 0 -> min(value, state.max_concurrent_agents)
+      _other -> state.max_concurrent_agents
+    end
+  end
+
+  defp running_counts_by_project(state, config) do
+    Enum.reduce(state.running, %{}, fn {_issue_id, run_entry}, acc ->
+      project_key = issue_project_key(Map.get(run_entry, :issue, %{}), config)
+      Map.update(acc, project_key, 1, &(&1 + 1))
+    end)
+  end
+
+  defp retry_counts_by_project(state, config) do
+    Enum.reduce(state.retry_attempts, %{}, fn {_issue_id, retry_entry}, acc ->
+      project_key = issue_project_key(Map.get(retry_entry, :issue, %{}), config)
+      Map.update(acc, project_key, 1, &(&1 + 1))
+    end)
+  end
+
+  defp project_running_count(state, issue, config) do
+    project_key = issue_project_key(issue, config)
+
+    state.running
+    |> Enum.count(fn {_issue_id, run_entry} ->
+      issue_project_key(Map.get(run_entry, :issue, %{}), config) == project_key
+    end)
+  end
+
+  defp optional_trimmed_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp optional_trimmed_string(value) when is_atom(value) do
+    value |> Atom.to_string() |> optional_trimmed_string()
+  end
+
+  defp optional_trimmed_string(_value), do: nil
+
   defp active_state?(state_name, config) do
     normalized = normalize_state(state_name)
 
@@ -3578,6 +3821,7 @@ defmodule Kollywood.Orchestrator do
       |> Enum.sort_by(& &1.issue_id)
 
     running_count = map_size(state.running)
+    project_limits = project_limits_snapshot(state)
 
     %{
       running: running,
@@ -3603,6 +3847,7 @@ defmodule Kollywood.Orchestrator do
       max_concurrent_agents_effective: state.max_concurrent_agents,
       max_concurrent_agents_hard_cap: state.global_max_concurrent_agents,
       max_concurrent_agents: state.max_concurrent_agents,
+      project_limits: project_limits,
       retries_enabled: state.retries_enabled,
       max_attempts: state.max_attempts,
       max_retry_backoff_ms: state.max_retry_backoff_ms,
@@ -3624,6 +3869,49 @@ defmodule Kollywood.Orchestrator do
         last_recovery_attempt: state.last_recovery_attempt
       }
     }
+  end
+
+  defp project_limits_snapshot(state) do
+    with {:ok, config} <- fetch_config(state.workflow_store) do
+      running_counts = running_counts_by_project(state, config)
+      retry_counts = retry_counts_by_project(state, config)
+
+      configured_project_keys =
+        Map.keys(state.project_max_concurrent_agents) ++
+          Map.keys(
+            get_in(config, [Access.key(:agent, %{}), Access.key(:project_max_concurrent_agents)]) ||
+              %{}
+          )
+
+      active_project_keys = Map.keys(running_counts) ++ Map.keys(retry_counts)
+
+      (configured_project_keys ++ active_project_keys)
+      |> Enum.uniq()
+      |> Enum.sort()
+      |> Enum.map(fn project_key ->
+        representative_issue = %{project_slug: project_key}
+
+        configured_limit =
+          configured_project_max_concurrent_agents(state, representative_issue, config)
+
+        effective_limit =
+          effective_project_max_concurrent_agents(state, representative_issue, config)
+
+        running_count = Map.get(running_counts, project_key, 0)
+        retry_count = Map.get(retry_counts, project_key, 0)
+
+        %{
+          project_slug: project_key,
+          configured_max_concurrent_agents: configured_limit,
+          effective_max_concurrent_agents: effective_limit,
+          running_count: running_count,
+          retry_count: retry_count,
+          available_slots: max(effective_limit - running_count, 0)
+        }
+      end)
+    else
+      _ -> []
+    end
   end
 
   defp runtime_last_event_type(%{} = event), do: Map.get(event, :type)
