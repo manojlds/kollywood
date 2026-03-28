@@ -50,6 +50,26 @@ defmodule Kollywood.Tracker.PrdJson do
   end
 
   @impl true
+  @spec list_pending_merge_issues(Config.t()) :: {:ok, [map()]} | {:error, String.t()}
+  def list_pending_merge_issues(%Config{} = config) do
+    with {:ok, prd} <- read_prd(config),
+         {:ok, stories} <- user_stories(prd) do
+      normalized_stories = Enum.map(stories, &normalize_story/1)
+      stories_by_id = Map.new(normalized_stories, &{&1.id, &1})
+
+      issues =
+        normalized_stories
+        |> Enum.filter(fn story ->
+          non_empty_string?(story.id) and story.status == "pending_merge" and
+            non_empty_string?(story.pr_url)
+        end)
+        |> Enum.map(&story_to_issue(&1, stories_by_id))
+
+      {:ok, issues}
+    end
+  end
+
+  @impl true
   @spec claim_issue(Config.t(), String.t()) :: :ok | {:error, String.t()}
   def claim_issue(%Config{} = _config, _issue_id), do: :ok
 
@@ -715,6 +735,7 @@ defmodule Kollywood.Tracker.PrdJson do
       priority: story.priority,
       blocked_by: blocker_list(story.depends_on, stories_by_id),
       resumable: story.resumable,
+      pr_url: story.pr_url,
       created_at: nil
     }
   end
@@ -770,7 +791,8 @@ defmodule Kollywood.Tracker.PrdJson do
       status: story_status(story),
       depends_on: string_list(field(story, :dependsOn)),
       notes: optional_string(field(story, :notes)),
-      resumable: field(story, :resumable) == true
+      resumable: field(story, :resumable) == true,
+      pr_url: optional_string(field(story, :pr_url))
     }
   end
 

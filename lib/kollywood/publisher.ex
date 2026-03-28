@@ -29,6 +29,12 @@ defmodule Kollywood.Publisher do
   @callback enable_auto_merge(Workspace.t(), String.t()) :: :ok | {:error, String.t()}
 
   @doc """
+  Returns whether a pull/merge request has been merged.
+  """
+  @callback merged?(Workspace.t(), String.t()) ::
+              {:ok, true} | {:ok, false} | {:error, String.t()}
+
+  @doc """
   Returns the Publisher module for the given provider atom, or an error.
   """
   @spec module_for_provider(atom()) :: {:ok, module()} | {:error, String.t()}
