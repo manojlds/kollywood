@@ -42,6 +42,29 @@ if app_mode do
   config :kollywood, app_mode: app_mode
 end
 
+case System.get_env("KOLLYWOOD_GLOBAL_MAX_CONCURRENT_AGENTS") do
+  nil ->
+    :ok
+
+  value ->
+    orchestrator_opts =
+      case Application.get_env(:kollywood, :orchestrator, []) do
+        opts when is_list(opts) -> opts
+        _other -> []
+      end
+
+    case Integer.parse(String.trim(value)) do
+      {parsed, ""} when parsed > 0 ->
+        config :kollywood,
+          orchestrator: Keyword.put(orchestrator_opts, :global_max_concurrent_agents, parsed)
+
+      _other ->
+        IO.warn(
+          "Ignoring invalid KOLLYWOOD_GLOBAL_MAX_CONCURRENT_AGENTS=#{inspect(value)}; expected a positive integer"
+        )
+    end
+end
+
 if config_env() != :test do
   config :kollywood, Kollywood.Repo,
     database:
