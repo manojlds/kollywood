@@ -82,6 +82,31 @@ defmodule Kollywood.Orchestrator.RunLogsTest do
       content = File.read!(context.files.agent)
       assert content == ""
     end
+
+    test "keeps worker log focused on worker event metadata", %{context: context} do
+      stream_json =
+        ~s({"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}})
+
+      event = %{
+        type: :turn_succeeded,
+        turn: 1,
+        duration_ms: 123,
+        command: "cursor",
+        args: ["agent", "--print", "very long prompt body"],
+        output: stream_json,
+        raw_output: stream_json
+      }
+
+      assert :ok = RunLogs.append_event(context, event)
+
+      worker_log = File.read!(context.files.worker)
+      assert worker_log =~ "[worker] turn_succeeded"
+      assert worker_log =~ "command=cursor"
+      refute worker_log =~ "args="
+      refute worker_log =~ "output:"
+      refute worker_log =~ "raw_output:"
+      refute worker_log =~ "\"type\":\"assistant\""
+    end
   end
 
   describe "append_event/2 with review events" do

@@ -537,6 +537,7 @@ defmodule Kollywood.Orchestrator.RunLogs do
         "identifier",
         "story_id",
         "attempt",
+        "args",
         "output",
         "raw_output",
         "output_preview"
@@ -548,7 +549,7 @@ defmodule Kollywood.Orchestrator.RunLogs do
       "[#{timestamp}] [#{category}] #{type}" <>
         if(detail_fields == "", do: "", else: " #{detail_fields}")
 
-    output_block = output_block(event)
+    output_block = output_block(event, category)
 
     if output_block == "" do
       header <> "\n"
@@ -557,7 +558,11 @@ defmodule Kollywood.Orchestrator.RunLogs do
     end
   end
 
-  defp output_block(event) do
+  # Keep worker logs focused on orchestrator lifecycle signals. Agent transcript
+  # output belongs in agent-specific logs, not worker.log / run.log worker entries.
+  defp output_block(_event, :worker), do: ""
+
+  defp output_block(event, _category) do
     output = optional_string(Map.get(event, "output"))
     raw_output = optional_string(Map.get(event, "raw_output"))
     output_preview = optional_string(Map.get(event, "output_preview"))

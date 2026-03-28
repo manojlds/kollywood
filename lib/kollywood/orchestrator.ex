@@ -18,6 +18,7 @@ defmodule Kollywood.Orchestrator do
   alias Kollywood.AgentRunner
   alias Kollywood.AgentRunner.Result
   alias Kollywood.Config
+  alias Kollywood.Orchestrator.ControlState
   alias Kollywood.Orchestrator.EphemeralStore
   alias Kollywood.Orchestrator.RetryStore
   alias Kollywood.Orchestrator.RunLogs
@@ -38,6 +39,8 @@ defmodule Kollywood.Orchestrator do
   @default_retry_base_delay_ms 10_000
   @default_continuation_delay_ms 1_000
   @default_stale_threshold_multiplier 3
+  @default_status_tick_interval_ms 1_000
+  @maintenance_retry_defer_ms 5_000
 
   @type state :: %__MODULE__{
           workflow_store: WorkflowStore.server() | Config.t(),
@@ -52,6 +55,8 @@ defmodule Kollywood.Orchestrator do
           auto_poll: boolean(),
           poll_timer_ref: reference() | nil,
           watchdog_timer_ref: reference() | nil,
+          status_tick_timer_ref: reference() | nil,
+          maintenance_mode: :normal | :drain,
           poll_interval_ms: pos_integer(),
           stale_threshold_multiplier: pos_integer(),
           watchdog_check_interval_ms: pos_integer(),
@@ -101,6 +106,8 @@ defmodule Kollywood.Orchestrator do
     :auto_poll,
     :poll_timer_ref,
     :watchdog_timer_ref,
+    :status_tick_timer_ref,
+    :maintenance_mode,
     :poll_interval_ms,
     :stale_threshold_multiplier,
     :watchdog_check_interval_ms,
@@ -169,9 +176,18 @@ defmodule Kollywood.Orchestrator do
     GenServer.call(server, {:stop_issue, issue_id})
   end
 
+  @doc "Sets orchestrator maintenance mode (`:normal` or `:drain`)."
+  @spec set_maintenance_mode(server(), :normal | :drain | String.t()) ::
+          :ok | {:error, :invalid_mode}
+  def set_maintenance_mode(server \\ __MODULE__, mode) do
+    GenServer.call(server, {:set_maintenance_mode, mode})
+  end
+
   @impl true
   def init(opts) do
     with {:ok, agent_pool} <- resolve_agent_pool(Keyword.get(opts, :agent_pool, AgentPool)) do
+      maintenance_mode = ControlState.load_maintenance_mode(:normal)
+
       poll_interval_ms =
         positive_integer(Keyword.get(opts, :poll_interval_ms), @default_poll_interval_ms)
 
@@ -207,6 +223,8 @@ defmodule Kollywood.Orchestrator do
         auto_poll: Keyword.get(opts, :auto_poll, true),
         poll_timer_ref: nil,
         watchdog_timer_ref: nil,
+        status_tick_timer_ref: nil,
+        maintenance_mode: maintenance_mode,
         poll_interval_ms: poll_interval_ms,
         stale_threshold_multiplier:
           positive_integer(
@@ -276,12 +294,18 @@ defmodule Kollywood.Orchestrator do
           state
         end
 
+      state =
+        state
+        |> schedule_status_tick(0)
+        |> persist_control_status()
+
       {:ok, state}
     end
   end
 
   @impl true
   def handle_call(:poll_now, _from, state) do
+    state = refresh_maintenance_mode(state)
     state = run_poll_cycle(state)
 
     state =
@@ -293,21 +317,39 @@ defmodule Kollywood.Orchestrator do
         state
       end
 
-    {:reply, :ok, state}
+    {:reply, :ok, persist_control_status(state)}
   end
 
   def handle_call(:status, _from, state) do
-    {:reply, status_snapshot(state), state}
+    state = refresh_maintenance_mode(state)
+    snapshot = status_snapshot(state)
+    {:reply, snapshot, persist_control_status(state)}
   end
 
   def handle_call({:stop_issue, issue_id}, _from, state) do
     state = stop_issue_now(state, issue_id)
-    {:reply, :ok, state}
+    {:reply, :ok, persist_control_status(state)}
+  end
+
+  def handle_call({:set_maintenance_mode, mode}, _from, state) do
+    case normalize_maintenance_mode(mode) do
+      :invalid ->
+        {:reply, {:error, :invalid_mode}, state}
+
+      normalized_mode ->
+        state =
+          state
+          |> set_maintenance_mode_state(normalized_mode, source: :api)
+          |> persist_control_status()
+
+        {:reply, :ok, state}
+    end
   end
 
   @impl true
   def handle_info(:poll, state) do
     state = %{state | poll_timer_ref: nil}
+    state = refresh_maintenance_mode(state)
     state = run_poll_cycle(state)
 
     state =
@@ -315,11 +357,12 @@ defmodule Kollywood.Orchestrator do
       |> schedule_poll(state.poll_interval_ms)
       |> schedule_watchdog_tick(state.watchdog_check_interval_ms)
 
-    {:noreply, state}
+    {:noreply, persist_control_status(state)}
   end
 
   def handle_info(:watchdog_tick, state) do
     state = %{state | watchdog_timer_ref: nil}
+    state = refresh_maintenance_mode(state)
     state = run_poll_watchdog(state)
 
     state =
@@ -329,18 +372,40 @@ defmodule Kollywood.Orchestrator do
         state
       end
 
+    {:noreply, persist_control_status(state)}
+  end
+
+  def handle_info(:status_tick, state) do
+    state = %{state | status_tick_timer_ref: nil}
+    state = refresh_maintenance_mode(state)
+
+    state =
+      state
+      |> schedule_status_tick(@default_status_tick_interval_ms)
+      |> persist_control_status()
+
     {:noreply, state}
   end
 
   def handle_info({:retry_due, issue_id}, state) do
+    state = refresh_maintenance_mode(state)
+
     case Map.pop(state.retry_attempts, issue_id) do
       {nil, _retry_attempts} ->
-        {:noreply, state}
+        {:noreply, persist_control_status(state)}
 
       {retry_entry, retry_attempts} ->
         state = %{state | retry_attempts: retry_attempts}
         state = delete_persisted_retry(state, issue_id)
-        {:noreply, dispatch_retry(state, issue_id, retry_entry)}
+
+        state =
+          if state.maintenance_mode == :drain do
+            defer_retry_due_to_maintenance(state, issue_id, retry_entry)
+          else
+            dispatch_retry(state, issue_id, retry_entry)
+          end
+
+        {:noreply, persist_control_status(state)}
     end
   end
 
@@ -360,9 +425,9 @@ defmodule Kollywood.Orchestrator do
           Logger.warning("Managed repo sync returned unexpected result: #{inspect(other)}")
       end
 
-      {:noreply, state}
+      {:noreply, persist_control_status(state)}
     else
-      {:noreply, state}
+      {:noreply, persist_control_status(state)}
     end
   end
 
@@ -383,14 +448,14 @@ defmodule Kollywood.Orchestrator do
       )
 
       Process.exit(repo_sync_pid, :kill)
-      {:noreply, clear_repo_sync_task_state(state)}
+      {:noreply, state |> clear_repo_sync_task_state() |> persist_control_status()}
     else
-      {:noreply, state}
+      {:noreply, persist_control_status(state)}
     end
   end
 
   def handle_info({:runner_event, issue_id, event}, state) do
-    {:noreply, track_runner_event(state, issue_id, event)}
+    {:noreply, state |> track_runner_event(issue_id, event) |> persist_control_status()}
   end
 
   def handle_info({:run_worker_result, issue_id, worker_pid, result}, state)
@@ -401,14 +466,18 @@ defmodule Kollywood.Orchestrator do
           {:ok, run_entry, state} ->
             cancel_run_timeout_timer(run_entry)
             Process.demonitor(run_entry.run_ref, [:flush])
-            {:noreply, handle_runner_result(state, issue_id, run_entry, result)}
+
+            {:noreply,
+             state
+             |> handle_runner_result(issue_id, run_entry, result)
+             |> persist_control_status()}
 
           :error ->
-            {:noreply, state}
+            {:noreply, persist_control_status(state)}
         end
 
       _other ->
-        {:noreply, state}
+        {:noreply, persist_control_status(state)}
     end
   end
 
@@ -432,14 +501,15 @@ defmodule Kollywood.Orchestrator do
             |> stop_run_task(run_entry)
             |> tracker_mark_failed(issue_id, reason, next_attempt)
             |> maybe_schedule_retry(issue_id, run_entry.issue, next_attempt, reason)
+            |> persist_control_status()
             |> then(&{:noreply, &1})
 
           :error ->
-            {:noreply, state}
+            {:noreply, persist_control_status(state)}
         end
 
       _other ->
-        {:noreply, state}
+        {:noreply, persist_control_status(state)}
     end
   end
 
@@ -465,7 +535,7 @@ defmodule Kollywood.Orchestrator do
           Logger.warning("Managed repo sync process exited: #{inspect(reason)}")
       end
 
-      {:noreply, state}
+      {:noreply, persist_control_status(state)}
     else
       handle_run_worker_down(state, ref, reason)
     end
@@ -485,10 +555,10 @@ defmodule Kollywood.Orchestrator do
         state = tracker_mark_failed(state, issue_id, reason, next_attempt)
 
         state = maybe_schedule_retry(state, issue_id, run_entry.issue, next_attempt, reason)
-        {:noreply, state}
+        {:noreply, persist_control_status(state)}
 
       :error ->
-        {:noreply, state}
+        {:noreply, persist_control_status(state)}
     end
   end
 
@@ -522,7 +592,10 @@ defmodule Kollywood.Orchestrator do
   end
 
   defp run_poll_cycle(state) do
-    state = maybe_sync_managed_repos(state)
+    state =
+      state
+      |> refresh_maintenance_mode()
+      |> maybe_sync_managed_repos()
 
     with {:ok, config} <- fetch_config(state.workflow_store),
          tracker <- resolve_tracker(state.tracker, config),
@@ -549,21 +622,25 @@ defmodule Kollywood.Orchestrator do
   end
 
   defp dispatch_retry(state, issue_id, retry_entry) do
-    with {:ok, config} <- fetch_config(state.workflow_store),
-         tracker <- resolve_tracker(state.tracker, config) do
-      state = apply_runtime_limits(state, config)
-      dispatch_retry_by_kind(state, issue_id, retry_entry, config, tracker)
+    if state.maintenance_mode == :drain do
+      defer_retry_due_to_maintenance(state, issue_id, retry_entry)
     else
-      {:error, reason} ->
-        schedule_retry(
-          state,
-          issue_id,
-          retry_entry.issue,
-          retry_entry.attempt,
-          "retry dispatch failed: #{reason}",
-          retry_backoff_delay_ms(state, retry_entry.attempt),
-          retry_schedule_opts(retry_entry)
-        )
+      with {:ok, config} <- fetch_config(state.workflow_store),
+           tracker <- resolve_tracker(state.tracker, config) do
+        state = apply_runtime_limits(state, config)
+        dispatch_retry_by_kind(state, issue_id, retry_entry, config, tracker)
+      else
+        {:error, reason} ->
+          schedule_retry(
+            state,
+            issue_id,
+            retry_entry.issue,
+            retry_entry.attempt,
+            "retry dispatch failed: #{reason}",
+            retry_backoff_delay_ms(state, retry_entry.attempt),
+            retry_schedule_opts(retry_entry)
+          )
+      end
     end
   end
 
@@ -917,18 +994,22 @@ defmodule Kollywood.Orchestrator do
   end
 
   defp dispatch_available(state, issues, config, tracker) do
-    available_slots = max(state.max_concurrent_agents - map_size(state.running), 0)
-
-    if available_slots == 0 do
+    if state.maintenance_mode == :drain do
       state
     else
-      issues
-      |> Enum.filter(&eligible_for_new_dispatch?(&1, state, config))
-      |> sort_issues_for_dispatch()
-      |> Enum.take(available_slots)
-      |> Enum.reduce(state, fn issue, acc ->
-        start_issue_run(acc, issue, nil, config, tracker)
-      end)
+      available_slots = max(state.max_concurrent_agents - map_size(state.running), 0)
+
+      if available_slots == 0 do
+        state
+      else
+        issues
+        |> Enum.filter(&eligible_for_new_dispatch?(&1, state, config))
+        |> sort_issues_for_dispatch()
+        |> Enum.take(available_slots)
+        |> Enum.reduce(state, fn issue, acc ->
+          start_issue_run(acc, issue, nil, config, tracker)
+        end)
+      end
     end
   end
 
@@ -1282,6 +1363,23 @@ defmodule Kollywood.Orchestrator do
       |> cancel_retry(issue_id)
       |> release_claim(issue_id)
     end
+  end
+
+  defp defer_retry_due_to_maintenance(state, issue_id, retry_entry) do
+    delay_ms = max(state.continuation_delay_ms, @maintenance_retry_defer_ms)
+    due_at_ms = System.monotonic_time(:millisecond) + delay_ms
+    timer_ref = Process.send_after(self(), {:retry_due, issue_id}, delay_ms)
+
+    deferred_entry =
+      retry_entry
+      |> Map.put(:timer_ref, timer_ref)
+      |> Map.put(:due_at_ms, due_at_ms)
+
+    state =
+      %{state | retry_attempts: Map.put(state.retry_attempts, issue_id, deferred_entry)}
+      |> claim(issue_id)
+
+    persist_retry_entry(state, issue_id, deferred_entry)
   end
 
   defp retry_kind(retry_entry) when is_map(retry_entry),
@@ -2595,6 +2693,20 @@ defmodule Kollywood.Orchestrator do
 
   defp non_empty_string?(value), do: is_binary(value) and String.trim(value) != ""
 
+  defp normalize_maintenance_mode(:normal), do: :normal
+  defp normalize_maintenance_mode(:drain), do: :drain
+  defp normalize_maintenance_mode("normal"), do: :normal
+  defp normalize_maintenance_mode("drain"), do: :drain
+
+  defp normalize_maintenance_mode(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> String.downcase()
+    |> normalize_maintenance_mode()
+  end
+
+  defp normalize_maintenance_mode(_value), do: :invalid
+
   defp sort_priority(nil), do: 99
   defp sort_priority(value) when is_integer(value), do: value
 
@@ -2675,6 +2787,64 @@ defmodule Kollywood.Orchestrator do
 
     ref = Process.send_after(self(), :watchdog_tick, delay_ms)
     %{state | watchdog_timer_ref: ref}
+  end
+
+  defp schedule_status_tick(state, delay_ms) do
+    if state.status_tick_timer_ref do
+      Process.cancel_timer(state.status_tick_timer_ref)
+    end
+
+    ref = Process.send_after(self(), :status_tick, delay_ms)
+    %{state | status_tick_timer_ref: ref}
+  end
+
+  defp refresh_maintenance_mode(state) do
+    mode = ControlState.load_maintenance_mode(state.maintenance_mode)
+
+    if mode == state.maintenance_mode do
+      state
+    else
+      Logger.info("orchestrator_event=maintenance_mode_changed mode=#{mode}")
+      set_maintenance_mode_state(state, mode, persist?: false, source: :control_file)
+    end
+  end
+
+  defp set_maintenance_mode_state(state, mode, opts) do
+    persist? = Keyword.get(opts, :persist?, true)
+    source = Keyword.get(opts, :source, :unknown)
+    mode = normalize_maintenance_mode(mode)
+
+    if mode == :invalid do
+      state
+    else
+      if persist? do
+        case ControlState.write_maintenance_mode(mode, source: source) do
+          :ok -> :ok
+          {:error, reason} -> Logger.warning("Failed to persist maintenance mode: #{reason}")
+        end
+      end
+
+      state = %{state | maintenance_mode: mode}
+
+      if mode == :normal and state.auto_poll do
+        schedule_poll(state, 0)
+      else
+        state
+      end
+    end
+  end
+
+  defp persist_control_status(state) do
+    status = status_snapshot(state)
+
+    case ControlState.write_status(status) do
+      :ok ->
+        state
+
+      {:error, reason} ->
+        Logger.warning("Failed to persist orchestrator status snapshot: #{reason}")
+        state
+    end
   end
 
   defp run_poll_watchdog(state) do
@@ -2825,19 +2995,28 @@ defmodule Kollywood.Orchestrator do
           attempt: entry.attempt,
           kind: retry_kind(entry),
           reason: entry.reason,
-          due_in_ms: max(entry.due_at_ms - now_ms, 0)
+          due_in_ms: retry_due_in_ms(entry, now_ms)
         }
       end)
       |> Enum.sort_by(& &1.issue_id)
 
+    running_count = map_size(state.running)
+
     %{
       running: running,
       retrying: retrying,
-      running_count: map_size(state.running),
+      running_count: running_count,
       retry_count: map_size(state.retry_attempts),
       claimed_count: MapSet.size(state.claimed),
       claimed_issue_ids: state.claimed |> MapSet.to_list() |> Enum.sort(),
       completed_count: MapSet.size(state.completed),
+      maintenance_mode: state.maintenance_mode,
+      dispatch_paused: state.maintenance_mode == :drain,
+      drain_ready: running_count == 0,
+      control_paths: %{
+        maintenance_mode: ControlState.maintenance_mode_path(),
+        status: ControlState.status_path()
+      },
       poll_interval_ms: state.poll_interval_ms,
       repo_sync_interval_ms: state.repo_sync_interval_ms,
       repo_sync_timeout_ms: state.repo_sync_timeout_ms,
@@ -2875,6 +3054,18 @@ defmodule Kollywood.Orchestrator do
 
   defp runtime_last_event_at(%{} = event), do: Map.get(event, :timestamp)
   defp runtime_last_event_at(_event), do: nil
+
+  defp retry_due_in_ms(entry, now_ms) when is_map(entry) and is_integer(now_ms) do
+    case Map.get(entry, :due_at_ms) do
+      due_at_ms when is_integer(due_at_ms) ->
+        max(due_at_ms - now_ms, 0)
+
+      _other ->
+        0
+    end
+  end
+
+  defp retry_due_in_ms(_entry, _now_ms), do: 0
 
   defp repo_sync_due_in_ms(state, now_ms) do
     case state.last_repo_sync_at_ms do

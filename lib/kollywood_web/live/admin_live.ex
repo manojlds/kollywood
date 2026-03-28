@@ -47,6 +47,35 @@ defmodule KollywoodWeb.AdminLive do
     end
   end
 
+  def handle_event("set_maintenance_mode", %{"mode" => mode}, socket) do
+    message =
+      case Kollywood.Orchestrator.set_maintenance_mode(mode) do
+        :ok ->
+          if mode == "drain" do
+            {:info, "Maintenance drain enabled. New work is paused."}
+          else
+            {:info, "Maintenance drain disabled. Scheduling resumed."}
+          end
+
+        {:error, :invalid_mode} ->
+          {:error, "Invalid maintenance mode: #{inspect(mode)}"}
+      end
+
+    socket =
+      case message do
+        {:info, text} -> put_flash(socket, :info, text)
+        {:error, text} -> put_flash(socket, :error, text)
+      end
+
+    {:noreply, assign(socket, :orchestrator_status, fetch_orchestrator_status())}
+  rescue
+    _ ->
+      {:noreply, put_flash(socket, :error, "Orchestrator not running.")}
+  catch
+    :exit, _ ->
+      {:noreply, put_flash(socket, :error, "Orchestrator not running.")}
+  end
+
   def handle_event("stop_issue", %{"id" => issue_id}, socket) do
     try do
       Kollywood.Orchestrator.stop_issue(issue_id)
@@ -149,13 +178,27 @@ defmodule KollywoodWeb.AdminLive do
     <section>
       <div class="flex items-center justify-between mb-3">
         <h2 class="text-lg font-semibold">Orchestrator</h2>
-        <button
-          :if={@status != nil}
-          phx-click="poll_now"
-          class="btn btn-sm btn-outline gap-2"
-        >
-          <.icon name="hero-arrow-path" class="size-4" /> Poll Now
-        </button>
+        <div :if={@status != nil} class="flex items-center gap-2">
+          <button
+            :if={maintenance_mode(@status) != :drain}
+            phx-click="set_maintenance_mode"
+            phx-value-mode="drain"
+            class="btn btn-sm btn-warning btn-outline gap-2"
+          >
+            <.icon name="hero-pause" class="size-4" /> Start Drain
+          </button>
+          <button
+            :if={maintenance_mode(@status) == :drain}
+            phx-click="set_maintenance_mode"
+            phx-value-mode="normal"
+            class="btn btn-sm btn-success btn-outline gap-2"
+          >
+            <.icon name="hero-play" class="size-4" /> Resume Scheduling
+          </button>
+          <button phx-click="poll_now" class="btn btn-sm btn-outline gap-2">
+            <.icon name="hero-arrow-path" class="size-4" /> Poll Now
+          </button>
+        </div>
       </div>
 
       <%= if @status == nil do %>
@@ -183,6 +226,18 @@ defmodule KollywoodWeb.AdminLive do
                   <.config_row
                     label="Max agents (hard cap)"
                     value={"#{@status.max_concurrent_agents_hard_cap}"}
+                  />
+                  <.config_row
+                    label="Maintenance mode"
+                    value={maintenance_mode_label(@status)}
+                  />
+                  <.config_row
+                    label="Dispatch paused"
+                    value={if @status.dispatch_paused, do: "yes", else: "no"}
+                  />
+                  <.config_row
+                    label="Drain ready"
+                    value={if @status.drain_ready, do: "yes", else: "no"}
                   />
                   <.config_row
                     label="Retries"
@@ -447,4 +502,21 @@ defmodule KollywoodWeb.AdminLive do
   end
 
   defp watchdog_recovery_attempt_value(_watchdog), do: nil
+
+  defp maintenance_mode(status) when is_map(status) do
+    case Map.get(status, :maintenance_mode, :normal) do
+      "drain" -> :drain
+      :drain -> :drain
+      _other -> :normal
+    end
+  end
+
+  defp maintenance_mode(_status), do: :normal
+
+  defp maintenance_mode_label(status) do
+    case maintenance_mode(status) do
+      :drain -> "drain (new work paused)"
+      :normal -> "normal"
+    end
+  end
 end
