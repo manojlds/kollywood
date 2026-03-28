@@ -131,7 +131,18 @@ defmodule Kollywood.Orchestrator.RunLogs do
   @doc "Creates a new per-attempt run-log directory and metadata file."
   @spec prepare_attempt(Config.t(), map(), non_neg_integer() | nil) ::
           {:ok, context()} | {:error, String.t()}
-  def prepare_attempt(%Config{} = config, issue, runner_attempt) when is_map(issue) do
+  def prepare_attempt(%Config{} = config, issue, runner_attempt) do
+    prepare_attempt(config, issue, runner_attempt, %{})
+  end
+
+  def prepare_attempt(_config, _issue, _runner_attempt) do
+    {:error, "failed to initialize run logs: invalid inputs"}
+  end
+
+  @spec prepare_attempt(Config.t(), map(), non_neg_integer() | nil, map()) ::
+          {:ok, context()} | {:error, String.t()}
+  def prepare_attempt(%Config{} = config, issue, runner_attempt, metadata_overrides)
+      when is_map(issue) and is_map(metadata_overrides) do
     identifier = field(issue, :identifier)
     issue_id = field(issue, :id)
 
@@ -150,21 +161,21 @@ defmodule Kollywood.Orchestrator.RunLogs do
          :ok <- File.mkdir_p(attempt_dir) do
       files = build_attempt_files(story_dir, attempt_dir)
 
+      metadata =
+        initial_metadata(
+          story_id,
+          issue_id,
+          identifier,
+          attempt,
+          runner_attempt,
+          project_root,
+          attempt_dir,
+          files,
+          metadata_overrides
+        )
+
       with :ok <- ensure_append_files(files),
-           :ok <-
-             write_json(
-               files.metadata,
-               initial_metadata(
-                 story_id,
-                 issue_id,
-                 identifier,
-                 attempt,
-                 runner_attempt,
-                 project_root,
-                 attempt_dir,
-                 files
-               )
-             ),
+           :ok <- write_json(files.metadata, metadata),
            :ok <-
              append_jsonl(files.attempts_index, %{
                "event" => "attempt_started",
@@ -172,7 +183,9 @@ defmodule Kollywood.Orchestrator.RunLogs do
                "attempt" => attempt,
                "runner_attempt" => runner_attempt,
                "timestamp" => now_iso8601(),
-               "attempt_dir" => attempt_dir
+               "attempt_dir" => attempt_dir,
+               "parent_attempt" => Map.get(metadata, "parent_attempt"),
+               "retry_step" => Map.get(metadata, "retry_step")
              }) do
         {:ok,
          %{
@@ -193,7 +206,7 @@ defmodule Kollywood.Orchestrator.RunLogs do
     error -> {:error, "failed to initialize run logs: #{Exception.message(error)}"}
   end
 
-  def prepare_attempt(_config, _issue, _runner_attempt) do
+  def prepare_attempt(_config, _issue, _runner_attempt, _metadata_overrides) do
     {:error, "failed to initialize run logs: invalid inputs"}
   end
 
@@ -432,8 +445,26 @@ defmodule Kollywood.Orchestrator.RunLogs do
          runner_attempt,
          project_root,
          attempt_dir,
-         files
+         files,
+         metadata_overrides
        ) do
+    extra_metadata =
+      metadata_overrides
+      |> stringify_map()
+      |> Map.drop([
+        "story_id",
+        "issue_id",
+        "identifier",
+        "attempt",
+        "runner_attempt",
+        "status",
+        "started_at",
+        "ended_at",
+        "project_root",
+        "attempt_dir",
+        "files"
+      ])
+
     %{
       "story_id" => story_id,
       "issue_id" => optional_string(issue_id),
@@ -458,6 +489,7 @@ defmodule Kollywood.Orchestrator.RunLogs do
         "review_json" => files.review_json
       }
     }
+    |> Map.merge(extra_metadata)
   end
 
   defp normalize_event(event, context) do

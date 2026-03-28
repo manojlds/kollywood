@@ -12,6 +12,7 @@ defmodule KollywoodWeb.DashboardLive do
   alias Kollywood.Projects
   alias Kollywood.Projects.Project
   alias Kollywood.ServiceConfig
+  alias Kollywood.StepRetry
   alias Kollywood.Tracker.PrdJson
 
   @default_stories_view "kanban"
@@ -326,7 +327,45 @@ defmodule KollywoodWeb.DashboardLive do
     {:noreply, socket}
   end
 
-  def handle_event("trigger_run", _params, socket) do
+  def handle_event("trigger_run", params, socket) do
+    project = socket.assigns.current_project
+    story_id = Map.get(params, "story_id") || socket.assigns.run_detail_story_id
+
+    source_attempt =
+      Map.get(params, "attempt") || get_in(socket.assigns, [:run_detail, "metadata", "attempt"])
+
+    retry_step =
+      Map.get(params, "step") || get_in(socket.assigns, [:run_detail, "retry_action", "step"])
+
+    socket =
+      cond do
+        is_nil(project) ->
+          put_flash(socket, :error, "Select a project before retrying a run.")
+
+        not local_provider?(project) ->
+          put_flash(socket, :error, "Step retries are only available for local projects.")
+
+        not is_binary(story_id) ->
+          put_flash(socket, :error, "No story selected for retry.")
+
+        true ->
+          case StepRetry.retry(project, story_id, source_attempt, retry_step) do
+            {:ok, result} ->
+              attempt = parse_attempt(result[:attempt])
+              retry_step_label = result[:retry_step] || "step"
+              run_label = if is_integer(attempt), do: "##{attempt}", else: "new run"
+
+              socket
+              |> load_project_data(project)
+              |> sync_story_detail_selection()
+              |> maybe_navigate_to_retry_attempt(project, story_id, attempt)
+              |> put_flash(:info, "Retry #{retry_step_label} completed as #{run_label}.")
+
+            {:error, reason} ->
+              put_flash(socket, :error, "Retry failed: #{reason}")
+          end
+      end
+
     {:noreply, socket}
   end
 
@@ -2088,6 +2127,23 @@ defmodule KollywoodWeb.DashboardLive do
         <%= if @run_detail do %>
           <.run_status_badge status={@run_detail["metadata"]["status"] || "unknown"} />
           <span class="text-sm text-base-content/60">{@run_detail["phase_label"]}</span>
+          <%= if retry_action = @run_detail["retry_action"] do %>
+            <button
+              phx-click="trigger_run"
+              phx-value-story_id={@story_id}
+              phx-value-attempt={retry_action["attempt"]}
+              phx-value-step={retry_action["step"]}
+              disabled={!retry_action["enabled"]}
+              title={retry_action["reason"] || retry_action["label"]}
+              class={[
+                "btn btn-sm",
+                retry_action["enabled"] && "btn-primary",
+                !retry_action["enabled"] && "btn-disabled"
+              ]}
+            >
+              {retry_action["label"]}
+            </button>
+          <% end %>
         <% end %>
       </div>
 
@@ -2373,6 +2429,24 @@ defmodule KollywoodWeb.DashboardLive do
                 <.icon name="hero-arrow-left" class="size-4" /> All Runs
               </.link>
               <span class="text-sm text-base-content/60">Run {run_number(@selected_attempt)}</span>
+              <% retry_action = if @run_detail, do: @run_detail["retry_action"], else: nil %>
+              <%= if retry_action do %>
+                <button
+                  phx-click="trigger_run"
+                  phx-value-story_id={@story_id}
+                  phx-value-attempt={retry_action["attempt"]}
+                  phx-value-step={retry_action["step"]}
+                  disabled={!retry_action["enabled"]}
+                  title={retry_action["reason"] || retry_action["label"]}
+                  class={[
+                    "btn btn-sm",
+                    retry_action["enabled"] && "btn-primary",
+                    !retry_action["enabled"] && "btn-disabled"
+                  ]}
+                >
+                  {retry_action["label"]}
+                </button>
+              <% end %>
             </div>
 
             <div class="flex gap-0 border-b border-base-300">
@@ -4247,6 +4321,27 @@ defmodule KollywoodWeb.DashboardLive do
   defp parse_attempt(value) when is_integer(value), do: value
   defp parse_attempt(_), do: nil
 
+  defp maybe_navigate_to_retry_attempt(socket, _project, _story_id, attempt)
+       when not is_integer(attempt) or attempt <= 0 do
+    socket
+  end
+
+  defp maybe_navigate_to_retry_attempt(socket, project, story_id, attempt) do
+    case socket.assigns[:live_action] do
+      :run_detail ->
+        push_patch(socket, to: ~p"/projects/#{project.slug}/runs/#{story_id}/#{attempt}")
+
+      :story_detail ->
+        push_patch(
+          socket,
+          to: ~p"/projects/#{project.slug}/stories/#{story_id}?tab=runs&attempt=#{attempt}"
+        )
+
+      _other ->
+        socket
+    end
+  end
+
   defp run_number(value) do
     case parse_attempt(value) do
       num when is_integer(num) and num > 0 -> "##{num}"
@@ -4407,15 +4502,7 @@ defmodule KollywoodWeb.DashboardLive do
     |> Enum.find_value(fn project_root ->
       case RunLogs.resolve_attempt(project_root, story_id, :latest) do
         {:ok, %{metadata: metadata, files: files}} ->
-          content = read_log_tab_content(files, tab)
-          phase = derive_phase_map(Path.dirname(files.metadata), metadata)
-
-          %{
-            "metadata" => metadata,
-            "phase" => phase,
-            "phase_label" => RunPhase.label(phase),
-            "active_log_content" => content
-          }
+          build_run_detail(project, story_id, metadata, files, tab)
 
         {:error, _} ->
           nil
@@ -4435,21 +4522,26 @@ defmodule KollywoodWeb.DashboardLive do
       |> Enum.find_value(fn project_root ->
         case RunLogs.resolve_attempt(project_root, story_id, parsed) do
           {:ok, %{metadata: metadata, files: files}} ->
-            content = read_log_tab_content(files, tab)
-            phase = derive_phase_map(Path.dirname(files.metadata), metadata)
-
-            %{
-              "metadata" => metadata,
-              "phase" => phase,
-              "phase_label" => RunPhase.label(phase),
-              "active_log_content" => content
-            }
+            build_run_detail(project, story_id, metadata, files, tab)
 
           {:error, _} ->
             nil
         end
       end)
     end
+  end
+
+  defp build_run_detail(project, story_id, metadata, files, tab) do
+    content = read_log_tab_content(files, tab)
+    phase = derive_phase_map(Path.dirname(files.metadata), metadata)
+
+    %{
+      "metadata" => metadata,
+      "phase" => phase,
+      "phase_label" => RunPhase.label(phase),
+      "retry_action" => StepRetry.retry_action(project, story_id, Map.get(metadata, "attempt")),
+      "active_log_content" => content
+    }
   end
 
   defp derive_project_roots(project) do
