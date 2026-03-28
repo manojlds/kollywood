@@ -14,6 +14,17 @@
 - Restart server: `vaibhav dev restart kollywood server`
 - Stop server: `vaibhav dev stop kollywood server`
 
+## Stable Server Deployment
+
+- Treat `/home/manojlds/projects/kollywood` as the only source-of-truth code checkout.
+- Never make direct code edits in `/home/manojlds/projects/kollywood-server`.
+- Deploy by committing/pushing from the source repo, then updating the server clone.
+- Preferred deploy command: `~/.local/bin/kollywood-server-update.sh`
+- If assets are stale/missing, run in server clone: `devenv shell -- bash -lc 'MIX_ENV=prod mix assets.deploy && MIX_ENV=prod mix phx.digest'`
+- Runtime service: `systemctl --user status kollywood-server.service`
+- Public endpoint mapping: `systemctl --user status kollywood-tailscale-serve.service` and `tailscale serve status`
+- Repo-scoped runtime config lives at `.kollywood/WORKFLOW.md` and `.kollywood/AGENTS.md`.
+
 ## Kollywood CLI (Stories)
 
 - Install once: `cargo install --path tools/kollywood-cli --force`

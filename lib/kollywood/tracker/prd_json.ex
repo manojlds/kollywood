@@ -151,7 +151,7 @@ defmodule Kollywood.Tracker.PrdJson do
 
     update_story_record(config, issue_id, fn story ->
       story
-      |> set_story_status("open")
+      |> set_story_status("draft")
       |> Map.delete("startedAt")
       |> Map.delete("completedAt")
       |> Map.delete("lastAttempt")
