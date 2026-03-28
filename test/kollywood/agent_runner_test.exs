@@ -853,6 +853,77 @@ defmodule Kollywood.AgentRunnerTest do
     assert_prd_status(source, @issue.id, "merged")
   end
 
+  test "auto_merge conflict triggers remediation turn and retries merge", %{root: root} do
+    %{source: source, workspaces_root: workspaces_root} = setup_worktree_repo(root)
+
+    seed_prd_story!(source, @issue.id)
+    seed_conflict_file!(source)
+
+    prompt_log = Path.join(root, "conflict_prompts.log")
+    conflict_cli_path = write_conflict_agent!(root)
+
+    config =
+      worktree_runner_config(source, workspaces_root, conflict_cli_path)
+      |> Map.put(:publish, %{mode: :auto_merge})
+      |> Map.put(:project_provider, :local)
+      |> update_in([Access.key(:agent), Access.key(:env)], fn env ->
+        Map.merge(env, %{
+          "SOURCE_REPO" => source,
+          "PROMPT_LOG_FILE" => prompt_log
+        })
+      end)
+
+    assert {:ok, result} =
+             AgentRunner.run_issue(@issue, config: config, prompt_template: "Implement")
+
+    event_types = Enum.map(result.events, & &1.type)
+    assert :publish_push_succeeded in event_types
+    assert :publish_merge_conflict in event_types
+    assert :publish_merge_conflict_resolved in event_types
+    assert :publish_merged in event_types
+    assert :publish_succeeded in event_types
+    assert result.turn_count == 2
+
+    prompt_history = File.read!(prompt_log)
+    assert prompt_history =~ "Please resolve the conflicts"
+    assert prompt_history =~ "git rebase origin/main"
+    assert prompt_history =~ "git push --force-with-lease origin"
+
+    assert_prd_status(source, @issue.id, "merged")
+  end
+
+  test "auto_merge conflict remediation failure fails publish", %{root: root} do
+    %{source: source, workspaces_root: workspaces_root} = setup_worktree_repo(root)
+
+    seed_prd_story!(source, @issue.id)
+    seed_conflict_file!(source)
+
+    conflict_cli_path = write_conflict_agent!(root)
+
+    config =
+      worktree_runner_config(source, workspaces_root, conflict_cli_path)
+      |> Map.put(:publish, %{mode: :auto_merge})
+      |> Map.put(:project_provider, :local)
+      |> update_in([Access.key(:agent), Access.key(:env)], fn env ->
+        Map.merge(env, %{
+          "SOURCE_REPO" => source,
+          "FAIL_CONFLICT_REMEDIATION" => "1"
+        })
+      end)
+
+    assert {:error, result} =
+             AgentRunner.run_issue(@issue, config: config, prompt_template: "Implement")
+
+    event_types = Enum.map(result.events, & &1.type)
+    assert :publish_push_succeeded in event_types
+    assert :publish_merge_conflict in event_types
+    assert :publish_failed in event_types
+    refute :publish_merged in event_types
+    refute :publish_succeeded in event_types
+    assert result.error =~ "conflict resolution failed"
+    assert_prd_status(source, @issue.id, "open")
+  end
+
   test "auto_merge failure does not fail publish", %{
     root: root,
     git_cli_path: git_cli_path
@@ -873,6 +944,8 @@ defmodule Kollywood.AgentRunnerTest do
     assert :publish_merge_failed in event_types
     assert :publish_succeeded in event_types
     refute :publish_failed in event_types
+    refute :publish_merge_conflict in event_types
+    assert result.turn_count == 1
   end
 
   defp worktree_runner_config(source, workspaces_root, git_cli_path) do
@@ -944,6 +1017,15 @@ defmodule Kollywood.AgentRunnerTest do
     git!(["push", "origin", "main"], source_repo)
   end
 
+  defp seed_conflict_file!(source_repo) do
+    conflict_path = Path.join(source_repo, "conflict.txt")
+
+    File.write!(conflict_path, "base\n")
+    git!(["add", "conflict.txt"], source_repo)
+    git!(["commit", "-m", "seed conflict file"], source_repo)
+    git!(["push", "origin", "main"], source_repo)
+  end
+
   defp assert_prd_status(source_repo, issue_id, expected_status) do
     prd = read_prd(source_repo)
     story = Enum.find(prd["userStories"], &(&1["id"] == issue_id))
@@ -989,6 +1071,65 @@ defmodule Kollywood.AgentRunnerTest do
 
     File.chmod!(path, 0o755)
     File.rm(log_path)
+    path
+  end
+
+  defp write_conflict_agent!(root) do
+    path = Path.join(root, "fake_conflict_runner_cli.sh")
+
+    File.write!(path, """
+    #!/usr/bin/env bash
+    set -eu
+
+    prompt="$(cat)"
+
+    if [ -n "${PROMPT_LOG_FILE:-}" ]; then
+      printf "PROMPT<<%s>>\n" "$prompt" >> "$PROMPT_LOG_FILE"
+    fi
+
+    case "$prompt" in
+      *"Please resolve the conflicts:"*)
+        if [ "${FAIL_CONFLICT_REMEDIATION:-}" = "1" ]; then
+          echo "forced remediation failure" >&2
+          exit 61
+        fi
+
+        git fetch origin >/dev/null
+
+        set +e
+        git rebase origin/main >/dev/null 2>&1
+        rebase_code=$?
+        set -e
+
+        if [ "$rebase_code" -ne 0 ]; then
+          printf "resolved in remediation\n" > conflict.txt
+          git add conflict.txt
+          GIT_EDITOR=true git rebase --continue >/dev/null
+        fi
+
+        branch="$(git rev-parse --abbrev-ref HEAD)"
+        git push --force-with-lease origin "$branch" >/dev/null
+        echo "ok:remediation"
+        exit 0
+        ;;
+    esac
+
+    printf "branch change\n" > conflict.txt
+    git add conflict.txt
+    git commit -m "branch change" >/dev/null
+
+    if [ -n "${SOURCE_REPO:-}" ]; then
+      git -C "$SOURCE_REPO" checkout main >/dev/null 2>&1
+      printf "main change\n" > "$SOURCE_REPO/conflict.txt"
+      git -C "$SOURCE_REPO" add conflict.txt
+      git -C "$SOURCE_REPO" commit -m "main change" >/dev/null
+      git -C "$SOURCE_REPO" push origin main >/dev/null
+    fi
+
+    echo "ok:initial"
+    """)
+
+    File.chmod!(path, 0o755)
     path
   end
 

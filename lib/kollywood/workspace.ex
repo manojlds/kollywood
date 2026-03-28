@@ -319,7 +319,9 @@ defmodule Kollywood.Workspace do
          {_, 0} <- git(["push", "origin", base_branch], source) do
       :ok
     else
-      {output, code} -> {:error, "merge to main failed (exit #{code}): #{String.trim(output)}"}
+      {output, code} ->
+        _ = maybe_abort_merge(source)
+        {:error, "merge to main failed (exit #{code}): #{String.trim(output)}"}
     end
   end
 
