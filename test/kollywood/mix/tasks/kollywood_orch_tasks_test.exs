@@ -52,6 +52,8 @@ defmodule Mix.Tasks.Kollywood.OrchTasksTest do
     assert output =~ "Orchestrator status"
     assert output =~ "running=0"
     assert output =~ "retrying=0"
+    assert output =~ "poll_stale=false"
+    assert output =~ "last_recovery_attempt=none"
   end
 
   test "kollywood.orch.status shows runtime state for running issue", %{

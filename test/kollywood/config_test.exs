@@ -18,6 +18,8 @@ defmodule Kollywood.ConfigTest do
       - Cancelled
   polling:
     interval_ms: 3000
+    stale_threshold_multiplier: 4
+    watchdog_check_interval_ms: 750
   workspace:
     root: ~/workspaces
   agent:
@@ -38,6 +40,8 @@ defmodule Kollywood.ConfigTest do
     assert config.tracker.project_slug == "my-project"
     assert config.tracker.active_states == ["Todo", "In Progress"]
     assert config.polling.interval_ms == 3000
+    assert config.polling.stale_threshold_multiplier == 4
+    assert config.polling.watchdog_check_interval_ms == 750
     assert config.workspace.root == "~/workspaces"
     assert template =~ "{{ issue.identifier }}"
   end
@@ -106,6 +110,8 @@ defmodule Kollywood.ConfigTest do
 
     assert {:ok, config, _} = Config.parse(content)
     assert config.polling.interval_ms == 5000
+    assert config.polling.stale_threshold_multiplier == 3
+    assert config.polling.watchdog_check_interval_ms == 5000
     assert config.agent.max_concurrent_agents == 5
     assert config.agent.max_turns == 20
     assert config.agent.retries_enabled == true

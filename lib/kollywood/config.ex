@@ -237,7 +237,14 @@ defmodule Kollywood.Config do
     polling = Map.get(raw, "polling", %{})
 
     %{
-      interval_ms: positive_integer(Map.get(polling, "interval_ms", 5000), 5000)
+      interval_ms: positive_integer(Map.get(polling, "interval_ms", 5000), 5000),
+      stale_threshold_multiplier:
+        positive_integer(Map.get(polling, "stale_threshold_multiplier", 3), 3),
+      watchdog_check_interval_ms:
+        positive_integer(
+          Map.get(polling, "watchdog_check_interval_ms", Map.get(polling, "interval_ms", 5000)),
+          positive_integer(Map.get(polling, "interval_ms", 5000), 5000)
+        )
     }
   end
 
