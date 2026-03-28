@@ -24,7 +24,7 @@ quality:
     max_cycles: 2
     required:
       - "devenv shell -- mix format --check-formatted"
-      - "devenv shell -- bash -c \"MIX_ENV=test mix test\""
+      - "devenv shell -- bash -c \"PHX_SERVER= MIX_ENV=test mix test\""
     timeout_ms: 1800000
   max_cycles: 4
   review:
@@ -74,3 +74,7 @@ and try a different approach.
 3. Implement the changes
 4. Run tests to verify
 5. Commit your changes with a descriptive message
+
+Safety constraints:
+- Never stop or restart shared local dev services just to run tests.
+- Run tests in isolated test mode (`PHX_SERVER= MIX_ENV=test ...`) instead of mutating running services.
