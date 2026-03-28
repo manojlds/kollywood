@@ -62,6 +62,30 @@ defmodule Kollywood.Orchestrator.RunPhaseTest do
       assert phase.label == "Publishing failed"
     end
 
+    test "advances after transient checks_failed when remediation turn starts" do
+      phase =
+        RunPhase.from_events([
+          %{type: :checks_failed, error_count: 1},
+          %{type: :turn_started, turn: 2}
+        ])
+
+      assert phase.kind == "agent"
+      assert phase.turn == 2
+      assert phase.label == "Agent turn 2"
+    end
+
+    test "advances after transient review_failed when next review cycle starts" do
+      phase =
+        RunPhase.from_events([
+          %{type: :review_failed, cycle: 1},
+          %{type: :review_started, cycle: 2}
+        ])
+
+      assert phase.kind == "review"
+      assert phase.review_cycle == 2
+      assert phase.label == "Review cycle 2"
+    end
+
     test "keeps last known phase when a recognized stale event arrives later" do
       phase =
         RunPhase.from_events([
