@@ -905,7 +905,6 @@ defmodule KollywoodWeb.DashboardLive do
       export default {
         mounted() {
           this.restoreViewPreference()
-          this.persistCurrentView()
         },
 
         updated() {
@@ -1027,7 +1026,7 @@ defmodule KollywoodWeb.DashboardLive do
       class="-mx-2 overflow-x-auto px-2 pb-2"
       phx-hook={@editable && ".KanbanBoardDnD"}
     >
-      <div class="flex min-w-max gap-3 lg:min-w-0 lg:grid lg:grid-cols-3 xl:grid-cols-6">
+      <div class="grid min-w-max grid-flow-col auto-cols-[minmax(17.5rem,_1fr)] gap-3 sm:auto-cols-[minmax(19rem,_1fr)]">
         <%= for {status, label} <- @status_columns do %>
           <.stories_kanban_column
             status={status}
@@ -1500,8 +1499,7 @@ defmodule KollywoodWeb.DashboardLive do
   defp stories_kanban_column(assigns) do
     assigns =
       assign(assigns, :column_classes, [
-        "w-[17.5rem] shrink-0 rounded-xl border border-base-300 bg-base-200/60 sm:w-[19rem]",
-        "lg:w-auto lg:min-w-0",
+        "min-w-0 rounded-xl border border-base-300 bg-base-200/60",
         assigns.status == "draft" && "opacity-80"
       ])
 
@@ -2093,14 +2091,19 @@ defmodule KollywoodWeb.DashboardLive do
 
     ~H"""
     <div class="space-y-6">
-      <div class="flex flex-wrap items-center justify-between gap-3">
-        <div class="flex flex-wrap items-center gap-3">
-          <.link navigate={~p"/projects/#{@project.slug}/stories"} class="btn btn-ghost btn-sm gap-2">
+      <div class="flex items-start justify-between gap-3">
+        <div class="flex min-w-0 flex-1 flex-wrap items-center gap-2 sm:gap-3">
+          <.link
+            navigate={~p"/projects/#{@project.slug}/stories"}
+            class="btn btn-ghost btn-sm gap-2 shrink-0"
+          >
             <.icon name="hero-arrow-left" class="size-4" /> Back to Stories
           </.link>
-          <span class="badge badge-outline font-mono text-sm">{@story_id}</span>
+          <span class="badge badge-outline font-mono text-sm shrink-0">{@story_id}</span>
           <%= if @story do %>
-            <.status_badge status={@story["status"] || "open"} />
+            <div class="shrink-0">
+              <.status_badge status={@story["status"] || "open"} />
+            </div>
           <% end %>
         </div>
 
@@ -2111,65 +2114,71 @@ defmodule KollywoodWeb.DashboardLive do
           <% show_reset = show_reset_action?(current_status) %>
           <% reset_label = reset_action_label(current_status) %>
           <% reset_confirm = reset_action_confirm(current_status, story_id) %>
-          <div class="dropdown dropdown-end">
-            <label tabindex="0" class="btn btn-ghost btn-sm gap-2">
-              Actions <.icon name="hero-chevron-down" class="size-4" />
-            </label>
-            <ul
-              tabindex="0"
-              class="dropdown-content menu menu-xs bg-base-100 rounded-box shadow-lg border border-base-300 z-50 w-44 p-1"
-            >
-              <li>
-                <button phx-click="open_edit_story_form" phx-value-id={story_id} class="text-xs">
-                  Edit Story
-                </button>
-              </li>
-              <li>
-                <button
-                  phx-click="delete_story"
-                  phx-value-id={story_id}
-                  onclick={confirm_onclick("Delete #{story_id}? This cannot be undone.")}
-                  class="text-xs text-error"
-                >
-                  Delete Story
-                </button>
-              </li>
-              <%= if show_reset do %>
+          <div class="shrink-0">
+            <div class="dropdown dropdown-end">
+              <label tabindex="0" class="btn btn-ghost btn-sm gap-2 whitespace-nowrap">
+                Actions <.icon name="hero-chevron-down" class="size-4" />
+              </label>
+              <ul
+                tabindex="0"
+                class="dropdown-content menu menu-xs bg-base-100 rounded-box shadow-lg border border-base-300 z-50 w-44 p-1"
+              >
                 <li>
                   <button
-                    phx-click="reset_story"
+                    phx-click="open_edit_story_form"
                     phx-value-id={story_id}
-                    onclick={confirm_onclick(reset_confirm)}
-                    class="text-xs text-warning"
-                  >
-                    {reset_label}
-                  </button>
-                </li>
-                <li><hr class="my-1 border-base-300" /></li>
-              <% end %>
-              <li class="menu-title px-2 py-1 text-[10px] tracking-wide uppercase text-base-content/50">
-                Set Status
-              </li>
-              <%= if status_targets == [] do %>
-                <li>
-                  <span class="px-2 py-1 text-xs text-base-content/50">
-                    No manual transitions
-                  </span>
-                </li>
-              <% end %>
-              <%= for s <- status_targets do %>
-                <li>
-                  <button
-                    phx-click="update_story_status"
-                    phx-value-id={story_id}
-                    phx-value-status={s}
                     class="text-xs"
                   >
-                    {display_status(s)}
+                    Edit Story
                   </button>
                 </li>
-              <% end %>
-            </ul>
+                <li>
+                  <button
+                    phx-click="delete_story"
+                    phx-value-id={story_id}
+                    onclick={confirm_onclick("Delete #{story_id}? This cannot be undone.")}
+                    class="text-xs text-error"
+                  >
+                    Delete Story
+                  </button>
+                </li>
+                <%= if show_reset do %>
+                  <li>
+                    <button
+                      phx-click="reset_story"
+                      phx-value-id={story_id}
+                      onclick={confirm_onclick(reset_confirm)}
+                      class="text-xs text-warning"
+                    >
+                      {reset_label}
+                    </button>
+                  </li>
+                  <li><hr class="my-1 border-base-300" /></li>
+                <% end %>
+                <li class="menu-title px-2 py-1 text-[10px] tracking-wide uppercase text-base-content/50">
+                  Set Status
+                </li>
+                <%= if status_targets == [] do %>
+                  <li>
+                    <span class="px-2 py-1 text-xs text-base-content/50">
+                      No manual transitions
+                    </span>
+                  </li>
+                <% end %>
+                <%= for s <- status_targets do %>
+                  <li>
+                    <button
+                      phx-click="update_story_status"
+                      phx-value-id={story_id}
+                      phx-value-status={s}
+                      class="text-xs"
+                    >
+                      {display_status(s)}
+                    </button>
+                  </li>
+                <% end %>
+              </ul>
+            </div>
           </div>
         <% end %>
       </div>
