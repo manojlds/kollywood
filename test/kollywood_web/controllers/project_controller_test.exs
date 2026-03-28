@@ -23,7 +23,6 @@ defmodule KollywoodWeb.ProjectControllerTest do
         slug: "one-#{System.unique_integer([:positive])}",
         provider: :local,
         repository: one_path,
-        local_path: one_path,
         tracker_path: Path.join(one_path, "prd.json")
       })
 
@@ -33,7 +32,6 @@ defmodule KollywoodWeb.ProjectControllerTest do
         slug: "nested-#{System.unique_integer([:positive])}",
         provider: :local,
         repository: nested_path,
-        local_path: nested_path,
         tracker_path: Path.join(nested_path, "prd.json")
       })
 
@@ -44,7 +42,7 @@ defmodule KollywoodWeb.ProjectControllerTest do
     %{root: root, one: one, nested: nested}
   end
 
-  test "resolve picks the closest local_path match", %{conn: conn, nested: nested, root: root} do
+  test "resolve picks the closest project path match", %{conn: conn, nested: nested, root: root} do
     target_path = Path.join([root, "one", "nested", "packages", "foo"])
     File.mkdir_p!(target_path)
 

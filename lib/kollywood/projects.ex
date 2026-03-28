@@ -7,6 +7,7 @@ defmodule Kollywood.Projects do
 
   alias Kollywood.Projects.Project
   alias Kollywood.Repo
+  alias Kollywood.ServiceConfig
 
   @type create_attrs :: map() | keyword()
 
@@ -36,18 +37,62 @@ defmodule Kollywood.Projects do
   @spec get_project_by_workflow_path(String.t()) :: Project.t() | nil
   def get_project_by_workflow_path(path) when is_binary(path) do
     expanded = Path.expand(path)
-    Repo.get_by(Project, workflow_path: expanded)
+
+    list_projects()
+    |> Enum.find(fn project -> workflow_path(project) == expanded end)
   end
+
+  @spec local_path(Project.t() | map()) :: String.t() | nil
+  def local_path(project) when is_map(project) do
+    case field(project, :slug) do
+      slug when is_binary(slug) and slug != "" ->
+        ServiceConfig.project_repos_path(slug)
+
+      _other ->
+        nil
+    end
+  end
+
+  def local_path(_project), do: nil
+
+  @spec workflow_path(Project.t() | map()) :: String.t() | nil
+  def workflow_path(project) when is_map(project) do
+    provider = field(project, :provider)
+
+    cond do
+      local_provider_value?(provider) and is_binary(repository_path(field(project, :repository))) ->
+        Path.join([repository_path(field(project, :repository)), ".kollywood", "WORKFLOW.md"])
+
+      is_binary(local_path(project)) ->
+        Path.join([local_path(project), ".kollywood", "WORKFLOW.md"])
+
+      true ->
+        nil
+    end
+  end
+
+  def workflow_path(_project), do: nil
+
+  @spec tracker_path(Project.t() | map()) :: String.t() | nil
+  def tracker_path(project) when is_map(project) do
+    case field(project, :tracker_path) do
+      value when is_binary(value) and value != "" -> Path.expand(value)
+      _other -> tracker_path_from_slug(field(project, :slug))
+    end
+  end
+
+  def tracker_path(_project), do: nil
 
   @spec create_project(create_attrs()) :: {:ok, Project.t()} | {:error, Ecto.Changeset.t()}
   def create_project(attrs) do
     attrs =
       attrs
       |> normalize_attrs()
+      |> drop_derived_paths()
       |> put_default_slug()
       |> put_default_branch()
-      |> put_managed_local_path()
-      |> put_default_workflow_and_tracker_paths()
+      |> normalize_local_repository()
+      |> put_default_tracker_path()
 
     %Project{}
     |> Project.changeset(attrs)
@@ -57,7 +102,12 @@ defmodule Kollywood.Projects do
   @spec update_project(Project.t(), create_attrs()) ::
           {:ok, Project.t()} | {:error, Ecto.Changeset.t()}
   def update_project(%Project{} = project, attrs) do
-    attrs = normalize_attrs(attrs)
+    attrs =
+      attrs
+      |> normalize_attrs()
+      |> drop_derived_paths()
+      |> normalize_local_repository()
+      |> normalize_tracker_path()
 
     project
     |> Project.changeset(attrs)
@@ -91,6 +141,12 @@ defmodule Kollywood.Projects do
   defp normalize_attrs(attrs) when is_map(attrs), do: stringify_keys(attrs)
   defp normalize_attrs(_attrs), do: %{}
 
+  defp drop_derived_paths(attrs) do
+    attrs
+    |> Map.delete("local_path")
+    |> Map.delete("workflow_path")
+  end
+
   defp stringify_keys(map) do
     Map.new(map, fn
       {k, v} when is_atom(k) -> {Atom.to_string(k), v}
@@ -116,39 +172,68 @@ defmodule Kollywood.Projects do
 
   defp put_default_branch(attrs), do: Map.put(attrs, "default_branch", "main")
 
-  defp put_managed_local_path(attrs) do
-    slug = Map.get(attrs, "slug") || Map.get(attrs, :slug)
+  defp normalize_local_repository(attrs) do
+    provider = Map.get(attrs, "provider") || Map.get(attrs, :provider)
 
-    if is_binary(slug) and slug != "" do
-      Map.put_new(attrs, "local_path", Kollywood.ServiceConfig.project_repos_path(slug))
+    if local_provider_value?(provider) do
+      case repository_path(Map.get(attrs, "repository") || Map.get(attrs, :repository)) do
+        nil -> attrs
+        path -> Map.put(attrs, "repository", path)
+      end
     else
       attrs
     end
   end
 
-  defp put_default_workflow_and_tracker_paths(attrs) do
-    local_path = Map.get(attrs, "local_path") || Map.get(attrs, :local_path)
-    slug = Map.get(attrs, "slug") || Map.get(attrs, :slug)
-
-    if is_binary(local_path) and String.trim(local_path) != "" do
-      local_path = local_path |> String.trim() |> Path.expand()
-
-      # Use the kollywood-managed tracker path only when the project is using its
-      # managed clone as local_path — otherwise keep tracker inside local_path.
-      tracker_path =
-        if is_binary(slug) and String.trim(slug) != "" and
-             local_path == Kollywood.ServiceConfig.project_repos_path(String.trim(slug)) do
-          Kollywood.ServiceConfig.project_tracker_path(String.trim(slug))
-        else
-          Path.join(local_path, "prd.json")
+  defp put_default_tracker_path(attrs) do
+    case tracker_path_value(attrs) do
+      nil ->
+        case tracker_path_from_slug(Map.get(attrs, "slug") || Map.get(attrs, :slug)) do
+          nil -> attrs
+          path -> Map.put(attrs, "tracker_path", path)
         end
 
-      attrs
-      |> Map.put_new("workflow_path", Path.join([local_path, ".kollywood", "WORKFLOW.md"]))
-      |> Map.put_new("tracker_path", tracker_path)
-      |> Map.put("local_path", local_path)
-    else
-      attrs
+      path ->
+        Map.put(attrs, "tracker_path", path)
     end
   end
+
+  defp normalize_tracker_path(attrs) do
+    case tracker_path_value(attrs) do
+      nil -> attrs
+      path -> Map.put(attrs, "tracker_path", path)
+    end
+  end
+
+  defp tracker_path_value(attrs) do
+    case Map.get(attrs, "tracker_path") || Map.get(attrs, :tracker_path) do
+      value when is_binary(value) and value != "" -> Path.expand(value)
+      _other -> nil
+    end
+  end
+
+  defp tracker_path_from_slug(slug) when is_binary(slug) and slug != "" do
+    ServiceConfig.project_tracker_path(slug)
+  end
+
+  defp tracker_path_from_slug(_slug), do: nil
+
+  defp field(map, key) when is_map(map) do
+    case Map.fetch(map, key) do
+      {:ok, value} -> value
+      :error -> Map.get(map, Atom.to_string(key))
+    end
+  end
+
+  defp field(_value, _key), do: nil
+
+  defp local_provider_value?(value) when value in [:local, "local"], do: true
+  defp local_provider_value?(_value), do: false
+
+  defp repository_path(value) when is_binary(value) do
+    trimmed = String.trim(value)
+    if trimmed == "", do: nil, else: Path.expand(trimmed)
+  end
+
+  defp repository_path(_value), do: nil
 end

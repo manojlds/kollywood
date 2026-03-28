@@ -44,10 +44,11 @@ defmodule Mix.Tasks.Kollywood.Projects do
       Mix.shell().info("Onboarded projects")
 
       Enum.each(projects, fn project ->
-        source = project.local_path || project.repository || "-"
+        source = project.repository || "-"
+        managed_clone = Projects.local_path(project) || "-"
 
         Mix.shell().info(
-          "- #{project.id} | #{project.slug} | provider=#{project.provider} | enabled=#{project.enabled} | source=#{source}"
+          "- #{project.id} | #{project.slug} | provider=#{project.provider} | enabled=#{project.enabled} | source=#{source} | managed=#{managed_clone}"
         )
       end)
     end
@@ -60,7 +61,6 @@ defmodule Mix.Tasks.Kollywood.Projects do
           name: :string,
           path: :string,
           slug: :string,
-          workflow_path: :string,
           tracker_path: :string,
           default_branch: :string,
           disabled: :boolean
@@ -80,12 +80,10 @@ defmodule Mix.Tasks.Kollywood.Projects do
         name: name,
         provider: :local,
         repository: expanded_path,
-        local_path: expanded_path,
         default_branch: opts[:default_branch] || "main",
         enabled: not Keyword.get(opts, :disabled, false)
       }
       |> maybe_put(:slug, opts[:slug])
-      |> maybe_put(:workflow_path, opts[:workflow_path])
       |> maybe_put(:tracker_path, opts[:tracker_path])
 
     create_project(attrs)
@@ -196,7 +194,7 @@ defmodule Mix.Tasks.Kollywood.Projects do
     Mix.raise("""
     Usage:
       mix kollywood.projects list
-      mix kollywood.projects add-local --name NAME --path PATH [--slug SLUG] [--workflow-path PATH] [--tracker-path PATH] [--default-branch BRANCH] [--disabled]
+      mix kollywood.projects add-local --name NAME --path PATH [--slug SLUG] [--tracker-path PATH] [--default-branch BRANCH] [--disabled]
       mix kollywood.projects add-github --name NAME --repo OWNER/REPO [--slug SLUG] [--default-branch BRANCH] [--disabled]
       mix kollywood.projects add-gitlab --name NAME --repo GROUP/PROJECT [--slug SLUG] [--default-branch BRANCH] [--disabled]
     """)

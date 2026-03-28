@@ -40,18 +40,16 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
     File.mkdir_p!(tmp_dir)
 
-    File.write!(
-      Path.join(tmp_dir, "prd.json"),
-      Jason.encode!(%{"userStories" => @test_stories}, pretty: true)
-    )
-
     {:ok, project} =
       Projects.create_project(%{
         name: "Dashboard Test Project #{System.unique_integer([:positive])}",
         provider: :local,
-        repository: tmp_dir,
-        local_path: tmp_dir
+        repository: tmp_dir
       })
+
+    tracker_path = Projects.tracker_path(project)
+    File.mkdir_p!(Path.dirname(tracker_path))
+    File.write!(tracker_path, Jason.encode!(%{"userStories" => @test_stories}, pretty: true))
 
     on_exit(fn ->
       case previous_home do
@@ -219,7 +217,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       |> element("form[phx-submit='save_review_template']")
       |> render_submit(%{review_template: "new review template"})
 
-      {:ok, content} = File.read(project.workflow_path)
+      {:ok, content} = File.read(Projects.workflow_path(project))
       assert content =~ "new review template"
       refute content =~ "old template content"
     end
@@ -276,7 +274,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
         }
       })
 
-      {:ok, content} = File.read(project.workflow_path)
+      {:ok, content} = File.read(Projects.workflow_path(project))
       assert content =~ "mode: auto_merge"
       refute content =~ "auto_push:"
       refute content =~ "auto_create_pr:"
@@ -392,7 +390,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
     test "resets story from detail page and updates status badge", %{
       conn: conn,
       project: project,
-      tmp_dir: tmp_dir
+      tmp_dir: _tmp_dir
     } do
       {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories/US-002")
 
@@ -406,7 +404,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       assert html =~ "Draft"
 
-      {:ok, content} = File.read(Path.join(tmp_dir, "prd.json"))
+      {:ok, content} = File.read(Projects.tracker_path(project))
       {:ok, data} = Jason.decode(content)
       story = Enum.find(data["userStories"], &(&1["id"] == "US-002"))
       assert story["status"] == "draft"
@@ -431,7 +429,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
     test "updates story status in tracker file on disk", %{
       conn: conn,
       project: project,
-      tmp_dir: tmp_dir
+      tmp_dir: _tmp_dir
     } do
       {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories")
 
@@ -441,7 +439,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       )
       |> render_click()
 
-      {:ok, content} = File.read(Path.join(tmp_dir, "prd.json"))
+      {:ok, content} = File.read(Projects.tracker_path(project))
       {:ok, data} = Jason.decode(content)
       story = Enum.find(data["userStories"], &(&1["id"] == "US-001"))
       assert story["status"] == "done"
@@ -474,7 +472,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
     test "moves a story to a valid status and persists to tracker", %{
       conn: conn,
       project: project,
-      tmp_dir: tmp_dir
+      tmp_dir: _tmp_dir
     } do
       {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories")
 
@@ -490,7 +488,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert has_element?(view, "#stories-column-done #story-card-US-001")
       refute has_element?(view, "#stories-column-open #story-card-US-001")
 
-      {:ok, content} = File.read(Path.join(tmp_dir, "prd.json"))
+      {:ok, content} = File.read(Projects.tracker_path(project))
       {:ok, data} = Jason.decode(content)
       story = Enum.find(data["userStories"], &(&1["id"] == "US-001"))
       assert story["status"] == "done"
@@ -499,7 +497,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
     test "rejects invalid manual transition drop with clear feedback", %{
       conn: conn,
       project: project,
-      tmp_dir: tmp_dir
+      tmp_dir: _tmp_dir
     } do
       {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories")
 
@@ -515,7 +513,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert has_element?(view, "#stories-column-open #story-card-US-001")
       refute has_element?(view, "#stories-column-in_progress #story-card-US-001")
 
-      {:ok, content} = File.read(Path.join(tmp_dir, "prd.json"))
+      {:ok, content} = File.read(Projects.tracker_path(project))
       {:ok, data} = Jason.decode(content)
       story = Enum.find(data["userStories"], &(&1["id"] == "US-001"))
       assert story["status"] == "open"
@@ -539,7 +537,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
   end
 
   describe "story editor" do
-    test "adds a new story from UI", %{conn: conn, project: project, tmp_dir: tmp_dir} do
+    test "adds a new story from UI", %{conn: conn, project: project, tmp_dir: _tmp_dir} do
       {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories")
 
       view
@@ -561,7 +559,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
         }
       })
 
-      {:ok, content} = File.read(Path.join(tmp_dir, "prd.json"))
+      {:ok, content} = File.read(Projects.tracker_path(project))
       {:ok, data} = Jason.decode(content)
       story = Enum.find(data["userStories"], &(&1["id"] == "US-100"))
 
@@ -570,7 +568,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert story["dependsOn"] == ["US-001"]
     end
 
-    test "edits an existing story from UI", %{conn: conn, project: project, tmp_dir: tmp_dir} do
+    test "edits an existing story from UI", %{conn: conn, project: project, tmp_dir: _tmp_dir} do
       {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories")
 
       view
@@ -592,7 +590,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
         }
       })
 
-      {:ok, content} = File.read(Path.join(tmp_dir, "prd.json"))
+      {:ok, content} = File.read(Projects.tracker_path(project))
       {:ok, data} = Jason.decode(content)
       story = Enum.find(data["userStories"], &(&1["id"] == "US-001"))
 
@@ -601,14 +599,14 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert story["priority"] == 7
     end
 
-    test "deletes a story from UI", %{conn: conn, project: project, tmp_dir: tmp_dir} do
+    test "deletes a story from UI", %{conn: conn, project: project, tmp_dir: _tmp_dir} do
       {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories")
 
       view
       |> element("button[phx-click='delete_story'][phx-value-id='US-003']")
       |> render_click()
 
-      {:ok, content} = File.read(Path.join(tmp_dir, "prd.json"))
+      {:ok, content} = File.read(Projects.tracker_path(project))
       {:ok, data} = Jason.decode(content)
 
       refute Enum.any?(data["userStories"], &(&1["id"] == "US-003"))
@@ -645,7 +643,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
     test "draft stories can be promoted to open via status dropdown", %{
       conn: conn,
       project: project,
-      tmp_dir: tmp_dir
+      tmp_dir: _tmp_dir
     } do
       {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories")
 
@@ -655,7 +653,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       )
       |> render_click()
 
-      {:ok, content} = File.read(Path.join(tmp_dir, "prd.json"))
+      {:ok, content} = File.read(Projects.tracker_path(project))
       {:ok, data} = Jason.decode(content)
       story = Enum.find(data["userStories"], &(&1["id"] == "US-003"))
       assert story["status"] == "open"
@@ -671,8 +669,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
     test "resets story to draft and clears run-attempt metadata in tracker file", %{
       conn: conn,
-      project: project,
-      tmp_dir: tmp_dir
+      project: project
     } do
       {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories")
 
@@ -680,7 +677,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       |> element("button[phx-click='reset_story'][phx-value-id='US-002']")
       |> render_click()
 
-      {:ok, content} = File.read(Path.join(tmp_dir, "prd.json"))
+      {:ok, content} = File.read(Projects.tracker_path(project))
       {:ok, data} = Jason.decode(content)
       story = Enum.find(data["userStories"], &(&1["id"] == "US-002"))
       assert story["status"] == "draft"
@@ -754,8 +751,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
     test "runs page uses latest run logs over stale tracker last-run metadata", %{
       conn: conn,
-      project: project,
-      tmp_dir: tmp_dir
+      project: project
     } do
       stories = [
         %{
@@ -766,10 +762,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
         }
       ]
 
-      File.write!(
-        Path.join(tmp_dir, "prd.json"),
-        Jason.encode!(%{"userStories" => stories}, pretty: true)
-      )
+      File.write!(Projects.tracker_path(project), Jason.encode!(%{"userStories" => stories}, pretty: true))
 
       _ = prepare_run_logs!(project.slug, "US-LATEST")
       _ = prepare_run_logs!(project.slug, "US-LATEST")
@@ -782,8 +775,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
     test "runs page shows run logs even when tracker lacks lastRunAttempt", %{
       conn: conn,
-      project: project,
-      tmp_dir: tmp_dir
+      project: project
     } do
       stories = [
         %{
@@ -793,10 +785,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
         }
       ]
 
-      File.write!(
-        Path.join(tmp_dir, "prd.json"),
-        Jason.encode!(%{"userStories" => stories}, pretty: true)
-      )
+      File.write!(Projects.tracker_path(project), Jason.encode!(%{"userStories" => stories}, pretty: true))
 
       _ = prepare_run_logs!(project.slug, "US-NO-LAST")
 
@@ -959,8 +948,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
   describe "story sort order" do
     test "done stories are ordered most-recent-first by completedAt", %{
       conn: conn,
-      project: project,
-      tmp_dir: tmp_dir
+      project: project
     } do
       stories = [
         %{
@@ -977,10 +965,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
         }
       ]
 
-      File.write!(
-        Path.join(tmp_dir, "prd.json"),
-        Jason.encode!(%{"userStories" => stories}, pretty: true)
-      )
+      File.write!(Projects.tracker_path(project), Jason.encode!(%{"userStories" => stories}, pretty: true))
 
       {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/stories")
 
@@ -991,8 +976,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
     test "in_progress stories appear before open stories in rendered HTML", %{
       conn: conn,
-      project: project,
-      tmp_dir: tmp_dir
+      project: project
     } do
       stories = [
         %{"id" => "US-OPEN", "title" => "Open Story", "status" => "open"},
@@ -1004,10 +988,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
         }
       ]
 
-      File.write!(
-        Path.join(tmp_dir, "prd.json"),
-        Jason.encode!(%{"userStories" => stories}, pretty: true)
-      )
+      File.write!(Projects.tracker_path(project), Jason.encode!(%{"userStories" => stories}, pretty: true))
 
       {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/stories")
 
@@ -1033,7 +1014,8 @@ defmodule KollywoodWeb.DashboardLiveTest do
   end
 
   defp write_workflow!(project, content) do
-    File.mkdir_p!(Path.dirname(project.workflow_path))
-    File.write!(project.workflow_path, content)
+    workflow_path = Projects.workflow_path(project)
+    File.mkdir_p!(Path.dirname(workflow_path))
+    File.write!(workflow_path, content)
   end
 end

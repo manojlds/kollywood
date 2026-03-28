@@ -16,6 +16,7 @@ defmodule Kollywood.WorkflowStore do
   use GenServer
   require Logger
 
+  alias Kollywood.Projects
   alias Kollywood.ServiceConfig
 
   @poll_interval_ms 1_000
@@ -69,18 +70,8 @@ defmodule Kollywood.WorkflowStore do
 
   @impl true
   def init({path, project_provider, project_slug, project_local_path}) do
-    # If project info was not resolved at startup (Repo not yet running when
-    # application.ex called resolve_workflow_store_opts), attempt the lookup now —
-    # Repo is guaranteed to be running before WorkflowStore starts.
-    {project_provider, project_slug, project_local_path} =
-      if is_nil(project_slug) do
-        case lookup_project_by_path(path) do
-          nil -> {project_provider, project_slug, project_local_path}
-          project -> {project.provider, project.slug, project.local_path}
-        end
-      else
-        {project_provider, project_slug, project_local_path}
-      end
+    {path, project_provider, project_slug, project_local_path} =
+      resolve_project_context(path, project_provider, project_slug, project_local_path)
 
     state = %__MODULE__{
       path: path,
@@ -225,7 +216,45 @@ defmodule Kollywood.WorkflowStore do
   end
 
   defp lookup_project_by_path(path) do
-    Kollywood.Projects.get_project_by_workflow_path(path)
+    Projects.get_project_by_workflow_path(path)
+  rescue
+    _ -> nil
+  catch
+    :exit, _ -> nil
+  end
+
+  defp resolve_project_context(path, project_provider, project_slug, project_local_path) do
+    normalized_path = if is_binary(path), do: Path.expand(path), else: path
+
+    cond do
+      is_binary(project_slug) and project_slug != "" ->
+        local_path =
+          if is_binary(project_local_path) and project_local_path != "" do
+            Path.expand(project_local_path)
+          else
+            nil
+          end
+
+        {normalized_path, project_provider, project_slug, local_path}
+
+      true ->
+        case lookup_project_by_path(normalized_path) || default_project() do
+          nil ->
+            {normalized_path, project_provider, project_slug, project_local_path}
+
+          project ->
+            resolved_path = Projects.workflow_path(project) || normalized_path
+            local_path = Projects.local_path(project)
+            {resolved_path, project.provider, project.slug, local_path}
+        end
+    end
+  end
+
+  defp default_project do
+    enabled = Projects.list_enabled_projects()
+
+    Enum.find(enabled, fn project -> project.provider == :local end) ||
+      List.first(enabled)
   rescue
     _ -> nil
   catch

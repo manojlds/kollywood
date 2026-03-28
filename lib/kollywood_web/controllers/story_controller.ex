@@ -7,7 +7,7 @@ defmodule KollywoodWeb.StoryController do
 
   def index(conn, %{"project_slug" => project_slug}) do
     with {:ok, project} <- fetch_local_project(project_slug),
-         {:ok, stories} <- PrdJson.list_stories(project.tracker_path) do
+         {:ok, stories} <- PrdJson.list_stories(Projects.tracker_path(project)) do
       json(conn, %{data: Enum.map(stories, &story_payload/1)})
     else
       {:error, {:not_found, reason}} ->
@@ -26,7 +26,7 @@ defmodule KollywoodWeb.StoryController do
     attrs = Map.get(params, "story", params)
 
     with {:ok, project} <- fetch_local_project(project_slug),
-         {:ok, story} <- PrdJson.create_story(project.tracker_path, attrs) do
+         {:ok, story} <- PrdJson.create_story(Projects.tracker_path(project), attrs) do
       conn
       |> put_status(:created)
       |> json(%{data: story_payload(story)})
@@ -47,7 +47,7 @@ defmodule KollywoodWeb.StoryController do
     attrs = Map.get(params, "story", params)
 
     with {:ok, project} <- fetch_local_project(project_slug),
-         {:ok, story} <- PrdJson.update_story(project.tracker_path, story_id, attrs) do
+         {:ok, story} <- PrdJson.update_story(Projects.tracker_path(project), story_id, attrs) do
       json(conn, %{data: story_payload(story)})
     else
       {:error, {:not_found, reason}} ->
@@ -67,7 +67,7 @@ defmodule KollywoodWeb.StoryController do
 
   def delete(conn, %{"project_slug" => project_slug, "story_id" => story_id}) do
     with {:ok, project} <- fetch_local_project(project_slug),
-         :ok <- PrdJson.delete_story(project.tracker_path, story_id) do
+         :ok <- PrdJson.delete_story(Projects.tracker_path(project), story_id) do
       send_resp(conn, :no_content, "")
     else
       {:error, {:not_found, reason}} ->
@@ -90,12 +90,17 @@ defmodule KollywoodWeb.StoryController do
       nil ->
         {:error, {:not_found, "project not found"}}
 
-      %Project{provider: :local, tracker_path: path} = project
-      when is_binary(path) and path != "" ->
-        {:ok, project}
+      %Project{provider: :local} = project ->
+        case Projects.tracker_path(project) do
+          path when is_binary(path) ->
+            if String.trim(path) != "" do
+              {:ok, project}
+            else
+              {:error, "project tracker path is not configured"}
+            end
 
-      %Project{provider: :local} ->
-        {:error, "project tracker path is not configured"}
+          _other -> {:error, "project tracker path is not configured"}
+        end
 
       %Project{} ->
         {:error, "story API is only available for local tracker projects"}

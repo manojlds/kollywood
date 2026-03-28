@@ -56,7 +56,7 @@ defmodule KollywoodWeb.ProjectController do
   defp matches_project_path?(_project, _path), do: false
 
   defp project_paths_for_matching(%Project{provider: :local} = project) do
-    [project.local_path, project.repository]
+    [Projects.local_path(project), project.repository]
     |> Enum.filter(&is_binary/1)
     |> Enum.map(&String.trim/1)
     |> Enum.reject(&(&1 == ""))
@@ -64,13 +64,12 @@ defmodule KollywoodWeb.ProjectController do
     |> Enum.uniq()
   end
 
-  defp project_paths_for_matching(%Project{local_path: local_path}) when is_binary(local_path) do
-    local_path
-    |> String.trim()
-    |> case do
-      "" -> []
-      path -> [Path.expand(path)]
-    end
+  defp project_paths_for_matching(%Project{} = project) do
+    [Projects.local_path(project)]
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.map(&Path.expand/1)
   end
 
   defp project_paths_for_matching(_project), do: []
@@ -87,7 +86,7 @@ defmodule KollywoodWeb.ProjectController do
       slug: project.slug,
       name: project.name,
       provider: project.provider,
-      local_path: project.local_path,
+      local_path: Projects.local_path(project),
       repository: project.repository
     }
   end

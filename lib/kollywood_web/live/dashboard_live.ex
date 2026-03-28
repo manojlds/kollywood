@@ -405,6 +405,8 @@ defmodule KollywoodWeb.DashboardLive do
 
           case File.write(path, content) do
             :ok ->
+              git_commit_workflow(path)
+
               socket
               |> assign(:workflow, load_workflow(project))
               |> put_flash(:info, "Settings saved.")
@@ -2338,11 +2340,11 @@ defmodule KollywoodWeb.DashboardLive do
               <span class="text-sm text-base-content/60">Default Branch</span>
               <p class="font-medium">{@project.default_branch}</p>
             </div>
-            <%= if @project.local_path do %>
+            <%= if local_path = Projects.local_path(@project) do %>
               <div class="sm:col-span-2">
                 <span class="text-sm text-base-content/60">Local Path</span>
                 <p class="font-medium font-mono text-sm break-all">
-                  {@project.local_path}
+                  {local_path}
                 </p>
               </div>
             <% end %>
@@ -3046,11 +3048,11 @@ defmodule KollywoodWeb.DashboardLive do
 
   # -- Story Form / Local Tracker Helpers --
 
-  defp local_tracker_path(%Project{provider: :local, tracker_path: path}) when is_binary(path) do
-    path = String.trim(path)
+  defp local_tracker_path(%Project{provider: :local} = project) do
+    path = Projects.tracker_path(project)
 
     cond do
-      path == "" ->
+      not is_binary(path) or String.trim(path) == "" ->
         {:error, "This project does not have a tracker path configured."}
 
       true ->
@@ -3348,7 +3350,7 @@ defmodule KollywoodWeb.DashboardLive do
   @status_group_order ~w(in_progress open failed done merged draft)
 
   defp read_stories(project) do
-    path = project.tracker_path
+    path = Projects.tracker_path(project)
 
     if is_binary(path) and File.exists?(path) do
       with {:ok, content} <- File.read(path),
@@ -3733,27 +3735,41 @@ defmodule KollywoodWeb.DashboardLive do
   defp local_provider?(_), do: false
 
   defp git_commit_workflow(workflow_path) when is_binary(workflow_path) do
-    repo_root = Path.dirname(workflow_path)
-    workflow_file = Path.basename(workflow_path)
+    repo_dir = Path.dirname(workflow_path)
 
-    {add_out, add_status} =
-      System.cmd("git", ["add", workflow_file], cd: repo_root, stderr_to_stdout: true)
-
-    if add_status != 0 do
-      Logger.warning(
-        "Failed to stage #{workflow_file} after settings save: #{String.trim(add_out)}"
+    {root_out, root_status} =
+      System.cmd("git", ["rev-parse", "--show-toplevel"],
+        cd: repo_dir,
+        stderr_to_stdout: true
       )
-    else
-      {commit_out, commit_status} =
-        System.cmd("git", ["commit", "-m", "chore: update workflow settings"],
-          cd: repo_root,
-          stderr_to_stdout: true
-        )
 
-      if commit_status != 0 do
+    if root_status != 0 do
+      Logger.warning("Failed to resolve git root for #{workflow_path}: #{String.trim(root_out)}")
+
+      :ok
+    else
+      repo_root = String.trim(root_out)
+      workflow_file = Path.relative_to(workflow_path, repo_root)
+
+      {add_out, add_status} =
+        System.cmd("git", ["add", workflow_file], cd: repo_root, stderr_to_stdout: true)
+
+      if add_status != 0 do
         Logger.warning(
-          "Failed to commit #{workflow_file} after settings save: #{String.trim(commit_out)}"
+          "Failed to stage #{workflow_file} after settings save: #{String.trim(add_out)}"
         )
+      else
+        {commit_out, commit_status} =
+          System.cmd("git", ["commit", "-m", "chore: update workflow settings"],
+            cd: repo_root,
+            stderr_to_stdout: true
+          )
+
+        if commit_status != 0 do
+          Logger.warning(
+            "Failed to commit #{workflow_file} after settings save: #{String.trim(commit_out)}"
+          )
+        end
       end
     end
 
@@ -3767,16 +3783,7 @@ defmodule KollywoodWeb.DashboardLive do
   defp workflow_path(nil), do: nil
 
   defp workflow_path(project) do
-    cond do
-      is_binary(project.workflow_path) and project.workflow_path != "" ->
-        project.workflow_path
-
-      is_binary(project.local_path) ->
-        Path.join([project.local_path, ".kollywood", "WORKFLOW.md"])
-
-      true ->
-        nil
-    end
+    Projects.workflow_path(project)
   end
 
   defp load_workflow(project) do

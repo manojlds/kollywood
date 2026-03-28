@@ -15,9 +15,7 @@ defmodule Kollywood.Projects.Project do
     field(:slug, :string)
     field(:provider, Ecto.Enum, values: @providers)
     field(:repository, :string)
-    field(:local_path, :string)
     field(:default_branch, :string, default: "main")
-    field(:workflow_path, :string)
     field(:tracker_path, :string)
     field(:enabled, :boolean, default: true)
 
@@ -33,18 +31,14 @@ defmodule Kollywood.Projects.Project do
       :slug,
       :provider,
       :repository,
-      :local_path,
       :default_branch,
-      :workflow_path,
       :tracker_path,
       :enabled
     ])
     |> update_change(:name, &trim/1)
     |> update_change(:slug, &trim/1)
     |> update_change(:repository, &trim/1)
-    |> update_change(:local_path, &trim/1)
     |> update_change(:default_branch, &trim/1)
-    |> update_change(:workflow_path, &trim/1)
     |> update_change(:tracker_path, &trim/1)
     |> validate_required([:name, :slug, :provider, :default_branch])
     |> validate_length(:name, min: 2, max: 120)
