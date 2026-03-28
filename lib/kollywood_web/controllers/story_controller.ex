@@ -3,6 +3,7 @@ defmodule KollywoodWeb.StoryController do
 
   alias Kollywood.Projects
   alias Kollywood.Projects.Project
+  alias Kollywood.StepRetry
   alias Kollywood.Tracker.PrdJson
 
   def index(conn, %{"project_slug" => project_slug}) do
@@ -69,6 +70,31 @@ defmodule KollywoodWeb.StoryController do
     with {:ok, project} <- fetch_local_project(project_slug),
          :ok <- PrdJson.delete_story(Projects.tracker_path(project), story_id) do
       send_resp(conn, :no_content, "")
+    else
+      {:error, {:not_found, reason}} ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: reason})
+
+      {:error, reason} ->
+        status =
+          if String.contains?(reason, "not found"), do: :not_found, else: :unprocessable_entity
+
+        conn
+        |> put_status(status)
+        |> json(%{error: reason})
+    end
+  end
+
+  def retry_step(conn, %{"project_slug" => project_slug, "story_id" => story_id} = params) do
+    source_attempt = Map.get(params, "attempt")
+    retry_step = Map.get(params, "step")
+
+    with {:ok, project} <- fetch_local_project(project_slug),
+         {:ok, result} <- StepRetry.retry(project, story_id, source_attempt, retry_step) do
+      conn
+      |> put_status(:accepted)
+      |> json(%{data: result})
     else
       {:error, {:not_found, reason}} ->
         conn
