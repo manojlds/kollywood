@@ -29,6 +29,7 @@ defmodule Kollywood.Orchestrator do
 
   @default_poll_interval_ms 5_000
   @default_repo_sync_interval_ms 30_000
+  @default_repo_sync_timeout_ms 15_000
   @default_claim_ttl_ms 86_400_000
   @default_completed_ttl_ms 60_000
   @default_max_concurrent_agents 5
@@ -50,7 +51,12 @@ defmodule Kollywood.Orchestrator do
           poll_timer_ref: reference() | nil,
           poll_interval_ms: pos_integer(),
           repo_sync_interval_ms: pos_integer(),
+          repo_sync_timeout_ms: pos_integer(),
           last_repo_sync_at_ms: integer() | nil,
+          repo_sync_task_ref: reference() | nil,
+          repo_sync_task_pid: pid() | nil,
+          repo_sync_timeout_timer_ref: reference() | nil,
+          repo_sync_started_at_ms: integer() | nil,
           max_concurrent_agents: pos_integer(),
           max_retry_backoff_ms: pos_integer(),
           retries_enabled: boolean(),
@@ -84,7 +90,12 @@ defmodule Kollywood.Orchestrator do
     :poll_timer_ref,
     :poll_interval_ms,
     :repo_sync_interval_ms,
+    :repo_sync_timeout_ms,
     :last_repo_sync_at_ms,
+    :repo_sync_task_ref,
+    :repo_sync_task_pid,
+    :repo_sync_timeout_timer_ref,
+    :repo_sync_started_at_ms,
     :max_concurrent_agents,
     :max_retry_backoff_ms,
     :retries_enabled,
@@ -158,7 +169,16 @@ defmodule Kollywood.Orchestrator do
             Keyword.get(opts, :repo_sync_interval_ms),
             @default_repo_sync_interval_ms
           ),
+        repo_sync_timeout_ms:
+          positive_integer(
+            Keyword.get(opts, :repo_sync_timeout_ms),
+            @default_repo_sync_timeout_ms
+          ),
         last_repo_sync_at_ms: nil,
+        repo_sync_task_ref: nil,
+        repo_sync_task_pid: nil,
+        repo_sync_timeout_timer_ref: nil,
+        repo_sync_started_at_ms: nil,
         max_concurrent_agents:
           positive_integer(
             Keyword.get(opts, :max_concurrent_agents),
@@ -248,6 +268,51 @@ defmodule Kollywood.Orchestrator do
     end
   end
 
+  def handle_info({:repo_sync_result, repo_sync_pid, result}, state)
+      when is_pid(repo_sync_pid) do
+    if repo_sync_pid == state.repo_sync_task_pid do
+      state = clear_repo_sync_task_state(state)
+
+      case result do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning("Managed repo sync failed: #{reason}")
+
+        other ->
+          Logger.warning("Managed repo sync returned unexpected result: #{inspect(other)}")
+      end
+
+      {:noreply, state}
+    else
+      {:noreply, state}
+    end
+  end
+
+  def handle_info({:repo_sync_timeout, ref, repo_sync_pid}, state)
+      when is_reference(ref) and is_pid(repo_sync_pid) do
+    if state.repo_sync_task_ref == ref and state.repo_sync_task_pid == repo_sync_pid do
+      duration_ms =
+        case state.repo_sync_started_at_ms do
+          started_at_ms when is_integer(started_at_ms) ->
+            max(System.monotonic_time(:millisecond) - started_at_ms, 0)
+
+          _other ->
+            state.repo_sync_timeout_ms
+        end
+
+      Logger.warning(
+        "Managed repo sync timed out after #{duration_ms}ms (timeout=#{state.repo_sync_timeout_ms}ms)"
+      )
+
+      Process.exit(repo_sync_pid, :kill)
+      {:noreply, clear_repo_sync_task_state(state)}
+    else
+      {:noreply, state}
+    end
+  end
+
   def handle_info({:runner_event, issue_id, event}, state) do
     {:noreply, track_runner_event(state, issue_id, event)}
   end
@@ -302,7 +367,35 @@ defmodule Kollywood.Orchestrator do
     end
   end
 
-  def handle_info({:DOWN, ref, :process, _pid, reason}, state) when is_reference(ref) do
+  def handle_info({:DOWN, ref, :process, pid, reason}, state)
+      when is_reference(ref) and is_pid(pid) do
+    if state.repo_sync_task_ref == ref and state.repo_sync_task_pid == pid do
+      state = clear_repo_sync_task_state(state)
+
+      case reason do
+        :normal ->
+          :ok
+
+        :noproc ->
+          :ok
+
+        :killed ->
+          :ok
+
+        :shutdown ->
+          :ok
+
+        _other ->
+          Logger.warning("Managed repo sync process exited: #{inspect(reason)}")
+      end
+
+      {:noreply, state}
+    else
+      handle_run_worker_down(state, ref, reason)
+    end
+  end
+
+  defp handle_run_worker_down(state, ref, reason) do
     case pop_running_by_ref(state, ref) do
       {:ok, issue_id, run_entry, state} ->
         cancel_run_timeout_timer(run_entry)
@@ -1724,9 +1817,10 @@ defmodule Kollywood.Orchestrator do
   defp maybe_sync_managed_repos(state) do
     now_ms = System.monotonic_time(:millisecond)
 
-    if repo_sync_due?(state, now_ms) do
-      sync_managed_repos(state)
-      %{state | last_repo_sync_at_ms: now_ms}
+    if repo_sync_due?(state, now_ms) and not repo_sync_in_progress?(state) do
+      state
+      |> start_repo_sync_task(now_ms)
+      |> Map.put(:last_repo_sync_at_ms, now_ms)
     else
       state
     end
@@ -1747,19 +1841,60 @@ defmodule Kollywood.Orchestrator do
     end
   end
 
-  defp sync_managed_repos(%__MODULE__{repo_syncer: nil} = state) do
-    sync_repo(state.repo_local_path, state.repo_default_branch)
+  defp start_repo_sync_task(state, started_at_ms) do
+    orchestrator_pid = self()
+    repo_syncer = state.repo_syncer
+    repo_local_path = state.repo_local_path
+    repo_default_branch = state.repo_default_branch
+
+    {repo_sync_pid, repo_sync_ref} =
+      spawn_monitor(fn ->
+        result = sync_managed_repos(repo_syncer, repo_local_path, repo_default_branch)
+        send(orchestrator_pid, {:repo_sync_result, self(), result})
+      end)
+
+    timeout_ref =
+      Process.send_after(
+        self(),
+        {:repo_sync_timeout, repo_sync_ref, repo_sync_pid},
+        state.repo_sync_timeout_ms
+      )
+
+    %{
+      state
+      | repo_sync_task_ref: repo_sync_ref,
+        repo_sync_task_pid: repo_sync_pid,
+        repo_sync_timeout_timer_ref: timeout_ref,
+        repo_sync_started_at_ms: started_at_ms
+    }
   end
 
-  defp sync_managed_repos(%__MODULE__{repo_syncer: repo_syncer}) do
-    case invoke_repo_syncer(repo_syncer) do
-      :ok ->
-        :ok
+  defp repo_sync_in_progress?(state), do: is_reference(state.repo_sync_task_ref)
 
-      {:error, reason} ->
-        Logger.warning("Managed repo sync failed: #{reason}")
-        :ok
+  defp clear_repo_sync_task_state(state) do
+    if is_reference(state.repo_sync_timeout_timer_ref) do
+      Process.cancel_timer(state.repo_sync_timeout_timer_ref)
     end
+
+    if is_reference(state.repo_sync_task_ref) do
+      Process.demonitor(state.repo_sync_task_ref, [:flush])
+    end
+
+    %{
+      state
+      | repo_sync_task_ref: nil,
+        repo_sync_task_pid: nil,
+        repo_sync_timeout_timer_ref: nil,
+        repo_sync_started_at_ms: nil
+    }
+  end
+
+  defp sync_managed_repos(nil, repo_local_path, repo_default_branch) do
+    sync_repo(repo_local_path, repo_default_branch)
+  end
+
+  defp sync_managed_repos(repo_syncer, _repo_local_path, _repo_default_branch) do
+    invoke_repo_syncer(repo_syncer)
   end
 
   defp invoke_repo_syncer(repo_syncer) when is_function(repo_syncer, 0) do
@@ -1803,9 +1938,15 @@ defmodule Kollywood.Orchestrator do
         :ok
 
       {:error, reason} ->
-        Logger.warning("Repo sync failed: #{reason}")
-        :ok
+        {:error, to_string(reason)}
+
+      other ->
+        {:error, "unexpected repo sync result: #{inspect(other)}"}
     end
+  rescue
+    error -> {:error, Exception.message(error)}
+  catch
+    :exit, reason -> {:error, inspect(reason)}
   end
 
   defp fetch_config(%Config{} = config), do: {:ok, config}
@@ -2197,6 +2338,12 @@ defmodule Kollywood.Orchestrator do
         state.repo_sync_interval_ms
       )
 
+    repo_sync_timeout_ms =
+      positive_integer(
+        get_in(config, [Access.key(:polling, %{}), Access.key(:repo_sync_timeout_ms)]),
+        state.repo_sync_timeout_ms
+      )
+
     max_concurrent_agents =
       positive_integer(
         get_in(config, [Access.key(:agent, %{}), Access.key(:max_concurrent_agents)]),
@@ -2246,6 +2393,7 @@ defmodule Kollywood.Orchestrator do
       state
       | poll_interval_ms: poll_interval_ms,
         repo_sync_interval_ms: repo_sync_interval_ms,
+        repo_sync_timeout_ms: repo_sync_timeout_ms,
         max_concurrent_agents: max_concurrent_agents,
         max_retry_backoff_ms: max_retry_backoff_ms,
         retries_enabled: retries_enabled,
@@ -2407,7 +2555,9 @@ defmodule Kollywood.Orchestrator do
       completed_count: MapSet.size(state.completed),
       poll_interval_ms: state.poll_interval_ms,
       repo_sync_interval_ms: state.repo_sync_interval_ms,
+      repo_sync_timeout_ms: state.repo_sync_timeout_ms,
       repo_sync_due_in_ms: repo_sync_due_in_ms(state, now_ms),
+      repo_sync_in_progress: repo_sync_in_progress?(state),
       max_concurrent_agents: state.max_concurrent_agents,
       retries_enabled: state.retries_enabled,
       max_attempts: state.max_attempts,

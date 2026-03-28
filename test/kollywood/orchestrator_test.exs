@@ -331,10 +331,10 @@ defmodule Kollywood.OrchestratorTest do
 
   test "poll executes repo syncer callback when configured", %{root: root} do
     %{store: workflow_store} = start_workflow_store!(root, %{})
-    sync_calls = start_agent!(fn -> 0 end)
+    test_pid = self()
 
     repo_syncer = fn ->
-      Agent.update(sync_calls, &(&1 + 1))
+      send(test_pid, :repo_sync_called)
       :ok
     end
 
@@ -351,15 +351,15 @@ defmodule Kollywood.OrchestratorTest do
       )
 
     assert :ok = Orchestrator.poll_now(orchestrator)
-    assert Agent.get(sync_calls, & &1) == 1
+    assert_receive :repo_sync_called
   end
 
   test "poll throttles repo syncer by configured interval", %{root: root} do
     %{store: workflow_store} = start_workflow_store!(root, %{})
-    sync_calls = start_agent!(fn -> 0 end)
+    test_pid = self()
 
     repo_syncer = fn ->
-      Agent.update(sync_calls, &(&1 + 1))
+      send(test_pid, :repo_sync_called)
       :ok
     end
 
@@ -379,11 +379,101 @@ defmodule Kollywood.OrchestratorTest do
     assert :ok = Orchestrator.poll_now(orchestrator)
     assert :ok = Orchestrator.poll_now(orchestrator)
 
-    assert Agent.get(sync_calls, & &1) == 1
+    assert_receive :repo_sync_called
+    refute_receive :repo_sync_called, 100
 
     status = Orchestrator.status(orchestrator)
     assert status.repo_sync_interval_ms == 60_000
     assert status.repo_sync_due_in_ms > 0
+  end
+
+  test "repo sync timeout does not stall dispatch", %{root: root} do
+    %{store: workflow_store} = start_workflow_store!(root, %{})
+    issue = issue("ISS-SYNC-TIMEOUT", "ABC-SYNC-TIMEOUT", 1)
+    test_pid = self()
+    issues_agent = start_agent!(fn -> [issue] end)
+
+    tracker = fn _config -> {:ok, Agent.get(issues_agent, & &1)} end
+
+    runner = fn issue, _opts ->
+      send(test_pid, {:runner_started, issue.id})
+      {:ok, success_result(issue)}
+    end
+
+    repo_syncer = fn ->
+      send(test_pid, :repo_sync_started)
+      Process.sleep(200)
+      :ok
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: tracker,
+         runner: runner,
+         auto_poll: false,
+         repo_syncer: repo_syncer,
+         repo_sync_timeout_ms: 40,
+         retry_base_delay_ms: 20}
+      )
+
+    log =
+      capture_log(fn ->
+        assert :ok = Orchestrator.poll_now(orchestrator)
+        assert_receive :repo_sync_started
+        assert_receive {:runner_started, "ISS-SYNC-TIMEOUT"}
+        Process.sleep(80)
+      end)
+
+    assert log =~ "Managed repo sync timed out"
+
+    status = Orchestrator.status(orchestrator)
+    assert status.repo_sync_in_progress == false
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+  end
+
+  test "repo sync failure is contained and poll still dispatches", %{root: root} do
+    %{store: workflow_store} = start_workflow_store!(root, %{})
+    issue = issue("ISS-SYNC-FAIL", "ABC-SYNC-FAIL", 1)
+    test_pid = self()
+    issues_agent = start_agent!(fn -> [issue] end)
+
+    tracker = fn _config -> {:ok, Agent.get(issues_agent, & &1)} end
+
+    runner = fn issue, _opts ->
+      send(test_pid, {:runner_started, issue.id})
+      {:ok, success_result(issue)}
+    end
+
+    repo_syncer = fn ->
+      send(test_pid, :repo_sync_attempted)
+      {:error, "forced sync failure"}
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: tracker,
+         runner: runner,
+         auto_poll: false,
+         repo_syncer: repo_syncer,
+         retry_base_delay_ms: 20}
+      )
+
+    log =
+      capture_log(fn ->
+        assert :ok = Orchestrator.poll_now(orchestrator)
+        assert_receive :repo_sync_attempted
+        assert_receive {:runner_started, "ISS-SYNC-FAIL"}
+        Process.sleep(30)
+      end)
+
+    assert log =~ "Managed repo sync failed: forced sync failure"
   end
 
   test "dispatches issues by priority with bounded concurrency", %{root: root} do
