@@ -233,6 +233,7 @@ defmodule Kollywood.ConfigTest do
     assert config.checks.required == []
     assert config.checks.timeout_ms == 7_200_000
     assert config.checks.fail_fast == true
+    assert config.checks.max_cycles == 1
 
     assert config.runtime.profile == :checks_only
     assert config.runtime.full_stack.command == "devenv"
@@ -242,6 +243,8 @@ defmodule Kollywood.ConfigTest do
     assert config.runtime.full_stack.port_offset_mod == 1000
     assert config.runtime.full_stack.start_timeout_ms == 120_000
     assert config.runtime.full_stack.stop_timeout_ms == 60_000
+
+    assert config.quality.max_cycles == 1
 
     assert config.review.enabled == false
     assert config.review.max_cycles == 1
@@ -253,26 +256,29 @@ defmodule Kollywood.ConfigTest do
   test "parses checks and review settings" do
     content = """
     ---
-    checks:
-      required:
-        - mix format --check-formatted
-        - mix test
-      timeout_ms: 600000
-      fail_fast: false
-    review:
-      enabled: true
-      max_cycles: 3
-      pass_token: OK_TO_MERGE
-      fail_token: NEEDS_WORK
-      prompt_template: "Review {{ issue.identifier }}"
-      agent:
-        kind: claude
-        command: /usr/local/bin/claude
-        args:
-          - --print
-        env:
-          REVIEW_MODE: strict
-        timeout_ms: 120000
+    quality:
+      max_cycles: 4
+      checks:
+        required:
+          - mix format --check-formatted
+          - mix test
+        timeout_ms: 600000
+        fail_fast: false
+        max_cycles: 2
+      review:
+        enabled: true
+        max_cycles: 3
+        pass_token: OK_TO_MERGE
+        fail_token: NEEDS_WORK
+        prompt_template: "Review {{ issue.identifier }}"
+        agent:
+          kind: claude
+          command: /usr/local/bin/claude
+          args:
+            - --print
+          env:
+            REVIEW_MODE: strict
+          timeout_ms: 120000
     workspace:
       root: /tmp
     agent:
@@ -286,6 +292,9 @@ defmodule Kollywood.ConfigTest do
     assert config.checks.required == ["mix format --check-formatted", "mix test"]
     assert config.checks.timeout_ms == 600_000
     assert config.checks.fail_fast == false
+    assert config.checks.max_cycles == 2
+
+    assert config.quality.max_cycles == 4
 
     assert config.review.enabled == true
     assert config.review.max_cycles == 3
@@ -600,10 +609,11 @@ defmodule Kollywood.ConfigTest do
   test "rejects invalid review.agent.kind" do
     content = """
     ---
-    review:
-      enabled: true
-      agent:
-        kind: invalid
+    quality:
+      review:
+        enabled: true
+        agent:
+          kind: invalid
     workspace:
       root: /tmp
     agent:

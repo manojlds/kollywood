@@ -1800,8 +1800,27 @@ defmodule KollywoodWeb.DashboardLive do
 
               <div class="divider my-0"></div>
 
-              <%!-- Checks --%>
+              <%!-- Quality --%>
               <div>
+                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
+                  Quality
+                </p>
+                <div class="grid sm:grid-cols-2 gap-4 mb-4">
+                  <div>
+                    <label class="label pb-1">
+                      <span class="label-text text-sm">Max Cycles</span>
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="10"
+                      name="settings[quality][max_cycles]"
+                      value={get_in(@workflow.parsed, ["quality", "max_cycles"]) || 1}
+                      class="input input-bordered input-sm w-full"
+                    />
+                  </div>
+                </div>
+
                 <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
                   Checks
                 </p>
@@ -1812,13 +1831,29 @@ defmodule KollywoodWeb.DashboardLive do
                       <span class="label-text-alt text-base-content/40">one per line</span>
                     </label>
                     <textarea
-                      name="settings[checks][required]"
+                      name="settings[quality][checks][required]"
                       rows="4"
                       spellcheck="false"
                       class="textarea textarea-bordered textarea-sm w-full font-mono text-xs"
-                    >{(get_in(@workflow.parsed, ["checks", "required"]) || []) |> Enum.join("\n")}</textarea>
+                    >{(get_in(@workflow.parsed, ["quality", "checks", "required"]) || []) |> Enum.join("\n")}</textarea>
                   </div>
-                  <div class="grid sm:grid-cols-2 gap-4">
+                  <div class="grid sm:grid-cols-3 gap-4">
+                    <div>
+                      <label class="label pb-1">
+                        <span class="label-text text-sm">Max Cycles</span>
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="10"
+                        name="settings[quality][checks][max_cycles]"
+                        value={
+                          get_in(@workflow.parsed, ["quality", "checks", "max_cycles"]) ||
+                            get_in(@workflow.parsed, ["quality", "max_cycles"]) || 1
+                        }
+                        class="input input-bordered input-sm w-full"
+                      />
+                    </div>
                     <div>
                       <label class="label pb-1">
                         <span class="label-text text-sm">Timeout (ms)</span>
@@ -1827,18 +1862,27 @@ defmodule KollywoodWeb.DashboardLive do
                         type="number"
                         min="1000"
                         step="1000"
-                        name="settings[checks][timeout_ms]"
-                        value={get_in(@workflow.parsed, ["checks", "timeout_ms"]) || 7_200_000}
+                        name="settings[quality][checks][timeout_ms]"
+                        value={
+                          get_in(@workflow.parsed, ["quality", "checks", "timeout_ms"]) ||
+                            7_200_000
+                        }
                         class="input input-bordered input-sm w-full"
                       />
                     </div>
                     <div class="flex items-center gap-2 pt-5">
-                      <input type="hidden" name="settings[checks][fail_fast]" value="false" />
+                      <input
+                        type="hidden"
+                        name="settings[quality][checks][fail_fast]"
+                        value="false"
+                      />
                       <input
                         type="checkbox"
-                        name="settings[checks][fail_fast]"
+                        name="settings[quality][checks][fail_fast]"
                         value="true"
-                        checked={get_in(@workflow.parsed, ["checks", "fail_fast"]) != false}
+                        checked={
+                          get_in(@workflow.parsed, ["quality", "checks", "fail_fast"]) != false
+                        }
                         class="toggle toggle-sm"
                       />
                       <span class="text-sm">Fail fast</span>
@@ -1856,12 +1900,12 @@ defmodule KollywoodWeb.DashboardLive do
                 </p>
                 <div class="grid sm:grid-cols-2 gap-4">
                   <div class="sm:col-span-2 flex items-center gap-2">
-                    <input type="hidden" name="settings[review][enabled]" value="false" />
+                    <input type="hidden" name="settings[quality][review][enabled]" value="false" />
                     <input
                       type="checkbox"
-                      name="settings[review][enabled]"
+                      name="settings[quality][review][enabled]"
                       value="true"
-                      checked={get_in(@workflow.parsed, ["review", "enabled"]) == true}
+                      checked={get_in(@workflow.parsed, ["quality", "review", "enabled"]) == true}
                       class="toggle toggle-sm toggle-primary"
                     />
                     <span class="text-sm">Enable review</span>
@@ -1874,8 +1918,11 @@ defmodule KollywoodWeb.DashboardLive do
                       type="number"
                       min="1"
                       max="10"
-                      name="settings[review][max_cycles]"
-                      value={get_in(@workflow.parsed, ["review", "max_cycles"]) || 1}
+                      name="settings[quality][review][max_cycles]"
+                      value={
+                        get_in(@workflow.parsed, ["quality", "review", "max_cycles"]) ||
+                          get_in(@workflow.parsed, ["quality", "max_cycles"]) || 1
+                      }
                       class="input input-bordered input-sm w-full"
                     />
                   </div>
@@ -1886,8 +1933,11 @@ defmodule KollywoodWeb.DashboardLive do
                     </label>
                     <input
                       type="text"
-                      name="settings[review][pass_token]"
-                      value={get_in(@workflow.parsed, ["review", "pass_token"]) || "REVIEW_PASS"}
+                      name="settings[quality][review][pass_token]"
+                      value={
+                        get_in(@workflow.parsed, ["quality", "review", "pass_token"]) ||
+                          "REVIEW_PASS"
+                      }
                       class="input input-bordered input-sm w-full font-mono"
                     />
                   </div>
@@ -1897,8 +1947,11 @@ defmodule KollywoodWeb.DashboardLive do
                     </label>
                     <input
                       type="text"
-                      name="settings[review][fail_token]"
-                      value={get_in(@workflow.parsed, ["review", "fail_token"]) || "REVIEW_FAIL"}
+                      name="settings[quality][review][fail_token]"
+                      value={
+                        get_in(@workflow.parsed, ["quality", "review", "fail_token"]) ||
+                          "REVIEW_FAIL"
+                      }
                       class="input input-bordered input-sm w-full font-mono"
                     />
                   </div>
@@ -1912,14 +1965,14 @@ defmodule KollywoodWeb.DashboardLive do
                       <div class="flex items-center gap-2">
                         <input
                           type="hidden"
-                          name="settings[review][agent_custom]"
+                          name="settings[quality][review][agent_custom]"
                           value="false"
                         />
                         <input
                           type="checkbox"
-                          name="settings[review][agent_custom]"
+                          name="settings[quality][review][agent_custom]"
                           value="true"
-                          checked={get_in(@workflow.parsed, ["review", "agent"]) != nil}
+                          checked={get_in(@workflow.parsed, ["quality", "review", "agent"]) != nil}
                           class="toggle toggle-sm"
                         />
                         <span class="text-sm">Use a different agent for reviews</span>
@@ -1930,14 +1983,14 @@ defmodule KollywoodWeb.DashboardLive do
                             <span class="label-text text-sm">Kind</span>
                           </label>
                           <select
-                            name="settings[review][agent][kind]"
+                            name="settings[quality][review][agent][kind]"
                             class="select select-bordered select-sm w-full"
                           >
                             <%= for k <- ["amp", "claude", "opencode", "pi"] do %>
                               <option
                                 value={k}
                                 selected={
-                                  (get_in(@workflow.parsed, ["review", "agent", "kind"]) ||
+                                  (get_in(@workflow.parsed, ["quality", "review", "agent", "kind"]) ||
                                      get_in(@workflow.parsed, ["agent", "kind"])) == k
                                 }
                               >
@@ -1954,9 +2007,9 @@ defmodule KollywoodWeb.DashboardLive do
                             type="number"
                             min="1000"
                             step="1000"
-                            name="settings[review][agent][timeout_ms]"
+                            name="settings[quality][review][agent][timeout_ms]"
                             value={
-                              get_in(@workflow.parsed, ["review", "agent", "timeout_ms"]) ||
+                              get_in(@workflow.parsed, ["quality", "review", "agent", "timeout_ms"]) ||
                                 7_200_000
                             }
                             class="input input-bordered input-sm w-full"
@@ -1971,8 +2024,11 @@ defmodule KollywoodWeb.DashboardLive do
                           </label>
                           <input
                             type="text"
-                            name="settings[review][agent][command]"
-                            value={get_in(@workflow.parsed, ["review", "agent", "command"]) || ""}
+                            name="settings[quality][review][agent][command]"
+                            value={
+                              get_in(@workflow.parsed, ["quality", "review", "agent", "command"]) ||
+                                ""
+                            }
                             placeholder="e.g. /usr/local/bin/amp"
                             class="input input-bordered input-sm w-full font-mono"
                           />
@@ -2122,7 +2178,7 @@ defmodule KollywoodWeb.DashboardLive do
                 class="textarea textarea-bordered w-full font-mono text-xs leading-relaxed bg-base-100"
               >{@workflow.body}</textarea>
               <p class="text-xs text-base-content/60">
-                Edit WORKFLOW.md in your repository to change these settings.
+                Edit .kollywood/WORKFLOW.md in your repository to change these settings.
               </p>
             <% end %>
           </div>
@@ -2137,7 +2193,7 @@ defmodule KollywoodWeb.DashboardLive do
                 <p class="text-sm text-base-content/60 mt-1">
                   Template used to prompt the reviewer agent. Saved as
                   <code class="font-mono text-xs bg-base-100 px-1 rounded">
-                    review.prompt_template
+                    quality.review.prompt_template
                   </code>
                   in WORKFLOW.md.
                 </p>
@@ -2178,7 +2234,7 @@ defmodule KollywoodWeb.DashboardLive do
                 class="textarea textarea-bordered w-full font-mono text-xs leading-relaxed bg-base-100"
               >{@workflow.review_template}</textarea>
               <p class="text-xs text-base-content/60">
-                Edit WORKFLOW.md in your repository to change these settings.
+                Edit .kollywood/WORKFLOW.md in your repository to change these settings.
               </p>
             <% end %>
           </div>
@@ -2681,19 +2737,21 @@ defmodule KollywoodWeb.DashboardLive do
 
   # -- Settings Helpers --
 
-  @workflow_yaml_key_order ~w(tracker polling workspace agent checks runtime hooks review publish git)
+  @workflow_yaml_key_order ~w(tracker workspace agent quality runtime hooks publish git)
 
   defp apply_settings(parsed, settings) do
     agent_p = Map.get(settings, "agent", %{})
     workspace_p = Map.get(settings, "workspace", %{})
-    checks_p = Map.get(settings, "checks", %{})
-    review_p = Map.get(settings, "review", %{})
+    quality_p = Map.get(settings, "quality", %{})
+    checks_p = Map.get(quality_p, "checks", %{})
+    review_p = Map.get(quality_p, "review", %{})
     publish_p = Map.get(settings, "publish", %{})
     git_p = Map.get(settings, "git", %{})
 
     existing_agent = Map.get(parsed, "agent", %{})
-    existing_checks = Map.get(parsed, "checks", %{})
-    existing_review = Map.get(parsed, "review", %{})
+    existing_quality = Map.get(parsed, "quality", %{})
+    existing_checks = Map.get(existing_quality, "checks", %{})
+    existing_review = Map.get(existing_quality, "review", %{})
 
     command = String.trim(Map.get(agent_p, "command", ""))
 
@@ -2718,14 +2776,23 @@ defmodule KollywoodWeb.DashboardLive do
         raw -> raw |> String.split("\n") |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
       end
 
+    quality_max_cycles =
+      parse_form_int(quality_p, "max_cycles", Map.get(existing_quality, "max_cycles", 1))
+
     new_checks = %{
       "required" => checks_required,
       "fail_fast" => Map.get(checks_p, "fail_fast") == "true",
+      "max_cycles" =>
+        parse_form_int(
+          checks_p,
+          "max_cycles",
+          Map.get(existing_checks, "max_cycles", quality_max_cycles)
+        ),
       "timeout_ms" =>
         parse_form_int(checks_p, "timeout_ms", Map.get(existing_checks, "timeout_ms", 7_200_000))
     }
 
-    existing_prompt_template = get_in(parsed, ["review", "prompt_template"])
+    existing_prompt_template = get_in(parsed, ["quality", "review", "prompt_template"])
     review_agent_custom = Map.get(review_p, "agent_custom") == "true"
     review_agent_p = Map.get(review_p, "agent", %{})
 
@@ -2733,7 +2800,11 @@ defmodule KollywoodWeb.DashboardLive do
       %{
         "enabled" => Map.get(review_p, "enabled") == "true",
         "max_cycles" =>
-          parse_form_int(review_p, "max_cycles", Map.get(existing_review, "max_cycles", 1)),
+          parse_form_int(
+            review_p,
+            "max_cycles",
+            Map.get(existing_review, "max_cycles", quality_max_cycles)
+          ),
         "pass_token" =>
           Map.get(review_p, "pass_token", "REVIEW_PASS")
           |> String.trim()
@@ -2774,6 +2845,12 @@ defmodule KollywoodWeb.DashboardLive do
         end
       end)
 
+    new_quality = %{
+      "max_cycles" => quality_max_cycles,
+      "checks" => new_checks,
+      "review" => new_review
+    }
+
     provider_val = Map.get(publish_p, "provider", "")
     mode_val = Map.get(publish_p, "mode", "") |> String.trim()
     pr_type_val = Map.get(publish_p, "pr_type", "ready") |> String.trim()
@@ -2805,8 +2882,10 @@ defmodule KollywoodWeb.DashboardLive do
       "strategy" =>
         Map.get(workspace_p, "strategy", get_in(parsed, ["workspace", "strategy"]) || "clone")
     })
-    |> Map.put("checks", new_checks)
-    |> Map.put("review", new_review)
+    |> Map.put("quality", new_quality)
+    |> Map.delete("checks")
+    |> Map.delete("review")
+    |> Map.delete("polling")
     |> Map.put("publish", new_publish)
     |> Map.put("git", %{
       "base_branch" => if(base_branch == "", do: "main", else: base_branch)
@@ -2997,7 +3076,7 @@ defmodule KollywoodWeb.DashboardLive do
 
                 stored_template =
                   parsed
-                  |> get_in(["review", "prompt_template"])
+                  |> get_in(["quality", "review", "prompt_template"])
                   |> then(fn
                     v when is_binary(v) and v != "" -> String.trim(v)
                     _ -> nil
@@ -3042,128 +3121,58 @@ defmodule KollywoodWeb.DashboardLive do
     end
   end
 
-  # Injects or replaces the review.prompt_template block scalar in the full WORKFLOW.md content.
-  # Operates on lines to avoid needing a YAML encoder.
+  # Injects or replaces quality.review.prompt_template in full WORKFLOW content.
   defp inject_review_template(content, template) do
-    indented_template =
-      template
-      |> String.trim()
-      |> String.split("\n")
-      |> Enum.map_join("\n", &("    " <> &1))
+    with {:ok, parsed, body} <- parse_workflow_frontmatter(content) do
+      updated =
+        put_in(
+          parsed,
+          [Access.key("quality", %{}), Access.key("review", %{}), Access.key("prompt_template")],
+          String.trim(template)
+        )
 
-    new_block_lines = ["  prompt_template: |", indented_template]
-
-    lines = String.split(content, "\n")
-
-    {result, _state, found?} =
-      Enum.reduce(lines, {[], :scanning, false}, fn line, {acc, state, found} ->
-        case state do
-          :scanning ->
-            if String.trim(line) == "review:" do
-              {acc ++ [line], :in_review, found}
-            else
-              {acc ++ [line], :scanning, found}
-            end
-
-          :in_review ->
-            trimmed = String.trim_leading(line)
-
-            cond do
-              String.starts_with?(trimmed, "prompt_template:") ->
-                {acc ++ new_block_lines, :skip_template, true}
-
-              line == "" ->
-                {acc ++ [line], :in_review, found}
-
-              not String.starts_with?(line, " ") ->
-                {acc ++ [line], :scanning, found}
-
-              true ->
-                {acc ++ [line], :in_review, found}
-            end
-
-          :skip_template ->
-            # Skip old template content lines (indented 4+ spaces), resume on 2-space keys or top-level
-            cond do
-              String.starts_with?(line, "    ") ->
-                {acc, :skip_template, found}
-
-              String.starts_with?(line, "  ") and not String.starts_with?(line, "    ") ->
-                {acc ++ [line], :in_review, found}
-
-              not String.starts_with?(line, " ") and line != "" ->
-                {acc ++ [line], :scanning, found}
-
-              true ->
-                {acc, :skip_template, found}
-            end
-        end
-      end)
-
-    result_str = Enum.join(result, "\n")
-
-    if found? do
-      result_str
+      render_workflow_content(updated, body)
     else
-      # prompt_template not found — append it under review: if review: exists, else append section
-      if String.match?(content, ~r/^review:/m) do
-        Regex.replace(~r/^(review:.*?)(\n(?=\S)|\z)/ms, content, fn _, review_block, tail ->
-          "#{String.trim_trailing(review_block)}\n#{Enum.join(new_block_lines, "\n")}#{tail}"
-        end)
-      else
-        String.trim_trailing(content) <>
-          "\nreview:\n" <> Enum.join(new_block_lines, "\n") <> "\n"
-      end
+      {:error, _reason} ->
+        content
     end
   end
 
-  # Removes the prompt_template block scalar from the review section of WORKFLOW.md content.
-  # Used when saving a template that matches the default — keeps the file clean.
+  # Removes quality.review.prompt_template from full WORKFLOW content.
   defp remove_review_template(content) do
-    lines = String.split(content, "\n")
+    with {:ok, parsed, body} <- parse_workflow_frontmatter(content) do
+      updated =
+        update_in(parsed, [Access.key("quality", %{}), Access.key("review", %{})], fn review ->
+          review
+          |> Kernel.||(%{})
+          |> Map.delete("prompt_template")
+        end)
 
-    {result, _state} =
-      Enum.reduce(lines, {[], :scanning}, fn line, {acc, state} ->
-        case state do
-          :scanning ->
-            if String.trim(line) == "review:" do
-              {acc ++ [line], :in_review}
-            else
-              {acc ++ [line], :scanning}
-            end
+      render_workflow_content(updated, body)
+    else
+      {:error, _reason} ->
+        content
+    end
+  end
 
-          :in_review ->
-            trimmed = String.trim_leading(line)
+  defp parse_workflow_frontmatter(content) when is_binary(content) do
+    case String.split(content, "---", parts: 3) do
+      ["", yaml_str, rest] ->
+        parsed =
+          case YamlElixir.read_from_string(yaml_str) do
+            {:ok, map} when is_map(map) -> map
+            _ -> %{}
+          end
 
-            cond do
-              String.starts_with?(trimmed, "prompt_template:") ->
-                {acc, :skip_template}
+        {:ok, parsed, String.trim(rest)}
 
-              not String.starts_with?(line, " ") and line != "" ->
-                {acc ++ [line], :scanning}
+      _other ->
+        {:error, :missing_frontmatter}
+    end
+  end
 
-              true ->
-                {acc ++ [line], :in_review}
-            end
-
-          :skip_template ->
-            cond do
-              String.starts_with?(line, "    ") ->
-                {acc, :skip_template}
-
-              String.starts_with?(line, "  ") and not String.starts_with?(line, "    ") ->
-                {acc ++ [line], :in_review}
-
-              not String.starts_with?(line, " ") and line != "" ->
-                {acc ++ [line], :scanning}
-
-              true ->
-                {acc, :skip_template}
-            end
-        end
-      end)
-
-    Enum.join(result, "\n")
+  defp render_workflow_content(parsed, body) do
+    "---\n#{to_workflow_yaml(parsed)}\n---\n\n#{String.trim(body)}\n"
   end
 
   defp run_logs_dirs(project) do

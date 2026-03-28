@@ -27,6 +27,7 @@ defmodule Kollywood.Config do
           polling: map(),
           workspace: map(),
           hooks: map(),
+          quality: map(),
           checks: map(),
           runtime: map(),
           review: map(),
@@ -42,6 +43,7 @@ defmodule Kollywood.Config do
     :polling,
     :workspace,
     :hooks,
+    :quality,
     :checks,
     :runtime,
     :review,
@@ -106,6 +108,7 @@ defmodule Kollywood.Config do
     with :ok <- validate_required_sections(raw),
          {:ok, agent_kind} <- parse_agent_kind(raw),
          {:ok, review_agent_kind} <- parse_review_agent_kind(raw, agent_kind),
+         {:ok, quality} <- parse_quality(raw, review_agent_kind),
          {:ok, runtime} <- parse_runtime(raw),
          {:ok, publish} <- parse_publish(raw),
          {:ok, git_policy} <- parse_git(raw) do
@@ -114,9 +117,10 @@ defmodule Kollywood.Config do
         polling: parse_polling(raw),
         workspace: parse_workspace(raw),
         hooks: parse_hooks(raw),
-        checks: parse_checks(raw),
+        quality: quality,
+        checks: quality.checks,
         runtime: runtime,
-        review: parse_review(raw, review_agent_kind),
+        review: quality.review,
         agent: parse_agent(raw, agent_kind),
         publish: publish,
         git: git_policy,
@@ -151,7 +155,17 @@ defmodule Kollywood.Config do
   end
 
   defp parse_review_agent_kind(raw, fallback_kind) do
-    case get_in(raw, ["review", "agent", "kind"]) do
+    kind =
+      raw
+      |> Map.get("quality", %{})
+      |> map_or_empty()
+      |> Map.get("review", %{})
+      |> map_or_empty()
+      |> Map.get("agent", %{})
+      |> map_or_empty()
+      |> Map.get("kind")
+
+    case kind do
       nil -> {:ok, fallback_kind}
       kind -> parse_agent_kind_value(kind)
     end
@@ -286,16 +300,64 @@ defmodule Kollywood.Config do
     }
   end
 
-  defp parse_checks(raw) do
-    checks = Map.get(raw, "checks", %{})
+  defp parse_quality(raw, review_agent_kind) do
+    quality = map_or_empty(Map.get(raw, "quality", %{}))
+    quality_max_cycles = positive_integer(Map.get(quality, "max_cycles", 1), 1)
+
+    checks = parse_quality_checks(quality, quality_max_cycles)
+    review = parse_quality_review(quality, review_agent_kind, quality_max_cycles)
+
+    {:ok,
+     %{
+       max_cycles: quality_max_cycles,
+       checks: checks,
+       review: review
+     }}
+  end
+
+  defp parse_quality_checks(quality, quality_max_cycles) do
+    checks = map_or_empty(Map.get(quality, "checks", %{}))
 
     %{
       required: command_list(Map.get(checks, "required", [])),
       timeout_ms:
         positive_integer(Map.get(checks, "timeout_ms", @default_timeout_ms), @default_timeout_ms),
-      fail_fast: boolean(Map.get(checks, "fail_fast", true), true)
+      fail_fast: boolean(Map.get(checks, "fail_fast", true), true),
+      max_cycles:
+        positive_integer(Map.get(checks, "max_cycles", quality_max_cycles), quality_max_cycles)
     }
   end
+
+  defp parse_quality_review(quality, review_agent_kind, quality_max_cycles) do
+    review = quality |> get_in(["review"]) |> map_or_empty()
+    review_agent_raw = Map.get(review, "agent")
+    review_agent_explicit = is_map(review_agent_raw)
+    review_agent = review_agent_raw || %{}
+
+    %{
+      enabled: boolean(Map.get(review, "enabled", false), false),
+      max_cycles:
+        positive_integer(Map.get(review, "max_cycles", quality_max_cycles), quality_max_cycles),
+      pass_token: optional_string(Map.get(review, "pass_token")) || "REVIEW_PASS",
+      fail_token: optional_string(Map.get(review, "fail_token")) || "REVIEW_FAIL",
+      prompt_template: optional_string(Map.get(review, "prompt_template")),
+      agent: %{
+        explicit: review_agent_explicit,
+        kind: review_agent_kind,
+        command: optional_string(Map.get(review_agent, "command")),
+        args: string_list(Map.get(review_agent, "args", [])),
+        env: string_map(Map.get(review_agent, "env", %{})),
+        timeout_ms:
+          positive_integer(
+            Map.get(review_agent, "timeout_ms", @default_timeout_ms),
+            @default_timeout_ms
+          )
+      }
+    }
+  end
+
+  defp map_or_empty(value) when is_map(value), do: value
+  defp map_or_empty(_value), do: %{}
 
   defp parse_runtime(raw) do
     case Map.get(raw, "runtime", %{}) do
@@ -367,33 +429,6 @@ defmodule Kollywood.Config do
 
   defp parse_runtime_ports(values) do
     {:error, "runtime.full_stack.ports must be a map (got: #{inspect(values)})"}
-  end
-
-  defp parse_review(raw, review_agent_kind) do
-    review = Map.get(raw, "review", %{})
-    review_agent_raw = Map.get(review, "agent")
-    review_agent_explicit = is_map(review_agent_raw)
-    review_agent = review_agent_raw || %{}
-
-    %{
-      enabled: boolean(Map.get(review, "enabled", false), false),
-      max_cycles: positive_integer(Map.get(review, "max_cycles", 1), 1),
-      pass_token: optional_string(Map.get(review, "pass_token")) || "REVIEW_PASS",
-      fail_token: optional_string(Map.get(review, "fail_token")) || "REVIEW_FAIL",
-      prompt_template: optional_string(Map.get(review, "prompt_template")),
-      agent: %{
-        explicit: review_agent_explicit,
-        kind: review_agent_kind,
-        command: optional_string(Map.get(review_agent, "command")),
-        args: string_list(Map.get(review_agent, "args", [])),
-        env: string_map(Map.get(review_agent, "env", %{})),
-        timeout_ms:
-          positive_integer(
-            Map.get(review_agent, "timeout_ms", @default_timeout_ms),
-            @default_timeout_ms
-          )
-      }
-    }
   end
 
   defp parse_agent(raw, kind) do
