@@ -103,3 +103,18 @@
 [data-phx-session], [data-phx-teleported-src] { display: contents }
 
 /* This file is for your main application CSS */
+
+@media (max-width: 430px) {
+  .prose pre {
+    max-width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .prose pre code {
+    white-space: pre;
+    word-break: normal;
+    overflow-wrap: normal;
+  }
+}
