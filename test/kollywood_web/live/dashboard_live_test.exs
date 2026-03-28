@@ -470,6 +470,74 @@ defmodule KollywoodWeb.DashboardLiveTest do
     end
   end
 
+  describe "kanban drag and drop" do
+    test "moves a story to a valid status and persists to tracker", %{
+      conn: conn,
+      project: project,
+      tmp_dir: tmp_dir
+    } do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories")
+
+      _html =
+        view
+        |> element("#stories-kanban-view")
+        |> render_hook("move_story_card", %{
+          "id" => "US-001",
+          "from_status" => "open",
+          "to_status" => "done"
+        })
+
+      assert has_element?(view, "#stories-column-done #story-card-US-001")
+      refute has_element?(view, "#stories-column-open #story-card-US-001")
+
+      {:ok, content} = File.read(Path.join(tmp_dir, "prd.json"))
+      {:ok, data} = Jason.decode(content)
+      story = Enum.find(data["userStories"], &(&1["id"] == "US-001"))
+      assert story["status"] == "done"
+    end
+
+    test "rejects invalid manual transition drop with clear feedback", %{
+      conn: conn,
+      project: project,
+      tmp_dir: tmp_dir
+    } do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories")
+
+      _html =
+        view
+        |> element("#stories-kanban-view")
+        |> render_hook("move_story_card", %{
+          "id" => "US-001",
+          "from_status" => "open",
+          "to_status" => "in_progress"
+        })
+
+      assert has_element?(view, "#stories-column-open #story-card-US-001")
+      refute has_element?(view, "#stories-column-in_progress #story-card-US-001")
+
+      {:ok, content} = File.read(Path.join(tmp_dir, "prd.json"))
+      {:ok, data} = Jason.decode(content)
+      story = Enum.find(data["userStories"], &(&1["id"] == "US-001"))
+      assert story["status"] == "open"
+    end
+
+    test "renders touch drag handles and kanban drop metadata", %{conn: conn, project: project} do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories")
+
+      assert has_element?(view, "#stories-kanban-view[phx-hook='.KanbanBoardDnD']")
+      assert has_element?(view, "#stories-dnd-feedback[data-dnd-feedback]")
+      assert has_element?(view, "#stories-column-done[data-story-drop-target='true']")
+      assert has_element?(view, "#story-card-US-001[data-story-card='true']")
+
+      assert has_element?(
+               view,
+               "#story-card-US-001[data-story-manual-targets='draft,done,failed,cancelled']"
+             )
+
+      assert has_element?(view, "#story-card-US-001 button[data-story-touch-handle='true']")
+    end
+  end
+
   describe "story editor" do
     test "adds a new story from UI", %{conn: conn, project: project, tmp_dir: tmp_dir} do
       {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories")
