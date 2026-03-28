@@ -2,7 +2,9 @@ defmodule Kollywood.Agent.Cursor do
   @moduledoc """
   Adapter for the Cursor Agent CLI.
 
-  Uses headless non-interactive mode via `--print` and passes prompts as argv.
+  Uses headless non-interactive mode via `--print` with `stream-json` output so
+  long-running turns flush incremental log updates while the process is active.
+  Prompts are passed as argv.
   """
 
   @behaviour Kollywood.Agent
@@ -12,7 +14,15 @@ defmodule Kollywood.Agent.Cursor do
 
   @defaults %{
     command: "cursor",
-    args: ["agent", "--print", "--output-format", "text", "--force", "--trust"],
+    args: [
+      "agent",
+      "--print",
+      "--output-format",
+      "stream-json",
+      "--stream-partial-output",
+      "--force",
+      "--trust"
+    ],
     prompt_mode: :argv,
     timeout_ms: 7_200_000,
     env: %{}
@@ -27,12 +37,85 @@ defmodule Kollywood.Agent.Cursor do
   @impl true
   @spec run_turn(Session.t(), String.t(), map()) :: {:ok, map()} | {:error, String.t()}
   def run_turn(session, prompt, opts \\ %{}) do
-    CLI.run_turn(session, prompt, opts)
+    case CLI.run_turn(session, prompt, opts) do
+      {:ok, result} ->
+        {:ok, normalize_stream_result(result)}
+
+      {:error, _reason} = error ->
+        error
+    end
   end
 
   @impl true
   @spec stop_session(Session.t()) :: :ok
   def stop_session(session) do
     CLI.stop_session(session)
+  end
+
+  defp normalize_stream_result(%{raw_output: raw_output} = result) do
+    case extract_final_output(raw_output) do
+      {:ok, output} -> %{result | output: output}
+      :error -> result
+    end
+  end
+
+  defp normalize_stream_result(result), do: result
+
+  defp extract_final_output(raw_output) when is_binary(raw_output) do
+    raw_output
+    |> String.split("\n", trim: true)
+    |> Enum.reduce({nil, []}, &collect_stream_output/2)
+    |> finalize_stream_output()
+  end
+
+  defp extract_final_output(_raw_output), do: :error
+
+  defp collect_stream_output(line, {result_text, assistant_chunks}) do
+    case Jason.decode(line) do
+      {:ok, %{"type" => "result", "result" => text}} when is_binary(text) ->
+        {text, assistant_chunks}
+
+      {:ok, %{"type" => "assistant", "message" => %{"content" => content}}}
+      when is_list(content) ->
+        chunk = assistant_content_text(content)
+
+        if chunk == "" do
+          {result_text, assistant_chunks}
+        else
+          {result_text, [chunk | assistant_chunks]}
+        end
+
+      _other ->
+        {result_text, assistant_chunks}
+    end
+  end
+
+  defp finalize_stream_output({result_text, assistant_chunks}) when is_binary(result_text) do
+    case String.trim(result_text) do
+      "" -> fallback_assistant_output(assistant_chunks)
+      trimmed -> {:ok, trimmed}
+    end
+  end
+
+  defp finalize_stream_output({_result_text, assistant_chunks}) do
+    fallback_assistant_output(assistant_chunks)
+  end
+
+  defp fallback_assistant_output(assistant_chunks) do
+    assistant_chunks
+    |> Enum.reverse()
+    |> Enum.join()
+    |> String.trim()
+    |> case do
+      "" -> :error
+      text -> {:ok, text}
+    end
+  end
+
+  defp assistant_content_text(content) do
+    Enum.map_join(content, "", fn
+      %{"type" => "text", "text" => text} when is_binary(text) -> text
+      _other -> ""
+    end)
   end
 end
