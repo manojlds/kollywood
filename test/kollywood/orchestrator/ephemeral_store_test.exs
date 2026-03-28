@@ -33,11 +33,14 @@ defmodule Kollywood.Orchestrator.EphemeralStoreTest do
     refute Enum.any?(remaining, &(&1.issue_id == "ISS-CLAIMED"))
   end
 
-  test "orchestrator restores claimed marker and dispatches after ttl", _context do
-    issue = issue("ISS-CLAIM-RESTORE", "ABC-CLAIM-RESTORE", 1)
+  test "orchestrator prunes stale restored claimed marker and dispatches on poll", _context do
+    issue =
+      issue("ISS-CLAIM-RESTORE", "ABC-CLAIM-RESTORE", 1)
+      |> Map.put(:state, "open")
+
     now_ms = System.monotonic_time(:millisecond)
 
-    assert :ok = EphemeralStore.upsert(:claimed, issue.id, now_ms + 200)
+    assert :ok = EphemeralStore.upsert(:claimed, issue.id, now_ms + 5_000)
 
     test_pid = self()
     tracker = fn _config -> {:ok, [issue]} end
@@ -66,11 +69,62 @@ defmodule Kollywood.Orchestrator.EphemeralStoreTest do
       )
 
     assert :ok = Orchestrator.poll_now(orchestrator)
-    refute_receive {:runner_started, "ISS-CLAIM-RESTORE"}, 80
-
-    Process.sleep(220)
-    assert :ok = Orchestrator.poll_now(orchestrator)
     assert_receive {:runner_started, "ISS-CLAIM-RESTORE"}, 1_000
+
+    :ok = GenServer.stop(orchestrator)
+  end
+
+  test "poll reconciliation prunes stale open claims in memory and persisted store", _context do
+    issue =
+      issue("ISS-CLAIM-PRUNE", "ABC-CLAIM-PRUNE", 1)
+      |> Map.put(:state, "open")
+      |> Map.put(:blocked_by, [%{id: "ISS-BLOCKER", state: "open"}])
+
+    test_pid = self()
+    tracker = fn _config -> {:ok, [issue]} end
+
+    runner = fn issue, _opts ->
+      send(test_pid, {:runner_started, issue.id})
+      {:ok, success_result(issue)}
+    end
+
+    agent_pool = start_supervised!({Kollywood.AgentPool, name: nil})
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: config_fixture(),
+         tracker: tracker,
+         runner: runner,
+         auto_poll: false,
+         retry_store: nil,
+         ephemeral_store: EphemeralStore,
+         agent_pool: agent_pool,
+         claim_ttl_ms: 5_000,
+         completed_ttl_ms: 200,
+         repo_sync_interval_ms: 60_000}
+      )
+
+    now_ms = System.monotonic_time(:millisecond)
+    assert :ok = EphemeralStore.upsert(:claimed, issue.id, now_ms + 5_000)
+
+    :sys.replace_state(orchestrator, fn state ->
+      %{
+        state
+        | claimed: MapSet.put(state.claimed, issue.id),
+          claimed_until: Map.put(state.claimed_until, issue.id, now_ms + 5_000)
+      }
+    end)
+
+    assert [issue.id] == Orchestrator.status(orchestrator).claimed_issue_ids
+    assert :ok = Orchestrator.poll_now(orchestrator)
+
+    refute_receive {:runner_started, "ISS-CLAIM-PRUNE"}, 100
+    assert [] == Orchestrator.status(orchestrator).claimed_issue_ids
+
+    assert {:ok, entries} = EphemeralStore.list_active(System.monotonic_time(:millisecond))
+    refute Enum.any?(entries, &(&1.issue_id == issue.id and &1.kind == :claimed))
 
     :ok = GenServer.stop(orchestrator)
   end
@@ -120,7 +174,7 @@ defmodule Kollywood.Orchestrator.EphemeralStoreTest do
   defp config_fixture do
     %Config{
       tracker: %{
-        active_states: ["Todo", "In Progress"],
+        active_states: ["Todo", "In Progress", "open"],
         terminal_states: ["Done", "Cancelled"]
       },
       polling: %{interval_ms: 1_000},
