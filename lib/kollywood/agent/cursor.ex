@@ -37,6 +37,8 @@ defmodule Kollywood.Agent.Cursor do
   @impl true
   @spec run_turn(Session.t(), String.t(), map()) :: {:ok, map()} | {:error, String.t()}
   def run_turn(session, prompt, opts \\ %{}) do
+    opts = maybe_enable_visual_raw_log(opts)
+
     case CLI.run_turn(session, prompt, opts) do
       {:ok, result} ->
         {:ok, normalize_stream_result(result)}
@@ -51,6 +53,21 @@ defmodule Kollywood.Agent.Cursor do
   def stop_session(session) do
     CLI.stop_session(session)
   end
+
+  defp maybe_enable_visual_raw_log(opts) when is_map(opts) do
+    raw_log = Map.get(opts, :raw_log) || Map.get(opts, "raw_log")
+
+    has_raw_log_mode? =
+      Map.has_key?(opts, :raw_log_mode) or Map.has_key?(opts, "raw_log_mode")
+
+    if is_binary(raw_log) and String.trim(raw_log) != "" and not has_raw_log_mode? do
+      Map.put(opts, :raw_log_mode, :cursor_stream_json_to_text)
+    else
+      opts
+    end
+  end
+
+  defp maybe_enable_visual_raw_log(opts), do: opts
 
   defp normalize_stream_result(%{raw_output: raw_output} = result) do
     case extract_final_output(raw_output) do

@@ -1,6 +1,7 @@
 defmodule Kollywood.Agent.CLI do
   @moduledoc false
 
+  alias Kollywood.Agent.CursorStreamLog
   alias Kollywood.Agent.Session
 
   @type defaults :: %{
@@ -47,7 +48,8 @@ defmodule Kollywood.Agent.CLI do
          {:ok, prompt_mode} <- turn_prompt_mode(session.prompt_mode, opts) do
       args = session.args ++ extra_args
       raw_log = opt(opts, :raw_log, nil)
-      execute(session, args, prompt, prompt_mode, env, timeout_ms, raw_log)
+      raw_log_mode = opt(opts, :raw_log_mode, :raw)
+      execute(session, args, prompt, prompt_mode, env, timeout_ms, raw_log, raw_log_mode)
     end
   end
 
@@ -57,13 +59,15 @@ defmodule Kollywood.Agent.CLI do
   @spec stop_session(Session.t()) :: :ok
   def stop_session(%Session{}), do: :ok
 
-  defp execute(session, args, prompt, prompt_mode, env, timeout_ms, raw_log) do
+  defp execute(session, args, prompt, prompt_mode, env, timeout_ms, raw_log, raw_log_mode) do
     {command, command_args, command_opts, cleanup} =
       command_invocation(session, args, prompt, prompt_mode, env)
 
     try do
       started_at = System.monotonic_time(:millisecond)
-      result = port_execute(command, command_args, command_opts, timeout_ms, raw_log)
+
+      result =
+        port_execute(command, command_args, command_opts, timeout_ms, raw_log, raw_log_mode)
 
       case result do
         {:ok, {output, 0}} ->
@@ -92,7 +96,7 @@ defmodule Kollywood.Agent.CLI do
     end
   end
 
-  defp port_execute(command, args, opts, timeout_ms, raw_log) do
+  defp port_execute(command, args, opts, timeout_ms, raw_log, raw_log_mode) do
     # Port.open requires charlists for executable, args, cd, and env keys/values.
     # System.cmd handles these conversions internally; we must do them explicitly.
     executable =
@@ -120,10 +124,10 @@ defmodule Kollywood.Agent.CLI do
 
     port = Port.open({:spawn_executable, executable}, port_opts)
     deadline = System.monotonic_time(:millisecond) + timeout_ms
-    collect_port_output(port, raw_log, [], deadline)
+    collect_port_output(port, raw_log, init_raw_log_state(raw_log_mode), [], deadline)
   end
 
-  defp collect_port_output(port, raw_log, chunks, deadline) do
+  defp collect_port_output(port, raw_log, raw_log_state, chunks, deadline) do
     remaining = deadline - System.monotonic_time(:millisecond)
 
     if remaining <= 0 do
@@ -132,18 +136,65 @@ defmodule Kollywood.Agent.CLI do
     else
       receive do
         {^port, {:data, chunk}} ->
-          if is_binary(raw_log) and byte_size(chunk) > 0,
-            do: File.write(raw_log, chunk, [:append])
+          {log_chunk, raw_log_state} = format_raw_log_chunk(raw_log_state, chunk)
+          maybe_write_raw_log(raw_log, log_chunk)
 
-          collect_port_output(port, raw_log, [chunks, chunk], deadline)
+          collect_port_output(port, raw_log, raw_log_state, [chunks, chunk], deadline)
 
         {^port, {:exit_status, status}} ->
+          {tail_chunk, _raw_log_state} = flush_raw_log_chunk(raw_log_state)
+          maybe_write_raw_log(raw_log, tail_chunk)
+
           {:ok, {IO.iodata_to_binary(chunks), status}}
       after
         remaining ->
           Port.close(port)
           {:error, :timeout}
       end
+    end
+  end
+
+  defp init_raw_log_state(:cursor_stream_json_to_text),
+    do: {:cursor_stream_json_to_text, CursorStreamLog.init_state()}
+
+  defp init_raw_log_state("cursor_stream_json_to_text"),
+    do: {:cursor_stream_json_to_text, CursorStreamLog.init_state()}
+
+  defp init_raw_log_state(_mode), do: :raw
+
+  defp format_raw_log_chunk(:raw, chunk), do: {chunk, :raw}
+
+  defp format_raw_log_chunk({:cursor_stream_json_to_text, state}, chunk) when is_binary(chunk) do
+    {rendered, state} = CursorStreamLog.feed(state, chunk)
+    {rendered, {:cursor_stream_json_to_text, state}}
+  end
+
+  defp format_raw_log_chunk(_state, chunk), do: {chunk, :raw}
+
+  defp flush_raw_log_chunk(:raw), do: {"", :raw}
+
+  defp flush_raw_log_chunk({:cursor_stream_json_to_text, state}) do
+    {rendered, state} = CursorStreamLog.flush(state)
+    {rendered, {:cursor_stream_json_to_text, state}}
+  end
+
+  defp flush_raw_log_chunk(_state), do: {"", :raw}
+
+  defp maybe_write_raw_log(raw_log, chunk) when is_binary(raw_log) do
+    if iodata_present?(chunk) do
+      File.write(raw_log, chunk, [:append])
+    else
+      :ok
+    end
+  end
+
+  defp maybe_write_raw_log(_raw_log, _chunk), do: :ok
+
+  defp iodata_present?(chunk) do
+    try do
+      IO.iodata_length(chunk) > 0
+    rescue
+      _ -> false
     end
   end
 
