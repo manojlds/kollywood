@@ -1633,7 +1633,7 @@ defmodule KollywoodWeb.DashboardLive do
             <button
               phx-click="delete_story"
               phx-value-id={@story["id"]}
-              phx-confirm={"Delete #{@story["id"]}? This cannot be undone."}
+              onclick={confirm_onclick("Delete #{@story["id"]}? This cannot be undone.")}
               class="text-xs text-error"
             >
               Delete Story
@@ -1644,7 +1644,7 @@ defmodule KollywoodWeb.DashboardLive do
               <button
                 phx-click="reset_story"
                 phx-value-id={@story["id"]}
-                phx-confirm={@reset_confirm}
+                onclick={confirm_onclick(@reset_confirm)}
                 class="text-xs text-warning"
               >
                 {@reset_label}
@@ -2065,7 +2065,7 @@ defmodule KollywoodWeb.DashboardLive do
                 <button
                   phx-click="delete_story"
                   phx-value-id={story_id}
-                  phx-confirm={"Delete #{story_id}? This cannot be undone."}
+                  onclick={confirm_onclick("Delete #{story_id}? This cannot be undone.")}
                   class="text-xs text-error"
                 >
                   Delete Story
@@ -2076,7 +2076,7 @@ defmodule KollywoodWeb.DashboardLive do
                   <button
                     phx-click="reset_story"
                     phx-value-id={story_id}
-                    phx-confirm={reset_confirm}
+                    onclick={confirm_onclick(reset_confirm)}
                     class="text-xs text-warning"
                   >
                     {reset_label}
@@ -4019,6 +4019,12 @@ defmodule KollywoodWeb.DashboardLive do
       "Reset #{story_id}? This will move it to Draft, clear run data, and remove the worktree."
     end
   end
+
+  defp confirm_onclick(message) when is_binary(message) and message != "" do
+    "return window.confirm(#{Jason.encode!(message)});"
+  end
+
+  defp confirm_onclick(_message), do: nil
 
   defp normalize_status(nil), do: "open"
 
