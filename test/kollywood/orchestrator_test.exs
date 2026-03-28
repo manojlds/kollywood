@@ -2817,6 +2817,56 @@ defmodule Kollywood.OrchestratorTest do
     end)
   end
 
+  test "rotates project dispatch priority across poll cycles", %{root: root} do
+    %{store: workflow_store} = start_workflow_store!(root, %{max_concurrent_agents: 1})
+    test_pid = self()
+
+    issue_a1 = issue("ISS-ROT-A1", "ABC-ROT-A1", 1, "alpha")
+    issue_a2 = issue("ISS-ROT-A2", "ABC-ROT-A2", 2, "alpha")
+    issue_b1 = issue("ISS-ROT-B1", "ABC-ROT-B1", 3, "beta")
+    issues_agent = start_agent!(fn -> [issue_a1, issue_a2, issue_b1] end)
+    tracker = fn _config -> {:ok, Agent.get(issues_agent, & &1)} end
+
+    runner = fn issue, _opts ->
+      issue_id = issue.id
+      send(test_pid, {:runner_started, issue_id, self()})
+
+      receive do
+        {:complete_runner, ^issue_id, result} -> result
+      after
+        5_000 -> {:error, failed_result(issue, "test timed out waiting for completion")}
+      end
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: tracker,
+         runner: runner,
+         project_limit_fetcher: fn -> %{"alpha" => 5, "beta" => 5} end,
+         auto_poll: false,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_started, "ISS-ROT-A1", runner_pid}
+    send(runner_pid, {:complete_runner, "ISS-ROT-A1", {:ok, success_result(issue_a1)}})
+
+    wait_until!(fn ->
+      if Orchestrator.status(orchestrator).running_count == 0 do
+        {:ok, :completed}
+      else
+        :retry
+      end
+    end)
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_started, "ISS-ROT-B1", second_runner_pid}
+    send(second_runner_pid, {:complete_runner, "ISS-ROT-B1", {:ok, success_result(issue_b1)}})
+  end
+
   test "retry dispatch also respects per-project caps", %{root: root} do
     %{store: workflow_store} = start_workflow_store!(root, %{max_concurrent_agents: 2})
     test_pid = self()
