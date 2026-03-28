@@ -293,7 +293,10 @@ defmodule Kollywood.AgentRunner do
   end
 
   defp verification_section(config) do
-    commands = get_in(config, [Access.key(:checks, %{}), Access.key(:required, [])]) || []
+    commands =
+      config
+      |> checks_config()
+      |> Map.get(:required, [])
 
     case commands do
       [] ->
@@ -817,9 +820,21 @@ defmodule Kollywood.AgentRunner do
          turn_opts,
          prompt_template
        ) do
-    max_cycles = review_max_cycles(config)
+    quality_limit = quality_max_cycles(config)
+    checks_limit = min(quality_limit, checks_max_cycles(config))
+    review_limit = min(quality_limit, review_max_cycles(config))
 
-    run_quality_cycle(state, config, session_opts, turn_opts, prompt_template, 1, max_cycles)
+    run_quality_cycle(
+      state,
+      config,
+      session_opts,
+      turn_opts,
+      prompt_template,
+      1,
+      quality_limit,
+      checks_limit,
+      review_limit
+    )
   end
 
   defp run_quality_cycle(
@@ -829,19 +844,29 @@ defmodule Kollywood.AgentRunner do
          turn_opts,
          prompt_template,
          cycle,
-         max_cycles
+         quality_limit,
+         checks_limit,
+         review_limit
        ) do
-    state = emit(state, :quality_cycle_started, %{cycle: cycle, max_cycles: max_cycles})
+    state =
+      emit(state, :quality_cycle_started, %{
+        cycle: cycle,
+        max_cycles: quality_limit,
+        checks_max_cycles: checks_limit,
+        review_max_cycles: review_limit
+      })
 
     with {:ok, state} <- run_required_checks(state, config),
          {:ok, state} <- run_review_if_enabled(state, config, cycle) do
       {:ok, emit(state, :quality_cycle_passed, %{cycle: cycle})}
     else
-      {:checks_failed, reason, state} when cycle < max_cycles ->
+      {:checks_failed, reason, state} when cycle < checks_limit ->
         state =
           emit(state, :quality_cycle_retrying, %{
             cycle: cycle,
-            max_cycles: max_cycles,
+            max_cycles: quality_limit,
+            checks_max_cycles: checks_limit,
+            review_max_cycles: review_limit,
             retry_reason: reason,
             retry_type: :checks
           })
@@ -863,7 +888,9 @@ defmodule Kollywood.AgentRunner do
               turn_opts,
               prompt_template,
               cycle + 1,
-              max_cycles
+              quality_limit,
+              checks_limit,
+              review_limit
             )
 
           {:error, remediation_reason, state} ->
@@ -871,13 +898,15 @@ defmodule Kollywood.AgentRunner do
         end
 
       {:checks_failed, reason, state} ->
-        {:error, "checks failed after #{max_cycles} cycle(s): #{reason}", state}
+        {:error, "checks failed after #{checks_limit} cycle(s): #{reason}", state}
 
-      {:review_failed, reason, state} when cycle < max_cycles ->
+      {:review_failed, reason, state} when cycle < review_limit ->
         state =
           emit(state, :quality_cycle_retrying, %{
             cycle: cycle,
-            max_cycles: max_cycles,
+            max_cycles: quality_limit,
+            checks_max_cycles: checks_limit,
+            review_max_cycles: review_limit,
             retry_reason: reason,
             retry_type: :review
           })
@@ -899,7 +928,9 @@ defmodule Kollywood.AgentRunner do
               turn_opts,
               prompt_template,
               cycle + 1,
-              max_cycles
+              quality_limit,
+              checks_limit,
+              review_limit
             )
 
           {:error, remediation_reason, state} ->
@@ -907,7 +938,7 @@ defmodule Kollywood.AgentRunner do
         end
 
       {:review_failed, reason, state} ->
-        {:error, "review failed after #{max_cycles} cycle(s): #{reason}", state}
+        {:error, "review failed after #{review_limit} cycle(s): #{reason}", state}
 
       {:error, reason, state} ->
         {:error, reason, state}
@@ -1948,7 +1979,11 @@ defmodule Kollywood.AgentRunner do
   end
 
   defp reviewer_config(config) do
-    review_agent = get_in(config, [Access.key(:review, %{}), Access.key(:agent, %{})]) || %{}
+    review_agent =
+      config
+      |> review_config()
+      |> Map.get(:agent, %{})
+
     base_agent = Map.get(config, :agent, %{})
 
     merged_agent =
@@ -2016,11 +2051,35 @@ defmodule Kollywood.AgentRunner do
     |> truthy?()
   end
 
+  defp quality_max_cycles(config) do
+    case quality_config(config) |> Map.get(:max_cycles) do
+      value when not is_nil(value) ->
+        positive_integer(value, 1)
+
+      _other ->
+        config
+        |> review_config()
+        |> Map.get(:max_cycles, 1)
+        |> positive_integer(1)
+    end
+  end
+
+  defp checks_max_cycles(config) do
+    default_limit = quality_max_cycles(config)
+
+    config
+    |> checks_config()
+    |> Map.get(:max_cycles, default_limit)
+    |> positive_integer(default_limit)
+  end
+
   defp review_max_cycles(config) do
+    default_limit = quality_max_cycles(config)
+
     config
     |> review_config()
-    |> Map.get(:max_cycles, 1)
-    |> positive_integer(1)
+    |> Map.get(:max_cycles, default_limit)
+    |> positive_integer(default_limit)
   end
 
   defp review_agent_kind(config) do
@@ -2070,14 +2129,39 @@ defmodule Kollywood.AgentRunner do
   def default_review_prompt_template, do: @default_review_prompt_template
 
   defp review_prompt_template(config) do
-    case get_in(config, [Access.key(:review, %{}), Access.key(:prompt_template)]) do
+    case config |> review_config() |> Map.get(:prompt_template) do
       value when is_binary(value) and value != "" -> value
       _other -> @default_review_prompt_template
     end
   end
 
-  defp checks_config(config), do: Map.get(config, :checks) || %{}
-  defp review_config(config), do: Map.get(config, :review) || %{}
+  defp quality_config(config), do: Map.get(config, :quality) || %{}
+
+  defp checks_config(config) do
+    case Map.get(config, :checks) do
+      checks when is_map(checks) ->
+        checks
+
+      _other ->
+        case quality_config(config) |> Map.get(:checks) do
+          checks when is_map(checks) -> checks
+          _other -> %{}
+        end
+    end
+  end
+
+  defp review_config(config) do
+    case Map.get(config, :review) do
+      review when is_map(review) ->
+        review
+
+      _other ->
+        case quality_config(config) |> Map.get(:review) do
+          review when is_map(review) -> review
+          _other -> %{}
+        end
+    end
+  end
 
   defp truthy?(value) when is_boolean(value), do: value
 

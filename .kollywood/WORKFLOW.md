@@ -9,8 +9,6 @@ tracker:
     - merged
     - failed
     - cancelled
-polling:
-  interval_ms: 5000
 workspace:
   strategy: worktree
 agent:
@@ -20,12 +18,21 @@ agent:
   max_turns: 20
   retries_enabled: false
   timeout_ms: 7200000
-checks:
-  fail_fast: true
-  required:
-    - "devenv shell -- mix format --check-formatted"
-    - "devenv shell -- bash -c \"MIX_ENV=test mix test\""
-  timeout_ms: 1800000
+quality:
+  max_cycles: 2
+  checks:
+    fail_fast: true
+    max_cycles: 2
+    required:
+      - "devenv shell -- mix format --check-formatted"
+      - "devenv shell -- bash -c \"MIX_ENV=test mix test\""
+    timeout_ms: 1800000
+  review:
+    agent:
+      kind: opencode
+      timeout_ms: 7200000
+    enabled: true
+    max_cycles: 2
 runtime:
   full_stack:
     command: devenv
@@ -37,12 +44,6 @@ runtime:
   profile: checks_only
 hooks:
   before_run: "bash -lc 'if [ -f .kollywood/AGENTS.md ]; then cp .kollywood/AGENTS.md AGENTS.md; fi; devenv shell -- sh -c \"mix deps.get && MIX_ENV=test mix deps.compile\"'"
-review:
-  agent:
-    kind: opencode
-    timeout_ms: 7200000
-  enabled: true
-  max_cycles: 2
 publish:
   mode: auto_merge
 git:

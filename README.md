@@ -164,13 +164,15 @@ mix kollywood.orch.logs US-001 --follow
 
 Quality gates are configured in `.kollywood/WORKFLOW.md`:
 
-- `checks.required`: shell commands that must pass before a story can be marked done
+- `quality.max_cycles`: overall maximum quality loop cycles
+- `quality.checks.required`: shell commands that must pass before a story can be marked done
+- `quality.checks.max_cycles`: maximum cycles allowed for checks remediation
 - `runtime.profile`: runtime isolation profile (`checks_only` or `full_stack`)
 - `runtime.full_stack`: per-worktree devenv process/env/port settings used for isolated checks
 - `runtime.full_stack.port_offset_mod`: offset pool size for concurrent `full_stack` runs (offsets are leased strictly; exhaustion fails fast)
-- `review.enabled`: when true, runs a reviewer agent round and requires verdict tokens
-- `review.max_cycles`: maximum worker/reviewer feedback cycles before failing the run
-- `review.agent`: reviewer adapter settings (kind/command/args/env/timeout)
+- `quality.review.enabled`: when true, runs a reviewer agent round and requires verdict tokens
+- `quality.review.max_cycles`: maximum cycles allowed for review remediation
+- `quality.review.agent`: reviewer adapter settings (kind/command/args/env/timeout)
 - default command timeouts are 30 minutes unless overridden in workflow config
 
 Repo-specific agent guidance can live in `.kollywood/AGENTS.md`.

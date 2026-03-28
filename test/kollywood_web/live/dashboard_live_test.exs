@@ -175,8 +175,12 @@ defmodule KollywoodWeb.DashboardLiveTest do
       ---
       agent:
         kind: claude
-      polling:
-        interval_ms: 5000
+      quality:
+        max_cycles: 1
+        checks:
+          required: []
+        review:
+          enabled: false
       ---
 
       You are working on {{ issue.identifier }}.
@@ -198,10 +202,11 @@ defmodule KollywoodWeb.DashboardLiveTest do
     } do
       write_workflow!(project, """
       ---
-      review:
-        enabled: true
-        prompt_template: |
-          old template content
+      quality:
+        review:
+          enabled: true
+          prompt_template: |
+            old template content
       ---
 
       Body here.
@@ -248,14 +253,22 @@ defmodule KollywoodWeb.DashboardLiveTest do
         settings: %{
           agent: %{"kind" => "claude", "max_turns" => "2", "command" => ""},
           workspace: %{"strategy" => "clone"},
-          checks: %{"required" => "", "timeout_ms" => "10000"},
-          review: %{
-            "enabled" => "false",
+          quality: %{
             "max_cycles" => "1",
-            "pass_token" => "REVIEW_PASS",
-            "fail_token" => "REVIEW_FAIL",
-            "agent_custom" => "false",
-            "agent" => %{}
+            "checks" => %{
+              "required" => "",
+              "timeout_ms" => "10000",
+              "fail_fast" => "true",
+              "max_cycles" => "1"
+            },
+            "review" => %{
+              "enabled" => "false",
+              "max_cycles" => "1",
+              "pass_token" => "REVIEW_PASS",
+              "fail_token" => "REVIEW_FAIL",
+              "agent_custom" => "false",
+              "agent" => %{}
+            }
           },
           publish: %{"provider" => "", "mode" => "auto_merge", "pr_type" => "ready"},
           git: %{"base_branch" => "main"}
