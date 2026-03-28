@@ -787,6 +787,142 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "View"
       assert html =~ "/projects/#{project.slug}/runs/US-002"
     end
+
+    test "run detail shows enabled retry action for failed checks attempt", %{
+      conn: conn,
+      project: project,
+      tmp_dir: tmp_dir
+    } do
+      story_id = "US-RETRY-CHECKS"
+
+      append_story!(project, %{
+        "id" => story_id,
+        "title" => "Retry checks",
+        "status" => "failed"
+      })
+
+      write_workflow!(project, """
+      ---
+      tracker:
+        kind: prd_json
+      workspace:
+        strategy: clone
+      agent:
+        kind: amp
+        command: /bin/true
+      quality:
+        max_cycles: 1
+        checks:
+          required:
+            - test -f ready.txt
+          timeout_ms: 10000
+          fail_fast: true
+          max_cycles: 1
+        review:
+          enabled: false
+          max_cycles: 1
+      publish:
+        mode: push
+      orchestrator:
+        retries_enabled: false
+      git:
+        base_branch: main
+      ---
+
+      Work on {{ issue.identifier }}.
+      """)
+
+      workspace_path = Path.join(tmp_dir, "retry-checks-workspace")
+      File.mkdir_p!(workspace_path)
+      File.write!(Path.join(workspace_path, "ready.txt"), "ok\n")
+
+      _context =
+        prepare_run_logs!(project.slug, story_id,
+          events: [
+            %{type: :turn_succeeded, turn: 1, output: "agent output"},
+            %{type: :checks_started, check_count: 1},
+            %{type: :check_failed, check_index: 1, reason: "failed"},
+            %{type: :checks_failed, error_count: 1}
+          ],
+          status: "failed",
+          completion: %{workspace_path: workspace_path, error: "checks failed"}
+        )
+
+      {:ok, view, html} =
+        live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
+
+      assert has_element?(view, "button[phx-click='trigger_run'][phx-value-step='checks']")
+      assert html =~ "Retry checks"
+      refute html =~ ~s(phx-value-step="checks" disabled)
+    end
+
+    test "run detail disables retry action when workspace preconditions are missing", %{
+      conn: conn,
+      project: project
+    } do
+      story_id = "US-RETRY-DISABLED"
+
+      append_story!(project, %{
+        "id" => story_id,
+        "title" => "Retry disabled",
+        "status" => "failed"
+      })
+
+      write_workflow!(project, """
+      ---
+      tracker:
+        kind: prd_json
+      workspace:
+        strategy: clone
+      agent:
+        kind: amp
+        command: /bin/true
+      quality:
+        max_cycles: 1
+        checks:
+          required:
+            - test -f ready.txt
+          timeout_ms: 10000
+          fail_fast: true
+          max_cycles: 1
+        review:
+          enabled: false
+          max_cycles: 1
+      publish:
+        mode: push
+      orchestrator:
+        retries_enabled: false
+      git:
+        base_branch: main
+      ---
+
+      Work on {{ issue.identifier }}.
+      """)
+
+      _context =
+        prepare_run_logs!(project.slug, story_id,
+          events: [
+            %{type: :turn_succeeded, turn: 1, output: "agent output"},
+            %{type: :checks_started, check_count: 1},
+            %{type: :check_failed, check_index: 1, reason: "failed"},
+            %{type: :checks_failed, error_count: 1}
+          ],
+          status: "failed",
+          completion: %{
+            workspace_path:
+              Path.join(System.tmp_dir!(), "does-not-exist-#{System.unique_integer()}"),
+            error: "checks failed"
+          }
+        )
+
+      {:ok, view, html} =
+        live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
+
+      assert has_element?(view, "button[phx-click='trigger_run'][phx-value-step='checks']")
+      assert html =~ "Retry checks"
+      assert html =~ ~s(phx-value-step="checks" disabled)
+      assert html =~ "workspace is missing"
+    end
   end
 
   describe "stories section actions" do
@@ -1169,7 +1305,8 @@ defmodule KollywoodWeb.DashboardLiveTest do
     }
 
     issue = %{id: story_id, identifier: story_id, title: "Test #{story_id}"}
-    {:ok, context} = RunLogs.prepare_attempt(config, issue, nil)
+    metadata_overrides = Keyword.get(opts, :metadata_overrides, %{})
+    {:ok, context} = RunLogs.prepare_attempt(config, issue, nil, metadata_overrides)
 
     opts
     |> Keyword.get(:events, [])
@@ -1177,10 +1314,25 @@ defmodule KollywoodWeb.DashboardLiveTest do
       RunLogs.append_event(context, event)
     end)
 
-    status = Keyword.get(opts, :status, "finished")
-    RunLogs.complete_attempt(context, %{status: status, turn_count: 1})
+    completion =
+      opts
+      |> Keyword.get(:completion, %{})
+      |> Map.new()
+      |> Map.put_new(:status, Keyword.get(opts, :status, "finished"))
+      |> Map.put_new(:turn_count, 1)
+
+    RunLogs.complete_attempt(context, completion)
 
     context
+  end
+
+  defp append_story!(project, story) do
+    tracker_path = Projects.tracker_path(project)
+    {:ok, content} = File.read(tracker_path)
+    {:ok, decoded} = Jason.decode(content)
+    stories = Map.get(decoded, "userStories", [])
+    payload = Map.put(decoded, "userStories", stories ++ [story])
+    File.write!(tracker_path, Jason.encode!(payload, pretty: true))
   end
 
   defp write_workflow!(project, content) do
