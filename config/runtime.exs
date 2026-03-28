@@ -17,11 +17,18 @@ import Config
 # Alternatively, you can use `mix phx.gen.release` to generate a `bin/server`
 # script that automatically sets the env var above.
 phx_server_enabled? =
-  System.get_env("PHX_SERVER")
-  |> to_string()
-  |> String.trim()
-  |> String.downcase()
-  |> then(&(&1 in ["1", "true", "yes", "on"]))
+  case System.get_env("PHX_SERVER") do
+    value when is_binary(value) ->
+      normalized =
+        value
+        |> String.trim()
+        |> String.downcase()
+
+      normalized in ["1", "true", "yes", "on"]
+
+    _other ->
+      false
+  end
 
 # Limit PHX_SERVER toggling to prod/release usage so ad-hoc dev/test
 # commands never bind the HTTP port unexpectedly.
