@@ -587,20 +587,6 @@ defmodule Kollywood.Config do
      "Invalid #{path}: #{inspect(value)}. Must be one of: #{Enum.join(valid_values, ", ")}"}
   end
 
-  defp parse_boolean_value(value, _path) when is_boolean(value), do: {:ok, value}
-
-  defp parse_boolean_value(value, path) when is_binary(value) do
-    case String.downcase(String.trim(value)) do
-      "true" -> {:ok, true}
-      "false" -> {:ok, false}
-      _ -> {:error, "Invalid #{path}: #{inspect(value)}. Must be true or false"}
-    end
-  end
-
-  defp parse_boolean_value(value, path) do
-    {:error, "Invalid #{path}: #{inspect(value)}. Must be true or false"}
-  end
-
   defp optional_string(value) when is_binary(value) and value != "", do: value
   defp optional_string(_value), do: nil
 
