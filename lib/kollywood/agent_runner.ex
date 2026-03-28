@@ -509,18 +509,63 @@ defmodule Kollywood.AgentRunner do
           end
 
         {:error, {:merge_failed, reason}} ->
-          Logger.warning(
-            "publish auto-merge failed for branch #{workspace.branch} -> #{base_branch}: #{reason}"
-          )
+          if merge_conflict?(reason) do
+            conflict_state =
+              emit(pushed_state, :publish_merge_conflict, %{
+                branch: workspace.branch,
+                base_branch: base_branch,
+                reason: reason
+              })
 
-          merged_state =
-            emit(pushed_state, :publish_merge_failed, %{
-              branch: workspace.branch,
-              base_branch: base_branch,
-              reason: reason
-            })
+            case schedule_conflict_remediation(conflict_state, config, reason) do
+              {:ok, remediated_state} ->
+                case tracker_mark_merged(
+                       config,
+                       remediated_state.issue_id,
+                       workspace.branch,
+                       base_branch
+                     ) do
+                  :ok ->
+                    state =
+                      remediated_state
+                      |> emit(:publish_merged, %{
+                        branch: workspace.branch,
+                        base_branch: base_branch
+                      })
+                      |> emit(:publish_succeeded, %{branch: workspace.branch, pr_url: nil})
 
-          {:ok, emit(merged_state, :publish_succeeded, %{branch: workspace.branch, pr_url: nil})}
+                    {:ok, state}
+
+                  {:error, tracker_reason} ->
+                    {:error, tracker_reason,
+                     emit(remediated_state, :publish_failed, %{
+                       branch: workspace.branch,
+                       reason: tracker_reason
+                     })}
+                end
+
+              {:error, remediation_reason, remediated_state} ->
+                {:error, remediation_reason,
+                 emit(remediated_state, :publish_failed, %{
+                   branch: workspace.branch,
+                   reason: remediation_reason
+                 })}
+            end
+          else
+            Logger.warning(
+              "publish auto-merge failed for branch #{workspace.branch} -> #{base_branch}: #{reason}"
+            )
+
+            merged_state =
+              emit(pushed_state, :publish_merge_failed, %{
+                branch: workspace.branch,
+                base_branch: base_branch,
+                reason: reason
+              })
+
+            {:ok,
+             emit(merged_state, :publish_succeeded, %{branch: workspace.branch, pr_url: nil})}
+          end
 
         {:error, reason} ->
           {:error, reason,
@@ -546,6 +591,158 @@ defmodule Kollywood.AgentRunner do
       {:error, reason} -> {:error, {:merge_failed, reason}}
     end
   end
+
+  defp schedule_conflict_remediation(state, config, reason) do
+    workspace = state.workspace
+    base_branch = get_in(config, [Access.key(:git, %{}), Access.key(:base_branch)]) || "main"
+
+    prompt = conflict_remediation_prompt(workspace.branch, reason)
+
+    case run_conflict_remediation_turn(state, config, prompt, base_branch) do
+      {:ok, remediated_state} ->
+        case merge_branch_to_main(workspace, base_branch) do
+          :ok ->
+            {:ok,
+             emit(remediated_state, :publish_merge_conflict_resolved, %{
+               branch: workspace.branch,
+               base_branch: base_branch
+             })}
+
+          {:error, {:merge_failed, retry_reason}} ->
+            {:error,
+             "conflict resolution failed: merge still conflicts after remediation: #{retry_reason}",
+             remediated_state}
+
+          {:error, retry_reason} ->
+            {:error, "conflict resolution failed: #{retry_reason}", remediated_state}
+        end
+
+      {:error, remediation_reason, remediated_state} ->
+        {:error, "conflict resolution failed: #{remediation_reason}", remediated_state}
+    end
+  end
+
+  defp run_conflict_remediation_turn(state, config, prompt, base_branch) do
+    with {:ok, session} <- Agent.start_session(config, state.workspace, %{}) do
+      state =
+        state
+        |> Map.put(:session, session)
+        |> emit(:session_started, %{
+          session_id: session.id,
+          adapter: session.adapter,
+          remediation: true,
+          remediation_type: :merge_conflict,
+          base_branch: base_branch
+        })
+
+      turn_number = state.turn_count + 1
+
+      run_result =
+        with :ok <- Workspace.before_run(state.workspace, config.hooks) do
+          state =
+            state
+            |> Map.put(:turn_count, turn_number)
+            |> emit(:turn_started, %{
+              turn: turn_number,
+              remediation: true,
+              remediation_type: :merge_conflict,
+              base_branch: base_branch
+            })
+
+          turn_result =
+            Agent.run_turn(
+              session,
+              prompt,
+              with_raw_log(%{}, state.log_files, :agent_stdout)
+            )
+
+          Workspace.after_run(state.workspace, config.hooks)
+
+          case turn_result do
+            {:ok, result} ->
+              turn_output = Map.get(result, :raw_output) || Map.get(result, :output)
+
+              {:ok,
+               state
+               |> Map.put(:last_output, result.output)
+               |> emit(:turn_succeeded, %{
+                 turn: turn_number,
+                 duration_ms: result.duration_ms,
+                 remediation: true,
+                 remediation_type: :merge_conflict,
+                 base_branch: base_branch,
+                 output: turn_output,
+                 command: Map.get(result, :command),
+                 args: Map.get(result, :args, [])
+               })}
+
+            {:error, reason} ->
+              {:error, reason,
+               emit(state, :turn_failed, %{
+                 turn: turn_number,
+                 reason: reason,
+                 remediation: true,
+                 remediation_type: :merge_conflict,
+                 base_branch: base_branch
+               })}
+          end
+        else
+          {:error, reason} ->
+            {:error, reason,
+             emit(state, :turn_failed, %{
+               turn: turn_number,
+               reason: reason,
+               remediation: true,
+               remediation_type: :merge_conflict,
+               base_branch: base_branch
+             })}
+        end
+
+      case run_result do
+        {:ok, run_state} ->
+          case stop_session(run_state, session) do
+            {:ok, stopped_state} ->
+              {:ok, stopped_state}
+
+            {:error, stop_reason, stopped_state} ->
+              {:error, "Failed to stop agent session: #{stop_reason}", stopped_state}
+          end
+
+        {:error, reason, run_state} ->
+          case stop_session(run_state, session) do
+            {:ok, stopped_state} ->
+              {:error, reason, stopped_state}
+
+            {:error, stop_reason, stopped_state} ->
+              {:error, combine_errors(reason, "Failed to stop agent session: #{stop_reason}"),
+               stopped_state}
+          end
+      end
+    else
+      {:error, session_reason} ->
+        {:error, "failed to run conflict remediation turn: #{session_reason}", state}
+    end
+  end
+
+  defp conflict_remediation_prompt(branch, reason) do
+    """
+    The previous attempt to merge branch `#{branch}` into `main` failed with conflicts:
+
+    #{reason}
+
+    Please resolve the conflicts:
+    1. `git fetch origin`
+    2. `git rebase origin/main`
+    3. Resolve any conflicts in conflicting files
+    4. `git rebase --continue` or `git add . && git rebase --continue`
+    5. `git push --force-with-lease origin #{branch}`
+    """
+  end
+
+  defp merge_conflict?(reason) when is_binary(reason),
+    do: String.contains?(reason, "CONFLICT") or String.contains?(reason, "conflict")
+
+  defp merge_conflict?(_reason), do: false
 
   defp publisher_adapter(provider) do
     case Publisher.module_for_provider(provider) do
