@@ -316,6 +316,60 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       assert html =~ "Story not found"
     end
+
+    test "shows actions menu with manual status transitions", %{conn: conn, project: project} do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories/US-001")
+      html = render(view)
+
+      assert has_element?(view, "button[phx-click='open_edit_story_form'][phx-value-id='US-001']")
+      assert has_element?(view, "button[phx-click='delete_story'][phx-value-id='US-001']")
+      assert html =~ "Delete US-001? This cannot be undone."
+
+      assert has_element?(
+               view,
+               "button[phx-click='update_story_status'][phx-value-id='US-001'][phx-value-status='done']"
+             )
+
+      refute has_element?(
+               view,
+               "button[phx-click='update_story_status'][phx-value-id='US-001'][phx-value-status='in_progress']"
+             )
+    end
+
+    test "resets story from detail page and updates status badge", %{
+      conn: conn,
+      project: project,
+      tmp_dir: tmp_dir
+    } do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories/US-002")
+      assert render(view) =~ "Reset US-002? This will clear run data and remove the worktree."
+
+      html =
+        view
+        |> element("button[phx-click='reset_story'][phx-value-id='US-002']")
+        |> render_click()
+
+      assert html =~ "Open"
+
+      {:ok, content} = File.read(Path.join(tmp_dir, "prd.json"))
+      {:ok, data} = Jason.decode(content)
+      story = Enum.find(data["userStories"], &(&1["id"] == "US-002"))
+      assert story["status"] == "open"
+    end
+
+    test "deletes story from detail page and shows not found state", %{
+      conn: conn,
+      project: project
+    } do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories/US-003")
+
+      html =
+        view
+        |> element("button[phx-click='delete_story'][phx-value-id='US-003']")
+        |> render_click()
+
+      assert html =~ "Story not found"
+    end
   end
 
   describe "update_story_status event" do

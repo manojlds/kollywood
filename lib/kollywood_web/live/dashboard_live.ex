@@ -70,6 +70,7 @@ defmodule KollywoodWeb.DashboardLive do
     socket =
       socket
       |> load_project_data(socket.assigns.current_project)
+      |> sync_story_detail_selection()
       |> assign(:orchestrator_status, fetch_orchestrator_status())
 
     {:noreply, socket}
@@ -119,6 +120,7 @@ defmodule KollywoodWeb.DashboardLive do
             :ok ->
               socket
               |> load_project_data(project)
+              |> sync_story_detail_selection()
               |> put_flash(:info, "Story status updated.")
 
             {:error, reason} ->
@@ -144,6 +146,7 @@ defmodule KollywoodWeb.DashboardLive do
 
               socket
               |> load_project_data(project)
+              |> sync_story_detail_selection()
               |> put_flash(:info, "Story reset for rerun.")
 
             {:error, reason} ->
@@ -226,6 +229,7 @@ defmodule KollywoodWeb.DashboardLive do
               socket
               |> clear_story_form()
               |> load_project_data(project)
+              |> sync_story_detail_selection()
               |> put_flash(:info, "Story saved.")
 
             {:error, reason} ->
@@ -257,6 +261,7 @@ defmodule KollywoodWeb.DashboardLive do
               socket
               |> clear_story_form_if_editing(story_id)
               |> load_project_data(project)
+              |> sync_story_detail_selection()
               |> put_flash(:info, "Story deleted.")
 
             {:error, reason} ->
@@ -1342,15 +1347,84 @@ defmodule KollywoodWeb.DashboardLive do
   attr :selected_attempt, :string, default: nil
 
   defp story_detail_section(assigns) do
+    assigns = assign(assigns, :editable, local_provider?(assigns.project))
+
     ~H"""
     <div class="space-y-6">
-      <div class="flex items-center gap-4">
-        <.link navigate={~p"/projects/#{@project.slug}/stories"} class="btn btn-ghost btn-sm gap-2">
-          <.icon name="hero-arrow-left" class="size-4" /> Back to Stories
-        </.link>
-        <span class="badge badge-outline font-mono text-sm">{@story_id}</span>
-        <%= if @story do %>
-          <.status_badge status={@story["status"] || "open"} />
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div class="flex flex-wrap items-center gap-3">
+          <.link navigate={~p"/projects/#{@project.slug}/stories"} class="btn btn-ghost btn-sm gap-2">
+            <.icon name="hero-arrow-left" class="size-4" /> Back to Stories
+          </.link>
+          <span class="badge badge-outline font-mono text-sm">{@story_id}</span>
+          <%= if @story do %>
+            <.status_badge status={@story["status"] || "open"} />
+          <% end %>
+        </div>
+
+        <%= if @editable && @story do %>
+          <% story_id = @story["id"] || @story_id %>
+          <% status_targets = manual_status_targets(@story["status"]) %>
+          <div class="dropdown dropdown-end">
+            <label tabindex="0" class="btn btn-ghost btn-sm gap-2">
+              Actions <.icon name="hero-chevron-down" class="size-4" />
+            </label>
+            <ul
+              tabindex="0"
+              class="dropdown-content menu menu-xs bg-base-100 rounded-box shadow-lg border border-base-300 z-50 w-44 p-1"
+            >
+              <li>
+                <button phx-click="open_edit_story_form" phx-value-id={story_id} class="text-xs">
+                  Edit Story
+                </button>
+              </li>
+              <li>
+                <button
+                  phx-click="delete_story"
+                  phx-value-id={story_id}
+                  phx-confirm={"Delete #{story_id}? This cannot be undone."}
+                  class="text-xs text-error"
+                >
+                  Delete Story
+                </button>
+              </li>
+              <%= if normalize_status(@story["status"]) != "open" do %>
+                <li>
+                  <button
+                    phx-click="reset_story"
+                    phx-value-id={story_id}
+                    phx-confirm={"Reset #{story_id}? This will clear run data and remove the worktree."}
+                    class="text-xs text-warning"
+                  >
+                    Reset Story
+                  </button>
+                </li>
+                <li><hr class="my-1 border-base-300" /></li>
+              <% end %>
+              <li class="menu-title px-2 py-1 text-[10px] tracking-wide uppercase text-base-content/50">
+                Set Status
+              </li>
+              <%= if status_targets == [] do %>
+                <li>
+                  <span class="px-2 py-1 text-xs text-base-content/50">
+                    No manual transitions
+                  </span>
+                </li>
+              <% end %>
+              <%= for s <- status_targets do %>
+                <li>
+                  <button
+                    phx-click="update_story_status"
+                    phx-value-id={story_id}
+                    phx-value-status={s}
+                    class="text-xs"
+                  >
+                    {display_status(s)}
+                  </button>
+                </li>
+              <% end %>
+            </ul>
+          </div>
         <% end %>
       </div>
 
@@ -2347,6 +2421,16 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp clear_story_form_if_editing(socket, _story_id), do: socket
+
+  defp sync_story_detail_selection(socket) do
+    if socket.assigns[:live_action] == :story_detail do
+      story_id = socket.assigns[:run_detail_story_id]
+      story = Enum.find(socket.assigns.stories, &(&1["id"] == story_id))
+      assign(socket, :selected_story, story)
+    else
+      socket
+    end
+  end
 
   defp story_form_status_options(:new, _values), do: ["draft", "open"]
 
