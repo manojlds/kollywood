@@ -440,6 +440,8 @@ defmodule Kollywood.Config do
     %{
       kind: kind,
       max_concurrent_agents: positive_integer(Map.get(agent, "max_concurrent_agents", 5), 5),
+      project_max_concurrent_agents:
+        parse_project_max_concurrent_agents(Map.get(agent, "project_max_concurrent_agents", %{})),
       max_turns: positive_integer(Map.get(agent, "max_turns", 20), 20),
       retries_enabled: boolean(Map.get(agent, "retries_enabled", true), true),
       max_attempts: positive_integer(Map.get(agent, "max_attempts", 1), 1),
@@ -451,6 +453,49 @@ defmodule Kollywood.Config do
       timeout_ms:
         positive_integer(Map.get(agent, "timeout_ms", @default_timeout_ms), @default_timeout_ms)
     }
+  end
+
+  defp parse_project_max_concurrent_agents(value) when is_map(value) do
+    Enum.reduce(value, %{}, fn {project_key, project_limit}, acc ->
+      normalized_key = optional_string(project_key)
+      normalized_limit = positive_integer(project_limit, nil)
+
+      cond do
+        is_nil(normalized_key) ->
+          acc
+
+        is_nil(normalized_limit) ->
+          Logger.warning(
+            "Ignoring invalid agent.project_max_concurrent_agents entry for #{inspect(project_key)} (got: #{inspect(project_limit)})"
+          )
+
+          acc
+
+        true ->
+          Map.put(acc, normalized_key, normalized_limit)
+      end
+    end)
+  end
+
+  defp parse_project_max_concurrent_agents(value) when is_list(value) do
+    value
+    |> Enum.reduce(%{}, fn entry, acc ->
+      case entry do
+        {project_key, project_limit} -> Map.put(acc, project_key, project_limit)
+        _other -> acc
+      end
+    end)
+    |> parse_project_max_concurrent_agents()
+  end
+
+  defp parse_project_max_concurrent_agents(nil), do: %{}
+
+  defp parse_project_max_concurrent_agents(value) do
+    Logger.warning(
+      "Ignoring invalid agent.project_max_concurrent_agents value (expected map, got: #{inspect(value)})"
+    )
+
+    %{}
   end
 
   defp parse_publish(raw) do

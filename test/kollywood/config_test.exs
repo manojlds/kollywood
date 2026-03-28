@@ -25,6 +25,9 @@ defmodule Kollywood.ConfigTest do
   agent:
     kind: amp
     max_concurrent_agents: 3
+    project_max_concurrent_agents:
+      alpha: 1
+      beta: 2
     max_turns: 10
   ---
 
@@ -35,6 +38,7 @@ defmodule Kollywood.ConfigTest do
     assert {:ok, config, template} = Config.parse(@valid_workflow)
     assert config.agent.kind == :amp
     assert config.agent.max_concurrent_agents == 3
+    assert config.agent.project_max_concurrent_agents == %{"alpha" => 1, "beta" => 2}
     assert config.agent.max_turns == 10
     assert config.tracker.kind == "linear"
     assert config.tracker.project_slug == "my-project"
@@ -113,6 +117,7 @@ defmodule Kollywood.ConfigTest do
     assert config.polling.stale_threshold_multiplier == 3
     assert config.polling.watchdog_check_interval_ms == 5000
     assert config.agent.max_concurrent_agents == 5
+    assert config.agent.project_max_concurrent_agents == %{}
     assert config.agent.max_turns == 20
     assert config.agent.retries_enabled == true
     assert config.agent.max_retry_backoff_ms == 300_000
@@ -160,6 +165,30 @@ defmodule Kollywood.ConfigTest do
     assert config.agent.env == %{"OPENAI_API_KEY" => "test-key"}
     assert config.agent.timeout_ms == 90_000
     assert config.agent.max_retry_backoff_ms == 120_000
+  end
+
+  test "ignores invalid project max concurrent agent entries" do
+    content = """
+    ---
+    workspace:
+      root: /tmp
+    agent:
+      kind: amp
+      project_max_concurrent_agents:
+        alpha: 2
+        beta: invalid
+        gamma: 0
+    ---
+    prompt
+    """
+
+    log =
+      capture_log(fn ->
+        assert {:ok, config, _} = Config.parse(content)
+        assert config.agent.project_max_concurrent_agents == %{"alpha" => 2}
+      end)
+
+    assert log =~ "Ignoring invalid agent.project_max_concurrent_agents entry"
   end
 
   test "defaults tracker settings for prd_json" do

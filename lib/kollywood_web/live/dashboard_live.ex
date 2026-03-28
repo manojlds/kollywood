@@ -609,6 +609,7 @@ defmodule KollywoodWeb.DashboardLive do
                 <.settings_section
                   project={@current_project}
                   workflow={@workflow}
+                  orchestrator_status={@orchestrator_status}
                   workflow_editable={local_provider?(@current_project)}
                 />
               <% _ -> %>
@@ -2731,6 +2732,7 @@ defmodule KollywoodWeb.DashboardLive do
 
   attr :project, Project, required: true
   attr :workflow, :map, required: true
+  attr :orchestrator_status, :map, default: nil
   attr :workflow_editable, :boolean, default: false
 
   defp settings_section(assigns) do
@@ -2757,6 +2759,22 @@ defmodule KollywoodWeb.DashboardLive do
             <div>
               <span class="text-sm text-base-content/60">Default Branch</span>
               <p class="font-medium">{@project.default_branch}</p>
+            </div>
+            <div>
+              <span class="text-sm text-base-content/60">Configured Max Agents</span>
+              <p class="font-medium">
+                {project_configured_limit_label(@project.max_concurrent_agents)}
+              </p>
+            </div>
+            <div>
+              <span class="text-sm text-base-content/60">Effective Max Agents</span>
+              <p class="font-medium">
+                {project_effective_limit_label(
+                  @project.slug,
+                  @project.max_concurrent_agents,
+                  @orchestrator_status
+                )}
+              </p>
             </div>
             <%= if local_path = Projects.local_path(@project) do %>
               <div class="sm:col-span-2">
@@ -5361,4 +5379,59 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp time_ago(_), do: "unknown"
+
+  defp project_configured_limit_label(nil), do: "Global default"
+  defp project_configured_limit_label(limit) when is_integer(limit), do: Integer.to_string(limit)
+  defp project_configured_limit_label(_limit), do: "Global default"
+
+  defp project_effective_limit_label(project_slug, configured_limit, status) do
+    case find_project_limit_snapshot(status, project_slug) do
+      %{effective_max_concurrent_agents: limit} when is_integer(limit) ->
+        Integer.to_string(limit)
+
+      _other ->
+        global_limit = global_limit_from_status(status)
+
+        configured_limit
+        |> effective_limit_with_global(global_limit)
+        |> case do
+          nil -> "-"
+          limit -> Integer.to_string(limit)
+        end
+    end
+  end
+
+  defp find_project_limit_snapshot(%{} = status, project_slug) when is_binary(project_slug) do
+    status
+    |> Map.get(:project_limits, [])
+    |> Enum.find(fn entry -> Map.get(entry, :project_slug) == project_slug end)
+  end
+
+  defp find_project_limit_snapshot(_status, _project_slug), do: nil
+
+  defp global_limit_from_status(%{} = status) do
+    case Map.get(status, :max_concurrent_agents) do
+      value when is_integer(value) and value > 0 -> value
+      _other -> nil
+    end
+  end
+
+  defp global_limit_from_status(_status), do: nil
+
+  defp effective_limit_with_global(configured_limit, global_limit)
+
+  defp effective_limit_with_global(configured_limit, global_limit)
+       when is_integer(configured_limit) and configured_limit > 0 and is_integer(global_limit) and
+              global_limit > 0,
+       do: min(configured_limit, global_limit)
+
+  defp effective_limit_with_global(configured_limit, _global_limit)
+       when is_integer(configured_limit) and configured_limit > 0,
+       do: configured_limit
+
+  defp effective_limit_with_global(_configured_limit, global_limit)
+       when is_integer(global_limit) and global_limit > 0,
+       do: global_limit
+
+  defp effective_limit_with_global(_configured_limit, _global_limit), do: nil
 end

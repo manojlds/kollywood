@@ -128,7 +128,11 @@ defmodule KollywoodWeb.AdminLive do
       <main class="px-4 sm:px-6 lg:px-8 py-8 max-w-6xl mx-auto space-y-8">
         <.service_config_section />
         <.orchestrator_section status={@orchestrator_status} />
-        <.repos_section projects={@projects} sync_status={@sync_status} />
+        <.repos_section
+          projects={@projects}
+          sync_status={@sync_status}
+          orchestrator_status={@orchestrator_status}
+        />
       </main>
     </div>
     """
@@ -269,9 +273,49 @@ defmodule KollywoodWeb.AdminLive do
 
           <.running_table :if={@status.running != []} running={@status.running} />
           <.retrying_table :if={@status.retrying != []} retrying={@status.retrying} />
+          <.project_limits_table
+            :if={Map.get(@status, :project_limits, []) != []}
+            project_limits={Map.get(@status, :project_limits, [])}
+          />
         </div>
       <% end %>
     </section>
+    """
+  end
+
+  attr :project_limits, :list, required: true
+
+  defp project_limits_table(assigns) do
+    ~H"""
+    <div class="card bg-base-200 border border-base-300">
+      <div class="card-body p-4">
+        <h3 class="font-medium text-sm mb-2">Project Limits</h3>
+        <div class="overflow-x-auto">
+          <table class="table table-sm">
+            <thead>
+              <tr>
+                <th>Project</th>
+                <th>Configured</th>
+                <th>Effective</th>
+                <th>Running</th>
+                <th>Retrying</th>
+              </tr>
+            </thead>
+            <tbody>
+              <%= for entry <- @project_limits do %>
+                <tr>
+                  <td class="font-mono text-sm">{entry.project_slug}</td>
+                  <td>{entry.configured_max_concurrent_agents || "global"}</td>
+                  <td>{entry.effective_max_concurrent_agents}</td>
+                  <td>{entry.running_count}</td>
+                  <td>{entry.retry_count}</td>
+                </tr>
+              <% end %>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
     """
   end
 
@@ -363,6 +407,7 @@ defmodule KollywoodWeb.AdminLive do
 
   attr :projects, :list, required: true
   attr :sync_status, :map, required: true
+  attr :orchestrator_status, :map, default: nil
 
   defp repos_section(assigns) do
     ~H"""
@@ -378,6 +423,7 @@ defmodule KollywoodWeb.AdminLive do
                   <th class="w-24">Provider</th>
                   <th class="w-48">Source</th>
                   <th class="w-48">Managed Clone</th>
+                  <th class="w-36">Agent Limit</th>
                   <th class="w-28">Status</th>
                   <th class="w-16"></th>
                 </tr>
@@ -415,6 +461,17 @@ defmodule KollywoodWeb.AdminLive do
                         title={local_path || "—"}
                       >
                         {local_path || "—"}
+                      </div>
+                    </td>
+                    <td>
+                      <div class="text-xs">
+                        <span class="font-medium">
+                          {project.max_concurrent_agents || "global"}
+                        </span>
+                        <span class="text-base-content/50"> / </span>
+                        <span class="font-medium">
+                          {effective_project_limit_label(@orchestrator_status, project)}
+                        </span>
                       </div>
                     </td>
                     <td>
@@ -519,4 +576,24 @@ defmodule KollywoodWeb.AdminLive do
       :normal -> "normal"
     end
   end
+
+  defp effective_project_limit_label(%{} = status, project) when is_map(project) do
+    project_slug = Map.get(project, :slug)
+
+    status
+    |> Map.get(:project_limits, [])
+    |> Enum.find(fn entry -> Map.get(entry, :project_slug) == project_slug end)
+    |> case do
+      %{effective_max_concurrent_agents: limit} when is_integer(limit) ->
+        Integer.to_string(limit)
+
+      _other ->
+        case Map.get(status, :max_concurrent_agents) do
+          limit when is_integer(limit) and limit > 0 -> Integer.to_string(limit)
+          _ -> "-"
+        end
+    end
+  end
+
+  defp effective_project_limit_label(_status, _project), do: "-"
 end
