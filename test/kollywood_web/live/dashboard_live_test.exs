@@ -318,9 +318,8 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert merged_pos < failed_pos
 
       assert html =~ "flex min-w-full items-start gap-3"
-      assert html =~ "min-w-[17.5rem] basis-0 flex-1"
-      refute html =~ "xl:w-0 xl:basis-0 xl:flex-1 xl:min-w-0"
-      refute html =~ "w-[17.5rem] shrink-0"
+      assert html =~ "min-w-72 w-0 flex-1 overflow-hidden"
+      refute html =~ "min-w-[17.5rem] basis-0 flex-1"
       refute html =~ "grid-flow-col auto-cols-[minmax(17.5rem,_1fr)]"
       refute Regex.match?(~r/restoreViewPreference\(\)\s*this\.persistCurrentView\(\)/, html)
     end
@@ -350,6 +349,19 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       assert has_element?(view, "#stories-list-view")
       refute has_element?(view, "#stories-kanban-view")
+    end
+
+    test "keeps list view while navigating between project tabs", %{conn: conn, project: project} do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories?#{[view: "list"]}")
+
+      view
+      |> element("a[href='/projects/#{project.slug}/runs?view=list']")
+      |> render_click()
+
+      assert_patch(view, ~p"/projects/#{project.slug}/runs?#{[view: "list"]}")
+
+      html = render(view)
+      assert html =~ ~s(href="/projects/#{project.slug}/stories?view=list")
     end
 
     test "list view groups stories by state order with collapsible sections", %{
@@ -935,6 +947,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       {:ok, view, html} =
         live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
 
+      assert html =~ "Actions"
       assert has_element?(view, "button[phx-click='trigger_run'][phx-value-step='checks']")
       assert html =~ "Retry checks"
       refute html =~ ~s(phx-value-step="checks" disabled)
@@ -1002,6 +1015,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       {:ok, view, html} =
         live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
 
+      assert html =~ "Actions"
       assert has_element?(view, "button[phx-click='trigger_run'][phx-value-step='checks']")
       assert html =~ "Retry checks"
       assert html =~ ~s(phx-value-step="checks" disabled)
@@ -1094,7 +1108,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "Checks 1/2"
     end
 
-    test "runs page distinguishes continuation retries from full reruns", %{
+    test "runs page keeps retry controls out of compact table view", %{
       conn: conn,
       project: project
     } do
@@ -1110,8 +1124,9 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/runs")
 
-      assert html =~ "Agent continuation"
-      assert html =~ "from run #1, turn 3 (agent timed out)"
+      refute html =~ "Agent continuation"
+      refute html =~ "from run #1, turn 3 (agent timed out)"
+      refute html =~ "<th>Retry</th>"
     end
 
     test "runs page moves past transient checks_failed once remediation turn starts", %{

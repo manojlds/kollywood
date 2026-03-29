@@ -524,7 +524,7 @@ defmodule KollywoodWeb.DashboardLive do
               <%= for project <- @projects do %>
                 <li>
                   <.link
-                    navigate={~p"/projects/#{project.slug}"}
+                    navigate={project_overview_path(project.slug, @stories_view)}
                     class={[@current_project && @current_project.id == project.id && "bg-base-200"]}
                   >
                     <span class="truncate">{project.name}</span>
@@ -546,7 +546,7 @@ defmodule KollywoodWeb.DashboardLive do
               label="Overview"
               icon="hero-squares-2x2"
               active={@live_action == :overview}
-              patch={~p"/projects/#{@current_project.slug}"}
+              patch={project_overview_path(@current_project.slug, @stories_view)}
             />
             <.nav_tab
               label="Stories"
@@ -558,13 +558,13 @@ defmodule KollywoodWeb.DashboardLive do
               label="Runs"
               icon="hero-play"
               active={@live_action in [:runs, :run_detail]}
-              patch={~p"/projects/#{@current_project.slug}/runs"}
+              patch={project_runs_path(@current_project.slug, @stories_view)}
             />
             <.nav_tab
               label="Settings"
               icon="hero-cog-6-tooth"
               active={@live_action == :settings}
-              patch={~p"/projects/#{@current_project.slug}/settings"}
+              patch={project_settings_path(@current_project.slug, @stories_view)}
             />
           </div>
         </nav>
@@ -579,6 +579,7 @@ defmodule KollywoodWeb.DashboardLive do
                   orchestrator_status={@orchestrator_status}
                   project={@current_project}
                   recent_runs={@recent_runs}
+                  stories_view={@stories_view}
                 />
               <% :stories -> %>
                 <.stories_section
@@ -593,6 +594,7 @@ defmodule KollywoodWeb.DashboardLive do
                   run_attempts={@run_attempts}
                   project={@current_project}
                   stories={@stories}
+                  stories_view={@stories_view}
                 />
               <% :story_detail -> %>
                 <.story_detail_section
@@ -613,6 +615,7 @@ defmodule KollywoodWeb.DashboardLive do
                   attempt={@run_detail_attempt}
                   active_log_tab={@active_log_tab}
                   project={@current_project}
+                  stories_view={@stories_view}
                 />
               <% :settings -> %>
                 <.settings_section
@@ -628,6 +631,7 @@ defmodule KollywoodWeb.DashboardLive do
                   orchestrator_status={@orchestrator_status}
                   project={@current_project}
                   recent_runs={@recent_runs}
+                  stories_view={@stories_view}
                 />
             <% end %>
           </div>
@@ -809,6 +813,7 @@ defmodule KollywoodWeb.DashboardLive do
   attr :orchestrator_status, :map, default: nil
   attr :project, Project, default: nil
   attr :recent_runs, :list, default: []
+  attr :stories_view, :string, default: @default_stories_view
 
   defp overview_section(assigns) do
     ~H"""
@@ -830,13 +835,12 @@ defmodule KollywoodWeb.DashboardLive do
             <div class="space-y-1 mt-2">
               <%= for run <- @recent_runs do %>
                 <.link
-                  navigate={~p"/projects/#{@project.slug}/runs/#{run.story_id}/#{run.attempt}"}
+                  navigate={run_detail_path(@project.slug, run.story_id, run.attempt, @stories_view)}
                   class="flex items-center gap-3 p-3 bg-base-100 rounded-lg hover:bg-base-300 transition-colors"
                 >
                   <.run_status_badge status={run.status} />
                   <span class="font-mono text-xs text-base-content/60 shrink-0">{run.story_id}</span>
                   <span class="text-sm truncate flex-1">{run.story_title}</span>
-                  <.run_retry_mode_badge mode={run.retry_mode} />
                   <span class="text-xs text-base-content/60 shrink-0">{run.phase_label}</span>
                   <span class="text-xs text-base-content/50 shrink-0">
                     Run {run_number(run.attempt)}
@@ -1091,6 +1095,7 @@ defmodule KollywoodWeb.DashboardLive do
                     story={story}
                     project={@project}
                     editable={@editable}
+                    stories_view="list"
                     latest_run={Map.get(@latest_run_by_story, story["id"])}
                   />
                 <% end %>
@@ -1592,7 +1597,7 @@ defmodule KollywoodWeb.DashboardLive do
   defp stories_kanban_column(assigns) do
     assigns =
       assign(assigns, :column_classes, [
-        "min-w-[17.5rem] basis-0 flex-1 rounded-xl border border-base-300 bg-base-200/60",
+        "min-w-72 w-0 flex-1 overflow-hidden rounded-xl border border-base-300 bg-base-200/60",
         assigns.status == "draft" && "opacity-80"
       ])
 
@@ -1605,9 +1610,9 @@ defmodule KollywoodWeb.DashboardLive do
       aria-disabled={if(@editable, do: "false", else: "true")}
     >
       <header class="flex items-center justify-between gap-2 border-b border-base-300 px-3 py-2">
-        <div class="flex items-center gap-2">
+        <div class="flex min-w-0 items-center gap-2">
           <.status_badge status={@status} />
-          <span class="text-sm font-semibold">{@label}</span>
+          <span class="truncate text-sm font-semibold">{@label}</span>
         </div>
         <span class="badge badge-sm badge-ghost">{length(@stories)}</span>
       </header>
@@ -1621,6 +1626,7 @@ defmodule KollywoodWeb.DashboardLive do
               story={story}
               project={@project}
               editable={@editable}
+              stories_view="kanban"
               latest_run={Map.get(@latest_run_by_story, story["id"])}
             />
           <% end %>
@@ -1633,6 +1639,7 @@ defmodule KollywoodWeb.DashboardLive do
   attr :story, :map, required: true
   attr :project, Project, required: true
   attr :editable, :boolean, default: false
+  attr :stories_view, :string, default: @default_stories_view
   attr :latest_run, :map, default: nil
 
   defp story_card(assigns) do
@@ -1671,7 +1678,7 @@ defmodule KollywoodWeb.DashboardLive do
           <div class="min-w-0 flex-1 space-y-2">
             <div class="flex items-center justify-between gap-2">
               <.link
-                navigate={~p"/projects/#{@project.slug}/stories/#{@story["id"]}"}
+                navigate={story_detail_path(@project.slug, @story["id"], @stories_view)}
                 class="font-mono text-sm font-semibold text-primary hover:underline"
               >
                 {@story["id"]}
@@ -1680,7 +1687,7 @@ defmodule KollywoodWeb.DashboardLive do
             </div>
 
             <.link
-              navigate={~p"/projects/#{@project.slug}/stories/#{@story["id"]}"}
+              navigate={story_detail_path(@project.slug, @story["id"], @stories_view)}
               class="line-clamp-2 text-left font-medium hover:text-primary"
             >
               {@story["title"]}
@@ -1746,7 +1753,7 @@ defmodule KollywoodWeb.DashboardLive do
         </div>
 
         <%= if @story["lastError"] do %>
-          <p class="line-clamp-2 text-sm text-error">{@story["lastError"]}</p>
+          <p class="line-clamp-2 break-words text-sm text-error">{@story["lastError"]}</p>
         <% end %>
       </div>
     </div>
@@ -2074,6 +2081,7 @@ defmodule KollywoodWeb.DashboardLive do
   attr :run_attempts, :list, required: true
   attr :project, Project, required: true
   attr :stories, :list, default: []
+  attr :stories_view, :string, default: @default_stories_view
 
   defp runs_section(assigns) do
     # Fall back to tracker run metadata when no run logs are available yet.
@@ -2105,7 +2113,6 @@ defmodule KollywoodWeb.DashboardLive do
               <tr>
                 <th>Story</th>
                 <th>Run #</th>
-                <th>Retry</th>
                 <th>Status</th>
                 <th>Phase</th>
                 <th>Started</th>
@@ -2118,14 +2125,6 @@ defmodule KollywoodWeb.DashboardLive do
                 <tr>
                   <td class="font-mono text-sm font-semibold">{run.story_id}</td>
                   <td>{run_number(run.attempt)}</td>
-                  <td>
-                    <div class="flex flex-col gap-1">
-                      <.run_retry_mode_badge mode={run.retry_mode} />
-                      <%= if run.retry_summary do %>
-                        <span class="text-xs text-base-content/60">{run.retry_summary}</span>
-                      <% end %>
-                    </div>
-                  </td>
                   <td><.run_status_badge status={run.status} /></td>
                   <td class="text-sm text-base-content/70">{run.phase_label}</td>
                   <td class="text-sm text-base-content/70" title={format_time_tooltip(run.started_at)}>
@@ -2136,7 +2135,9 @@ defmodule KollywoodWeb.DashboardLive do
                   </td>
                   <td>
                     <.link
-                      navigate={~p"/projects/#{@project.slug}/runs/#{run.story_id}/#{run.attempt}"}
+                      navigate={
+                        run_detail_path(@project.slug, run.story_id, run.attempt, @stories_view)
+                      }
                       class="btn btn-ghost btn-xs"
                     >
                       View →
@@ -2179,7 +2180,12 @@ defmodule KollywoodWeb.DashboardLive do
                     <td>
                       <.link
                         navigate={
-                          ~p"/projects/#{@project.slug}/runs/#{story["id"]}/#{story_run.run_attempt}"
+                          run_detail_path(
+                            @project.slug,
+                            story["id"],
+                            story_run.run_attempt,
+                            @stories_view
+                          )
                         }
                         class="btn btn-xs btn-outline"
                       >
@@ -2204,6 +2210,7 @@ defmodule KollywoodWeb.DashboardLive do
   attr :attempt, :string, default: nil
   attr :active_log_tab, :string, default: "agent"
   attr :project, Project, required: true
+  attr :stories_view, :string, default: @default_stories_view
 
   defp run_detail_section(assigns) do
     snapshot =
@@ -2227,40 +2234,30 @@ defmodule KollywoodWeb.DashboardLive do
 
     ~H"""
     <div class="flex flex-col gap-4 h-full">
-      <div class="flex items-center gap-4">
-        <.link
-          navigate={~p"/projects/#{@project.slug}/stories/#{@story_id}?tab=runs"}
-          class="btn btn-ghost btn-sm gap-2"
-        >
-          <.icon name="hero-arrow-left" class="size-4" /> Back to Runs
-        </.link>
-        <span class="badge badge-outline font-mono text-sm">{@story_id}</span>
+      <div class="flex flex-wrap items-center justify-between gap-2 sm:gap-3">
+        <div class="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3">
+          <.link
+            navigate={story_runs_tab_path(@project.slug, @story_id, @stories_view)}
+            class="btn btn-ghost btn-sm gap-2"
+          >
+            <.icon name="hero-arrow-left" class="size-4" /> Back to Runs
+          </.link>
+          <span class="badge badge-outline font-mono text-sm">{@story_id}</span>
+          <%= if @run_detail do %>
+            <.run_status_badge status={@run_detail["metadata"]["status"] || "unknown"} />
+            <.run_retry_mode_badge mode={@run_detail["retry_mode"]} />
+            <span class="text-sm text-base-content/60">{@run_detail["phase_label"]}</span>
+          <% end %>
+        </div>
+
         <%= if @run_detail do %>
-          <.run_status_badge status={@run_detail["metadata"]["status"] || "unknown"} />
-          <.run_retry_mode_badge mode={@run_detail["retry_mode"]} />
-          <span class="text-sm text-base-content/60">{@run_detail["phase_label"]}</span>
-          <%= if retry_action = @run_detail["retry_action"] do %>
-            <button
-              phx-click="trigger_run"
-              phx-value-story_id={@story_id}
-              phx-value-attempt={retry_action["attempt"]}
-              phx-value-step={retry_action["step"]}
-              disabled={!retry_action["enabled"]}
-              title={retry_action["reason"] || retry_action["label"]}
-              class={[
-                "btn btn-sm",
-                retry_action["enabled"] && "btn-primary",
-                !retry_action["enabled"] && "btn-disabled"
-              ]}
-            >
-              {retry_action["label"]}
-            </button>
-          <% end %>
-          <%= if @run_detail["retry_summary"] do %>
-            <span class="text-xs text-base-content/60">{@run_detail["retry_summary"]}</span>
-          <% end %>
+          <.run_actions_menu retry_action={@run_detail["retry_action"]} story_id={@story_id} />
         <% end %>
       </div>
+
+      <%= if @run_detail && @run_detail["retry_summary"] do %>
+        <p class="break-words text-xs text-base-content/60">{@run_detail["retry_summary"]}</p>
+      <% end %>
 
       <%= if @run_detail do %>
         <.settings_used_section
@@ -2617,33 +2614,23 @@ defmodule KollywoodWeb.DashboardLive do
       <%= if @story_detail_tab == "runs" do %>
         <div class="flex flex-col gap-4">
           <%= if @selected_attempt do %>
-            <div class="flex items-center gap-3">
-              <.link
-                navigate={~p"/projects/#{@project.slug}/stories/#{@story_id}?tab=runs"}
-                class="btn btn-ghost btn-sm gap-2"
-              >
-                <.icon name="hero-arrow-left" class="size-4" /> All Runs
-              </.link>
-              <span class="text-sm text-base-content/60">Run {run_number(@selected_attempt)}</span>
-              <% retry_action = if @run_detail, do: @run_detail["retry_action"], else: nil %>
-              <%= if retry_action do %>
-                <button
-                  phx-click="trigger_run"
-                  phx-value-story_id={@story_id}
-                  phx-value-attempt={retry_action["attempt"]}
-                  phx-value-step={retry_action["step"]}
-                  disabled={!retry_action["enabled"]}
-                  title={retry_action["reason"] || retry_action["label"]}
-                  class={[
-                    "btn btn-sm",
-                    retry_action["enabled"] && "btn-primary",
-                    !retry_action["enabled"] && "btn-disabled"
-                  ]}
+            <div class="flex flex-wrap items-center justify-between gap-2 sm:gap-3">
+              <div class="flex flex-wrap items-center gap-2 sm:gap-3">
+                <.link
+                  navigate={story_runs_tab_path(@project.slug, @story_id, @stories_view)}
+                  class="btn btn-ghost btn-sm gap-2"
                 >
-                  {retry_action["label"]}
-                </button>
-              <% end %>
+                  <.icon name="hero-arrow-left" class="size-4" /> All Runs
+                </.link>
+                <span class="text-sm text-base-content/60">Run {run_number(@selected_attempt)}</span>
+                <% retry_action = if @run_detail, do: @run_detail["retry_action"], else: nil %>
+              </div>
+              <.run_actions_menu retry_action={retry_action} story_id={@story_id} />
             </div>
+
+            <%= if @run_detail && @run_detail["retry_summary"] do %>
+              <p class="break-words text-xs text-base-content/60">{@run_detail["retry_summary"]}</p>
+            <% end %>
 
             <div class="flex gap-0 border-b border-base-300">
               <%= for {tab, label} <- [
@@ -2685,7 +2672,6 @@ defmodule KollywoodWeb.DashboardLive do
                     <thead>
                       <tr>
                         <th>Run #</th>
-                        <th>Retry</th>
                         <th>Status</th>
                         <th>Phase</th>
                         <th>Started</th>
@@ -2698,22 +2684,17 @@ defmodule KollywoodWeb.DashboardLive do
                           <td>
                             <.link
                               navigate={
-                                ~p"/projects/#{@project.slug}/runs/#{@story_id}/#{run.attempt}"
+                                run_detail_path(
+                                  @project.slug,
+                                  @story_id,
+                                  run.attempt,
+                                  @stories_view
+                                )
                               }
                               class="font-mono text-sm hover:text-primary"
                             >
                               {run_number(run.attempt)}
                             </.link>
-                          </td>
-                          <td>
-                            <div class="flex flex-col gap-1">
-                              <.run_retry_mode_badge mode={run.retry_mode} />
-                              <%= if run.retry_summary do %>
-                                <span class="text-[11px] text-base-content/60">
-                                  {run.retry_summary}
-                                </span>
-                              <% end %>
-                            </div>
                           </td>
                           <td><.run_status_badge status={run.status} /></td>
                           <td class="text-xs text-base-content/60">{run.phase_label}</td>
@@ -3398,7 +3379,7 @@ defmodule KollywoodWeb.DashboardLive do
     assigns = assign(assigns, :color, color)
 
     ~H"""
-    <span class={"badge badge-sm #{@color}"}>{display_status(@status)}</span>
+    <span class={"badge badge-sm whitespace-nowrap #{@color}"}>{display_status(@status)}</span>
     """
   end
 
@@ -3418,7 +3399,7 @@ defmodule KollywoodWeb.DashboardLive do
     assigns = assigns |> assign(:color, color) |> assign(:label, label)
 
     ~H"""
-    <span class={"badge badge-sm #{@color}"}>{@label}</span>
+    <span class={"badge badge-sm whitespace-nowrap #{@color}"}>{@label}</span>
     """
   end
 
@@ -3436,7 +3417,44 @@ defmodule KollywoodWeb.DashboardLive do
     assigns = assigns |> assign(:color, color) |> assign(:label, label)
 
     ~H"""
-    <span class={"badge badge-xs #{@color}"}>{@label}</span>
+    <span class={"badge badge-xs whitespace-nowrap #{@color}"}>{@label}</span>
+    """
+  end
+
+  attr :retry_action, :map, default: nil
+  attr :story_id, :string, required: true
+
+  defp run_actions_menu(assigns) do
+    ~H"""
+    <%= if is_map(@retry_action) do %>
+      <div class="dropdown dropdown-end">
+        <label tabindex="0" class="btn btn-ghost btn-sm gap-2 whitespace-nowrap">
+          Actions <.icon name="hero-chevron-down" class="size-4" />
+        </label>
+        <ul
+          tabindex="0"
+          class="dropdown-content menu menu-xs z-50 w-52 rounded-box border border-base-300 bg-base-100 p-1 shadow-lg"
+        >
+          <li>
+            <button
+              phx-click="trigger_run"
+              phx-value-story_id={@story_id}
+              phx-value-attempt={@retry_action["attempt"]}
+              phx-value-step={@retry_action["step"]}
+              disabled={!@retry_action["enabled"]}
+              title={@retry_action["reason"] || @retry_action["label"]}
+              class={[
+                "text-left text-xs",
+                @retry_action["enabled"] && "text-primary",
+                !@retry_action["enabled"] && "opacity-60"
+              ]}
+            >
+              {@retry_action["label"]}
+            </button>
+          </li>
+        </ul>
+      </div>
+    <% end %>
     """
   end
 
@@ -4660,13 +4678,86 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp stories_index_path(project_slug, stories_view) when is_binary(project_slug) do
+    query = stories_view_query(stories_view)
+
+    if query == [] do
+      ~p"/projects/#{project_slug}/stories"
+    else
+      ~p"/projects/#{project_slug}/stories?#{query}"
+    end
+  end
+
+  defp project_overview_path(project_slug, stories_view) when is_binary(project_slug) do
+    query = stories_view_query(stories_view)
+
+    if query == [] do
+      ~p"/projects/#{project_slug}"
+    else
+      ~p"/projects/#{project_slug}?#{query}"
+    end
+  end
+
+  defp project_runs_path(project_slug, stories_view) when is_binary(project_slug) do
+    query = stories_view_query(stories_view)
+
+    if query == [] do
+      ~p"/projects/#{project_slug}/runs"
+    else
+      ~p"/projects/#{project_slug}/runs?#{query}"
+    end
+  end
+
+  defp project_settings_path(project_slug, stories_view) when is_binary(project_slug) do
+    query = stories_view_query(stories_view)
+
+    if query == [] do
+      ~p"/projects/#{project_slug}/settings"
+    else
+      ~p"/projects/#{project_slug}/settings?#{query}"
+    end
+  end
+
+  defp story_detail_path(project_slug, story_id, stories_view, extra_query \\ [])
+       when is_binary(project_slug) and is_binary(story_id) and is_list(extra_query) do
+    query = merge_view_query(stories_view, extra_query)
+
+    if query == [] do
+      ~p"/projects/#{project_slug}/stories/#{story_id}"
+    else
+      ~p"/projects/#{project_slug}/stories/#{story_id}?#{query}"
+    end
+  end
+
+  defp story_runs_tab_path(project_slug, story_id, stories_view, extra_query \\ [])
+       when is_binary(project_slug) and is_binary(story_id) and is_list(extra_query) do
+    query = merge_view_query(stories_view, [{:tab, "runs"} | extra_query])
+    ~p"/projects/#{project_slug}/stories/#{story_id}?#{query}"
+  end
+
+  defp run_detail_path(project_slug, story_id, attempt, stories_view)
+       when is_binary(project_slug) and is_binary(story_id) do
+    query = stories_view_query(stories_view)
+
+    if query == [] do
+      ~p"/projects/#{project_slug}/runs/#{story_id}/#{attempt}"
+    else
+      ~p"/projects/#{project_slug}/runs/#{story_id}/#{attempt}?#{query}"
+    end
+  end
+
+  defp stories_view_query(stories_view) do
     normalized_view = normalize_stories_view(stories_view)
 
     if normalized_view == @default_stories_view do
-      ~p"/projects/#{project_slug}/stories"
+      []
     else
-      ~p"/projects/#{project_slug}/stories?#{[view: normalized_view]}"
+      [view: normalized_view]
     end
+  end
+
+  defp merge_view_query(stories_view, extra_query) when is_list(extra_query) do
+    stories_view_query(stories_view)
+    |> Keyword.merge(extra_query, fn _key, _left, right -> right end)
   end
 
   defp maybe_patch_stories_view(socket, stories_view) do
@@ -4739,14 +4830,16 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp maybe_navigate_to_retry_attempt(socket, project, story_id, attempt) do
+    stories_view = socket.assigns[:stories_view]
+
     case socket.assigns[:live_action] do
       :run_detail ->
-        push_patch(socket, to: ~p"/projects/#{project.slug}/runs/#{story_id}/#{attempt}")
+        push_patch(socket, to: run_detail_path(project.slug, story_id, attempt, stories_view))
 
       :story_detail ->
         push_patch(
           socket,
-          to: ~p"/projects/#{project.slug}/stories/#{story_id}?tab=runs&attempt=#{attempt}"
+          to: story_runs_tab_path(project.slug, story_id, stories_view, attempt: attempt)
         )
 
       _other ->
@@ -4858,7 +4951,7 @@ defmodule KollywoodWeb.DashboardLive do
 
       true ->
         push_navigate(socket,
-          to: ~p"/projects/#{project.slug}/stories/#{story_id}?tab=runs"
+          to: story_runs_tab_path(project.slug, story_id, socket.assigns[:stories_view])
         )
     end
   end
