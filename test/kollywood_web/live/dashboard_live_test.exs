@@ -266,6 +266,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
             "kind" => "claude",
             "max_turns" => "2",
             "max_concurrent_agents" => "3",
+            "retries_enabled" => "true",
             "command" => ""
           },
           workspace: %{"strategy" => "clone"},
@@ -294,6 +295,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       {:ok, content} = File.read(Projects.workflow_path(project))
       assert content =~ "mode: auto_merge"
       assert content =~ "max_concurrent_agents: 3"
+      assert content =~ "retries_enabled: true"
       refute content =~ "auto_push:"
       refute content =~ "auto_create_pr:"
     end

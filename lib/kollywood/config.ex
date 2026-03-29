@@ -461,7 +461,7 @@ defmodule Kollywood.Config do
       project_max_concurrent_agents:
         parse_project_max_concurrent_agents(Map.get(agent, "project_max_concurrent_agents", %{})),
       max_turns: positive_integer(Map.get(agent, "max_turns", 20), 20),
-      retries_enabled: boolean(Map.get(agent, "retries_enabled", true), true),
+      retries_enabled: boolean(Map.get(agent, "retries_enabled", false), false),
       max_attempts: positive_integer(Map.get(agent, "max_attempts", 1), 1),
       max_retry_backoff_ms:
         positive_integer(Map.get(agent, "max_retry_backoff_ms", 300_000), 300_000),

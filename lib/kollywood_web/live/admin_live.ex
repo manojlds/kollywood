@@ -236,10 +236,6 @@ defmodule KollywoodWeb.AdminLive do
                     value={if @status.drain_ready, do: "yes", else: "no"}
                   />
                   <.config_row
-                    label="Retries"
-                    value={if @status.retries_enabled, do: "enabled", else: "disabled"}
-                  />
-                  <.config_row
                     :if={@status.max_attempts}
                     label="Max attempts"
                     value={"#{@status.max_attempts}"}
