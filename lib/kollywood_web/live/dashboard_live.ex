@@ -3180,22 +3180,29 @@ defmodule KollywoodWeb.DashboardLive do
                         class="input input-bordered input-sm w-full"
                       />
                     </div>
-                    <div class="flex items-center gap-2 pt-5">
-                      <input
-                        type="hidden"
-                        name="settings[quality][checks][fail_fast]"
-                        value="false"
-                      />
-                      <input
-                        type="checkbox"
-                        name="settings[quality][checks][fail_fast]"
-                        value="true"
-                        checked={
-                          get_in(@workflow.parsed, ["quality", "checks", "fail_fast"]) != false
-                        }
-                        class="toggle toggle-sm"
-                      />
-                      <span class="text-sm">Fail fast</span>
+                    <div class="pt-5">
+                      <div class="flex items-center gap-2">
+                        <input
+                          type="hidden"
+                          name="settings[quality][checks][fail_fast]"
+                          value="false"
+                        />
+                        <input
+                          type="checkbox"
+                          name="settings[quality][checks][fail_fast]"
+                          value="true"
+                          checked={
+                            get_in(@workflow.parsed, ["quality", "checks", "fail_fast"]) != false
+                          }
+                          class="toggle toggle-sm"
+                          aria-describedby="checks-fail-fast-help"
+                        />
+                        <span class="text-sm">Fail fast</span>
+                      </div>
+                      <p id="checks-fail-fast-help" class="text-xs text-base-content/60 mt-1">
+                        Stop checks at the first failure. Disable to run every configured check and
+                        report all failures in one cycle.
+                      </p>
                     </div>
                   </div>
                 </div>

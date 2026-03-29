@@ -9,7 +9,7 @@ defmodule Kollywood.ProjectsTest do
                name: "My Local App",
                provider: :local,
                repository: "/home/user/projects/my-local-app"
-               })
+             })
 
     managed_root = Kollywood.ServiceConfig.project_repos_path("my-local-app")
 
@@ -24,7 +24,6 @@ defmodule Kollywood.ProjectsTest do
 
     assert Projects.tracker_path(project) ==
              Kollywood.ServiceConfig.project_tracker_path("my-local-app")
-
   end
 
   test "requires repository for all providers" do
