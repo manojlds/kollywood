@@ -220,15 +220,7 @@ defmodule KollywoodWeb.AdminLive do
                 <tbody>
                   <.config_row label="Poll interval" value={"#{@status.poll_interval_ms}ms"} />
                   <.config_row
-                    label="Max agents (requested)"
-                    value={"#{@status.max_concurrent_agents_requested}"}
-                  />
-                  <.config_row
-                    label="Max agents (effective)"
-                    value={"#{@status.max_concurrent_agents_effective}"}
-                  />
-                  <.config_row
-                    label="Max agents (hard cap)"
+                    label="Server max agents (hard cap)"
                     value={"#{@status.max_concurrent_agents_hard_cap}"}
                   />
                   <.config_row

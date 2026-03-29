@@ -153,6 +153,18 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       assert html =~ "First Story"
     end
+
+    test "recent activity avoids duplicating terminal phase labels", %{
+      conn: conn,
+      project: project
+    } do
+      prepare_run_logs!(project.slug, "US-RECENT-FAIL", status: "failed")
+
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}")
+
+      assert html =~ "US-RECENT-FAIL"
+      refute html =~ "Run failed"
+    end
   end
 
   describe "settings section" do
@@ -250,7 +262,12 @@ defmodule KollywoodWeb.DashboardLiveTest do
       |> element("form[phx-submit='save_settings']")
       |> render_submit(%{
         settings: %{
-          agent: %{"kind" => "claude", "max_turns" => "2", "command" => ""},
+          agent: %{
+            "kind" => "claude",
+            "max_turns" => "2",
+            "max_concurrent_agents" => "3",
+            "command" => ""
+          },
           workspace: %{"strategy" => "clone"},
           quality: %{
             "max_cycles" => "1",
@@ -276,6 +293,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       {:ok, content} = File.read(Projects.workflow_path(project))
       assert content =~ "mode: auto_merge"
+      assert content =~ "max_concurrent_agents: 3"
       refute content =~ "auto_push:"
       refute content =~ "auto_create_pr:"
     end
