@@ -2245,8 +2245,12 @@ defmodule KollywoodWeb.DashboardLive do
           <span class="badge badge-outline font-mono text-sm">{@story_id}</span>
           <%= if @run_detail do %>
             <.run_status_badge status={@run_detail["metadata"]["status"] || "unknown"} />
-            <.run_retry_mode_badge mode={@run_detail["retry_mode"]} />
-            <span class="text-sm text-base-content/60">{@run_detail["phase_label"]}</span>
+            <%= if show_retry_mode_badge?(@run_detail["retry_mode"]) do %>
+              <.run_retry_mode_badge mode={@run_detail["retry_mode"]} />
+            <% end %>
+            <%= if show_run_detail_phase_label?(@run_detail["phase_label"]) do %>
+              <span class="text-sm text-base-content/60">{@run_detail["phase_label"]}</span>
+            <% end %>
           <% end %>
         </div>
 
@@ -3420,6 +3424,22 @@ defmodule KollywoodWeb.DashboardLive do
     <span class={"badge badge-xs whitespace-nowrap #{@color}"}>{@label}</span>
     """
   end
+
+  defp show_retry_mode_badge?(mode) do
+    normalize_retry_mode(mode) == "agent_continuation"
+  end
+
+  defp show_run_detail_phase_label?(phase_label) when is_binary(phase_label) do
+    phase_label
+    |> String.trim()
+    |> case do
+      "" -> false
+      "Run finished" -> false
+      _other -> true
+    end
+  end
+
+  defp show_run_detail_phase_label?(_phase_label), do: false
 
   attr :retry_action, :map, default: nil
   attr :story_id, :string, required: true
