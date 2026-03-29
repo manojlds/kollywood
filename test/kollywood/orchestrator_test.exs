@@ -1061,7 +1061,16 @@ defmodule Kollywood.OrchestratorTest do
     %{store: workflow_store, path: workflow_path} =
       start_workflow_store!(root, %{tracker_kind: "prd_json", tracker_path: prd_path})
 
-    issue = issue("ISS-LOG", "US-LOG", 1)
+    issue =
+      issue("ISS-LOG", "US-LOG", 1)
+      |> Map.put(:settings, %{
+        "execution" => %{
+          "agent_kind" => "cursor",
+          "review_agent_kind" => "claude",
+          "review_max_cycles" => 5
+        }
+      })
+
     test_pid = self()
     issues_agent = start_agent!(fn -> [issue] end)
 
@@ -1132,6 +1141,10 @@ defmodule Kollywood.OrchestratorTest do
     assert metadata["runner_attempt"] == nil
     assert metadata["turn_count"] == 1
     assert metadata["story_id"] == "US-LOG"
+
+    assert metadata["run_settings"]["agent_kind"] == "cursor"
+    assert metadata["run_settings"]["review_agent_kind"] == "claude"
+    assert metadata["run_settings"]["review_max_cycles"] == 1
 
     settings_snapshot = metadata["settings_snapshot"]
     assert is_map(settings_snapshot)
@@ -1232,6 +1245,44 @@ defmodule Kollywood.OrchestratorTest do
              get_in(snapshot_two, ["workflow", "sha256"])
 
     assert attempt_one_snapshot_after == snapshot_one
+  end
+
+  test "rejects invalid story execution overrides before runner dispatch", %{root: root} do
+    %{store: workflow_store} = start_workflow_store!(root, %{})
+    test_pid = self()
+
+    issue =
+      issue("ISS-INVALID-SETTINGS", "US-INVALID-SETTINGS", 1)
+      |> Map.put(:settings, %{"execution" => %{"agent_kind" => "invalid-kind"}})
+
+    issues_agent = start_agent!(fn -> [issue] end)
+    tracker = fn _config -> {:ok, Agent.get(issues_agent, & &1)} end
+
+    runner = fn issue, _opts ->
+      send(test_pid, {:runner_started, issue.id})
+      {:ok, success_result(issue)}
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: tracker,
+         runner: runner,
+         auto_poll: false,
+         continuation_delay_ms: 60_000,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    refute_receive {:runner_started, "ISS-INVALID-SETTINGS"}, 200
+
+    _ = :sys.get_state(orchestrator)
+    status = Orchestrator.status(orchestrator)
+
+    assert status.running_count == 0
+    assert status.retry_count == 0
   end
 
   test "retries failed runs with backoff and increments attempt", %{root: root} do

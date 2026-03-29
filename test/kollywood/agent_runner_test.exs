@@ -660,6 +660,84 @@ defmodule Kollywood.AgentRunnerTest do
     assert prompt_history =~ "Reviewer feedback from cycle 1"
   end
 
+  test "applies story override for review_max_cycles during execution", %{
+    root: root,
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    review_cli_path: review_cli_path,
+    prompt_log: prompt_log
+  } do
+    fail_once_file = Path.join(root, "review_fail_once_override.marker")
+
+    config =
+      runner_config(workspace_root, cli_path, prompt_log)
+      |> Map.put(:quality, %{
+        max_cycles: 2,
+        review: %{
+          max_cycles: 1,
+          agent: %{kind: :pi, explicit: true}
+        }
+      })
+      |> Map.put(:review, %{
+        enabled: true,
+        max_cycles: 1,
+        agent: %{
+          explicit: true,
+          kind: :pi,
+          command: review_cli_path,
+          args: [],
+          env: %{"REVIEW_FAIL_ONCE_FILE" => fail_once_file},
+          timeout_ms: 10_000
+        }
+      })
+
+    issue_with_overrides =
+      Map.put(@issue, :settings, %{
+        "execution" => %{
+          "review_max_cycles" => 2
+        }
+      })
+
+    assert {:ok, result} =
+             AgentRunner.run_issue(issue_with_overrides,
+               config: config,
+               prompt_template: "Work on {{ issue.identifier }}",
+               mode: :single_turn
+             )
+
+    assert result.status == :ok
+    assert result.turn_count == 2
+    assert :quality_cycle_retrying in Enum.map(result.events, & &1.type)
+    assert :review_failed in Enum.map(result.events, & &1.type)
+    assert :review_passed in Enum.map(result.events, & &1.type)
+  end
+
+  test "rejects invalid story execution overrides before starting the run", %{
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    prompt_log: prompt_log
+  } do
+    config = runner_config(workspace_root, cli_path, prompt_log)
+
+    issue_with_invalid_overrides =
+      Map.put(@issue, :settings, %{
+        "execution" => %{
+          "agent_kind" => "not-a-valid-kind"
+        }
+      })
+
+    assert {:error, result} =
+             AgentRunner.run_issue(issue_with_invalid_overrides,
+               config: config,
+               prompt_template: "Work on {{ issue.identifier }}",
+               mode: :single_turn
+             )
+
+    assert result.error =~ "invalid story execution settings"
+    assert result.error =~ "agent_kind"
+    assert result.events == []
+  end
+
   test "fails run when review verdict is REVIEW_FAIL", %{
     workspace_root: workspace_root,
     cli_path: cli_path,

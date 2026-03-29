@@ -88,6 +88,44 @@ defmodule KollywoodWeb.StoryControllerTest do
     assert error =~ "managed by the orchestrator"
   end
 
+  test "update stores story execution overrides", %{conn: conn, project: project} do
+    payload = %{
+      "story" => %{
+        "settings" => %{
+          "execution" => %{
+            "agent_kind" => "cursor",
+            "review_agent_kind" => "claude",
+            "review_max_cycles" => "2"
+          }
+        }
+      }
+    }
+
+    conn = patch(conn, ~p"/api/projects/#{project.slug}/stories/US-001", payload)
+
+    assert %{"data" => story} = json_response(conn, 200)
+    assert story["settings"]["execution"]["agent_kind"] == "cursor"
+    assert story["settings"]["execution"]["review_agent_kind"] == "claude"
+    assert story["settings"]["execution"]["review_max_cycles"] == 2
+  end
+
+  test "update rejects invalid execution override values", %{conn: conn, project: project} do
+    payload = %{
+      "story" => %{
+        "settings" => %{
+          "execution" => %{
+            "review_max_cycles" => "zero"
+          }
+        }
+      }
+    }
+
+    conn = patch(conn, ~p"/api/projects/#{project.slug}/stories/US-001", payload)
+
+    assert %{"error" => error} = json_response(conn, 422)
+    assert error =~ "review_max_cycles"
+  end
+
   test "delete blocks stories referenced by dependencies", %{conn: conn, project: project} do
     conn = delete(conn, ~p"/api/projects/#{project.slug}/stories/US-001")
 

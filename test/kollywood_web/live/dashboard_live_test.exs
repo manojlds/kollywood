@@ -613,7 +613,10 @@ defmodule KollywoodWeb.DashboardLiveTest do
           priority: "4",
           status: "draft",
           dependsOn: "US-001",
-          notes: "UI note"
+          notes: "UI note",
+          execution_agent_kind: "cursor",
+          execution_review_agent_kind: "claude",
+          execution_review_max_cycles: "3"
         }
       })
 
@@ -624,6 +627,9 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert story["title"] == "Story From UI"
       assert story["status"] == "draft"
       assert story["dependsOn"] == ["US-001"]
+      assert story["settings"]["execution"]["agent_kind"] == "cursor"
+      assert story["settings"]["execution"]["review_agent_kind"] == "claude"
+      assert story["settings"]["execution"]["review_max_cycles"] == 3
     end
 
     test "edits an existing story from UI", %{conn: conn, project: project, tmp_dir: _tmp_dir} do
