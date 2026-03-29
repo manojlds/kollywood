@@ -1108,6 +1108,13 @@ defmodule Kollywood.Orchestrator do
 
         state
         |> tracker_mark_failed(issue_id, failure_reason, retry_attempt)
+        |> schedule_retry(
+          issue_id,
+          issue,
+          retry_attempt,
+          failure_reason,
+          retry_backoff_delay_ms(state, retry_attempt)
+        )
         |> release_claim(issue_id)
 
       {:error, reason} ->
