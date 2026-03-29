@@ -206,9 +206,7 @@ defmodule KollywoodWeb.ProjectsLive do
                   <span class={"badge badge-sm #{if project.enabled, do: "badge-success", else: "badge-ghost"}"}>
                     {if project.enabled, do: "Active", else: "Disabled"}
                   </span>
-                  <span class="badge badge-sm badge-outline">
-                    cap {project.max_concurrent_agents || "auto"}
-                  </span>
+
                 </div>
               </.link>
               <button
@@ -343,14 +341,6 @@ defmodule KollywoodWeb.ProjectsLive do
                 type="text"
                 label="Default Branch"
                 placeholder="main"
-              />
-
-              <.input
-                field={@form[:max_concurrent_agents]}
-                type="number"
-                min="1"
-                label="Project Max Agents"
-                placeholder="Use global limit"
               />
 
               <div class="pt-4 flex gap-2">

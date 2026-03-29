@@ -2754,22 +2754,7 @@ defmodule KollywoodWeb.DashboardLive do
               <span class="text-sm text-base-content/60">Default Branch</span>
               <p class="font-medium">{@project.default_branch}</p>
             </div>
-            <div>
-              <span class="text-sm text-base-content/60">Configured Max Agents</span>
-              <p class="font-medium">
-                {project_configured_limit_label(@project.max_concurrent_agents)}
-              </p>
-            </div>
-            <div>
-              <span class="text-sm text-base-content/60">Effective Max Agents</span>
-              <p class="font-medium">
-                {project_effective_limit_label(
-                  @project.slug,
-                  @project.max_concurrent_agents,
-                  @orchestrator_status
-                )}
-              </p>
-            </div>
+
             <%= if local_path = Projects.local_path(@project) do %>
               <div class="sm:col-span-2">
                 <span class="text-sm text-base-content/60">Local Path</span>
@@ -3135,6 +3120,53 @@ defmodule KollywoodWeb.DashboardLive do
                         </div>
                       </div>
                     </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="divider my-0"></div>
+
+              <%!-- Runtime --%>
+              <div>
+                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
+                  Runtime
+                </p>
+                <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  <div>
+                    <label class="label pb-1"><span class="label-text text-sm">Kind</span></label>
+                    <select
+                      name="settings[runtime][kind]"
+                      class="select select-bordered select-sm w-full"
+                    >
+                      <%= for k <- ["host", "docker"] do %>
+                        <option
+                          value={k}
+                          selected={
+                            (get_in(@workflow.parsed, ["runtime", "kind"]) || "host") == k
+                          }
+                        >
+                          {k}
+                        </option>
+                      <% end %>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="label pb-1"><span class="label-text text-sm">Profile</span></label>
+                    <select
+                      name="settings[runtime][profile]"
+                      class="select select-bordered select-sm w-full"
+                    >
+                      <%= for p <- ["checks_only", "full_stack"] do %>
+                        <option
+                          value={p}
+                          selected={
+                            (get_in(@workflow.parsed, ["runtime", "profile"]) || "checks_only") == p
+                          }
+                        >
+                          {p}
+                        </option>
+                      <% end %>
+                    </select>
                   </div>
                 </div>
               </div>
@@ -4205,6 +4237,7 @@ defmodule KollywoodWeb.DashboardLive do
     quality_p = Map.get(settings, "quality", %{})
     checks_p = Map.get(quality_p, "checks", %{})
     review_p = Map.get(quality_p, "review", %{})
+    runtime_p = Map.get(settings, "runtime", %{})
     publish_p = Map.get(settings, "publish", %{})
     git_p = Map.get(settings, "git", %{})
 
@@ -4332,6 +4365,16 @@ defmodule KollywoodWeb.DashboardLive do
         end
       end)
 
+    existing_runtime = Map.get(parsed, "runtime", %{})
+
+    new_runtime =
+      existing_runtime
+      |> Map.put("kind", Map.get(runtime_p, "kind", Map.get(existing_runtime, "kind", "host")))
+      |> Map.put(
+        "profile",
+        Map.get(runtime_p, "profile", Map.get(existing_runtime, "profile", "checks_only"))
+      )
+
     base_branch =
       Map.get(git_p, "base_branch", get_in(parsed, ["git", "base_branch"]) || "main")
       |> String.trim()
@@ -4343,6 +4386,7 @@ defmodule KollywoodWeb.DashboardLive do
         Map.get(workspace_p, "strategy", get_in(parsed, ["workspace", "strategy"]) || "clone")
     })
     |> Map.put("quality", new_quality)
+    |> Map.put("runtime", new_runtime)
     |> Map.delete("checks")
     |> Map.delete("review")
     |> Map.delete("polling")
@@ -5548,58 +5592,4 @@ defmodule KollywoodWeb.DashboardLive do
 
   defp time_ago(_), do: "unknown"
 
-  defp project_configured_limit_label(nil), do: "Global default"
-  defp project_configured_limit_label(limit) when is_integer(limit), do: Integer.to_string(limit)
-  defp project_configured_limit_label(_limit), do: "Global default"
-
-  defp project_effective_limit_label(project_slug, configured_limit, status) do
-    case find_project_limit_snapshot(status, project_slug) do
-      %{effective_max_concurrent_agents: limit} when is_integer(limit) ->
-        Integer.to_string(limit)
-
-      _other ->
-        global_limit = global_limit_from_status(status)
-
-        configured_limit
-        |> effective_limit_with_global(global_limit)
-        |> case do
-          nil -> "-"
-          limit -> Integer.to_string(limit)
-        end
-    end
-  end
-
-  defp find_project_limit_snapshot(%{} = status, project_slug) when is_binary(project_slug) do
-    status
-    |> Map.get(:project_limits, [])
-    |> Enum.find(fn entry -> Map.get(entry, :project_slug) == project_slug end)
-  end
-
-  defp find_project_limit_snapshot(_status, _project_slug), do: nil
-
-  defp global_limit_from_status(%{} = status) do
-    case Map.get(status, :max_concurrent_agents) do
-      value when is_integer(value) and value > 0 -> value
-      _other -> nil
-    end
-  end
-
-  defp global_limit_from_status(_status), do: nil
-
-  defp effective_limit_with_global(configured_limit, global_limit)
-
-  defp effective_limit_with_global(configured_limit, global_limit)
-       when is_integer(configured_limit) and configured_limit > 0 and is_integer(global_limit) and
-              global_limit > 0,
-       do: min(configured_limit, global_limit)
-
-  defp effective_limit_with_global(configured_limit, _global_limit)
-       when is_integer(configured_limit) and configured_limit > 0,
-       do: configured_limit
-
-  defp effective_limit_with_global(_configured_limit, global_limit)
-       when is_integer(global_limit) and global_limit > 0,
-       do: global_limit
-
-  defp effective_limit_with_global(_configured_limit, _global_limit), do: nil
 end

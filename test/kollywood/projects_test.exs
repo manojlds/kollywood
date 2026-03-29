@@ -8,9 +8,8 @@ defmodule Kollywood.ProjectsTest do
              Projects.create_project(%{
                name: "My Local App",
                provider: :local,
-               repository: "/home/user/projects/my-local-app",
-               max_concurrent_agents: 2
-             })
+               repository: "/home/user/projects/my-local-app"
+               })
 
     managed_root = Kollywood.ServiceConfig.project_repos_path("my-local-app")
 
@@ -23,20 +22,9 @@ defmodule Kollywood.ProjectsTest do
     assert Projects.workflow_path(project) ==
              Path.join(["/home/user/projects/my-local-app", ".kollywood", "WORKFLOW.md"])
 
-    assert project.tracker_path == Kollywood.ServiceConfig.project_tracker_path("my-local-app")
-    assert project.max_concurrent_agents == 2
-  end
+    assert Projects.tracker_path(project) ==
+             Kollywood.ServiceConfig.project_tracker_path("my-local-app")
 
-  test "rejects non-positive max_concurrent_agents" do
-    assert {:error, changeset} =
-             Projects.create_project(%{
-               name: "My Local App",
-               provider: :local,
-               repository: "/home/user/projects/my-local-app",
-               max_concurrent_agents: 0
-             })
-
-    assert errors_on(changeset, :max_concurrent_agents) != []
   end
 
   test "requires repository for all providers" do

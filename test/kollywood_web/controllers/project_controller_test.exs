@@ -22,8 +22,7 @@ defmodule KollywoodWeb.ProjectControllerTest do
         name: "One",
         slug: "one-#{System.unique_integer([:positive])}",
         provider: :local,
-        repository: one_path,
-        tracker_path: Path.join(one_path, "prd.json")
+        repository: one_path
       })
 
     {:ok, nested} =
@@ -31,8 +30,7 @@ defmodule KollywoodWeb.ProjectControllerTest do
         name: "Nested",
         slug: "nested-#{System.unique_integer([:positive])}",
         provider: :local,
-        repository: nested_path,
-        tracker_path: Path.join(nested_path, "prd.json")
+        repository: nested_path
       })
 
     on_exit(fn ->

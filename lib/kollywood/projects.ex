@@ -75,10 +75,7 @@ defmodule Kollywood.Projects do
 
   @spec tracker_path(Project.t() | map()) :: String.t() | nil
   def tracker_path(project) when is_map(project) do
-    case field(project, :tracker_path) do
-      value when is_binary(value) and value != "" -> Path.expand(value)
-      _other -> tracker_path_from_slug(field(project, :slug))
-    end
+    tracker_path_from_slug(field(project, :slug))
   end
 
   def tracker_path(_project), do: nil
@@ -92,7 +89,6 @@ defmodule Kollywood.Projects do
       |> put_default_slug()
       |> put_default_branch()
       |> normalize_local_repository()
-      |> put_default_tracker_path()
 
     %Project{}
     |> Project.changeset(attrs)
@@ -107,7 +103,6 @@ defmodule Kollywood.Projects do
       |> normalize_attrs()
       |> drop_derived_paths()
       |> normalize_local_repository()
-      |> normalize_tracker_path()
 
     project
     |> Project.changeset(attrs)
@@ -182,33 +177,6 @@ defmodule Kollywood.Projects do
       end
     else
       attrs
-    end
-  end
-
-  defp put_default_tracker_path(attrs) do
-    case tracker_path_value(attrs) do
-      nil ->
-        case tracker_path_from_slug(Map.get(attrs, "slug") || Map.get(attrs, :slug)) do
-          nil -> attrs
-          path -> Map.put(attrs, "tracker_path", path)
-        end
-
-      path ->
-        Map.put(attrs, "tracker_path", path)
-    end
-  end
-
-  defp normalize_tracker_path(attrs) do
-    case tracker_path_value(attrs) do
-      nil -> attrs
-      path -> Map.put(attrs, "tracker_path", path)
-    end
-  end
-
-  defp tracker_path_value(attrs) do
-    case Map.get(attrs, "tracker_path") || Map.get(attrs, :tracker_path) do
-      value when is_binary(value) and value != "" -> Path.expand(value)
-      _other -> nil
     end
   end
 

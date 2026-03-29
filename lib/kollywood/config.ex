@@ -365,10 +365,12 @@ defmodule Kollywood.Config do
   defp parse_runtime(raw) do
     case Map.get(raw, "runtime", %{}) do
       runtime when is_map(runtime) ->
-        with {:ok, profile} <- parse_runtime_profile(Map.get(runtime, "profile", "checks_only")),
+        with {:ok, kind} <- parse_runtime_kind(Map.get(runtime, "kind", "host")),
+             {:ok, profile} <- parse_runtime_profile(Map.get(runtime, "profile", "checks_only")),
              {:ok, full_stack} <- parse_runtime_full_stack(Map.get(runtime, "full_stack", %{})) do
           {:ok,
            %{
+             kind: kind,
              profile: profile,
              full_stack: full_stack
            }}
@@ -377,6 +379,22 @@ defmodule Kollywood.Config do
       other ->
         {:error, "runtime must be a map (got: #{inspect(other)})"}
     end
+  end
+
+  defp parse_runtime_kind(nil), do: {:ok, :host}
+
+  defp parse_runtime_kind(value) when is_binary(value) do
+    case String.trim(value) do
+      "host" -> {:ok, :host}
+      "docker" -> {:ok, :docker}
+      other -> {:error, "runtime.kind must be one of: host, docker (got: #{other})"}
+    end
+  end
+
+  defp parse_runtime_kind(value) when value in [:host, :docker], do: {:ok, value}
+
+  defp parse_runtime_kind(value) do
+    {:error, "runtime.kind must be one of: host, docker (got: #{inspect(value)})"}
   end
 
   defp parse_runtime_profile(nil), do: {:ok, :checks_only}
@@ -439,7 +457,7 @@ defmodule Kollywood.Config do
 
     %{
       kind: kind,
-      max_concurrent_agents: positive_integer(Map.get(agent, "max_concurrent_agents", 5), 5),
+      max_concurrent_agents: positive_integer(Map.get(agent, "max_concurrent_agents", 1), 1),
       project_max_concurrent_agents:
         parse_project_max_concurrent_agents(Map.get(agent, "project_max_concurrent_agents", %{})),
       max_turns: positive_integer(Map.get(agent, "max_turns", 20), 20),

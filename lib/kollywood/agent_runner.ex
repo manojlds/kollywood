@@ -14,6 +14,7 @@ defmodule Kollywood.AgentRunner do
   alias Kollywood.Config
   alias Kollywood.PromptBuilder
   alias Kollywood.Publisher
+  alias Kollywood.Runtime
   alias Kollywood.StoryExecutionOverrides
   alias Kollywood.Tracker
   alias Kollywood.WorkflowStore
@@ -68,7 +69,7 @@ defmodule Kollywood.AgentRunner do
         identifier: issue_meta.identifier,
         started_at: started_at,
         workspace: nil,
-        runtime: default_runtime_state(config),
+        runtime: Runtime.default_state(runtime_kind(config), config),
         session: nil,
         turn_count: 0,
         last_output: nil,
@@ -92,7 +93,7 @@ defmodule Kollywood.AgentRunner do
 
       case Workspace.create_for_issue(issue_meta.identifier, config) do
         {:ok, workspace} ->
-          runtime = runtime_for_workspace(config, workspace)
+          runtime = Runtime.init(runtime_kind(config), config, workspace)
 
           state =
             state
@@ -164,7 +165,7 @@ defmodule Kollywood.AgentRunner do
          {:ok, workspace} <- resolve_retry_workspace(Keyword.get(opts, :workspace)) do
       log_files = Keyword.get(opts, :log_files)
 
-      runtime = runtime_for_workspace(config, workspace)
+      runtime = Runtime.init(runtime_kind(config), config, workspace)
 
       state = %{
         issue: issue,
@@ -1572,10 +1573,8 @@ defmodule Kollywood.AgentRunner do
     end
   end
 
-  defp execute_check_command(workspace_path, command, timeout_ms, runtime) do
-    {executable, args, env} = check_command_invocation(command, runtime)
-
-    case execute_command(executable, args, workspace_path, env, timeout_ms) do
+  defp execute_check_command(_workspace_path, command, timeout_ms, runtime) do
+    case Runtime.exec(runtime, command, timeout_ms) do
       {:ok, output, duration_ms} ->
         {:ok, duration_ms, output}
 
@@ -1585,314 +1584,97 @@ defmodule Kollywood.AgentRunner do
   end
 
   defp ensure_runtime_for_checks(state) do
-    runtime = state.runtime || default_runtime_state(nil)
+    runtime = state.runtime
 
-    case runtime.profile do
-      :checks_only ->
-        {:ok, state}
+    if runtime.profile == :checks_only or runtime.started? do
+      {:ok, state}
+    else
+      state =
+        emit(state, :runtime_starting, %{
+          runtime_profile: runtime.profile,
+          command: runtime.command,
+          workspace_path: runtime.workspace_path,
+          process_count: length(runtime.processes)
+        })
 
-      :full_stack ->
-        if runtime.started? do
-          {:ok, state}
-        else
+      case Runtime.start(runtime) do
+        {:ok, runtime} ->
           state =
-            emit(state, :runtime_starting, %{
-              runtime_profile: :full_stack,
-              command: runtime.command,
+            state
+            |> Map.put(:runtime, runtime)
+            |> emit(:runtime_started, %{
+              runtime_profile: runtime.profile,
               workspace_path: runtime.workspace_path,
-              process_count: length(runtime.processes)
+              command: runtime.command,
+              process_count: length(runtime.processes),
+              port_offset: runtime.port_offset,
+              resolved_ports: runtime.resolved_ports
             })
 
-          with {:ok, runtime} <- ensure_runtime_isolation(runtime) do
-            state = Map.put(state, :runtime, runtime)
+          {:ok, state}
 
-            case execute_command(
-                   runtime.command,
-                   runtime_start_args(runtime),
-                   runtime.workspace_path,
-                   runtime.env,
-                   runtime.start_timeout_ms
-                 ) do
-              {:ok, output, duration_ms} ->
-                runtime = %{runtime | started?: true, process_state: :running}
+        {:error, reason, runtime} ->
+          state =
+            state
+            |> Map.put(:runtime, runtime)
+            |> emit(:runtime_start_failed, %{
+              runtime_profile: runtime.profile,
+              workspace_path: runtime.workspace_path,
+              command: runtime.command,
+              reason: reason
+            })
 
-                state =
-                  state
-                  |> Map.put(:runtime, runtime)
-                  |> emit(:runtime_started, %{
-                    runtime_profile: :full_stack,
-                    duration_ms: duration_ms,
-                    workspace_path: runtime.workspace_path,
-                    command: runtime.command,
-                    process_count: length(runtime.processes),
-                    port_offset: runtime.port_offset,
-                    resolved_ports: runtime.resolved_ports,
-                    output: output
-                  })
-
-                {:ok, state}
-
-              {:error, reason, output, duration_ms} ->
-                output_preview = output_preview(output)
-                runtime = %{runtime | process_state: :start_failed}
-
-                state =
-                  state
-                  |> Map.put(:runtime, runtime)
-                  |> emit(:runtime_start_failed, %{
-                    runtime_profile: :full_stack,
-                    duration_ms: duration_ms,
-                    workspace_path: runtime.workspace_path,
-                    command: runtime.command,
-                    reason: reason,
-                    output: output,
-                    output_preview: output_preview
-                  })
-
-                {:error,
-                 "failed to start runtime processes: #{reason}#{preview_suffix(output_preview)}",
-                 state}
-            end
-          else
-            {:error, reason} ->
-              runtime = %{runtime | process_state: :isolation_failed}
-
-              state =
-                state
-                |> Map.put(:runtime, runtime)
-                |> emit(:runtime_start_failed, %{
-                  runtime_profile: :full_stack,
-                  duration_ms: 0,
-                  workspace_path: runtime.workspace_path,
-                  command: runtime.command,
-                  reason: reason,
-                  output_preview: ""
-                })
-
-              {:error, "failed to start runtime processes: #{reason}", state}
-          end
-        end
+          {:error, reason, state}
+      end
     end
   end
 
   defp maybe_stop_runtime(state) do
-    runtime = state.runtime || default_runtime_state(nil)
+    runtime = state.runtime
 
-    cond do
-      runtime.profile != :full_stack ->
-        {:ok, state}
+    if runtime.profile == :checks_only or not runtime_needs_stop?(runtime) do
+      runtime = Runtime.release(runtime)
+      {:ok, Map.put(state, :runtime, runtime)}
+    else
+      state =
+        emit(state, :runtime_stopping, %{
+          runtime_profile: runtime.profile,
+          command: runtime.command,
+          workspace_path: runtime.workspace_path
+        })
 
-      not runtime_stop_required?(runtime) ->
-        runtime = release_runtime_offset(runtime)
-        {:ok, Map.put(state, :runtime, runtime)}
+      case Runtime.stop(runtime) do
+        {:ok, runtime} ->
+          state =
+            state
+            |> Map.put(:runtime, runtime)
+            |> emit(:runtime_stopped, %{
+              runtime_profile: runtime.profile,
+              workspace_path: runtime.workspace_path,
+              command: runtime.command
+            })
 
-      true ->
-        state =
-          emit(state, :runtime_stopping, %{
-            runtime_profile: :full_stack,
-            command: runtime.command,
-            workspace_path: runtime.workspace_path
-          })
+          {:ok, state}
 
-        case execute_command(
-               runtime.command,
-               runtime_stop_args(runtime),
-               runtime.workspace_path,
-               runtime.env,
-               runtime.stop_timeout_ms
-             ) do
-          {:ok, output, duration_ms} ->
-            runtime =
-              runtime
-              |> Map.put(:started?, false)
-              |> Map.put(:process_state, :stopped)
-              |> release_runtime_offset()
+        {:error, reason, runtime} ->
+          state =
+            state
+            |> Map.put(:runtime, runtime)
+            |> emit(:runtime_stop_failed, %{
+              runtime_profile: runtime.profile,
+              workspace_path: runtime.workspace_path,
+              command: runtime.command,
+              reason: reason
+            })
 
-            state =
-              state
-              |> Map.put(:runtime, runtime)
-              |> emit(:runtime_stopped, %{
-                runtime_profile: :full_stack,
-                duration_ms: duration_ms,
-                workspace_path: runtime.workspace_path,
-                command: runtime.command,
-                output: output
-              })
-
-            {:ok, state}
-
-          {:error, reason, output, duration_ms} ->
-            output_preview = output_preview(output)
-
-            runtime =
-              runtime
-              |> Map.put(:process_state, :stop_failed)
-              |> release_runtime_offset()
-
-            state =
-              state
-              |> Map.put(:runtime, runtime)
-              |> emit(:runtime_stop_failed, %{
-                runtime_profile: :full_stack,
-                duration_ms: duration_ms,
-                workspace_path: runtime.workspace_path,
-                command: runtime.command,
-                reason: reason,
-                output: output,
-                output_preview: output_preview
-              })
-
-            {:error,
-             "failed to stop runtime processes: #{reason}#{preview_suffix(output_preview)}",
-             state}
-        end
+          {:error, reason, state}
+      end
     end
   end
 
-  defp runtime_stop_required?(runtime) do
+  defp runtime_needs_stop?(runtime) do
     runtime.started? == true or runtime.process_state == :start_failed
   end
-
-  defp ensure_runtime_isolation(runtime) do
-    case Map.get(runtime, :offset_lease_name) do
-      lease_name when not is_nil(lease_name) ->
-        {:ok, runtime}
-
-      _other ->
-        reserve_runtime_offset(runtime)
-    end
-  end
-
-  defp reserve_runtime_offset(runtime) do
-    modulus = positive_integer(Map.get(runtime, :port_offset_mod), 1000)
-
-    workspace_identity =
-      Map.get(runtime, :workspace_identity) || Map.get(runtime, :workspace_path) ||
-        Map.get(runtime, :workspace_key)
-
-    seed_offset = runtime_port_offset_seed(workspace_identity, modulus)
-
-    case runtime_offset_lease(modulus, seed_offset) do
-      {:ok, port_offset, lease_name} ->
-        port_bases = Map.get(runtime, :port_bases, %{})
-        user_env = Map.get(runtime, :user_env, %{})
-        workspace_key = Map.get(runtime, :workspace_key)
-        workspace_path = Map.get(runtime, :workspace_path)
-        resolved_ports = runtime_resolved_ports(port_bases, port_offset)
-        env = runtime_env(workspace_key, workspace_path, user_env, port_offset, resolved_ports)
-
-        {:ok,
-         runtime
-         |> Map.put(:port_offset_seed, seed_offset)
-         |> Map.put(:port_offset, port_offset)
-         |> Map.put(:resolved_ports, resolved_ports)
-         |> Map.put(:env, env)
-         |> Map.put(:offset_lease_name, lease_name)}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp runtime_offset_lease(modulus, seed_offset) do
-    0..(modulus - 1)
-    |> Enum.reduce_while(:none, fn probe, _acc ->
-      offset = rem(seed_offset + probe, modulus)
-      lease_name = runtime_offset_lease_name(modulus, offset)
-
-      case :global.register_name(lease_name, self()) do
-        :yes -> {:halt, {:ok, offset, lease_name}}
-        :no -> {:cont, :none}
-      end
-    end)
-    |> case do
-      {:ok, _offset, _lease_name} = ok ->
-        ok
-
-      :none ->
-        {:error,
-         "no available runtime port offsets within modulus #{modulus}; increase runtime.full_stack.port_offset_mod or reduce concurrent full_stack runs"}
-    end
-  end
-
-  defp release_runtime_offset(runtime) do
-    case Map.get(runtime, :offset_lease_name) do
-      lease_name when is_nil(lease_name) ->
-        runtime
-
-      lease_name ->
-        release_runtime_offset_lease(lease_name)
-        Map.put(runtime, :offset_lease_name, nil)
-    end
-  end
-
-  defp release_runtime_offset_lease(lease_name) do
-    case :global.whereis_name(lease_name) do
-      pid when pid == self() ->
-        :global.unregister_name(lease_name)
-
-      _other ->
-        :ok
-    end
-
-    :ok
-  end
-
-  defp runtime_offset_lease_name(modulus, offset) do
-    {:kollywood, :runtime_port_offset, modulus, offset}
-  end
-
-  defp check_command_invocation(command, %{profile: :full_stack} = runtime) do
-    {runtime.command, ["shell", "--", "bash", "-lc", command], runtime.env}
-  end
-
-  defp check_command_invocation(command, _runtime) do
-    {"bash", ["-lc", command], %{}}
-  end
-
-  defp runtime_start_args(runtime) do
-    base = ["processes", "up", "--detach", "--strict-ports"]
-
-    if runtime.processes == [] do
-      base
-    else
-      base ++ runtime.processes
-    end
-  end
-
-  defp runtime_stop_args(_runtime), do: ["processes", "down"]
-
-  defp execute_command(command, args, workspace_path, env, timeout_ms) do
-    started_at_ms = System.monotonic_time(:millisecond)
-
-    opts =
-      [cd: workspace_path, stderr_to_stdout: true]
-      |> maybe_put_env(env)
-
-    try do
-      task = Task.async(fn -> System.cmd(command, args, opts) end)
-
-      case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
-        {:ok, {output, 0}} ->
-          {:ok, output, elapsed_ms(started_at_ms)}
-
-        {:ok, {output, exit_code}} ->
-          {:error, "exit code #{exit_code}", output, elapsed_ms(started_at_ms)}
-
-        nil ->
-          {:error, "timed out after #{timeout_ms}ms", "", elapsed_ms(started_at_ms)}
-      end
-    rescue
-      error ->
-        {:error, Exception.message(error), "", elapsed_ms(started_at_ms)}
-    end
-  end
-
-  defp maybe_put_env(opts, env) when map_size(env) == 0, do: opts
-  defp maybe_put_env(opts, env), do: Keyword.put(opts, :env, env_to_cmd_env(env))
-
-  defp env_to_cmd_env(env) when is_map(env), do: Enum.to_list(env)
-  defp env_to_cmd_env(_env), do: []
 
   defp runtime_profile_from_state(state) do
     state
@@ -1900,176 +1682,10 @@ defmodule Kollywood.AgentRunner do
     |> Map.get(:profile, :checks_only)
   end
 
-  defp default_runtime_state(config) do
-    case runtime_profile(config) do
-      :full_stack ->
-        %{
-          profile: :full_stack,
-          process_state: :pending,
-          started?: false,
-          command: "devenv",
-          processes: [],
-          env: %{},
-          user_env: %{},
-          port_bases: %{},
-          resolved_ports: %{},
-          port_offset: 0,
-          port_offset_mod: 1000,
-          port_offset_seed: 0,
-          offset_lease_name: nil,
-          start_timeout_ms: 120_000,
-          stop_timeout_ms: 60_000,
-          workspace_key: nil,
-          workspace_identity: nil,
-          workspace_path: nil
-        }
-
-      :checks_only ->
-        %{
-          profile: :checks_only,
-          process_state: :not_required,
-          started?: false,
-          command: nil,
-          processes: [],
-          env: %{},
-          user_env: %{},
-          port_bases: %{},
-          resolved_ports: %{},
-          port_offset: 0,
-          port_offset_mod: 1000,
-          port_offset_seed: 0,
-          offset_lease_name: nil,
-          start_timeout_ms: 120_000,
-          stop_timeout_ms: 60_000,
-          workspace_key: nil,
-          workspace_identity: nil,
-          workspace_path: nil
-        }
-    end
-  end
-
-  defp runtime_for_workspace(config, workspace) do
-    workspace_key = Map.get(workspace, :key) || Path.basename(workspace.path)
-    workspace_path = workspace.path
-    workspace_identity = runtime_workspace_identity(workspace_key, workspace_path)
-
-    case runtime_profile(config) do
-      :checks_only ->
-        %{
-          default_runtime_state(config)
-          | workspace_key: workspace_key,
-            workspace_identity: workspace_identity,
-            workspace_path: workspace_path
-        }
-
-      :full_stack ->
-        full_stack = runtime_full_stack_config(config)
-        user_env = runtime_env_map(field(full_stack, :env))
-        port_bases = runtime_ports_map(field(full_stack, :ports))
-        port_offset_mod = positive_integer(field(full_stack, :port_offset_mod), 1000)
-        port_offset_seed = runtime_port_offset_seed(workspace_identity, port_offset_mod)
-        resolved_ports = runtime_resolved_ports(port_bases, port_offset_seed)
-
-        %{
-          profile: :full_stack,
-          process_state: :pending,
-          started?: false,
-          command: optional_string(field(full_stack, :command)) || "devenv",
-          processes: runtime_processes(field(full_stack, :processes)),
-          env:
-            runtime_env(workspace_key, workspace_path, user_env, port_offset_seed, resolved_ports),
-          user_env: user_env,
-          port_bases: port_bases,
-          resolved_ports: resolved_ports,
-          port_offset: port_offset_seed,
-          port_offset_mod: port_offset_mod,
-          port_offset_seed: port_offset_seed,
-          offset_lease_name: nil,
-          start_timeout_ms: positive_integer(field(full_stack, :start_timeout_ms), 120_000),
-          stop_timeout_ms: positive_integer(field(full_stack, :stop_timeout_ms), 60_000),
-          workspace_key: workspace_key,
-          workspace_identity: workspace_identity,
-          workspace_path: workspace_path
-        }
-    end
-  end
-
-  defp runtime_profile(config) do
-    case field(runtime_config(config), :profile) do
-      :full_stack -> :full_stack
-      "full_stack" -> :full_stack
-      _other -> :checks_only
-    end
-  end
-
-  defp runtime_config(config), do: Map.get(config || %{}, :runtime) || %{}
-
-  defp runtime_full_stack_config(config) do
-    case field(runtime_config(config), :full_stack) do
-      value when is_map(value) -> value
-      _other -> %{}
-    end
-  end
-
-  defp runtime_processes(value) when is_list(value) do
-    value
-    |> Enum.map(&to_string/1)
-    |> Enum.map(&String.trim/1)
-    |> Enum.reject(&(&1 == ""))
-  end
-
-  defp runtime_processes(_value), do: []
-
-  defp runtime_env_map(value) when is_map(value) do
-    Map.new(value, fn {key, val} ->
-      {to_string(key), to_string(val)}
-    end)
-  end
-
-  defp runtime_env_map(_value), do: %{}
-
-  defp runtime_ports_map(value) when is_map(value) do
-    Enum.reduce(value, %{}, fn {key, val}, acc ->
-      case positive_integer(val, nil) do
-        parsed when is_integer(parsed) and parsed > 0 -> Map.put(acc, to_string(key), parsed)
-        _other -> acc
-      end
-    end)
-  end
-
-  defp runtime_ports_map(_value), do: %{}
-
-  defp runtime_workspace_identity(workspace_key, workspace_path) do
-    optional_string(workspace_path) || optional_string(workspace_key) || "unknown-worktree"
-  end
-
-  defp runtime_resolved_ports(port_bases, port_offset) do
-    Map.new(port_bases, fn {key, base_port} ->
-      {key, base_port + port_offset}
-    end)
-  end
-
-  defp runtime_env(workspace_key, workspace_path, user_env, port_offset, resolved_ports) do
-    builtins = %{
-      "KOLLYWOOD_RUNTIME_PROFILE" => "full_stack",
-      "KOLLYWOOD_RUNTIME_WORKTREE_KEY" => to_string(workspace_key),
-      "KOLLYWOOD_RUNTIME_WORKTREE_PATH" => to_string(workspace_path),
-      "KOLLYWOOD_RUNTIME_PORT_OFFSET" => Integer.to_string(port_offset)
-    }
-
-    port_env =
-      Map.new(resolved_ports, fn {key, value} ->
-        {key, Integer.to_string(value)}
-      end)
-
-    user_env
-    |> Map.merge(builtins)
-    |> Map.merge(port_env)
-  end
-
-  defp runtime_port_offset_seed(workspace_identity, modulus) do
-    max_modulus = positive_integer(modulus, 1000)
-    :erlang.phash2(to_string(workspace_identity), max(max_modulus, 1))
+  defp runtime_kind(config) do
+    config
+    |> Map.get(:runtime, %{})
+    |> Map.get(:kind, :host)
   end
 
   defp run_review_turn(state, config, prompt, log_files) do
@@ -2450,10 +2066,6 @@ defmodule Kollywood.AgentRunner do
   end
 
   defp truthy?(_value), do: false
-
-  defp elapsed_ms(started_at_ms) do
-    max(System.monotonic_time(:millisecond) - started_at_ms, 0)
-  end
 
   defp output_preview(output) when is_binary(output) do
     output

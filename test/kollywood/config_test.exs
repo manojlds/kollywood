@@ -116,7 +116,7 @@ defmodule Kollywood.ConfigTest do
     assert config.polling.interval_ms == 5000
     assert config.polling.stale_threshold_multiplier == 3
     assert config.polling.watchdog_check_interval_ms == 5000
-    assert config.agent.max_concurrent_agents == 5
+    assert config.agent.max_concurrent_agents == 1
     assert config.agent.project_max_concurrent_agents == %{}
     assert config.agent.max_turns == 20
     assert config.agent.retries_enabled == true
@@ -264,6 +264,7 @@ defmodule Kollywood.ConfigTest do
     assert config.checks.fail_fast == true
     assert config.checks.max_cycles == 1
 
+    assert config.runtime.kind == :host
     assert config.runtime.profile == :checks_only
     assert config.runtime.full_stack.command == "devenv"
     assert config.runtime.full_stack.processes == []

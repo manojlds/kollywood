@@ -466,7 +466,7 @@ defmodule KollywoodWeb.AdminLive do
                     <td>
                       <div class="text-xs">
                         <span class="font-medium">
-                          {project.max_concurrent_agents || "global"}
+                          {"workflow"}
                         </span>
                         <span class="text-base-content/50"> / </span>
                         <span class="font-medium">
