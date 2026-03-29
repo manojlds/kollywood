@@ -618,6 +618,62 @@ defmodule Kollywood.AgentRunnerTest do
     assert log =~ "processes down"
   end
 
+  test "runtime stop retries once on transient down failure", %{
+    root: root,
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    testing_cli_path: testing_cli_path,
+    prompt_log: prompt_log
+  } do
+    fake_devenv_log = Path.join(root, "fake_devenv_stop_retry.log")
+    fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    down_fail_once_file = Path.join(root, "devenv_down_fail_once.marker")
+
+    runtime =
+      full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log)
+      |> put_in([:env, "FAKE_DEVENV_FAIL_DOWN_ONCE_FILE"], down_fail_once_file)
+
+    config =
+      runner_config(workspace_root, cli_path, prompt_log)
+      |> Map.put(:runtime, runtime)
+      |> Map.put(:testing, %{
+        enabled: true,
+        max_cycles: 1,
+        timeout_ms: 10_000,
+        agent: %{
+          explicit: true,
+          kind: :cursor,
+          command: testing_cli_path,
+          args: [],
+          env: %{"TESTING_VERDICT" => "pass"},
+          timeout_ms: 10_000
+        }
+      })
+
+    issue_with_testing =
+      Map.put(@issue, :settings, %{"execution" => %{"testing_enabled" => true}})
+
+    assert {:ok, result} =
+             AgentRunner.run_issue(issue_with_testing,
+               config: config,
+               prompt_template: "Work on {{ issue.identifier }}",
+               mode: :single_turn
+             )
+
+    event_types = Enum.map(result.events, & &1.type)
+    assert :runtime_started in event_types
+    assert :runtime_stopped in event_types
+    refute :runtime_stop_failed in event_types
+
+    down_count =
+      fake_devenv_log
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.count(&String.contains?(&1, "CMD:processes down"))
+
+    assert down_count == 2
+  end
+
   test "runtime attempts shutdown after startup failure during testing", %{
     root: root,
     workspace_root: workspace_root,
@@ -1144,6 +1200,87 @@ defmodule Kollywood.AgentRunnerTest do
     assert "replay" in artifact_kinds
   end
 
+  test "passes testing_notes only to testing agent prompt", %{
+    root: root,
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    review_cli_path: review_cli_path,
+    testing_cli_path: testing_cli_path,
+    prompt_log: prompt_log
+  } do
+    fake_devenv_log = Path.join(root, "fake_devenv_testing_notes.log")
+    fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    review_prompt_log = Path.join(root, "review-prompts.log")
+    testing_prompt_log = Path.join(root, "testing-prompts.log")
+    attempt_dir = Path.join(root, "attempt-testing-notes")
+
+    log_files = %{
+      review_json: Path.join(attempt_dir, "review.json"),
+      review_cycles_dir: Path.join(attempt_dir, "review_cycles"),
+      testing_json: Path.join(attempt_dir, "testing.json"),
+      testing_cycles_dir: Path.join(attempt_dir, "testing_cycles")
+    }
+
+    config =
+      runner_config(workspace_root, cli_path, prompt_log)
+      |> Map.put(:quality, %{max_cycles: 2})
+      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log))
+      |> Map.put(:review, %{
+        enabled: true,
+        max_cycles: 1,
+        agent: %{
+          explicit: true,
+          kind: :pi,
+          command: review_cli_path,
+          args: [],
+          env: %{"REVIEW_PROMPT_LOG_FILE" => review_prompt_log},
+          timeout_ms: 10_000
+        }
+      })
+      |> Map.put(:testing, %{
+        enabled: true,
+        max_cycles: 1,
+        timeout_ms: 10_000,
+        agent: %{
+          explicit: true,
+          kind: :cursor,
+          command: testing_cli_path,
+          args: [],
+          env: %{
+            "TESTING_VERDICT" => "pass",
+            "TESTING_PROMPT_LOG_FILE" => testing_prompt_log
+          },
+          timeout_ms: 10_000
+        }
+      })
+
+    issue_with_testing =
+      @issue
+      |> Map.put("testing_notes", "Use tester account and capture checkout flow video.")
+      |> Map.put(:settings, %{"execution" => %{"testing_enabled" => true}})
+
+    assert {:ok, result} =
+             AgentRunner.run_issue(issue_with_testing,
+               config: config,
+               prompt_template: "Work on {{ issue.identifier }}",
+               mode: :single_turn,
+               log_files: log_files
+             )
+
+    assert result.status == :ok
+
+    prompt_history = File.read!(prompt_log)
+    refute prompt_history =~ "Use tester account and capture checkout flow video."
+
+    review_prompt_history = File.read!(review_prompt_log)
+    refute review_prompt_history =~ "Use tester account and capture checkout flow video."
+
+    testing_prompt_history = File.read!(testing_prompt_log)
+    assert testing_prompt_history =~ "Use tester account and capture checkout flow video."
+    assert File.exists?(Path.join(log_files.review_cycles_dir, "cycle-001.json"))
+    assert File.exists?(Path.join(log_files.testing_cycles_dir, "cycle-001.json"))
+  end
+
   test "persists testing report and local artifacts to run-log paths", %{
     root: root,
     workspace_root: workspace_root,
@@ -1159,6 +1296,7 @@ defmodule Kollywood.AgentRunnerTest do
 
     log_files = %{
       testing_json: Path.join(attempt_dir, "testing.json"),
+      testing_cycles_dir: Path.join(attempt_dir, "testing_cycles"),
       testing_report: Path.join(attempt_dir, "testing_report.json"),
       testing_artifacts_dir: Path.join(attempt_dir, "testing_artifacts")
     }
@@ -1194,6 +1332,7 @@ defmodule Kollywood.AgentRunnerTest do
 
     assert result.status == :ok
     assert File.exists?(log_files.testing_json)
+    assert File.exists?(Path.join(log_files.testing_cycles_dir, "cycle-001.json"))
     assert File.exists?(log_files.testing_report)
     assert File.dir?(log_files.testing_artifacts_dir)
 
@@ -1878,6 +2017,14 @@ defmodule Kollywood.AgentRunnerTest do
     fi
 
     if [ "${1:-}" = "processes" ] && [ "${2:-}" = "down" ]; then
+      if [ -n "${FAKE_DEVENV_FAIL_DOWN_ONCE_FILE:-}" ]; then
+        if [ ! -f "$FAKE_DEVENV_FAIL_DOWN_ONCE_FILE" ]; then
+          touch "$FAKE_DEVENV_FAIL_DOWN_ONCE_FILE"
+          echo "forced down failure" >&2
+          exit 61
+        fi
+      fi
+
       exit 0
     fi
 

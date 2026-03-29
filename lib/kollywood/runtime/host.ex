@@ -8,6 +8,9 @@ defmodule Kollywood.Runtime.Host do
   @behaviour Kollywood.Runtime
 
   require Logger
+  @stop_retry_attempts 1
+  @stop_retry_delay_ms 500
+  @stop_output_preview_chars 240
 
   # ── Callbacks ──────────────────────────────────────────────────────
 
@@ -98,19 +101,12 @@ defmodule Kollywood.Runtime.Host do
   @impl true
   def stop(state) do
     if stop_required?(state) do
-      case execute(
-             state.command,
-             ["processes", "down"],
-             state.workspace_path,
-             state.env,
-             state.stop_timeout_ms
-           ) do
-        {:ok, _output, _ms} ->
+      case stop_runtime_processes(state) do
+        :ok ->
           {:ok, %{state | started?: false, process_state: :stopped} |> release()}
 
-        {:error, reason, _output, _ms} ->
-          {:error, "failed to stop runtime processes: #{reason}",
-           %{state | process_state: :stop_failed} |> release()}
+        {:error, reason} ->
+          {:error, reason, %{state | process_state: :stop_failed} |> release()}
       end
     else
       {:ok, release(state)}
@@ -242,6 +238,123 @@ defmodule Kollywood.Runtime.Host do
 
   defp stop_required?(state) do
     state.started? == true or state.process_state == :start_failed
+  end
+
+  defp stop_runtime_processes(state) do
+    case stop_processes_once(state) do
+      :ok ->
+        :ok
+
+      {:error, reason, output} ->
+        if output_indicates_runtime_already_stopped?(output) do
+          Logger.warning("runtime stop returned non-zero but appears already stopped: #{reason}")
+          :ok
+        else
+          retry_stop_runtime_processes(state, reason, output)
+        end
+    end
+  end
+
+  defp stop_processes_once(state) do
+    case execute(
+           state.command,
+           ["processes", "down"],
+           state.workspace_path,
+           state.env,
+           state.stop_timeout_ms
+         ) do
+      {:ok, _output, _ms} ->
+        :ok
+
+      {:error, reason, output, _ms} ->
+        {:error, reason, output}
+    end
+  end
+
+  defp retry_stop_runtime_processes(state, first_reason, first_output) do
+    Logger.warning("runtime stop failed (attempt 1); retrying once: #{first_reason}")
+
+    1..@stop_retry_attempts
+    |> Enum.reduce_while({:error, first_reason, first_output}, fn _attempt, _acc ->
+      Process.sleep(@stop_retry_delay_ms)
+
+      case stop_processes_once(state) do
+        :ok ->
+          {:halt, :ok}
+
+        {:error, retry_reason, retry_output} ->
+          if output_indicates_runtime_already_stopped?(retry_output) do
+            Logger.warning(
+              "runtime stop retry returned non-zero but appears already stopped: #{retry_reason}"
+            )
+
+            {:halt, :ok}
+          else
+            {:cont, {:error, retry_reason, retry_output}}
+          end
+      end
+    end)
+    |> case do
+      :ok ->
+        :ok
+
+      {:error, last_reason, last_output} ->
+        {:error,
+         "failed to stop runtime processes after #{@stop_retry_attempts + 1} attempts " <>
+           "(attempt1=#{format_stop_failure(first_reason, first_output)}; " <>
+           "attempt#{@stop_retry_attempts + 1}=#{format_stop_failure(last_reason, last_output)})"}
+    end
+  end
+
+  defp output_indicates_runtime_already_stopped?(output) when is_binary(output) do
+    normalized =
+      output
+      |> String.downcase()
+      |> String.trim()
+
+    normalized != "" and
+      Enum.any?(
+        [
+          "already stopped",
+          "not running",
+          "no running process",
+          "no running processes",
+          "no process to stop",
+          "nothing to stop"
+        ],
+        &String.contains?(normalized, &1)
+      )
+  end
+
+  defp output_indicates_runtime_already_stopped?(_output), do: false
+
+  defp format_stop_failure(reason, output) do
+    reason_text = optional_string(reason) || "unknown"
+
+    output_text =
+      output
+      |> optional_string()
+      |> case do
+        nil ->
+          nil
+
+        value ->
+          trimmed = String.trim(value)
+
+          if trimmed == "" do
+            nil
+          else
+            trimmed
+            |> String.slice(0, @stop_output_preview_chars)
+            |> String.replace("\n", "\\n")
+          end
+      end
+
+    if output_text do
+      "#{reason_text}; output=#{output_text}"
+    else
+      reason_text
+    end
   end
 
   # ── Env / ports helpers ────────────────────────────────────────────

@@ -54,6 +54,10 @@ defmodule Kollywood.Orchestrator.RunLogsTest do
       assert metadata["files"]["tester"] == context.files.tester
       assert Map.has_key?(metadata["files"], "testing_json")
       assert metadata["files"]["testing_json"] == context.files.testing_json
+      assert Map.has_key?(metadata["files"], "review_cycles_dir")
+      assert metadata["files"]["review_cycles_dir"] == context.files.review_cycles_dir
+      assert Map.has_key?(metadata["files"], "testing_cycles_dir")
+      assert metadata["files"]["testing_cycles_dir"] == context.files.testing_cycles_dir
       assert Map.has_key?(metadata["files"], "testing_report")
       assert metadata["files"]["testing_report"] == context.files.testing_report
       assert Map.has_key?(metadata["files"], "testing_artifacts_dir")
@@ -65,7 +69,10 @@ defmodule Kollywood.Orchestrator.RunLogsTest do
       assert Map.has_key?(tracker_meta.run_logs.files, :agent)
       assert Map.has_key?(tracker_meta.run_logs.files, :tester)
       assert Map.has_key?(tracker_meta.run_logs.files, :tester_stdout)
+      assert Map.has_key?(tracker_meta.run_logs.files, :review_json)
+      assert Map.has_key?(tracker_meta.run_logs.files, :review_cycles_dir)
       assert Map.has_key?(tracker_meta.run_logs.files, :testing_json)
+      assert Map.has_key?(tracker_meta.run_logs.files, :testing_cycles_dir)
       assert Map.has_key?(tracker_meta.run_logs.files, :testing_report)
       assert Map.has_key?(tracker_meta.run_logs.files, :testing_artifacts_dir)
     end

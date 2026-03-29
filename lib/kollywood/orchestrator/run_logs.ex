@@ -345,7 +345,10 @@ defmodule Kollywood.Orchestrator.RunLogs do
           agent_stdout: files.agent_stdout,
           reviewer_stdout: files.reviewer_stdout,
           tester_stdout: files.tester_stdout,
+          review_json: files.review_json,
+          review_cycles_dir: files.review_cycles_dir,
           testing_json: files.testing_json,
+          testing_cycles_dir: files.testing_cycles_dir,
           testing_report: files.testing_report,
           testing_artifacts_dir: files.testing_artifacts_dir
         }
@@ -463,7 +466,9 @@ defmodule Kollywood.Orchestrator.RunLogs do
       reviewer_stdout: Path.join(attempt_dir, "reviewer_stdout.log"),
       tester_stdout: Path.join(attempt_dir, "tester_stdout.log"),
       review_json: Path.join(attempt_dir, "review.json"),
+      review_cycles_dir: Path.join(attempt_dir, "review_cycles"),
       testing_json: Path.join(attempt_dir, "testing.json"),
+      testing_cycles_dir: Path.join(attempt_dir, "testing_cycles"),
       testing_report: Path.join(attempt_dir, "testing_report.json"),
       testing_artifacts_dir: Path.join(attempt_dir, "testing_artifacts")
     }
@@ -576,7 +581,9 @@ defmodule Kollywood.Orchestrator.RunLogs do
         "reviewer_stdout" => files.reviewer_stdout,
         "tester_stdout" => files.tester_stdout,
         "review_json" => files.review_json,
+        "review_cycles_dir" => files.review_cycles_dir,
         "testing_json" => files.testing_json,
+        "testing_cycles_dir" => files.testing_cycles_dir,
         "testing_report" => files.testing_report,
         "testing_artifacts_dir" => files.testing_artifacts_dir
       }

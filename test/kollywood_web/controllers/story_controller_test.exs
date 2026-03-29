@@ -69,7 +69,8 @@ defmodule KollywoodWeb.StoryControllerTest do
         "status" => "draft",
         "priority" => 3,
         "dependsOn" => "US-001",
-        "acceptanceCriteria" => "first criterion\nsecond criterion"
+        "acceptanceCriteria" => "first criterion\nsecond criterion",
+        "testingNotes" => "Tester should validate on mobile viewport."
       }
     }
 
@@ -78,6 +79,7 @@ defmodule KollywoodWeb.StoryControllerTest do
     assert %{"data" => story} = json_response(conn, 201)
     assert story["title"] == "New API Story"
     assert story["status"] == "draft"
+    assert story["testingNotes"] == "Tester should validate on mobile viewport."
 
     story_ids = tracker_story_ids(tracker_path)
     assert Enum.any?(story_ids, &(&1 == story["id"]))
@@ -95,6 +97,7 @@ defmodule KollywoodWeb.StoryControllerTest do
   test "update stores story execution overrides", %{conn: conn, project: project} do
     payload = %{
       "story" => %{
+        "testingNotes" => "Verify a11y keyboard nav.",
         "settings" => %{
           "execution" => %{
             "agent_kind" => "cursor",
@@ -117,6 +120,7 @@ defmodule KollywoodWeb.StoryControllerTest do
     assert story["settings"]["execution"]["testing_enabled"] == true
     assert story["settings"]["execution"]["testing_agent_kind"] == "opencode"
     assert story["settings"]["execution"]["testing_max_cycles"] == 3
+    assert story["testingNotes"] == "Verify a11y keyboard nav."
   end
 
   test "update rejects invalid execution override values", %{conn: conn, project: project} do
