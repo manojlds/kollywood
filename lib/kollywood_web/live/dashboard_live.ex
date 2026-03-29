@@ -3425,36 +3425,52 @@ defmodule KollywoodWeb.DashboardLive do
   attr :story_id, :string, required: true
 
   defp run_actions_menu(assigns) do
+    retry_action = if is_map(assigns.retry_action), do: assigns.retry_action, else: %{}
+    retry_label = Map.get(retry_action, "label", "Retry unavailable for this run")
+    retry_reason = Map.get(retry_action, "reason")
+    retry_enabled = Map.get(retry_action, "enabled", false) == true
+    has_retry_action = retry_action != %{}
+
+    assigns =
+      assigns
+      |> assign(:retry_action, retry_action)
+      |> assign(:retry_label, retry_label)
+      |> assign(:retry_reason, retry_reason)
+      |> assign(:retry_enabled, retry_enabled)
+      |> assign(:has_retry_action, has_retry_action)
+
     ~H"""
-    <%= if is_map(@retry_action) do %>
-      <div class="dropdown dropdown-end">
-        <label tabindex="0" class="btn btn-ghost btn-sm gap-2 whitespace-nowrap">
-          Actions <.icon name="hero-chevron-down" class="size-4" />
-        </label>
-        <ul
-          tabindex="0"
-          class="dropdown-content menu menu-xs z-50 w-52 rounded-box border border-base-300 bg-base-100 p-1 shadow-lg"
-        >
-          <li>
+    <div class="dropdown dropdown-end">
+      <label tabindex="0" class="btn btn-ghost btn-sm gap-2 whitespace-nowrap">
+        Actions <.icon name="hero-chevron-down" class="size-4" />
+      </label>
+      <ul
+        tabindex="0"
+        class="dropdown-content menu menu-xs z-50 w-52 rounded-box border border-base-300 bg-base-100 p-1 shadow-lg"
+      >
+        <li>
+          <%= if @has_retry_action do %>
             <button
               phx-click="trigger_run"
               phx-value-story_id={@story_id}
               phx-value-attempt={@retry_action["attempt"]}
               phx-value-step={@retry_action["step"]}
-              disabled={!@retry_action["enabled"]}
-              title={@retry_action["reason"] || @retry_action["label"]}
+              disabled={!@retry_enabled}
+              title={@retry_reason || @retry_label}
               class={[
                 "text-left text-xs",
-                @retry_action["enabled"] && "text-primary",
-                !@retry_action["enabled"] && "opacity-60"
+                @retry_enabled && "text-primary",
+                !@retry_enabled && "opacity-60"
               ]}
             >
-              {@retry_action["label"]}
+              {@retry_label}
             </button>
-          </li>
-        </ul>
-      </div>
-    <% end %>
+          <% else %>
+            <span class="block px-3 py-2 text-left text-xs opacity-60">{@retry_label}</span>
+          <% end %>
+        </li>
+      </ul>
+    </div>
     """
   end
 
