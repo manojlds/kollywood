@@ -1067,7 +1067,11 @@ defmodule Kollywood.OrchestratorTest do
         "execution" => %{
           "agent_kind" => "cursor",
           "review_agent_kind" => "claude",
-          "review_max_cycles" => 5
+          "review_max_cycles" => 5,
+          "testing_enabled" => true,
+          "preview_enabled" => true,
+          "testing_agent_kind" => "opencode",
+          "testing_max_cycles" => 8
         }
       })
 
@@ -1145,6 +1149,10 @@ defmodule Kollywood.OrchestratorTest do
     assert metadata["run_settings"]["agent_kind"] == "cursor"
     assert metadata["run_settings"]["review_agent_kind"] == "claude"
     assert metadata["run_settings"]["review_max_cycles"] == 1
+    assert metadata["run_settings"]["testing_enabled"] == "true"
+    assert metadata["run_settings"]["preview_enabled"] == "true"
+    assert metadata["run_settings"]["testing_agent_kind"] == "opencode"
+    assert metadata["run_settings"]["testing_max_cycles"] == 1
 
     settings_snapshot = metadata["settings_snapshot"]
     assert is_map(settings_snapshot)
@@ -1152,7 +1160,12 @@ defmodule Kollywood.OrchestratorTest do
     assert get_in(settings_snapshot, ["workflow", "path"]) == workflow_path
     assert is_binary(get_in(settings_snapshot, ["workflow", "sha256"]))
     assert get_in(settings_snapshot, ["resolved", "agent", "kind"]) == "amp"
+    assert get_in(settings_snapshot, ["resolved", "testing", "enabled"]) == "false"
+    assert get_in(settings_snapshot, ["resolved", "testing", "agent", "kind"]) == "amp"
+    assert get_in(settings_snapshot, ["resolved", "preview", "enabled"]) == "false"
     assert get_in(settings_snapshot, ["resolved", "runtime", "profile"]) == "checks_only"
+    assert get_in(settings_snapshot, ["sources", "testing", "enabled"]) == "default"
+    assert get_in(settings_snapshot, ["sources", "preview", "enabled"]) == "default"
     assert get_in(settings_snapshot, ["sources", "publish", "mode"]) == "provider_default"
   end
 
@@ -1829,7 +1842,8 @@ defmodule Kollywood.OrchestratorTest do
         pid when is_pid(pid) ->
           if Process.alive?(pid), do: Process.exit(pid, :kill)
 
-        _other -> :ok
+        _other ->
+          :ok
       end
     end)
 

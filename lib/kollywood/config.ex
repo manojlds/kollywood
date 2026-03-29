@@ -31,6 +31,8 @@ defmodule Kollywood.Config do
           checks: map(),
           runtime: map(),
           review: map(),
+          testing: map(),
+          preview: map(),
           agent: map(),
           publish: map(),
           git: map(),
@@ -47,6 +49,8 @@ defmodule Kollywood.Config do
     :checks,
     :runtime,
     :review,
+    :testing,
+    :preview,
     :agent,
     :publish,
     :git,
@@ -108,8 +112,9 @@ defmodule Kollywood.Config do
     with :ok <- validate_required_sections(raw),
          {:ok, agent_kind} <- parse_agent_kind(raw),
          {:ok, review_agent_kind} <- parse_review_agent_kind(raw, agent_kind),
-         {:ok, quality} <- parse_quality(raw, review_agent_kind),
+         {:ok, quality} <- parse_quality(raw, review_agent_kind, agent_kind),
          {:ok, runtime} <- parse_runtime(raw),
+         {:ok, preview} <- parse_preview(raw),
          {:ok, publish} <- parse_publish(raw),
          {:ok, git_policy} <- parse_git(raw) do
       config = %__MODULE__{
@@ -121,6 +126,8 @@ defmodule Kollywood.Config do
         checks: quality.checks,
         runtime: runtime,
         review: quality.review,
+        testing: quality.testing,
+        preview: preview,
         agent: parse_agent(raw, agent_kind),
         publish: publish,
         git: git_policy,
@@ -303,19 +310,105 @@ defmodule Kollywood.Config do
     }
   end
 
-  defp parse_quality(raw, review_agent_kind) do
+  defp parse_quality(raw, review_agent_kind, default_testing_agent_kind) do
     quality = map_or_empty(Map.get(raw, "quality", %{}))
     quality_max_cycles = positive_integer(Map.get(quality, "max_cycles", 1), 1)
 
     checks = parse_quality_checks(quality, quality_max_cycles)
     review = parse_quality_review(quality, review_agent_kind, quality_max_cycles)
 
-    {:ok,
-     %{
-       max_cycles: quality_max_cycles,
-       checks: checks,
-       review: review
-     }}
+    with {:ok, testing} <-
+           parse_quality_testing(quality, default_testing_agent_kind, quality_max_cycles) do
+      {:ok,
+       %{
+         max_cycles: quality_max_cycles,
+         checks: checks,
+         review: review,
+         testing: testing
+       }}
+    end
+  end
+
+  defp parse_quality_testing(quality, default_agent_kind, quality_max_cycles) do
+    case Map.get(quality, "testing", %{}) do
+      testing when is_map(testing) ->
+        testing_agent_raw = Map.get(testing, "agent")
+
+        cond do
+          is_nil(testing_agent_raw) or is_map(testing_agent_raw) ->
+            testing_agent_explicit = is_map(testing_agent_raw)
+            testing_agent = testing_agent_raw || %{}
+
+            with {:ok, enabled} <-
+                   parse_boolean_field(
+                     Map.get(testing, "enabled", false),
+                     "quality.testing.enabled"
+                   ),
+                 {:ok, requires_runtime} <-
+                   parse_boolean_field(
+                     Map.get(testing, "requires_runtime", false),
+                     "quality.testing.requires_runtime"
+                   ),
+                 {:ok, max_cycles} <-
+                   parse_positive_integer_field(
+                     Map.get(testing, "max_cycles", quality_max_cycles),
+                     "quality.testing.max_cycles"
+                   ),
+                 {:ok, timeout_ms} <-
+                   parse_positive_integer_field(
+                     Map.get(testing, "timeout_ms", @default_timeout_ms),
+                     "quality.testing.timeout_ms"
+                   ),
+                 {:ok, testing_agent_kind} <-
+                   parse_optional_quality_testing_agent_kind(
+                     Map.get(testing_agent, "kind"),
+                     default_agent_kind
+                   ),
+                 {:ok, testing_agent_command} <-
+                   parse_optional_string_field(
+                     Map.get(testing_agent, "command"),
+                     "quality.testing.agent.command"
+                   ),
+                 {:ok, testing_agent_args} <-
+                   parse_string_list_field(
+                     Map.get(testing_agent, "args", []),
+                     "quality.testing.agent.args"
+                   ),
+                 {:ok, testing_agent_env} <-
+                   parse_string_map_field(
+                     Map.get(testing_agent, "env", %{}),
+                     "quality.testing.agent.env"
+                   ),
+                 {:ok, testing_agent_timeout_ms} <-
+                   parse_positive_integer_field(
+                     Map.get(testing_agent, "timeout_ms", @default_timeout_ms),
+                     "quality.testing.agent.timeout_ms"
+                   ) do
+              {:ok,
+               %{
+                 enabled: enabled,
+                 requires_runtime: requires_runtime,
+                 max_cycles: max_cycles,
+                 timeout_ms: timeout_ms,
+                 prompt_template: optional_string(Map.get(testing, "prompt_template")),
+                 agent: %{
+                   explicit: testing_agent_explicit,
+                   kind: testing_agent_kind,
+                   command: testing_agent_command,
+                   args: testing_agent_args,
+                   env: testing_agent_env,
+                   timeout_ms: testing_agent_timeout_ms
+                 }
+               }}
+            end
+
+          true ->
+            {:error, "quality.testing.agent must be a map (got: #{inspect(testing_agent_raw)})"}
+        end
+
+      other ->
+        {:error, "quality.testing must be a map (got: #{inspect(other)})"}
+    end
   end
 
   defp parse_quality_checks(quality, quality_max_cycles) do
@@ -376,6 +469,52 @@ defmodule Kollywood.Config do
 
       other ->
         {:error, "runtime must be a map (got: #{inspect(other)})"}
+    end
+  end
+
+  defp parse_preview(raw) do
+    case Map.get(raw, "preview", %{}) do
+      preview when is_map(preview) ->
+        with {:ok, enabled} <-
+               parse_boolean_field(Map.get(preview, "enabled", false), "preview.enabled"),
+             {:ok, ttl_minutes} <-
+               parse_positive_integer_field(
+                 Map.get(preview, "ttl_minutes", 120),
+                 "preview.ttl_minutes"
+               ),
+             {:ok, reuse_testing_runtime} <-
+               parse_boolean_field(
+                 Map.get(preview, "reuse_testing_runtime", true),
+                 "preview.reuse_testing_runtime"
+               ),
+             {:ok, allow_on_demand_from_pending_merge} <-
+               parse_boolean_field(
+                 Map.get(preview, "allow_on_demand_from_pending_merge", true),
+                 "preview.allow_on_demand_from_pending_merge"
+               ),
+             {:ok, start_timeout_ms} <-
+               parse_positive_integer_field(
+                 Map.get(preview, "start_timeout_ms", 120_000),
+                 "preview.start_timeout_ms"
+               ),
+             {:ok, stop_timeout_ms} <-
+               parse_positive_integer_field(
+                 Map.get(preview, "stop_timeout_ms", 60_000),
+                 "preview.stop_timeout_ms"
+               ) do
+          {:ok,
+           %{
+             enabled: enabled,
+             ttl_minutes: ttl_minutes,
+             reuse_testing_runtime: reuse_testing_runtime,
+             allow_on_demand_from_pending_merge: allow_on_demand_from_pending_merge,
+             start_timeout_ms: start_timeout_ms,
+             stop_timeout_ms: stop_timeout_ms
+           }}
+        end
+
+      other ->
+        {:error, "preview must be a map (got: #{inspect(other)})"}
     end
   end
 
@@ -650,6 +789,63 @@ defmodule Kollywood.Config do
 
   defp optional_string(value) when is_binary(value) and value != "", do: value
   defp optional_string(_value), do: nil
+
+  defp parse_boolean_field(value, _path) when is_boolean(value), do: {:ok, value}
+
+  defp parse_boolean_field(value, path) when is_binary(value) do
+    case String.trim(value) |> String.downcase() do
+      "true" -> {:ok, true}
+      "false" -> {:ok, false}
+      _other -> {:error, "#{path} must be a boolean (got: #{inspect(value)})"}
+    end
+  end
+
+  defp parse_boolean_field(value, path),
+    do: {:error, "#{path} must be a boolean (got: #{inspect(value)})"}
+
+  defp parse_positive_integer_field(value, _path) when is_integer(value) and value > 0,
+    do: {:ok, value}
+
+  defp parse_positive_integer_field(value, path) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {parsed, ""} when parsed > 0 -> {:ok, parsed}
+      _other -> {:error, "#{path} must be a positive integer (got: #{inspect(value)})"}
+    end
+  end
+
+  defp parse_positive_integer_field(value, path),
+    do: {:error, "#{path} must be a positive integer (got: #{inspect(value)})"}
+
+  defp parse_optional_string_field(nil, _path), do: {:ok, nil}
+
+  defp parse_optional_string_field(value, _path) when is_binary(value),
+    do: {:ok, optional_string(value)}
+
+  defp parse_optional_string_field(value, path),
+    do: {:error, "#{path} must be a string (got: #{inspect(value)})"}
+
+  defp parse_string_list_field(value, _path) when is_list(value), do: {:ok, string_list(value)}
+
+  defp parse_string_list_field(value, path),
+    do: {:error, "#{path} must be a list (got: #{inspect(value)})"}
+
+  defp parse_string_map_field(value, _path) when is_map(value), do: {:ok, string_map(value)}
+
+  defp parse_string_map_field(value, path),
+    do: {:error, "#{path} must be a map (got: #{inspect(value)})"}
+
+  defp parse_optional_quality_testing_agent_kind(nil, fallback_kind), do: {:ok, fallback_kind}
+
+  defp parse_optional_quality_testing_agent_kind(value, _fallback_kind) do
+    case parse_agent_kind_value(value) do
+      {:ok, kind} ->
+        {:ok, kind}
+
+      {:error, _reason} ->
+        {:error,
+         "Invalid quality.testing.agent.kind: #{inspect(value)}. Must be one of: #{Enum.join(@valid_agent_kinds, ", ")}"}
+    end
+  end
 
   defp command_list(values) when is_list(values) do
     values

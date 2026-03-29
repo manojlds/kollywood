@@ -2361,8 +2361,10 @@ defmodule KollywoodWeb.DashboardLive do
             <.settings_used_field label="Review cycles" value={snapshot_review_cycles(@snapshot)} />
             <.settings_used_field label="Checks" value={snapshot_checks_toggle(@snapshot)} />
             <.settings_used_field label="Review" value={snapshot_review_toggle(@snapshot)} />
+            <.settings_used_field label="Testing" value={snapshot_testing_toggle(@snapshot)} />
             <.settings_used_field label="Publish" value={snapshot_publish_toggle(@snapshot)} />
             <.settings_used_field label="Runtime" value={snapshot_runtime_toggle(@snapshot)} />
+            <.settings_used_field label="Preview" value={snapshot_preview_toggle(@snapshot)} />
           </div>
         <% else %>
           <p class="text-sm text-base-content/60 italic">Settings snapshot unavailable.</p>
@@ -3136,9 +3138,7 @@ defmodule KollywoodWeb.DashboardLive do
                       <%= for k <- ["host", "docker"] do %>
                         <option
                           value={k}
-                          selected={
-                            (get_in(@workflow.parsed, ["runtime", "kind"]) || "host") == k
-                          }
+                          selected={(get_in(@workflow.parsed, ["runtime", "kind"]) || "host") == k}
                         >
                           {k}
                         </option>
@@ -3472,7 +3472,8 @@ defmodule KollywoodWeb.DashboardLive do
     phase_label = Map.get(run, :phase_label) || Map.get(run, "phase_label")
     status = normalize_run_status(Map.get(run, :status) || Map.get(run, "status"))
 
-    show_run_detail_phase_label?(phase_label) and status not in ["ok", "finished", "failed", "stopped"]
+    show_run_detail_phase_label?(phase_label) and
+      status not in ["ok", "finished", "failed", "stopped"]
   end
 
   defp show_recent_activity_phase_label?(_run), do: false
@@ -5245,6 +5246,44 @@ defmodule KollywoodWeb.DashboardLive do
     |> toggle_text()
   end
 
+  defp snapshot_testing_toggle(snapshot) do
+    enabled = snapshot_value(snapshot, ["resolved", "testing", "enabled"])
+    requires_runtime = snapshot_value(snapshot, ["resolved", "testing", "requires_runtime"])
+
+    cond do
+      truthy_value?(enabled) and truthy_value?(requires_runtime) ->
+        "Enabled (runtime required)"
+
+      truthy_value?(enabled) ->
+        "Enabled"
+
+      falsey_value?(enabled) ->
+        "Disabled"
+
+      true ->
+        "Unavailable"
+    end
+  end
+
+  defp snapshot_preview_toggle(snapshot) do
+    enabled = snapshot_value(snapshot, ["resolved", "preview", "enabled"])
+    ttl = snapshot_value(snapshot, ["resolved", "preview", "ttl_minutes"])
+
+    cond do
+      truthy_value?(enabled) and is_integer(ttl) and ttl > 0 ->
+        "Enabled (#{ttl}m TTL)"
+
+      truthy_value?(enabled) ->
+        "Enabled"
+
+      falsey_value?(enabled) ->
+        "Disabled"
+
+      true ->
+        "Unavailable"
+    end
+  end
+
   defp snapshot_publish_toggle(snapshot) do
     mode = snapshot |> snapshot_value(["resolved", "publish", "mode"]) |> maybe_string()
     provider = snapshot |> snapshot_value(["resolved", "publish", "provider"]) |> maybe_string()
@@ -5307,7 +5346,17 @@ defmodule KollywoodWeb.DashboardLive do
 
   defp toggle_text(true), do: "Enabled"
   defp toggle_text(false), do: "Disabled"
+  defp toggle_text("true"), do: "Enabled"
+  defp toggle_text("false"), do: "Disabled"
   defp toggle_text(_value), do: "Unavailable"
+
+  defp truthy_value?(true), do: true
+  defp truthy_value?("true"), do: true
+  defp truthy_value?(_value), do: false
+
+  defp falsey_value?(false), do: true
+  defp falsey_value?("false"), do: true
+  defp falsey_value?(_value), do: false
 
   defp map_or_empty(value) when is_map(value), do: value
   defp map_or_empty(_value), do: %{}
@@ -5624,5 +5673,4 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp time_ago(_), do: "unknown"
-
 end

@@ -279,6 +279,21 @@ defmodule Kollywood.ConfigTest do
     assert config.review.enabled == false
     assert config.review.max_cycles == 1
     assert config.review.agent.kind == :pi
+
+    assert config.testing.enabled == false
+    assert config.testing.requires_runtime == false
+    assert config.testing.max_cycles == 1
+    assert config.testing.timeout_ms == 7_200_000
+    assert config.testing.prompt_template == nil
+    assert config.testing.agent.kind == :pi
+    assert config.testing.agent.explicit == false
+
+    assert config.preview.enabled == false
+    assert config.preview.ttl_minutes == 120
+    assert config.preview.reuse_testing_runtime == true
+    assert config.preview.allow_on_demand_from_pending_merge == true
+    assert config.preview.start_timeout_ms == 120_000
+    assert config.preview.stop_timeout_ms == 60_000
   end
 
   test "parses checks and review settings" do
@@ -330,6 +345,136 @@ defmodule Kollywood.ConfigTest do
     assert config.review.agent.args == ["--print"]
     assert config.review.agent.env == %{"REVIEW_MODE" => "strict"}
     assert config.review.agent.timeout_ms == 120_000
+  end
+
+  test "parses quality.testing and preview settings" do
+    content = """
+    ---
+    quality:
+      max_cycles: 4
+      testing:
+        enabled: true
+        requires_runtime: true
+        max_cycles: 3
+        timeout_ms: 180000
+        prompt_template: "Test {{ issue.identifier }}"
+        agent:
+          kind: cursor
+          command: /usr/local/bin/cursor
+          args:
+            - --print
+          env:
+            TEST_MODE: smoke
+          timeout_ms: 110000
+    preview:
+      enabled: true
+      ttl_minutes: 45
+      reuse_testing_runtime: false
+      allow_on_demand_from_pending_merge: false
+      start_timeout_ms: 50000
+      stop_timeout_ms: 25000
+    workspace:
+      root: /tmp
+    agent:
+      kind: pi
+    ---
+    prompt
+    """
+
+    assert {:ok, config, _} = Config.parse(content)
+
+    assert config.testing.enabled == true
+    assert config.testing.requires_runtime == true
+    assert config.testing.max_cycles == 3
+    assert config.testing.timeout_ms == 180_000
+    assert config.testing.prompt_template == "Test {{ issue.identifier }}"
+    assert config.testing.agent.kind == :cursor
+    assert config.testing.agent.command == "/usr/local/bin/cursor"
+    assert config.testing.agent.args == ["--print"]
+    assert config.testing.agent.env == %{"TEST_MODE" => "smoke"}
+    assert config.testing.agent.timeout_ms == 110_000
+    assert config.testing.agent.explicit == true
+
+    assert config.preview.enabled == true
+    assert config.preview.ttl_minutes == 45
+    assert config.preview.reuse_testing_runtime == false
+    assert config.preview.allow_on_demand_from_pending_merge == false
+    assert config.preview.start_timeout_ms == 50_000
+    assert config.preview.stop_timeout_ms == 25_000
+  end
+
+  test "rejects invalid quality.testing.enabled" do
+    content = """
+    ---
+    quality:
+      testing:
+        enabled: maybe
+    workspace:
+      root: /tmp
+    agent:
+      kind: pi
+    ---
+    prompt
+    """
+
+    assert {:error, msg} = Config.parse(content)
+    assert msg =~ "quality.testing.enabled"
+    assert msg =~ "boolean"
+  end
+
+  test "rejects non-map quality.testing.agent" do
+    content = """
+    ---
+    quality:
+      testing:
+        agent: cursor
+    workspace:
+      root: /tmp
+    agent:
+      kind: pi
+    ---
+    prompt
+    """
+
+    assert {:error, msg} = Config.parse(content)
+    assert msg =~ "quality.testing.agent must be a map"
+  end
+
+  test "rejects invalid quality.testing.agent.kind" do
+    content = """
+    ---
+    quality:
+      testing:
+        agent:
+          kind: invalid
+    workspace:
+      root: /tmp
+    agent:
+      kind: pi
+    ---
+    prompt
+    """
+
+    assert {:error, msg} = Config.parse(content)
+    assert msg =~ "quality.testing.agent.kind"
+  end
+
+  test "rejects invalid preview.enabled" do
+    content = """
+    ---
+    preview:
+      enabled: sometimes
+    workspace:
+      root: /tmp
+    agent:
+      kind: pi
+    ---
+    prompt
+    """
+
+    assert {:error, msg} = Config.parse(content)
+    assert msg =~ "preview.enabled"
+    assert msg =~ "boolean"
   end
 
   test "parses publish and git policy settings" do

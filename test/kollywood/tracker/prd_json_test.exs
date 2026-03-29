@@ -245,7 +245,11 @@ defmodule Kollywood.Tracker.PrdJsonTest do
                  "execution" => %{
                    "agent_kind" => "cursor",
                    "review_agent_kind" => "claude",
-                   "review_max_cycles" => "3"
+                   "review_max_cycles" => "3",
+                   "testing_enabled" => "true",
+                   "preview_enabled" => true,
+                   "testing_agent_kind" => "opencode",
+                   "testing_max_cycles" => "2"
                  }
                }
              })
@@ -255,6 +259,10 @@ defmodule Kollywood.Tracker.PrdJsonTest do
     assert created["settings"]["execution"]["agent_kind"] == "cursor"
     assert created["settings"]["execution"]["review_agent_kind"] == "claude"
     assert created["settings"]["execution"]["review_max_cycles"] == 3
+    assert created["settings"]["execution"]["testing_enabled"] == true
+    assert created["settings"]["execution"]["preview_enabled"] == true
+    assert created["settings"]["execution"]["testing_agent_kind"] == "opencode"
+    assert created["settings"]["execution"]["testing_max_cycles"] == 2
 
     assert {:ok, updated} =
              PrdJson.update_story(path, created_id, %{

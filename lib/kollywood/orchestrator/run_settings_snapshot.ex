@@ -28,16 +28,20 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshot do
       "resolved" => %{
         "agent" => stringify_map(config.agent || %{}),
         "review" => stringify_map(resolved_review_settings(config)),
+        "testing" => stringify_map(resolved_testing_settings(config)),
         "checks" => stringify_map(resolved_checks_settings(config)),
         "publish" => stringify_map(resolved_publish_settings(config)),
-        "runtime" => stringify_map(resolved_runtime_settings(config))
+        "runtime" => stringify_map(resolved_runtime_settings(config)),
+        "preview" => stringify_map(resolved_preview_settings(config))
       },
       "sources" => %{
         "agent" => agent_source_markers(config),
         "review" => review_source_markers(config),
+        "testing" => testing_source_markers(config),
         "checks" => checks_source_markers(config),
         "publish" => publish_source_markers(config),
-        "runtime" => runtime_source_markers(config)
+        "runtime" => runtime_source_markers(config),
+        "preview" => preview_source_markers(config)
       }
     }
   end
@@ -165,6 +169,58 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshot do
     }
   end
 
+  defp resolved_testing_settings(%Config{} = config) do
+    testing = testing_config(config)
+    testing_agent = map_or_empty(Map.get(testing, :agent))
+    testing_agent_explicit = truthy?(Map.get(testing_agent, :explicit, false))
+    quality_limit = quality_max_cycles(config)
+
+    %{
+      enabled: truthy?(Map.get(testing, :enabled, false)),
+      requires_runtime: truthy?(Map.get(testing, :requires_runtime, false)),
+      max_cycles: positive_integer(Map.get(testing, :max_cycles), quality_limit),
+      timeout_ms: positive_integer(Map.get(testing, :timeout_ms), @default_timeout_ms),
+      prompt_template: optional_string(Map.get(testing, :prompt_template)),
+      agent_explicit: testing_agent_explicit,
+      agent: resolved_testing_agent(config, testing_agent, testing_agent_explicit)
+    }
+  end
+
+  defp resolved_testing_agent(%Config{} = config, testing_agent, true) do
+    base_agent = map_or_empty(Map.get(config, :agent))
+
+    base_agent
+    |> Map.put(:kind, Map.get(testing_agent, :kind, Map.get(base_agent, :kind)))
+    |> Map.put(:max_turns, 1)
+    |> maybe_put(:command, Map.get(testing_agent, :command))
+    |> maybe_put_list(:args, Map.get(testing_agent, :args))
+    |> Map.put(
+      :env,
+      Map.merge(
+        map_or_empty(Map.get(base_agent, :env)),
+        map_or_empty(Map.get(testing_agent, :env))
+      )
+    )
+    |> Map.put(
+      :timeout_ms,
+      positive_integer(
+        Map.get(
+          testing_agent,
+          :timeout_ms,
+          Map.get(base_agent, :timeout_ms, @default_timeout_ms)
+        ),
+        @default_timeout_ms
+      )
+    )
+  end
+
+  defp resolved_testing_agent(%Config{} = config, _testing_agent, false) do
+    config
+    |> Map.get(:agent)
+    |> map_or_empty()
+    |> Map.put(:max_turns, 1)
+  end
+
   defp resolved_publish_settings(%Config{} = config) do
     publish = map_or_empty(Map.get(config, :publish))
     git = map_or_empty(Map.get(config, :git))
@@ -176,6 +232,20 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshot do
       auto_merge: Map.get(publish, :auto_merge),
       auto_create_pr: Map.get(publish, :auto_create_pr),
       base_branch: optional_string(Map.get(git, :base_branch)) || "main"
+    }
+  end
+
+  defp resolved_preview_settings(%Config{} = config) do
+    preview = map_or_empty(Map.get(config, :preview))
+
+    %{
+      enabled: truthy?(Map.get(preview, :enabled, false)),
+      ttl_minutes: positive_integer(Map.get(preview, :ttl_minutes), 120),
+      reuse_testing_runtime: truthy?(Map.get(preview, :reuse_testing_runtime, true)),
+      allow_on_demand_from_pending_merge:
+        truthy?(Map.get(preview, :allow_on_demand_from_pending_merge, true)),
+      start_timeout_ms: positive_integer(Map.get(preview, :start_timeout_ms), 120_000),
+      stop_timeout_ms: positive_integer(Map.get(preview, :stop_timeout_ms), 60_000)
     }
   end
 
@@ -280,6 +350,48 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshot do
     }
   end
 
+  defp testing_source_markers(%Config{} = config) do
+    raw = map_or_empty(Map.get(config, :raw))
+    testing_agent_path = ["quality", "testing", "agent"]
+    testing_agent_explicit = path_present?(raw, testing_agent_path)
+
+    %{
+      "enabled" => source_marker(raw, ["quality", "testing", "enabled"]),
+      "requires_runtime" => source_marker(raw, ["quality", "testing", "requires_runtime"]),
+      "max_cycles" => source_marker(raw, ["quality", "testing", "max_cycles"]),
+      "timeout_ms" => source_marker(raw, ["quality", "testing", "timeout_ms"]),
+      "prompt_template" => source_marker(raw, ["quality", "testing", "prompt_template"]),
+      "agent_explicit" => if(testing_agent_explicit, do: "workflow", else: "derived"),
+      "agent" => %{
+        "kind" =>
+          testing_agent_source_marker(raw, "kind",
+            explicit: testing_agent_explicit,
+            fallback_path: ["agent", "kind"]
+          ),
+        "command" =>
+          testing_agent_source_marker(raw, "command",
+            explicit: testing_agent_explicit,
+            fallback_path: ["agent", "command"]
+          ),
+        "args" =>
+          testing_agent_source_marker(raw, "args",
+            explicit: testing_agent_explicit,
+            fallback_path: ["agent", "args"]
+          ),
+        "env" =>
+          testing_agent_source_marker(raw, "env",
+            explicit: testing_agent_explicit,
+            fallback_path: ["agent", "env"]
+          ),
+        "timeout_ms" =>
+          testing_agent_source_marker(raw, "timeout_ms",
+            explicit: testing_agent_explicit,
+            fallback_path: ["agent", "timeout_ms"]
+          )
+      }
+    }
+  end
+
   defp publish_source_markers(%Config{} = config) do
     raw = map_or_empty(Map.get(config, :raw))
 
@@ -319,6 +431,20 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshot do
     }
   end
 
+  defp preview_source_markers(%Config{} = config) do
+    raw = map_or_empty(Map.get(config, :raw))
+
+    %{
+      "enabled" => source_marker(raw, ["preview", "enabled"]),
+      "ttl_minutes" => source_marker(raw, ["preview", "ttl_minutes"]),
+      "reuse_testing_runtime" => source_marker(raw, ["preview", "reuse_testing_runtime"]),
+      "allow_on_demand_from_pending_merge" =>
+        source_marker(raw, ["preview", "allow_on_demand_from_pending_merge"]),
+      "start_timeout_ms" => source_marker(raw, ["preview", "start_timeout_ms"]),
+      "stop_timeout_ms" => source_marker(raw, ["preview", "stop_timeout_ms"])
+    }
+  end
+
   defp runtime_source_markers(%Config{} = config) do
     raw = map_or_empty(Map.get(config, :raw))
 
@@ -355,6 +481,25 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshot do
     end
   end
 
+  defp testing_agent_source_marker(raw, field, opts) when is_binary(field) do
+    explicit = Keyword.get(opts, :explicit, false)
+    fallback_path = Keyword.get(opts, :fallback_path, [])
+
+    cond do
+      path_present?(raw, ["quality", "testing", "agent", field]) ->
+        "workflow.testing_agent"
+
+      explicit ->
+        "workflow.testing_agent_inherited"
+
+      fallback_path != [] and path_present?(raw, fallback_path) ->
+        "workflow.agent"
+
+      true ->
+        "default"
+    end
+  end
+
   defp checks_config(%Config{} = config) do
     case Map.get(config, :checks) do
       checks when is_map(checks) ->
@@ -377,6 +522,19 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshot do
         config
         |> quality_config()
         |> Map.get(:review)
+        |> map_or_empty()
+    end
+  end
+
+  defp testing_config(%Config{} = config) do
+    case Map.get(config, :testing) do
+      testing when is_map(testing) ->
+        testing
+
+      _other ->
+        config
+        |> quality_config()
+        |> Map.get(:testing)
         |> map_or_empty()
     end
   end
