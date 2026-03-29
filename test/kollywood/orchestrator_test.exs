@@ -1061,7 +1061,16 @@ defmodule Kollywood.OrchestratorTest do
     %{store: workflow_store, path: workflow_path} =
       start_workflow_store!(root, %{tracker_kind: "prd_json", tracker_path: prd_path})
 
-    issue = issue("ISS-LOG", "US-LOG", 1)
+    issue =
+      issue("ISS-LOG", "US-LOG", 1)
+      |> Map.put(:settings, %{
+        "execution" => %{
+          "agent_kind" => "cursor",
+          "review_agent_kind" => "claude",
+          "review_max_cycles" => 5
+        }
+      })
+
     test_pid = self()
     issues_agent = start_agent!(fn -> [issue] end)
 
@@ -1132,6 +1141,10 @@ defmodule Kollywood.OrchestratorTest do
     assert metadata["runner_attempt"] == nil
     assert metadata["turn_count"] == 1
     assert metadata["story_id"] == "US-LOG"
+
+    assert metadata["run_settings"]["agent_kind"] == "cursor"
+    assert metadata["run_settings"]["review_agent_kind"] == "claude"
+    assert metadata["run_settings"]["review_max_cycles"] == 1
 
     settings_snapshot = metadata["settings_snapshot"]
     assert is_map(settings_snapshot)
@@ -1232,6 +1245,71 @@ defmodule Kollywood.OrchestratorTest do
              get_in(snapshot_two, ["workflow", "sha256"])
 
     assert attempt_one_snapshot_after == snapshot_one
+  end
+
+  test "invalid story execution overrides mark failed and schedule retry", %{root: root} do
+    prd_path = Path.join(root, "invalid-settings-prd.json")
+
+    payload = %{
+      "project" => "kollywood",
+      "branchName" => "main",
+      "description" => "invalid story settings fixture",
+      "userStories" => [
+        %{
+          "id" => "US-INVALID-SETTINGS",
+          "title" => "Invalid settings",
+          "description" => "Should fail override validation before dispatch",
+          "acceptanceCriteria" => [],
+          "priority" => 1,
+          "status" => "open",
+          "dependsOn" => [],
+          "settings" => %{"execution" => %{"agent_kind" => "invalid-kind"}}
+        }
+      ]
+    }
+
+    File.mkdir_p!(Path.dirname(prd_path))
+    File.write!(prd_path, Jason.encode!(payload, pretty: true))
+
+    %{store: workflow_store} =
+      start_workflow_store!(root, %{
+        tracker_kind: "prd_json",
+        tracker_path: prd_path,
+        tracker_active_states: ["open", "in_progress"],
+        tracker_terminal_states: ["done"]
+      })
+
+    test_pid = self()
+
+    runner = fn issue, _opts ->
+      send(test_pid, {:runner_started, issue.id})
+      {:ok, success_result(issue)}
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         runner: runner,
+         auto_poll: false,
+         continuation_delay_ms: 60_000,
+         retry_base_delay_ms: 60_000}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    refute_receive {:runner_started, "US-INVALID-SETTINGS"}, 200
+
+    _ = :sys.get_state(orchestrator)
+    status = Orchestrator.status(orchestrator)
+    story = read_story_from_prd!(prd_path, "US-INVALID-SETTINGS")
+
+    assert status.running_count == 0
+    assert status.retry_count == 1
+    assert story["status"] == "in_progress"
+    assert story["lastRunAttempt"] == 1
+    assert is_binary(story["lastError"])
+    assert story["lastError"] =~ "invalid story execution settings"
   end
 
   test "retries failed runs with backoff and increments attempt", %{root: root} do
@@ -2577,13 +2655,23 @@ defmodule Kollywood.OrchestratorTest do
   end
 
   defp prd_story_status(path, story_id) do
-    {:ok, content} = File.read(path)
-    {:ok, data} = Jason.decode(content)
-
-    data
-    |> Map.fetch!("userStories")
-    |> Enum.find(fn story -> Map.get(story, "id") == story_id end)
+    path
+    |> read_story_from_prd!(story_id)
     |> Map.get("status")
+  end
+
+  defp read_story_from_prd!(path, story_id) do
+    story =
+      path
+      |> read_json!()
+      |> Map.fetch!("userStories")
+      |> Enum.find(fn candidate -> Map.get(candidate, "id") == story_id end)
+
+    if is_map(story) do
+      story
+    else
+      flunk("story #{story_id} not found in #{path}")
+    end
   end
 
   defp read_json!(path) do

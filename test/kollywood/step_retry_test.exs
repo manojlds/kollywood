@@ -97,6 +97,61 @@ defmodule Kollywood.StepRetryTest do
     assert story["lastError"] in [nil, ""]
   end
 
+  test "retrying checks applies persisted story execution overrides to run settings", %{
+    root: root,
+    project: project
+  } do
+    story_id = "US-CHECKS-OVERRIDES"
+
+    write_tracker!(project, [
+      %{
+        "id" => story_id,
+        "title" => "Checks",
+        "status" => "failed",
+        "settings" => %{
+          "execution" => %{
+            "agent_kind" => "cursor",
+            "review_agent_kind" => "claude",
+            "review_max_cycles" => 5
+          }
+        }
+      }
+    ])
+
+    write_clone_checks_workflow!(project)
+
+    workspace_path = Path.join(root, "checks-workspace-overrides")
+    File.mkdir_p!(workspace_path)
+    File.write!(Path.join(workspace_path, "ready.txt"), "ok\n")
+
+    source_context =
+      prepare_failed_attempt!(
+        project,
+        story_id,
+        workspace_path,
+        [
+          %{type: :turn_succeeded, turn: 1, output: "agent output"},
+          %{type: :checks_started, check_count: 1},
+          %{type: :check_failed, check_index: 1, command: "test -f ready.txt", reason: "missing"},
+          %{type: :checks_failed, error_count: 1}
+        ],
+        "checks failed"
+      )
+
+    assert {:ok, result} = StepRetry.retry(project, story_id, source_context.attempt, "checks")
+
+    latest = resolve_attempt!(project, story_id, result.attempt)
+    run_settings = latest.metadata["run_settings"]
+    story_overrides = run_settings["story_overrides"]
+
+    assert run_settings["agent_kind"] == "cursor"
+    assert run_settings["review_agent_kind"] == "claude"
+    assert run_settings["review_max_cycles"] == 1
+    assert story_overrides["agent_kind"] == "cursor"
+    assert story_overrides["review_agent_kind"] == "claude"
+    assert story_overrides["review_max_cycles"] == 5
+  end
+
   test "retrying checks records a failed linked attempt when checks fail again", %{
     root: root,
     project: project

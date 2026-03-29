@@ -15,6 +15,7 @@ defmodule Kollywood.StepRetry do
   alias Kollywood.Orchestrator.RunSettingsSnapshot
   alias Kollywood.Projects
   alias Kollywood.ServiceConfig
+  alias Kollywood.StoryExecutionOverrides
   alias Kollywood.Tracker
   alias Kollywood.Tracker.PrdJson
   alias Kollywood.Workspace
@@ -76,9 +77,18 @@ defmodule Kollywood.StepRetry do
          :ok <- ensure_common_preconditions(config, source.metadata),
          :ok <- ensure_prior_phase_outputs(retry_step, config, source.events),
          {:ok, issue} <- load_issue(project, story_id),
+         {:ok, resolved_story_execution} <- StoryExecutionOverrides.resolve(config, issue),
          {:ok, workspace} <- build_workspace(config, issue.identifier, source.metadata),
          {:ok, run_log_context} <-
-           prepare_retry_logs(config, project, issue, source, retry_step, workflow_identity) do
+           prepare_retry_logs(
+             config,
+             project,
+             issue,
+             source,
+             retry_step,
+             workflow_identity,
+             resolved_story_execution.settings_snapshot
+           ) do
       on_event = fn event ->
         case RunLogs.append_event(run_log_context, event) do
           :ok ->
@@ -91,7 +101,9 @@ defmodule Kollywood.StepRetry do
       end
 
       run_opts = [
-        config: config,
+        config: resolved_story_execution.config,
+        story_overrides_resolved: true,
+        run_settings_snapshot: resolved_story_execution.settings_snapshot,
         prompt_template: prompt_template,
         attempt: run_log_context.attempt,
         workspace: workspace,
@@ -256,14 +268,23 @@ defmodule Kollywood.StepRetry do
     Tracker.module_for_kind(kind)
   end
 
-  defp prepare_retry_logs(config, project, issue, source, retry_step, workflow_identity) do
+  defp prepare_retry_logs(
+         config,
+         project,
+         issue,
+         source,
+         retry_step,
+         workflow_identity,
+         run_settings_snapshot
+       ) do
     log_config = config_for_run_logs(config, project)
 
     metadata = %{
       "parent_attempt" => source.attempt,
       "retry_step" => Atom.to_string(retry_step),
       "settings_snapshot" =>
-        RunSettingsSnapshot.build(log_config, workflow_identity: workflow_identity)
+        RunSettingsSnapshot.build(log_config, workflow_identity: workflow_identity),
+      "run_settings" => if(is_map(run_settings_snapshot), do: run_settings_snapshot, else: %{})
     }
 
     case RunLogs.prepare_attempt(log_config, issue, source.runner_attempt, metadata) do
@@ -473,8 +494,9 @@ defmodule Kollywood.StepRetry do
     %{
       id: story_id,
       identifier: story_id,
-      title: optional_string(story["title"]) || story_id,
-      description: optional_string(story["description"]) || ""
+      title: optional_string(field(story, :title)) || story_id,
+      description: optional_string(field(story, :description)) || "",
+      settings: field(story, :settings)
     }
   end
 

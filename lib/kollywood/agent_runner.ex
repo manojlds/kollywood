@@ -14,6 +14,7 @@ defmodule Kollywood.AgentRunner do
   alias Kollywood.Config
   alias Kollywood.PromptBuilder
   alias Kollywood.Publisher
+  alias Kollywood.StoryExecutionOverrides
   alias Kollywood.Tracker
   alias Kollywood.WorkflowStore
   alias Kollywood.Workspace
@@ -24,6 +25,8 @@ defmodule Kollywood.AgentRunner do
           {:workflow_store, GenServer.server()}
           | {:config, Config.t()}
           | {:prompt_template, String.t()}
+          | {:story_overrides_resolved, boolean()}
+          | {:run_settings_snapshot, map()}
           | {:attempt, non_neg_integer() | nil}
           | {:workspace, Workspace.t()}
           | {:mode, mode()}
@@ -49,7 +52,7 @@ defmodule Kollywood.AgentRunner do
     with {:ok, on_event} <- parse_on_event(Keyword.get(opts, :on_event, &default_on_event/1)),
          {:ok, attempt} <- parse_attempt(Keyword.get(opts, :attempt)),
          {:ok, issue_meta} <- issue_meta(issue),
-         {:ok, config, prompt_template} <- resolve_workflow(opts),
+         {:ok, config, prompt_template, run_settings_snapshot} <- resolve_workflow(issue, opts),
          {:ok, mode} <- parse_mode(Keyword.get(opts, :mode, :single_turn)),
          {:ok, turn_limit} <- parse_turn_limit(config, Keyword.get(opts, :turn_limit)),
          {:ok, session_opts} <-
@@ -73,7 +76,13 @@ defmodule Kollywood.AgentRunner do
         log_files: log_files
       }
 
-      state = emit(state, :run_started, %{attempt: attempt, mode: mode, turn_limit: turn_limit})
+      state =
+        emit(state, :run_started, %{
+          attempt: attempt,
+          mode: mode,
+          turn_limit: turn_limit,
+          run_settings: run_settings_snapshot
+        })
 
       case Workspace.create_for_issue(issue_meta.identifier, config) do
         {:ok, workspace} ->
@@ -141,7 +150,7 @@ defmodule Kollywood.AgentRunner do
     with {:ok, on_event} <- parse_on_event(Keyword.get(opts, :on_event, &default_on_event/1)),
          {:ok, attempt} <- parse_attempt(Keyword.get(opts, :attempt)),
          {:ok, issue_meta} <- issue_meta(issue),
-         {:ok, config, prompt_template} <- resolve_workflow(opts),
+         {:ok, config, prompt_template, run_settings_snapshot} <- resolve_workflow(issue, opts),
          {:ok, retry_step} <- parse_retry_step(step),
          {:ok, session_opts} <-
            normalize_opts(Keyword.get(opts, :session_opts, %{}), "session_opts"),
@@ -169,7 +178,12 @@ defmodule Kollywood.AgentRunner do
 
       state =
         state
-        |> emit(:run_started, %{attempt: attempt, mode: :step_retry, retry_step: retry_step})
+        |> emit(:run_started, %{
+          attempt: attempt,
+          mode: :step_retry,
+          retry_step: retry_step,
+          run_settings: run_settings_snapshot
+        })
         |> emit(:workspace_ready, %{
           workspace_path: workspace.path,
           runtime_profile: runtime.profile
@@ -2402,12 +2416,15 @@ defmodule Kollywood.AgentRunner do
     end
   end
 
-  defp resolve_workflow(opts) do
+  defp resolve_workflow(issue, opts) do
     workflow_store = Keyword.get(opts, :workflow_store, WorkflowStore)
     config = Keyword.get(opts, :config) || WorkflowStore.get_config(workflow_store)
 
     prompt_template =
       Keyword.get(opts, :prompt_template) || WorkflowStore.get_prompt_template(workflow_store)
+
+    story_overrides_resolved? = Keyword.get(opts, :story_overrides_resolved, false)
+    provided_snapshot = Keyword.get(opts, :run_settings_snapshot)
 
     cond do
       not match?(%Config{}, config) ->
@@ -2416,8 +2433,22 @@ defmodule Kollywood.AgentRunner do
       not (is_binary(prompt_template) and prompt_template != "") ->
         {:error, "Workflow prompt template is unavailable"}
 
+      story_overrides_resolved? ->
+        run_settings_snapshot =
+          if is_map(provided_snapshot),
+            do: provided_snapshot,
+            else: StoryExecutionOverrides.snapshot(config)
+
+        {:ok, config, prompt_template, run_settings_snapshot}
+
       true ->
-        {:ok, config, prompt_template}
+        case StoryExecutionOverrides.resolve(config, issue) do
+          {:ok, resolved} ->
+            {:ok, resolved.config, prompt_template, resolved.settings_snapshot}
+
+          {:error, reason} ->
+            {:error, "invalid story execution settings: #{reason}"}
+        end
     end
   end
 

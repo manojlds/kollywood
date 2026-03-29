@@ -12,6 +12,7 @@ defmodule KollywoodWeb.DashboardLive do
   alias Kollywood.Projects
   alias Kollywood.Projects.Project
   alias Kollywood.ServiceConfig
+  alias Kollywood.StoryExecutionOverrides
   alias Kollywood.StepRetry
   alias Kollywood.Tracker.PrdJson
 
@@ -25,6 +26,7 @@ defmodule KollywoodWeb.DashboardLive do
     {"failed", "Failed"}
   ]
   @story_status_order Enum.map(@story_status_columns, fn {status, _label} -> status end)
+  @agent_kind_options StoryExecutionOverrides.valid_agent_kind_strings()
 
   @impl true
   def mount(params, _session, socket) do
@@ -1856,6 +1858,7 @@ defmodule KollywoodWeb.DashboardLive do
       assigns
       |> assign(:show, show)
       |> assign(:status_options, status_options)
+      |> assign(:agent_kind_options, @agent_kind_options)
 
     ~H"""
     <%= if @show do %>
@@ -1941,6 +1944,76 @@ defmodule KollywoodWeb.DashboardLive do
                   value={Map.get(@values, "dependsOn", "")}
                   class="input input-bordered input-sm w-full"
                 />
+              </div>
+
+              <div class="rounded-lg border border-base-300 p-3 space-y-3">
+                <h4 class="text-sm font-semibold">Execution Overrides</h4>
+                <p class="text-xs text-base-content/60">
+                  Optional per-story overrides. Leave blank to use workflow defaults.
+                </p>
+
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label class="label py-1">
+                      <span class="label-text text-sm">Main Agent Kind</span>
+                    </label>
+                    <select
+                      name="story[execution_agent_kind]"
+                      class="select select-bordered select-sm w-full"
+                    >
+                      <option value="" selected={Map.get(@values, "execution_agent_kind", "") == ""}>
+                        Use workflow default
+                      </option>
+                      <%= for kind <- @agent_kind_options do %>
+                        <option
+                          value={kind}
+                          selected={Map.get(@values, "execution_agent_kind", "") == kind}
+                        >
+                          {kind}
+                        </option>
+                      <% end %>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label class="label py-1">
+                      <span class="label-text text-sm">Review Agent Kind</span>
+                    </label>
+                    <select
+                      name="story[execution_review_agent_kind]"
+                      class="select select-bordered select-sm w-full"
+                    >
+                      <option
+                        value=""
+                        selected={Map.get(@values, "execution_review_agent_kind", "") == ""}
+                      >
+                        Use workflow default
+                      </option>
+                      <%= for kind <- @agent_kind_options do %>
+                        <option
+                          value={kind}
+                          selected={Map.get(@values, "execution_review_agent_kind", "") == kind}
+                        >
+                          {kind}
+                        </option>
+                      <% end %>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label class="label py-1">
+                      <span class="label-text text-sm">Review Max Cycles</span>
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      name="story[execution_review_max_cycles]"
+                      value={Map.get(@values, "execution_review_max_cycles", "")}
+                      class="input input-bordered input-sm w-full"
+                      placeholder="Use workflow default"
+                    />
+                  </div>
+                </div>
               </div>
 
               <div>
@@ -3296,7 +3369,10 @@ defmodule KollywoodWeb.DashboardLive do
       "priority" => to_string(next_story_priority(stories)),
       "status" => "draft",
       "dependsOn" => "",
-      "notes" => ""
+      "notes" => "",
+      "execution_agent_kind" => "",
+      "execution_review_agent_kind" => "",
+      "execution_review_max_cycles" => ""
     }
   end
 
@@ -3311,11 +3387,39 @@ defmodule KollywoodWeb.DashboardLive do
       "priority" => to_string(Map.get(story, "priority", "")),
       "status" => normalize_status(Map.get(story, "status", "open")),
       "dependsOn" => depends_on_text(Map.get(story, "dependsOn")),
-      "notes" => to_string(Map.get(story, "notes", ""))
+      "notes" => to_string(Map.get(story, "notes", "")),
+      "execution_agent_kind" => story_execution_override_value(story, "agent_kind"),
+      "execution_review_agent_kind" => story_execution_override_value(story, "review_agent_kind"),
+      "execution_review_max_cycles" => story_execution_override_value(story, "review_max_cycles")
     }
   end
 
   defp story_to_form_values(_story), do: default_story_form_values([])
+
+  defp story_execution_override_value(story, key) when is_map(story) and is_binary(key) do
+    execution =
+      story
+      |> Map.get("settings", %{})
+      |> Map.get("execution", %{})
+
+    camel_key =
+      case key do
+        "agent_kind" -> "agentKind"
+        "review_agent_kind" -> "reviewAgentKind"
+        "review_max_cycles" -> "reviewMaxCycles"
+        other -> other
+      end
+
+    value = Map.get(execution, key) || Map.get(execution, camel_key)
+
+    cond do
+      is_binary(value) -> value
+      is_integer(value) -> Integer.to_string(value)
+      true -> ""
+    end
+  end
+
+  defp story_execution_override_value(_story, _key), do: ""
 
   defp normalize_story_form_params(params) when is_map(params) do
     %{
@@ -3326,7 +3430,17 @@ defmodule KollywoodWeb.DashboardLive do
       "priority" => Map.get(params, "priority"),
       "status" => Map.get(params, "status"),
       "dependsOn" => Map.get(params, "dependsOn"),
-      "notes" => Map.get(params, "notes")
+      "notes" => Map.get(params, "notes"),
+      "settings" => %{
+        "execution" => %{
+          "agent_kind" => Map.get(params, "execution_agent_kind"),
+          "review_agent_kind" => Map.get(params, "execution_review_agent_kind"),
+          "review_max_cycles" => Map.get(params, "execution_review_max_cycles")
+        }
+      },
+      "execution_agent_kind" => Map.get(params, "execution_agent_kind"),
+      "execution_review_agent_kind" => Map.get(params, "execution_review_agent_kind"),
+      "execution_review_max_cycles" => Map.get(params, "execution_review_max_cycles")
     }
   end
 
@@ -3344,7 +3458,10 @@ defmodule KollywoodWeb.DashboardLive do
         "priority",
         "status",
         "dependsOn",
-        "notes"
+        "notes",
+        "execution_agent_kind",
+        "execution_review_agent_kind",
+        "execution_review_max_cycles"
       ])
     )
   end
