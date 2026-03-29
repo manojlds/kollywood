@@ -32,9 +32,7 @@ quality:
       kind: cursor
       timeout_ms: 7200000
     enabled: true
-    fail_token: REVIEW_FAIL
     max_cycles: 2
-    pass_token: REVIEW_PASS
 runtime:
   kind: host
   full_stack:

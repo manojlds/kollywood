@@ -2757,14 +2757,12 @@ defmodule KollywoodWeb.DashboardLive do
               <p class="font-medium">{@project.default_branch}</p>
             </div>
 
-            <%= if local_path = Projects.local_path(@project) do %>
-              <div class="sm:col-span-2">
-                <span class="text-sm text-base-content/60">Local Path</span>
-                <p class="font-medium font-mono text-sm break-all">
-                  {local_path}
-                </p>
-              </div>
-            <% end %>
+            <div class="sm:col-span-2">
+              <span class="text-sm text-base-content/60">Repository</span>
+              <p class="font-medium font-mono text-sm break-all">
+                {@project.repository || "—"}
+              </p>
+            </div>
           </div>
         </div>
       </div>
@@ -3037,34 +3035,6 @@ defmodule KollywoodWeb.DashboardLive do
                     />
                   </div>
                   <div></div>
-                  <div>
-                    <label class="label pb-1">
-                      <span class="label-text text-sm">Pass Token</span>
-                    </label>
-                    <input
-                      type="text"
-                      name="settings[quality][review][pass_token]"
-                      value={
-                        get_in(@workflow.parsed, ["quality", "review", "pass_token"]) ||
-                          "REVIEW_PASS"
-                      }
-                      class="input input-bordered input-sm w-full font-mono"
-                    />
-                  </div>
-                  <div>
-                    <label class="label pb-1">
-                      <span class="label-text text-sm">Fail Token</span>
-                    </label>
-                    <input
-                      type="text"
-                      name="settings[quality][review][fail_token]"
-                      value={
-                        get_in(@workflow.parsed, ["quality", "review", "fail_token"]) ||
-                          "REVIEW_FAIL"
-                      }
-                      class="input input-bordered input-sm w-full font-mono"
-                    />
-                  </div>
 
                   <%!-- Reviewer Agent --%>
                   <div class="sm:col-span-2 pt-2">
@@ -4355,15 +4325,7 @@ defmodule KollywoodWeb.DashboardLive do
             review_p,
             "max_cycles",
             Map.get(existing_review, "max_cycles", quality_max_cycles)
-          ),
-        "pass_token" =>
-          Map.get(review_p, "pass_token", "REVIEW_PASS")
-          |> String.trim()
-          |> then(&if &1 == "", do: "REVIEW_PASS", else: &1),
-        "fail_token" =>
-          Map.get(review_p, "fail_token", "REVIEW_FAIL")
-          |> String.trim()
-          |> then(&if &1 == "", do: "REVIEW_FAIL", else: &1)
+          )
       }
       |> then(fn r ->
         if is_binary(existing_prompt_template) and existing_prompt_template != "",

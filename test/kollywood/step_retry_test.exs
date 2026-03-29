@@ -301,6 +301,7 @@ defmodule Kollywood.StepRetryTest do
       agent:
         kind: amp
         command: /bin/true
+        retries_enabled: true
       quality:
         max_cycles: 1
         checks:
@@ -312,8 +313,6 @@ defmodule Kollywood.StepRetryTest do
         review:
           enabled: true
           max_cycles: 1
-          pass_token: REVIEW_PASS
-          fail_token: REVIEW_FAIL
           agent:
             kind: amp
             command: #{review_cli_path}
@@ -456,6 +455,7 @@ defmodule Kollywood.StepRetryTest do
       agent:
         kind: amp
         command: /bin/true
+        retries_enabled: true
       quality:
         max_cycles: 1
         checks:
@@ -492,6 +492,7 @@ defmodule Kollywood.StepRetryTest do
       agent:
         kind: amp
         command: /bin/true
+        retries_enabled: true
       quality:
         max_cycles: 1
         checks:
@@ -502,8 +503,6 @@ defmodule Kollywood.StepRetryTest do
         review:
           enabled: true
           max_cycles: 1
-          pass_token: REVIEW_PASS
-          fail_token: REVIEW_FAIL
           agent:
             kind: amp
             command: #{review_cli_path}
