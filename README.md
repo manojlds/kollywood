@@ -166,6 +166,7 @@ Quality gates are configured in `.kollywood/WORKFLOW.md`:
 
 - `quality.max_cycles`: overall maximum quality loop cycles
 - `quality.checks.required`: shell commands that must pass before a story can be marked done
+- `quality.checks.fail_fast`: when true, stop checks at first failure; when false, run all checks and report every failure
 - `quality.checks.max_cycles`: maximum cycles allowed for checks remediation
 - `runtime.command`: runtime command used for process orchestration (defaults to `devenv`)
 - `runtime.processes`: named devenv processes started for testing/preview runtime

@@ -3585,8 +3585,8 @@ defmodule KollywoodWeb.DashboardLive do
                         <span class="text-sm">Fail fast</span>
                       </div>
                       <p id="checks-fail-fast-help" class="text-xs text-base-content/60 mt-1">
-                        Stop checks at the first failure. Disable to run every configured check and
-                        report all failures in one cycle.
+                        When enabled, checks stop at the first failure. When disabled, all
+                        configured checks run so every failure is reported in one cycle.
                       </p>
                     </div>
                   </div>
