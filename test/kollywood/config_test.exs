@@ -119,7 +119,7 @@ defmodule Kollywood.ConfigTest do
     assert config.agent.max_concurrent_agents == 1
     assert config.agent.project_max_concurrent_agents == %{}
     assert config.agent.max_turns == 20
-    assert config.agent.retries_enabled == true
+    assert config.agent.retries_enabled == false
     assert config.agent.max_retry_backoff_ms == 300_000
     assert config.agent.command == nil
     assert config.agent.args == []

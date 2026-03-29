@@ -264,7 +264,7 @@ defmodule Kollywood.Orchestrator do
             Keyword.get(opts, :max_retry_backoff_ms),
             @default_max_retry_backoff_ms
           ),
-        retries_enabled: Keyword.get(opts, :retries_enabled, true),
+        retries_enabled: Keyword.get(opts, :retries_enabled, false),
         max_attempts: positive_integer(Keyword.get(opts, :max_attempts), nil),
         repo_syncer: Keyword.get(opts, :repo_syncer),
         repo_local_path: Keyword.get(opts, :repo_local_path),

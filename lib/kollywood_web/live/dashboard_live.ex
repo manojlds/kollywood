@@ -2879,6 +2879,17 @@ defmodule KollywoodWeb.DashboardLive do
                       class="input input-bordered input-sm w-full"
                     />
                   </div>
+                  <div class="sm:col-span-2 lg:col-span-3 flex items-center gap-2">
+                    <input type="hidden" name="settings[agent][retries_enabled]" value="false" />
+                    <input
+                      type="checkbox"
+                      name="settings[agent][retries_enabled]"
+                      value="true"
+                      checked={get_in(@workflow.parsed, ["agent", "retries_enabled"]) == true}
+                      class="toggle toggle-sm"
+                    />
+                    <span class="text-sm">Enable retries</span>
+                  </div>
                   <div class="sm:col-span-2 lg:col-span-3">
                     <label class="label pb-1">
                       <span class="label-text text-sm">
@@ -4298,6 +4309,14 @@ defmodule KollywoodWeb.DashboardLive do
         "timeout_ms",
         parse_form_int(agent_p, "timeout_ms", Map.get(existing_agent, "timeout_ms", 7_200_000))
       )
+      |> Map.put(
+        "retries_enabled",
+        parse_form_bool(
+          agent_p,
+          "retries_enabled",
+          Map.get(existing_agent, "retries_enabled", false)
+        )
+      )
       |> then(fn a ->
         if command != "", do: Map.put(a, "command", command), else: Map.delete(a, "command")
       end)
@@ -4523,6 +4542,19 @@ defmodule KollywoodWeb.DashboardLive do
           {n, _} when n > 0 -> n
           _ -> default
         end
+    end
+  end
+
+  defp parse_form_bool(params, key, default) do
+    case Map.get(params, key) do
+      nil ->
+        default
+
+      value when value in [true, "true", "1", "yes", "on"] ->
+        true
+
+      _other ->
+        false
     end
   end
 
