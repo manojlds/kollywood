@@ -71,6 +71,7 @@ defmodule KollywoodWeb.DashboardLive do
     socket = cancel_poll_timer(socket)
     project_slug = params["project_slug"]
     current_project = find_project_by_slug(socket.assigns.projects, project_slug)
+    stories_view = resolve_stories_view(params["view"], socket.assigns[:stories_view])
 
     socket =
       socket
@@ -78,7 +79,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:page_title, if(current_project, do: current_project.name, else: "Dashboard"))
       |> assign(:run_detail_story_id, params["story_id"])
       |> assign(:run_detail_attempt, params["attempt"])
-      |> assign(:stories_view, Map.get(socket.assigns, :stories_view, @default_stories_view))
+      |> assign(:stories_view, stories_view)
       |> assign(
         :collapsed_story_groups,
         Map.get(socket.assigns, :collapsed_story_groups, MapSet.new())
@@ -131,7 +132,14 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   def handle_event("set_stories_view", %{"view" => view}, socket) do
-    {:noreply, assign(socket, :stories_view, normalize_stories_view(view))}
+    stories_view = normalize_stories_view(view)
+
+    socket =
+      socket
+      |> assign(:stories_view, stories_view)
+      |> maybe_patch_stories_view(stories_view)
+
+    {:noreply, socket}
   end
 
   def handle_event("toggle_story_group", %{"status" => status}, socket) do
@@ -544,7 +552,7 @@ defmodule KollywoodWeb.DashboardLive do
               label="Stories"
               icon="hero-list-bullet"
               active={@live_action in [:stories, :story_detail]}
-              patch={~p"/projects/#{@current_project.slug}/stories"}
+              patch={stories_index_path(@current_project.slug, @stories_view)}
             />
             <.nav_tab
               label="Runs"
@@ -594,6 +602,7 @@ defmodule KollywoodWeb.DashboardLive do
                   active_log_tab={@active_log_tab}
                   story_detail_tab={@story_detail_tab}
                   project={@current_project}
+                  stories_view={@stories_view}
                   story_attempts={Enum.filter(@run_attempts, &(&1.story_id == @run_detail_story_id))}
                   selected_attempt={@run_detail_attempt}
                 />
@@ -1108,7 +1117,7 @@ defmodule KollywoodWeb.DashboardLive do
       class="-mx-2 overflow-x-auto px-2 pb-2"
       phx-hook={@editable && ".KanbanBoardDnD"}
     >
-      <div class="flex min-w-max gap-3">
+      <div class="flex min-w-full items-start gap-3">
         <%= for {status, label} <- @status_columns do %>
           <.stories_kanban_column
             status={status}
@@ -1583,8 +1592,7 @@ defmodule KollywoodWeb.DashboardLive do
   defp stories_kanban_column(assigns) do
     assigns =
       assign(assigns, :column_classes, [
-        "w-[17.5rem] shrink-0 rounded-xl border border-base-300 bg-base-200/60 sm:w-[19rem]",
-        "xl:w-0 xl:basis-0 xl:flex-1 xl:min-w-0",
+        "min-w-[17.5rem] basis-0 flex-1 rounded-xl border border-base-300 bg-base-200/60",
         assigns.status == "draft" && "opacity-80"
       ])
 
@@ -2387,6 +2395,7 @@ defmodule KollywoodWeb.DashboardLive do
   attr :active_log_tab, :string, default: "agent"
   attr :story_detail_tab, :string, default: "details"
   attr :project, Project, required: true
+  attr :stories_view, :string, default: @default_stories_view
   attr :story_attempts, :list, default: []
   attr :selected_attempt, :string, default: nil
 
@@ -2398,7 +2407,7 @@ defmodule KollywoodWeb.DashboardLive do
       <div class="flex items-start justify-between gap-3">
         <div class="flex min-w-0 flex-1 flex-wrap items-center gap-2 sm:gap-3">
           <.link
-            navigate={~p"/projects/#{@project.slug}/stories"}
+            navigate={stories_index_path(@project.slug, @stories_view)}
             class="btn btn-ghost btn-sm gap-2 shrink-0"
           >
             <.icon name="hero-arrow-left" class="size-4" /> Back to Stories
@@ -4639,6 +4648,36 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp normalize_stories_view(_view), do: @default_stories_view
+
+  defp resolve_stories_view(param_view, current_view) do
+    cond do
+      is_binary(param_view) and String.trim(param_view) != "" ->
+        normalize_stories_view(param_view)
+
+      true ->
+        normalize_stories_view(current_view)
+    end
+  end
+
+  defp stories_index_path(project_slug, stories_view) when is_binary(project_slug) do
+    normalized_view = normalize_stories_view(stories_view)
+
+    if normalized_view == @default_stories_view do
+      ~p"/projects/#{project_slug}/stories"
+    else
+      ~p"/projects/#{project_slug}/stories?#{[view: normalized_view]}"
+    end
+  end
+
+  defp maybe_patch_stories_view(socket, stories_view) do
+    case socket.assigns do
+      %{current_project: %Project{slug: slug}, live_action: :stories} ->
+        push_patch(socket, to: stories_index_path(slug, stories_view), replace: true)
+
+      _other ->
+        socket
+    end
+  end
 
   defp show_reset_action?(status) do
     normalize_status(status) not in ["open", "draft"]
