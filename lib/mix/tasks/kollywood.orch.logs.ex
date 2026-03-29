@@ -129,6 +129,7 @@ defmodule Mix.Tasks.Kollywood.Orch.Logs do
 
     Mix.shell().info("- started_at=#{Map.get(metadata, "started_at", "-")}")
     Mix.shell().info("- ended_at=#{Map.get(metadata, "ended_at", "-")}")
+    Mix.shell().info("- retry_mode=#{Map.get(metadata, "retry_mode", "full_rerun")}")
     Mix.shell().info("- path=#{attempt.files.run}")
   end
 

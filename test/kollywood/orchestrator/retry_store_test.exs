@@ -37,6 +37,33 @@ defmodule Kollywood.Orchestrator.RetryStoreTest do
     assert {:ok, []} = RetryStore.list()
   end
 
+  test "persists agent continuation retry entries" do
+    issue_id = "ISS-RETRY-CONTINUATION"
+
+    retry_entry = %{
+      issue: %{id: issue_id, identifier: "ABC-RETRY-CONT", state: "Todo", title: "Retry"},
+      attempt: 3,
+      reason: "agent phase timeout",
+      kind: :agent_continuation,
+      finalization: %{
+        continuation: %{
+          originating_attempt: 2,
+          last_successful_turn: 5,
+          failure_reason: "agent phase timeout"
+        }
+      },
+      due_at_ms: System.monotonic_time(:millisecond) + 500
+    }
+
+    assert :ok = RetryStore.upsert(issue_id, retry_entry)
+
+    assert {:ok, [stored]} = RetryStore.list()
+    assert stored.issue_id == issue_id
+    assert stored.kind == :agent_continuation
+    assert stored.finalization.continuation.originating_attempt == 2
+    assert stored.finalization.continuation.last_successful_turn == 5
+  end
+
   test "orchestrator restores persisted retries and dispatches without poll" do
     issue = issue("ISS-RETRY-RESTORE", "ABC-RETRY-RESTORE", 1)
 

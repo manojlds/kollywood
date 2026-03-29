@@ -1,6 +1,7 @@
 defmodule Kollywood.Orchestrator.RunLogsTest do
   use ExUnit.Case, async: false
 
+  alias Kollywood.AgentRunner.Result
   alias Kollywood.Config
   alias Kollywood.Orchestrator.RunLogs
 
@@ -52,6 +53,105 @@ defmodule Kollywood.Orchestrator.RunLogsTest do
     test "includes agent in tracker_metadata", %{context: context} do
       tracker_meta = RunLogs.tracker_metadata(context)
       assert Map.has_key?(tracker_meta.run_logs.files, :agent)
+    end
+
+    test "persists retry mode and provenance in metadata" do
+      root =
+        Path.join(
+          System.tmp_dir!(),
+          "kollywood_run_logs_retry_test_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(root)
+
+      config = %Config{
+        workspace: %{root: root},
+        tracker: %{path: nil, project_slug: "run-logs-test"}
+      }
+
+      issue = %{id: "US-RETRY", identifier: "US-RETRY", title: "Retry issue"}
+
+      {:ok, context} =
+        RunLogs.prepare_attempt(config, issue, 2,
+          retry_mode: :agent_continuation,
+          retry_provenance: %{
+            originating_attempt: 1,
+            last_successful_turn: 4,
+            failure_reason: "agent timeout"
+          }
+        )
+
+      metadata = File.read!(context.files.metadata) |> Jason.decode!()
+
+      assert metadata["retry_mode"] == "agent_continuation"
+      assert metadata["retry_provenance"]["originating_attempt"] == 1
+      assert metadata["retry_provenance"]["last_successful_turn"] == 4
+      assert metadata["retry_provenance"]["failure_reason"] == "agent timeout"
+    end
+
+    test "exposes retry mode and provenance via tracker metadata" do
+      root =
+        Path.join(
+          System.tmp_dir!(),
+          "kollywood_run_logs_tracker_retry_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(root)
+
+      config = %Config{
+        workspace: %{root: root},
+        tracker: %{path: nil, project_slug: "run-logs-test"}
+      }
+
+      issue = %{id: "US-TRACKER-RETRY", identifier: "US-TRACKER-RETRY", title: "Retry issue"}
+
+      {:ok, context} =
+        RunLogs.prepare_attempt(config, issue, 1,
+          retry_mode: :agent_continuation,
+          retry_provenance: %{
+            originating_attempt: 1,
+            last_successful_turn: 2,
+            failure_reason: "turn failed"
+          }
+        )
+
+      tracker_meta = RunLogs.tracker_metadata(context)
+      assert tracker_meta.retry_mode == "agent_continuation"
+      assert tracker_meta.retry_provenance["originating_attempt"] == 1
+      assert tracker_meta.retry_provenance["last_successful_turn"] == 2
+      assert tracker_meta.run_logs.retry_mode == "agent_continuation"
+      assert tracker_meta.run_logs.retry_provenance["failure_reason"] == "turn failed"
+    end
+  end
+
+  describe "complete_attempt/2" do
+    test "stores last_successful_turn derived from turn_succeeded events", %{context: context} do
+      now = DateTime.utc_now()
+
+      result = %Result{
+        issue_id: "US-TEST",
+        identifier: "US-TEST",
+        workspace_path: "/tmp/workspace",
+        turn_count: 3,
+        status: :failed,
+        started_at: now,
+        ended_at: now,
+        last_output: nil,
+        events: [
+          %{type: :turn_started, turn: 1},
+          %{type: :turn_succeeded, turn: 1},
+          %{type: "turn_succeeded", turn: "2"},
+          %{type: :turn_failed, turn: 3}
+        ],
+        error: "agent phase failed"
+      }
+
+      assert :ok = RunLogs.complete_attempt(context, result)
+
+      metadata = File.read!(context.files.metadata) |> Jason.decode!()
+      assert metadata["turn_count"] == 3
+      assert metadata["last_successful_turn"] == 2
+      assert metadata["status"] == "failed"
     end
   end
 

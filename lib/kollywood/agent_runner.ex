@@ -32,6 +32,7 @@ defmodule Kollywood.AgentRunner do
           | {:mode, mode()}
           | {:turn_limit, pos_integer()}
           | {:session_opts, map() | keyword()}
+          | {:continuation, map() | keyword() | nil}
           | {:turn_opts, map() | keyword()}
           | {:on_event, (map() -> any())}
 
@@ -57,6 +58,7 @@ defmodule Kollywood.AgentRunner do
          {:ok, turn_limit} <- parse_turn_limit(config, Keyword.get(opts, :turn_limit)),
          {:ok, session_opts} <-
            normalize_opts(Keyword.get(opts, :session_opts, %{}), "session_opts"),
+         {:ok, continuation} <- parse_continuation_opts(Keyword.get(opts, :continuation)),
          {:ok, turn_opts} <- normalize_opts(Keyword.get(opts, :turn_opts, %{}), "turn_opts") do
       log_files = Keyword.get(opts, :log_files)
 
@@ -73,16 +75,20 @@ defmodule Kollywood.AgentRunner do
         events_rev: [],
         on_event: on_event,
         attempt: attempt,
-        log_files: log_files
+        log_files: log_files,
+        continuation: continuation
       }
 
       state =
-        emit(state, :run_started, %{
+        state
+        |> emit(:run_started, %{
           attempt: attempt,
           mode: mode,
           turn_limit: turn_limit,
+          retry_mode: continuation_retry_mode(continuation),
           run_settings: run_settings_snapshot
         })
+        |> maybe_emit_continuation_context()
 
       case Workspace.create_for_issue(issue_meta.identifier, config) do
         {:ok, workspace} ->
@@ -424,20 +430,15 @@ defmodule Kollywood.AgentRunner do
 
   defp build_prompt(state, config, prompt_template, 1) do
     variables = PromptBuilder.build_variables(state.issue, state.attempt)
+    resume_context = build_resume_context(state.workspace, Map.get(state, :continuation))
 
-    # Check for existing work in workspace
-    resume_context = detect_resume_context(state.workspace)
-
-    # Add resume context to variables if work exists
     variables =
-      if resume_context != "" do
-        Map.put(variables, "resume_context", resume_context)
-      else
-        variables
-      end
+      if resume_context == "",
+        do: variables,
+        else: Map.put(variables, "resume_context", resume_context)
 
     case build_task_prompt(prompt_template, variables, config) do
-      {:ok, prompt} -> {:ok, prompt}
+      {:ok, prompt} -> {:ok, append_context_if_missing(prompt, resume_context)}
       {:error, reason} -> {:error, "Failed to render initial prompt: #{reason}"}
     end
   end
@@ -469,6 +470,87 @@ defmodule Kollywood.AgentRunner do
         "\n\n## Verification\n\nRun these commands to verify your changes before finishing:\n#{list}"
     end
   end
+
+  defp build_resume_context(workspace, continuation) do
+    workspace_resume_context = detect_resume_context(workspace)
+    continuation_context = continuation_context(continuation)
+
+    [workspace_resume_context, continuation_context]
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join("\n\n")
+  end
+
+  defp continuation_context(nil), do: ""
+
+  defp continuation_context(continuation) when is_map(continuation) do
+    originating_attempt = field(continuation, :originating_attempt)
+    last_successful_turn = field(continuation, :last_successful_turn)
+    failure_reason = field(continuation, :failure_reason)
+    originating_session_id = field(continuation, :originating_session_id)
+    mode = continuation_mode(field(continuation, :mode))
+
+    """
+    CONTINUATION CONTEXT: This run is an agent-phase continuation retry.
+
+    - Retry mode: #{mode}
+    - Originating run attempt: #{continuation_display_value(originating_attempt)}
+    - Last successful turn: #{continuation_display_value(last_successful_turn)}
+    - Failure reason: #{continuation_display_value(failure_reason)}
+    - Originating session id: #{continuation_display_value(originating_session_id)}
+
+    Continue from the latest completed state in this workspace. Do not restart from scratch.
+    """
+  end
+
+  defp continuation_context(_continuation), do: ""
+
+  defp continuation_display_value(value) when is_binary(value) and value != "", do: value
+  defp continuation_display_value(value) when is_integer(value), do: Integer.to_string(value)
+  defp continuation_display_value(_value), do: "unknown"
+
+  defp continuation_mode(value) when value in ["agent_continuation", "agent-continuation"],
+    do: "agent_continuation"
+
+  defp continuation_mode(value) when value in [:agent_continuation], do: "agent_continuation"
+  defp continuation_mode(_value), do: "agent_continuation"
+
+  defp append_context_if_missing(prompt, "") when is_binary(prompt), do: prompt
+
+  defp append_context_if_missing(prompt, context) when is_binary(prompt) and is_binary(context) do
+    if String.contains?(prompt, context) do
+      prompt
+    else
+      prompt <> "\n\n" <> context
+    end
+  end
+
+  defp append_context_if_missing(prompt, _context), do: prompt
+
+  defp maybe_emit_continuation_context(state) when is_map(state) do
+    case Map.get(state, :continuation) do
+      nil ->
+        state
+
+      continuation when is_map(continuation) ->
+        emit(state, :continuation_context_loaded, %{
+          mode: continuation_mode(field(continuation, :mode)),
+          originating_attempt: field(continuation, :originating_attempt),
+          last_successful_turn: field(continuation, :last_successful_turn),
+          failure_reason: field(continuation, :failure_reason),
+          originating_session_id: field(continuation, :originating_session_id)
+        })
+
+      _other ->
+        state
+    end
+  end
+
+  defp maybe_emit_continuation_context(state), do: state
+
+  defp continuation_retry_mode(nil), do: :full_rerun
+  defp continuation_retry_mode(%{}), do: :agent_continuation
+  defp continuation_retry_mode(_), do: :full_rerun
 
   # Detect if there's existing work in the workspace to resume from
   defp detect_resume_context(nil), do: ""
@@ -2483,6 +2565,40 @@ defmodule Kollywood.AgentRunner do
   end
 
   defp parse_positive_integer(_value, label), do: {:error, "#{label} must be a positive integer"}
+
+  defp parse_continuation_opts(nil), do: {:ok, nil}
+
+  defp parse_continuation_opts(value) do
+    case normalize_opts(value, "continuation") do
+      {:ok, continuation} when map_size(continuation) == 0 ->
+        {:ok, nil}
+
+      {:ok, continuation} ->
+        {:ok, normalize_continuation_payload(continuation)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp normalize_continuation_payload(continuation) when is_map(continuation) do
+    normalized = %{
+      mode: continuation_mode(field(continuation, :mode)),
+      source: field(continuation, :source),
+      originating_attempt: field(continuation, :originating_attempt),
+      continuation_attempt: field(continuation, :continuation_attempt),
+      last_successful_turn: field(continuation, :last_successful_turn),
+      failure_reason: field(continuation, :failure_reason),
+      originating_session_id: field(continuation, :originating_session_id)
+    }
+
+    Enum.reduce(normalized, %{}, fn
+      {_key, nil}, acc -> acc
+      {key, value}, acc -> Map.put(acc, key, value)
+    end)
+  end
+
+  defp normalize_continuation_payload(_continuation), do: %{}
 
   defp normalize_opts(value, _label) when is_map(value), do: {:ok, value}
 

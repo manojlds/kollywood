@@ -76,7 +76,9 @@ defmodule Kollywood.Orchestrator.RunLogs do
           attempt: pos_integer(),
           runner_attempt: non_neg_integer() | nil,
           attempt_dir: String.t(),
-          files: map()
+          files: map(),
+          retry_mode: String.t(),
+          retry_provenance: map()
         }
 
   @doc "Resolves the project data root used for run-log persistence."
@@ -131,18 +133,20 @@ defmodule Kollywood.Orchestrator.RunLogs do
   @doc "Creates a new per-attempt run-log directory and metadata file."
   @spec prepare_attempt(Config.t(), map(), non_neg_integer() | nil) ::
           {:ok, context()} | {:error, String.t()}
-  def prepare_attempt(%Config{} = config, issue, runner_attempt) do
-    prepare_attempt(config, issue, runner_attempt, %{})
+  def prepare_attempt(%Config{} = config, issue, runner_attempt) when is_map(issue) do
+    prepare_attempt(config, issue, runner_attempt, [])
   end
 
   def prepare_attempt(_config, _issue, _runner_attempt) do
     {:error, "failed to initialize run logs: invalid inputs"}
   end
 
-  @spec prepare_attempt(Config.t(), map(), non_neg_integer() | nil, map()) ::
+  @spec prepare_attempt(Config.t(), map(), non_neg_integer() | nil, keyword() | map()) ::
           {:ok, context()} | {:error, String.t()}
-  def prepare_attempt(%Config{} = config, issue, runner_attempt, metadata_overrides)
-      when is_map(issue) and is_map(metadata_overrides) do
+  def prepare_attempt(%Config{} = config, issue, runner_attempt, opts)
+      when is_map(issue) do
+    {retry_mode, retry_provenance, metadata_overrides} = parse_prepare_attempt_opts(opts)
+
     identifier = field(issue, :identifier)
     issue_id = field(issue, :id)
 
@@ -171,6 +175,8 @@ defmodule Kollywood.Orchestrator.RunLogs do
           project_root,
           attempt_dir,
           files,
+          retry_mode,
+          retry_provenance,
           metadata_overrides
         )
 
@@ -185,7 +191,9 @@ defmodule Kollywood.Orchestrator.RunLogs do
                "timestamp" => now_iso8601(),
                "attempt_dir" => attempt_dir,
                "parent_attempt" => Map.get(metadata, "parent_attempt"),
-               "retry_step" => Map.get(metadata, "retry_step")
+               "retry_step" => Map.get(metadata, "retry_step"),
+               "retry_mode" => retry_mode,
+               "retry_provenance" => retry_provenance
              }) do
         {:ok,
          %{
@@ -196,7 +204,9 @@ defmodule Kollywood.Orchestrator.RunLogs do
            attempt: attempt,
            runner_attempt: runner_attempt,
            attempt_dir: attempt_dir,
-           files: files
+           files: files,
+           retry_mode: retry_mode,
+           retry_provenance: retry_provenance
          }}
       end
     else
@@ -206,7 +216,7 @@ defmodule Kollywood.Orchestrator.RunLogs do
     error -> {:error, "failed to initialize run logs: #{Exception.message(error)}"}
   end
 
-  def prepare_attempt(_config, _issue, _runner_attempt, _metadata_overrides) do
+  def prepare_attempt(_config, _issue, _runner_attempt, _opts) do
     {:error, "failed to initialize run logs: invalid inputs"}
   end
 
@@ -234,13 +244,24 @@ defmodule Kollywood.Orchestrator.RunLogs do
   @doc "Completes a run attempt with final metadata from `%Result{}`."
   @spec complete_attempt(context(), Result.t()) :: :ok | {:error, String.t()}
   def complete_attempt(context, %Result{} = result) do
-    complete_attempt(context, %{
+    base_update = %{
       status: result.status,
       ended_at: result.ended_at,
       turn_count: result.turn_count,
       workspace_path: result.workspace_path,
       error: result.error
-    })
+    }
+
+    update =
+      case derive_last_successful_turn(result.events) do
+        turn when is_integer(turn) and turn > 0 ->
+          Map.put(base_update, :last_successful_turn, turn)
+
+        _other ->
+          base_update
+      end
+
+    complete_attempt(context, update)
   end
 
   @spec complete_attempt(context(), map()) :: :ok | {:error, String.t()}
@@ -265,7 +286,9 @@ defmodule Kollywood.Orchestrator.RunLogs do
              "runner_attempt" => context.runner_attempt,
              "timestamp" => now_iso8601(),
              "status" => Map.get(metadata, "status"),
-             "error" => Map.get(metadata, "error")
+             "error" => Map.get(metadata, "error"),
+             "retry_mode" => Map.get(metadata, "retry_mode", "full_rerun"),
+             "retry_provenance" => Map.get(metadata, "retry_provenance", %{})
            }) do
       :ok
     else
@@ -279,11 +302,18 @@ defmodule Kollywood.Orchestrator.RunLogs do
 
   @doc "Returns run-log metadata for tracker/UI surfaces."
   @spec tracker_metadata(context()) :: map()
-  def tracker_metadata(%{attempt: attempt, attempt_dir: attempt_dir, files: files}) do
+  def tracker_metadata(%{attempt: attempt, attempt_dir: attempt_dir, files: files} = context) do
+    retry_mode = normalize_retry_mode(Map.get(context, :retry_mode, "full_rerun"))
+    retry_provenance = normalize_retry_provenance(Map.get(context, :retry_provenance, %{}))
+
     %{
+      retry_mode: retry_mode,
+      retry_provenance: retry_provenance,
       run_logs: %{
         attempt: attempt,
         dir: attempt_dir,
+        retry_mode: retry_mode,
+        retry_provenance: retry_provenance,
         files: %{
           run: files.run,
           worker: files.worker,
@@ -467,6 +497,8 @@ defmodule Kollywood.Orchestrator.RunLogs do
          project_root,
          attempt_dir,
          files,
+         retry_mode,
+         retry_provenance,
          metadata_overrides
        ) do
     extra_metadata =
@@ -483,7 +515,9 @@ defmodule Kollywood.Orchestrator.RunLogs do
         "ended_at",
         "project_root",
         "attempt_dir",
-        "files"
+        "files",
+        "retry_mode",
+        "retry_provenance"
       ])
 
     %{
@@ -492,6 +526,8 @@ defmodule Kollywood.Orchestrator.RunLogs do
       "identifier" => optional_string(identifier),
       "attempt" => attempt,
       "runner_attempt" => runner_attempt,
+      "retry_mode" => normalize_retry_mode(retry_mode),
+      "retry_provenance" => normalize_retry_provenance(retry_provenance),
       "status" => "running",
       "started_at" => now_iso8601(),
       "ended_at" => nil,
@@ -512,6 +548,41 @@ defmodule Kollywood.Orchestrator.RunLogs do
     }
     |> Map.merge(extra_metadata)
   end
+
+  defp parse_prepare_attempt_opts(opts) when is_list(opts) do
+    if Keyword.keyword?(opts) do
+      retry_mode = normalize_retry_mode(Keyword.get(opts, :retry_mode, :full_rerun))
+      retry_provenance = normalize_retry_provenance(Keyword.get(opts, :retry_provenance, %{}))
+
+      metadata_overrides =
+        normalize_metadata_overrides(Keyword.get(opts, :metadata_overrides, %{}))
+
+      {retry_mode, retry_provenance, metadata_overrides}
+    else
+      {"full_rerun", %{}, %{}}
+    end
+  end
+
+  defp parse_prepare_attempt_opts(opts) when is_map(opts) do
+    retry_mode =
+      opts
+      |> field(:retry_mode)
+      |> normalize_retry_mode()
+
+    retry_provenance =
+      opts
+      |> field(:retry_provenance)
+      |> normalize_retry_provenance()
+
+    metadata_overrides = normalize_metadata_overrides(opts)
+
+    {retry_mode, retry_provenance, metadata_overrides}
+  end
+
+  defp parse_prepare_attempt_opts(_opts), do: {"full_rerun", %{}, %{}}
+
+  defp normalize_metadata_overrides(overrides) when is_map(overrides), do: overrides
+  defp normalize_metadata_overrides(_overrides), do: %{}
 
   defp normalize_event(event, context) do
     normalized = stringify_map(event)
@@ -680,6 +751,37 @@ defmodule Kollywood.Orchestrator.RunLogs do
   defp normalize_status_value(value) when is_atom(value), do: Atom.to_string(value)
   defp normalize_status_value(value), do: to_string(value)
 
+  defp derive_last_successful_turn(events) when is_list(events) do
+    events
+    |> Enum.filter(fn event -> run_event_type(event) == "turn_succeeded" end)
+    |> Enum.map(fn event -> positive_integer(field(event, :turn), nil) end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.max(fn -> nil end)
+  end
+
+  defp derive_last_successful_turn(_events), do: nil
+
+  defp run_event_type(event) when is_map(event) do
+    case field(event, :type) do
+      value when is_binary(value) -> value
+      value when is_atom(value) -> Atom.to_string(value)
+      _other -> nil
+    end
+  end
+
+  defp run_event_type(_event), do: nil
+
+  defp positive_integer(value, _fallback) when is_integer(value) and value > 0, do: value
+
+  defp positive_integer(value, fallback) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {int, ""} when int > 0 -> int
+      _other -> fallback
+    end
+  end
+
+  defp positive_integer(_value, fallback), do: fallback
+
   defp stringify_map(map) when is_map(map) do
     Map.new(map, fn {key, value} ->
       {to_string(key), stringify_value(value)}
@@ -687,6 +789,23 @@ defmodule Kollywood.Orchestrator.RunLogs do
   end
 
   defp stringify_map(_value), do: %{}
+
+  defp normalize_retry_mode(mode) when mode in [:full_rerun, :agent_continuation] do
+    Atom.to_string(mode)
+  end
+
+  defp normalize_retry_mode(mode) when is_binary(mode) do
+    case mode |> String.trim() |> String.downcase() do
+      "agent_continuation" -> "agent_continuation"
+      "agent-continuation" -> "agent_continuation"
+      _other -> "full_rerun"
+    end
+  end
+
+  defp normalize_retry_mode(_mode), do: "full_rerun"
+
+  defp normalize_retry_provenance(value) when is_map(value), do: stringify_map(value)
+  defp normalize_retry_provenance(_value), do: %{}
 
   defp stringify_value(%DateTime{} = value), do: DateTime.to_iso8601(value)
   defp stringify_value(%NaiveDateTime{} = value), do: NaiveDateTime.to_iso8601(value)

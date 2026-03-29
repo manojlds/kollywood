@@ -89,7 +89,7 @@ defmodule Mix.Tasks.Kollywood.Orch.Status do
 
     Enum.each(retrying, fn item ->
       Mix.shell().info(
-        "  #{item.issue_id} (#{item.identifier || "-"}) attempt=#{item.attempt} due_in_ms=#{item.due_in_ms} reason=#{item.reason || "-"}"
+        "  #{item.issue_id} (#{item.identifier || "-"}) attempt=#{item.attempt} kind=#{item.kind} due_in_ms=#{item.due_in_ms} reason=#{item.reason || "-"}"
       )
     end)
   end
