@@ -503,7 +503,7 @@ defmodule Kollywood.Orchestrator do
             state
             |> stop_run_task(run_entry)
             |> tracker_mark_failed(issue_id, reason, next_attempt)
-            |> maybe_schedule_retry(issue_id, run_entry.issue, next_attempt, reason)
+            |> schedule_retry_for_failed_run(issue_id, run_entry, next_attempt, reason)
             |> persist_control_status()
             |> then(&{:noreply, &1})
 
@@ -556,8 +556,7 @@ defmodule Kollywood.Orchestrator do
         maybe_complete_run_logs(run_entry, %{status: :failed, error: reason})
 
         state = tracker_mark_failed(state, issue_id, reason, next_attempt)
-
-        state = maybe_schedule_retry(state, issue_id, run_entry.issue, next_attempt, reason)
+        state = schedule_retry_for_failed_run(state, issue_id, run_entry, next_attempt, reason)
         {:noreply, persist_control_status(state)}
 
       :error ->
@@ -771,6 +770,9 @@ defmodule Kollywood.Orchestrator do
       :run ->
         dispatch_run_retry(state, issue_id, retry_entry, config, tracker)
 
+      :agent_continuation ->
+        dispatch_agent_continuation_retry(state, issue_id, retry_entry, config, tracker)
+
       :finalize_done ->
         dispatch_finalize_done_retry(state, issue_id, retry_entry)
 
@@ -826,6 +828,90 @@ defmodule Kollywood.Orchestrator do
           retry_entry.attempt,
           "retry dispatch failed: #{reason}",
           retry_backoff_delay_ms(state, retry_entry.attempt)
+        )
+    end
+  end
+
+  defp dispatch_agent_continuation_retry(state, issue_id, retry_entry, config, tracker) do
+    with {:ok, issues} <- list_active_issues(tracker, config) do
+      issue = find_issue(issues, issue_id)
+      finalization = retry_finalization(retry_entry)
+
+      if retry_attempt_reached_limit?(state, retry_entry.attempt) do
+        stop_retry_after_limit(state, issue_id)
+      else
+        cond do
+          is_nil(issue) ->
+            release_claim(state, issue_id)
+
+          not issue_dispatchable?(issue, config) ->
+            release_claim(state, issue_id)
+
+          map_size(state.running) >= state.max_concurrent_agents ->
+            schedule_retry(
+              state,
+              issue_id,
+              issue,
+              retry_entry.attempt,
+              "no available orchestrator slots",
+              retry_backoff_delay_ms(state, retry_entry.attempt),
+              kind: :agent_continuation,
+              finalization: finalization
+            )
+
+          true ->
+            case validate_agent_continuation_finalization(finalization) do
+              {:ok, continuation} ->
+                case tracker_mark_resumable(
+                       state,
+                       issue_id,
+                       continuation_tracker_metadata(continuation)
+                     ) do
+                  {:ok, state} ->
+                    continuation_issue = put_issue_resumable(issue)
+
+                    start_issue_run(
+                      state,
+                      continuation_issue,
+                      retry_entry.attempt,
+                      config,
+                      tracker,
+                      continuation_run_opts(continuation)
+                    )
+
+                  {:error, reason, state} ->
+                    maybe_schedule_retry(
+                      state,
+                      issue_id,
+                      retry_entry.issue,
+                      next_retry_attempt(retry_entry.attempt),
+                      "failed to mark issue resumable: #{reason}",
+                      kind: :agent_continuation,
+                      finalization: finalization
+                    )
+                end
+
+              {:error, guidance} ->
+                block_agent_phase_continuation_retry(
+                  state,
+                  issue_id,
+                  retry_entry.attempt,
+                  guidance
+                )
+            end
+        end
+      end
+    else
+      {:error, reason} ->
+        schedule_retry(
+          state,
+          issue_id,
+          retry_entry.issue,
+          retry_entry.attempt,
+          "retry dispatch failed: #{reason}",
+          retry_backoff_delay_ms(state, retry_entry.attempt),
+          kind: :agent_continuation,
+          finalization: retry_finalization(retry_entry)
         )
     end
   end
@@ -1016,24 +1102,41 @@ defmodule Kollywood.Orchestrator do
     end
   end
 
-  defp start_issue_run(state, issue, attempt, config, tracker) do
+  defp start_issue_run(state, issue, attempt, config, tracker, opts \\ %{}) do
     issue_id = issue_id(issue)
     identifier = issue_identifier(issue)
+    opts = normalize_start_issue_run_opts(opts)
+    retry_mode = normalize_retry_mode(Map.get(opts, :retry_mode, :full_rerun))
+    retry_provenance = normalize_retry_provenance(Map.get(opts, :retry_provenance, %{}))
+    retry_schedule_opts = start_issue_run_retry_schedule_opts(retry_mode, retry_provenance)
 
     with {:ok, resolved_story_execution} <- resolve_story_execution(config, issue),
          :ok <- tracker_prepare_issue_for_run(tracker, config, issue_id) do
       orchestrator_pid = self()
       {user_on_event, runner_opts} = Keyword.pop(state.runner_opts, :on_event)
+
+      metadata_overrides = %{
+        "settings_snapshot" =>
+          RunSettingsSnapshot.build(config,
+            workflow_identity: RunSettingsSnapshot.workflow_identity(state.workflow_store, config)
+          ),
+        "run_settings" =>
+          if(is_map(resolved_story_execution.settings_snapshot),
+            do: resolved_story_execution.settings_snapshot,
+            else: %{}
+          )
+      }
+
       run_log_context =
-        prepare_run_log_context(
-          config,
-          issue,
-          attempt,
-          state.workflow_store,
-          resolved_story_execution.settings_snapshot
+        prepare_run_log_context(config, issue, attempt,
+          retry_mode: retry_mode,
+          retry_provenance: retry_provenance,
+          metadata_overrides: metadata_overrides
         )
 
-      session_opts = if field(issue, :resumable), do: %{resumable: true}, else: %{}
+      base_session_opts = if field(issue, :resumable), do: %{resumable: true}, else: %{}
+      session_opts = Map.merge(base_session_opts, Map.get(opts, :session_opts, %{}))
+      continuation = normalize_continuation_opts(Map.get(opts, :continuation))
 
       log_files =
         case run_log_context do
@@ -1049,6 +1152,7 @@ defmodule Kollywood.Orchestrator do
           run_settings_snapshot: resolved_story_execution.settings_snapshot,
           attempt: attempt,
           session_opts: session_opts,
+          continuation: continuation,
           log_files: log_files,
           on_event: runner_on_event(orchestrator_pid, issue_id, run_log_context, user_on_event)
         ] ++ runner_opts
@@ -1074,7 +1178,9 @@ defmodule Kollywood.Orchestrator do
           runtime_process_state: initial_runtime_process_state(runtime_profile),
           runtime_last_event: nil,
           run_phase: RunPhase.from_status(:running),
-          run_log_context: run_log_context
+          run_log_context: run_log_context,
+          retry_mode: retry_mode,
+          retry_provenance: retry_provenance
         }
 
         Logger.info(
@@ -1097,7 +1203,8 @@ defmodule Kollywood.Orchestrator do
             issue,
             retry_attempt,
             failure_reason,
-            retry_backoff_delay_ms(state, retry_attempt)
+            retry_backoff_delay_ms(state, retry_attempt),
+            retry_schedule_opts
           )
           |> release_claim(issue_id)
       end
@@ -1113,7 +1220,8 @@ defmodule Kollywood.Orchestrator do
           issue,
           retry_attempt,
           failure_reason,
-          retry_backoff_delay_ms(state, retry_attempt)
+          retry_backoff_delay_ms(state, retry_attempt),
+          retry_schedule_opts
         )
         |> release_claim(issue_id)
 
@@ -1126,7 +1234,8 @@ defmodule Kollywood.Orchestrator do
           issue,
           retry_attempt,
           "tracker update failed before dispatch: #{reason}",
-          retry_backoff_delay_ms(state, retry_attempt)
+          retry_backoff_delay_ms(state, retry_attempt),
+          retry_schedule_opts
         )
         |> release_claim(issue_id)
     end
@@ -1239,39 +1348,21 @@ defmodule Kollywood.Orchestrator do
 
       :max_turns_reached ->
         next_attempt = next_retry_attempt(run_entry.attempt)
+        failure_reason = result.error || "agent reached maximum configured turns"
 
-        case tracker_mark_resumable(state, issue_id, done_metadata) do
-          {:ok, state} ->
-            schedule_retry(
-              state,
-              issue_id,
-              run_entry.issue,
-              next_attempt,
-              nil,
-              state.continuation_delay_ms
-            )
-
-          {:error, reason, state} ->
-            maybe_schedule_retry(
-              state,
-              issue_id,
-              run_entry.issue,
-              next_attempt,
-              "failed to mark issue resumable: #{reason}",
-              kind: :finalize_resumable,
-              finalization: %{
-                done_metadata: done_metadata,
-                continuation_attempt: next_attempt
-              }
-            )
-        end
+        maybe_schedule_agent_phase_continuation_retry(
+          state,
+          issue_id,
+          run_entry,
+          next_attempt,
+          failure_reason
+        )
 
       _other ->
         next_attempt = next_retry_attempt(run_entry.attempt)
         reason = "runner returned non-success status: #{inspect(result.status)}"
         state = tracker_mark_failed(state, issue_id, reason, next_attempt)
-
-        maybe_schedule_retry(state, issue_id, run_entry.issue, next_attempt, reason)
+        schedule_retry_for_failed_run(state, issue_id, run_entry, next_attempt, reason)
     end
   end
 
@@ -1280,8 +1371,7 @@ defmodule Kollywood.Orchestrator do
     next_attempt = next_retry_attempt(run_entry.attempt)
     reason = result.error || "runner returned error"
     state = tracker_mark_failed(state, issue_id, reason, next_attempt)
-
-    maybe_schedule_retry(state, issue_id, run_entry.issue, next_attempt, reason)
+    schedule_retry_for_failed_run(state, issue_id, run_entry, next_attempt, reason)
   end
 
   defp handle_runner_result(state, issue_id, run_entry, other_result) do
@@ -1291,8 +1381,7 @@ defmodule Kollywood.Orchestrator do
 
     next_attempt = next_retry_attempt(run_entry.attempt)
     state = tracker_mark_failed(state, issue_id, reason, next_attempt)
-
-    maybe_schedule_retry(state, issue_id, run_entry.issue, next_attempt, reason)
+    schedule_retry_for_failed_run(state, issue_id, run_entry, next_attempt, reason)
   end
 
   defp finalize_successful_run(
@@ -1324,6 +1413,418 @@ defmodule Kollywood.Orchestrator do
       {:ok, state}
     end
   end
+
+  defp schedule_retry_for_failed_run(state, issue_id, run_entry, attempt, reason) do
+    if state.retries_enabled and agent_phase_continuation_candidate?(run_entry) do
+      maybe_schedule_agent_phase_continuation_retry(state, issue_id, run_entry, attempt, reason)
+    else
+      maybe_schedule_retry(state, issue_id, run_entry.issue, attempt, reason)
+    end
+  end
+
+  defp maybe_schedule_agent_phase_continuation_retry(
+         state,
+         issue_id,
+         run_entry,
+         attempt,
+         failure_reason
+       ) do
+    case build_agent_continuation_finalization(state, run_entry, attempt, failure_reason) do
+      {:ok, finalization} ->
+        schedule_retry(
+          state,
+          issue_id,
+          run_entry.issue,
+          attempt,
+          failure_reason,
+          state.continuation_delay_ms,
+          kind: :agent_continuation,
+          finalization: finalization
+        )
+
+      {:error, guidance} ->
+        block_agent_phase_continuation_retry(state, issue_id, attempt, guidance)
+    end
+  end
+
+  defp block_agent_phase_continuation_retry(state, issue_id, attempt, guidance) do
+    actionable_reason =
+      "agent-phase continuation retry blocked: #{guidance}. Trigger a full rerun manually."
+
+    Logger.warning(
+      "Blocking agent continuation retry issue_id=#{issue_id} attempt=#{attempt}: #{actionable_reason}"
+    )
+
+    state
+    |> cancel_retry(issue_id)
+    |> tracker_mark_failed(issue_id, actionable_reason, attempt)
+    |> release_claim(issue_id)
+    |> mark_completed(issue_id)
+  end
+
+  defp build_agent_continuation_finalization(
+         state,
+         run_entry,
+         continuation_attempt,
+         failure_reason
+       ) do
+    with {:ok, originating_attempt} <- originating_run_log_attempt(run_entry),
+         {:ok, workspace_path} <- continuation_workspace_path(state, run_entry),
+         :ok <- ensure_continuation_workspace(workspace_path),
+         {:ok, events_path} <- continuation_events_path(run_entry),
+         {:ok, events} <- read_run_log_events(events_path),
+         {:ok, last_successful_turn} <- last_successful_turn(events, run_entry) do
+      continuation = %{
+        mode: "agent_continuation",
+        source: "agent_phase_failure",
+        originating_attempt: originating_attempt,
+        continuation_attempt: continuation_attempt,
+        last_successful_turn: last_successful_turn,
+        failure_reason: failure_reason,
+        originating_session_id: originating_session_id(events),
+        workspace_path: workspace_path,
+        events_path: events_path,
+        generated_at: DateTime.utc_now()
+      }
+
+      {:ok, %{continuation: continuation}}
+    end
+  end
+
+  defp validate_agent_continuation_finalization(finalization) when is_map(finalization) do
+    continuation = field(finalization, :continuation)
+
+    with continuation when is_map(continuation) <- continuation,
+         originating_attempt when is_integer(originating_attempt) and originating_attempt > 0 <-
+           positive_integer(field(continuation, :originating_attempt), nil),
+         last_successful_turn when is_integer(last_successful_turn) and last_successful_turn > 0 <-
+           positive_integer(field(continuation, :last_successful_turn), nil),
+         failure_reason <- field(continuation, :failure_reason),
+         true <- is_binary(failure_reason) and byte_size(failure_reason) > 0,
+         workspace_path <- field(continuation, :workspace_path),
+         true <- is_binary(workspace_path) and byte_size(workspace_path) > 0,
+         true <- File.dir?(workspace_path),
+         events_path <- field(continuation, :events_path),
+         true <- is_binary(events_path) and byte_size(events_path) > 0,
+         true <- File.exists?(events_path) do
+      {:ok,
+       %{
+         mode: "agent_continuation",
+         source: field(continuation, :source) || "agent_phase_failure",
+         originating_attempt: originating_attempt,
+         continuation_attempt:
+           positive_integer(field(continuation, :continuation_attempt), originating_attempt + 1),
+         last_successful_turn: last_successful_turn,
+         failure_reason: failure_reason,
+         originating_session_id: field(continuation, :originating_session_id),
+         workspace_path: workspace_path,
+         events_path: events_path,
+         generated_at: field(continuation, :generated_at) || DateTime.utc_now()
+       }}
+    else
+      nil ->
+        {:error, "retry provenance is missing; a full rerun is required"}
+
+      false ->
+        {:error,
+         "workspace/log prerequisites are unavailable; keep the workspace and run logs intact before retrying"}
+
+      _other ->
+        {:error, "retry provenance is incomplete; a full rerun is required"}
+    end
+  end
+
+  defp validate_agent_continuation_finalization(_finalization) do
+    {:error, "retry provenance is invalid; a full rerun is required"}
+  end
+
+  defp continuation_tracker_metadata(continuation) when is_map(continuation) do
+    %{
+      status: :agent_continuation_scheduled,
+      retry_mode: "agent_continuation",
+      retry_provenance: continuation,
+      originating_attempt: Map.get(continuation, :originating_attempt),
+      last_successful_turn: Map.get(continuation, :last_successful_turn),
+      failure_reason: Map.get(continuation, :failure_reason)
+    }
+  end
+
+  defp continuation_tracker_metadata(_continuation),
+    do: %{status: :agent_continuation_scheduled, retry_mode: "agent_continuation"}
+
+  defp continuation_run_opts(continuation) when is_map(continuation) do
+    %{
+      # Force a fresh adapter session and rely on workspace/log-derived continuation context.
+      session_opts: %{resumable: false},
+      continuation: %{
+        mode: :agent_continuation,
+        originating_attempt: Map.get(continuation, :originating_attempt),
+        last_successful_turn: Map.get(continuation, :last_successful_turn),
+        failure_reason: Map.get(continuation, :failure_reason),
+        originating_session_id: Map.get(continuation, :originating_session_id)
+      },
+      retry_mode: :agent_continuation,
+      retry_provenance: continuation
+    }
+  end
+
+  defp continuation_run_opts(_continuation) do
+    %{session_opts: %{resumable: false}, retry_mode: :agent_continuation, retry_provenance: %{}}
+  end
+
+  defp put_issue_resumable(issue) when is_map(issue) do
+    issue
+    |> Map.put(:resumable, true)
+    |> Map.put("resumable", true)
+  end
+
+  defp put_issue_resumable(issue), do: issue
+
+  defp agent_phase_continuation_candidate?(run_entry) when is_map(run_entry) do
+    run_phase = Map.get(run_entry, :run_phase)
+    previous_run_phase = Map.get(run_entry, :previous_run_phase)
+
+    run_phase_kind(run_phase) == "agent" or
+      run_phase_event_type(run_phase) == "turn_failed" or
+      run_phase_event_type(previous_run_phase) == "turn_failed" or
+      run_finished_after_agent_phase?(run_phase, previous_run_phase)
+  end
+
+  defp agent_phase_continuation_candidate?(_run_entry), do: false
+
+  defp run_finished_after_agent_phase?(run_phase, previous_run_phase) do
+    run_phase_event_type(run_phase) == "run_finished" and
+      run_phase_kind(previous_run_phase) == "agent"
+  end
+
+  defp run_phase_kind(%{} = run_phase) do
+    case field(run_phase, :kind) do
+      kind when is_binary(kind) -> kind
+      kind when is_atom(kind) -> Atom.to_string(kind)
+      _other -> nil
+    end
+  end
+
+  defp run_phase_kind(_run_phase), do: nil
+
+  defp run_phase_event_type(%{} = run_phase) do
+    case field(run_phase, :event_type) do
+      event_type when is_binary(event_type) -> event_type
+      event_type when is_atom(event_type) -> Atom.to_string(event_type)
+      _other -> nil
+    end
+  end
+
+  defp run_phase_event_type(_run_phase), do: nil
+
+  defp originating_run_log_attempt(run_entry) when is_map(run_entry) do
+    case get_in(run_entry, [:run_log_context, :attempt]) do
+      attempt when is_integer(attempt) and attempt > 0 ->
+        {:ok, attempt}
+
+      _other ->
+        {:error, "originating run attempt metadata is missing"}
+    end
+  end
+
+  defp originating_run_log_attempt(_run_entry),
+    do: {:error, "originating run attempt metadata is missing"}
+
+  defp continuation_workspace_path(state, run_entry) do
+    with {:ok, config} <- fetch_config(state.workflow_store),
+         identifier <- issue_identifier(run_entry.issue),
+         true <- is_binary(identifier) and byte_size(identifier) > 0 do
+      workspace_root =
+        config
+        |> get_in([Access.key(:workspace, %{}), Access.key(:root)])
+        |> case do
+          root when is_binary(root) and byte_size(root) > 0 ->
+            expand_workspace_root(root)
+
+          _other ->
+            Kollywood.ServiceConfig.workspaces_dir()
+        end
+
+      {:ok, Path.join(workspace_root, Workspace.sanitize_key(identifier))}
+    else
+      {:error, reason} ->
+        {:error, "workflow config unavailable while resolving workspace: #{reason}"}
+
+      _other ->
+        {:error, "issue identifier is missing; cannot compute workspace for continuation"}
+    end
+  end
+
+  defp ensure_continuation_workspace(path) when is_binary(path) do
+    if File.dir?(path) do
+      :ok
+    else
+      {:error, "workspace not found at #{path}"}
+    end
+  end
+
+  defp ensure_continuation_workspace(_path), do: {:error, "workspace path is unavailable"}
+
+  defp continuation_events_path(run_entry) when is_map(run_entry) do
+    case get_in(run_entry, [:run_log_context, :files, :events]) do
+      path when is_binary(path) and byte_size(path) > 0 ->
+        {:ok, path}
+
+      _other ->
+        {:error, "run-log events file is missing"}
+    end
+  end
+
+  defp continuation_events_path(_run_entry), do: {:error, "run-log events file is missing"}
+
+  defp read_run_log_events(path) when is_binary(path) do
+    if File.exists?(path) do
+      events =
+        path
+        |> File.stream!([], :line)
+        |> Enum.reduce([], fn line, acc ->
+          case Jason.decode(String.trim(line)) do
+            {:ok, event} when is_map(event) -> [event | acc]
+            _other -> acc
+          end
+        end)
+        |> Enum.reverse()
+
+      {:ok, events}
+    else
+      {:error, "run-log events file not found: #{path}"}
+    end
+  rescue
+    error ->
+      {:error, "failed to read run-log events: #{Exception.message(error)}"}
+  end
+
+  defp read_run_log_events(_path), do: {:error, "run-log events path is invalid"}
+
+  defp last_successful_turn(events, run_entry) when is_list(events) do
+    case last_successful_turn_from_events(events) do
+      {:ok, turn} ->
+        {:ok, turn}
+
+      {:error, _reason} ->
+        last_successful_turn_from_metadata(run_entry)
+    end
+  end
+
+  defp last_successful_turn(_events, run_entry), do: last_successful_turn_from_metadata(run_entry)
+
+  defp last_successful_turn_from_events(events) when is_list(events) do
+    events
+    |> Enum.filter(fn event -> event_type(event) == "turn_succeeded" end)
+    |> Enum.map(fn event -> positive_integer(field(event, :turn), nil) end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.max(fn -> nil end)
+    |> case do
+      turn when is_integer(turn) and turn > 0 -> {:ok, turn}
+      _other -> {:error, "turn_succeeded events are missing"}
+    end
+  end
+
+  defp last_successful_turn_from_events(_events), do: {:error, "run-log events are unavailable"}
+
+  defp last_successful_turn_from_metadata(run_entry) when is_map(run_entry) do
+    metadata_path = get_in(run_entry, [:run_log_context, :files, :metadata])
+
+    with path when is_binary(path) and byte_size(path) > 0 <- metadata_path,
+         true <- File.exists?(path),
+         {:ok, metadata} <- read_json_file(path),
+         last_successful_turn when is_integer(last_successful_turn) and last_successful_turn > 0 <-
+           positive_integer(field(metadata, :last_successful_turn), nil) do
+      {:ok, last_successful_turn}
+    else
+      _other ->
+        {:error,
+         "no successful turn could be derived from run logs; cannot resume agent-phase retry safely"}
+    end
+  end
+
+  defp last_successful_turn_from_metadata(_run_entry) do
+    {:error, "run-log metadata is unavailable for continuation retry"}
+  end
+
+  defp read_json_file(path) when is_binary(path) do
+    with {:ok, content} <- File.read(path),
+         {:ok, decoded} <- Jason.decode(content),
+         true <- is_map(decoded) do
+      {:ok, decoded}
+    else
+      _other -> {:error, "invalid JSON"}
+    end
+  end
+
+  defp read_json_file(_path), do: {:error, "invalid path"}
+
+  defp originating_session_id(events) when is_list(events) do
+    events
+    |> Enum.filter(fn event -> event_type(event) == "session_started" end)
+    |> Enum.map(&field(&1, :session_id))
+    |> Enum.reject(&is_nil/1)
+    |> List.last()
+  end
+
+  defp originating_session_id(_events), do: nil
+
+  defp event_type(event) when is_map(event) do
+    case field(event, :type) do
+      value when is_binary(value) -> value
+      value when is_atom(value) -> Atom.to_string(value)
+      _other -> ""
+    end
+  end
+
+  defp event_type(_event), do: ""
+
+  defp expand_workspace_root(root) do
+    root
+    |> to_string()
+    |> String.replace_prefix("~", System.user_home!())
+    |> Path.expand()
+  end
+
+  defp normalize_start_issue_run_opts(opts) when is_map(opts), do: opts
+
+  defp normalize_start_issue_run_opts(opts) when is_list(opts) do
+    if Keyword.keyword?(opts), do: Map.new(opts), else: %{}
+  end
+
+  defp normalize_start_issue_run_opts(_opts), do: %{}
+
+  defp start_issue_run_retry_schedule_opts(:agent_continuation, retry_provenance) do
+    [kind: :agent_continuation, finalization: continuation_retry_finalization(retry_provenance)]
+  end
+
+  defp start_issue_run_retry_schedule_opts(_retry_mode, _retry_provenance), do: []
+
+  defp continuation_retry_finalization(retry_provenance) when is_map(retry_provenance) do
+    case field(retry_provenance, :continuation) do
+      continuation when is_map(continuation) -> %{continuation: continuation}
+      _other -> %{continuation: retry_provenance}
+    end
+  end
+
+  defp continuation_retry_finalization(_retry_provenance), do: %{continuation: %{}}
+
+  defp normalize_retry_mode(mode) when mode in [:full_rerun, :agent_continuation], do: mode
+  defp normalize_retry_mode("agent_continuation"), do: :agent_continuation
+  defp normalize_retry_mode("agent-continuation"), do: :agent_continuation
+  defp normalize_retry_mode(_mode), do: :full_rerun
+
+  defp normalize_retry_provenance(provenance) when is_map(provenance), do: provenance
+  defp normalize_retry_provenance(_provenance), do: %{}
+
+  defp normalize_continuation_opts(nil), do: nil
+  defp normalize_continuation_opts(opts) when is_map(opts), do: opts
+
+  defp normalize_continuation_opts(opts) when is_list(opts) do
+    if Keyword.keyword?(opts), do: Map.new(opts), else: nil
+  end
+
+  defp normalize_continuation_opts(_opts), do: nil
 
   # --- Retry and claim management ---
 
@@ -1443,10 +1944,18 @@ defmodule Kollywood.Orchestrator do
   end
 
   defp normalize_retry_kind(kind)
-       when kind in [:run, :finalize_done, :finalize_resumable, :finalize_pending_merge],
+       when kind in [
+              :run,
+              :agent_continuation,
+              :finalize_done,
+              :finalize_resumable,
+              :finalize_pending_merge
+            ],
        do: kind
 
   defp normalize_retry_kind("run"), do: :run
+  defp normalize_retry_kind("agent_continuation"), do: :agent_continuation
+  defp normalize_retry_kind("agent-continuation"), do: :agent_continuation
   defp normalize_retry_kind("finalize_done"), do: :finalize_done
   defp normalize_retry_kind("finalize_resumable"), do: :finalize_resumable
   defp normalize_retry_kind("finalize_pending_merge"), do: :finalize_pending_merge
@@ -1834,6 +2343,7 @@ defmodule Kollywood.Orchestrator do
             run_entry
             |> Map.put(:runtime_process_state, runtime_process_state)
             |> Map.put(:runtime_last_event, runtime_last_event)
+            |> Map.put(:previous_run_phase, current_phase)
             |> Map.put(:run_phase, next_phase)
 
           put_running(state, issue_id, updated_entry)
@@ -2512,16 +3022,8 @@ defmodule Kollywood.Orchestrator do
     end
   end
 
-  defp prepare_run_log_context(config, issue, attempt, workflow_store, run_settings_snapshot) do
-    metadata_overrides = %{
-      "settings_snapshot" =>
-        RunSettingsSnapshot.build(config,
-          workflow_identity: RunSettingsSnapshot.workflow_identity(workflow_store, config)
-        ),
-      "run_settings" => if(is_map(run_settings_snapshot), do: run_settings_snapshot, else: %{})
-    }
-
-    case RunLogs.prepare_attempt(config, issue, attempt, metadata_overrides) do
+  defp prepare_run_log_context(config, issue, attempt, opts) do
+    case RunLogs.prepare_attempt(config, issue, attempt, opts) do
       {:ok, context} ->
         context
 
@@ -3049,6 +3551,8 @@ defmodule Kollywood.Orchestrator do
           identifier: issue_identifier(entry.issue),
           attempt: entry.attempt,
           started_at: entry.started_at,
+          retry_mode: normalize_retry_mode(Map.get(entry, :retry_mode, :full_rerun)),
+          retry_provenance: normalize_retry_provenance(Map.get(entry, :retry_provenance, %{})),
           run_phase: Map.get(entry, :run_phase, RunPhase.unknown()),
           run_phase_label: entry |> Map.get(:run_phase) |> RunPhase.label(),
           runtime_profile: Map.get(entry, :runtime_profile, :checks_only),

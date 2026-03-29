@@ -826,6 +826,7 @@ defmodule KollywoodWeb.DashboardLive do
                   <.run_status_badge status={run.status} />
                   <span class="font-mono text-xs text-base-content/60 shrink-0">{run.story_id}</span>
                   <span class="text-sm truncate flex-1">{run.story_title}</span>
+                  <.run_retry_mode_badge mode={run.retry_mode} />
                   <span class="text-xs text-base-content/60 shrink-0">{run.phase_label}</span>
                   <span class="text-xs text-base-content/50 shrink-0">
                     Run {run_number(run.attempt)}
@@ -2095,6 +2096,7 @@ defmodule KollywoodWeb.DashboardLive do
               <tr>
                 <th>Story</th>
                 <th>Run #</th>
+                <th>Retry</th>
                 <th>Status</th>
                 <th>Phase</th>
                 <th>Started</th>
@@ -2107,6 +2109,14 @@ defmodule KollywoodWeb.DashboardLive do
                 <tr>
                   <td class="font-mono text-sm font-semibold">{run.story_id}</td>
                   <td>{run_number(run.attempt)}</td>
+                  <td>
+                    <div class="flex flex-col gap-1">
+                      <.run_retry_mode_badge mode={run.retry_mode} />
+                      <%= if run.retry_summary do %>
+                        <span class="text-xs text-base-content/60">{run.retry_summary}</span>
+                      <% end %>
+                    </div>
+                  </td>
                   <td><.run_status_badge status={run.status} /></td>
                   <td class="text-sm text-base-content/70">{run.phase_label}</td>
                   <td class="text-sm text-base-content/70" title={format_time_tooltip(run.started_at)}>
@@ -2218,6 +2228,7 @@ defmodule KollywoodWeb.DashboardLive do
         <span class="badge badge-outline font-mono text-sm">{@story_id}</span>
         <%= if @run_detail do %>
           <.run_status_badge status={@run_detail["metadata"]["status"] || "unknown"} />
+          <.run_retry_mode_badge mode={@run_detail["retry_mode"]} />
           <span class="text-sm text-base-content/60">{@run_detail["phase_label"]}</span>
           <%= if retry_action = @run_detail["retry_action"] do %>
             <button
@@ -2235,6 +2246,9 @@ defmodule KollywoodWeb.DashboardLive do
             >
               {retry_action["label"]}
             </button>
+          <% end %>
+          <%= if @run_detail["retry_summary"] do %>
+            <span class="text-xs text-base-content/60">{@run_detail["retry_summary"]}</span>
           <% end %>
         <% end %>
       </div>
@@ -2661,6 +2675,7 @@ defmodule KollywoodWeb.DashboardLive do
                     <thead>
                       <tr>
                         <th>Run #</th>
+                        <th>Retry</th>
                         <th>Status</th>
                         <th>Phase</th>
                         <th>Started</th>
@@ -2679,6 +2694,16 @@ defmodule KollywoodWeb.DashboardLive do
                             >
                               {run_number(run.attempt)}
                             </.link>
+                          </td>
+                          <td>
+                            <div class="flex flex-col gap-1">
+                              <.run_retry_mode_badge mode={run.retry_mode} />
+                              <%= if run.retry_summary do %>
+                                <span class="text-[11px] text-base-content/60">
+                                  {run.retry_summary}
+                                </span>
+                              <% end %>
+                            </div>
                           </td>
                           <td><.run_status_badge status={run.status} /></td>
                           <td class="text-xs text-base-content/60">{run.phase_label}</td>
@@ -3370,6 +3395,24 @@ defmodule KollywoodWeb.DashboardLive do
     """
   end
 
+  attr :mode, :any, default: "full_rerun"
+
+  defp run_retry_mode_badge(assigns) do
+    mode = normalize_retry_mode(assigns.mode)
+
+    {color, label} =
+      case mode do
+        "agent_continuation" -> {"badge-info badge-outline", "Agent continuation"}
+        _other -> {"badge-ghost", "Full rerun"}
+      end
+
+    assigns = assigns |> assign(:color, color) |> assign(:label, label)
+
+    ~H"""
+    <span class={"badge badge-xs #{@color}"}>{@label}</span>
+    """
+  end
+
   # -- Orchestrator Status Components --
 
   attr :status, :map, default: nil
@@ -3891,6 +3934,8 @@ defmodule KollywoodWeb.DashboardLive do
               end
 
             phase = derive_phase_map(attempt_dir, metadata)
+            retry_mode = normalize_retry_mode(Map.get(metadata, "retry_mode"))
+            retry_provenance = normalize_retry_provenance(Map.get(metadata, "retry_provenance"))
 
             %{
               story_id: story_dir_name,
@@ -3899,6 +3944,10 @@ defmodule KollywoodWeb.DashboardLive do
               started_at: metadata["started_at"],
               ended_at: metadata["ended_at"],
               error: metadata["error"],
+              retry_mode: retry_mode,
+              retry_mode_label: retry_mode_label(retry_mode),
+              retry_provenance: retry_provenance,
+              retry_summary: retry_summary(retry_mode, retry_provenance),
               phase: phase,
               phase_label: RunPhase.label(phase)
             }
@@ -3938,6 +3987,96 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp run_attempt_sort_key(_run), do: {"", 0}
+
+  defp normalize_retry_mode(mode)
+       when mode in [:agent_continuation, "agent_continuation", "agent-continuation"] do
+    "agent_continuation"
+  end
+
+  defp normalize_retry_mode(mode) when mode in [:full_rerun, "full_rerun", "full-rerun"] do
+    "full_rerun"
+  end
+
+  defp normalize_retry_mode(_mode), do: "full_rerun"
+
+  defp normalize_retry_provenance(provenance) when is_map(provenance), do: provenance
+  defp normalize_retry_provenance(_provenance), do: %{}
+
+  defp retry_mode_label("agent_continuation"), do: "Agent continuation"
+  defp retry_mode_label(_mode), do: "Full rerun"
+
+  defp retry_summary("agent_continuation", provenance) when is_map(provenance) do
+    originating_attempt =
+      provenance
+      |> map_field(:originating_attempt)
+      |> positive_integer_or_nil()
+
+    last_successful_turn =
+      provenance
+      |> map_field(:last_successful_turn)
+      |> positive_integer_or_nil()
+
+    failure_reason =
+      provenance
+      |> map_field(:failure_reason)
+      |> compact_reason()
+
+    detail_parts =
+      [
+        originating_attempt && "run ##{originating_attempt}",
+        last_successful_turn && "turn #{last_successful_turn}"
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    details =
+      case detail_parts do
+        [] -> nil
+        parts -> "from " <> Enum.join(parts, ", ")
+      end
+
+    cond do
+      details && failure_reason -> "#{details} (#{failure_reason})"
+      details -> details
+      failure_reason -> failure_reason
+      true -> nil
+    end
+  end
+
+  defp retry_summary(_mode, _provenance), do: nil
+
+  defp map_field(map, key) when is_map(map) and is_atom(key) do
+    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  end
+
+  defp map_field(_map, _key), do: nil
+
+  defp positive_integer_or_nil(value) when is_integer(value) and value > 0, do: value
+
+  defp positive_integer_or_nil(value) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {parsed, ""} when parsed > 0 -> parsed
+      _other -> nil
+    end
+  end
+
+  defp positive_integer_or_nil(_value), do: nil
+
+  defp compact_reason(reason) when is_binary(reason) do
+    trimmed = String.trim(reason)
+
+    cond do
+      trimmed == "" ->
+        nil
+
+      String.length(trimmed) > 80 ->
+        String.slice(trimmed, 0, 80) <> "..."
+
+      true ->
+        trimmed
+    end
+  end
+
+  defp compact_reason(_reason), do: nil
 
   defp derive_phase_map(attempt_dir, metadata) when is_binary(attempt_dir) and is_map(metadata) do
     status_phase = RunPhase.from_status(metadata["status"])
@@ -4750,6 +4889,8 @@ defmodule KollywoodWeb.DashboardLive do
   defp build_run_detail(project, story_id, metadata, files, tab) do
     content = read_log_tab_content(files, tab)
     phase = derive_phase_map(Path.dirname(files.metadata), metadata)
+    retry_mode = normalize_retry_mode(Map.get(metadata, "retry_mode"))
+    retry_provenance = normalize_retry_provenance(Map.get(metadata, "retry_provenance"))
 
     %{
       "metadata" => metadata,
@@ -4757,6 +4898,10 @@ defmodule KollywoodWeb.DashboardLive do
       "current_workflow_identity" => current_workflow_identity(project),
       "phase" => phase,
       "phase_label" => RunPhase.label(phase),
+      "retry_mode" => retry_mode,
+      "retry_mode_label" => retry_mode_label(retry_mode),
+      "retry_provenance" => retry_provenance,
+      "retry_summary" => retry_summary(retry_mode, retry_provenance),
       "retry_action" => StepRetry.retry_action(project, story_id, Map.get(metadata, "attempt")),
       "active_log_content" => content
     }

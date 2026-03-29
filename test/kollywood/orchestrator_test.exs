@@ -1590,6 +1590,82 @@ defmodule Kollywood.OrchestratorTest do
     test_pid = self()
     runner_calls = start_agent!(fn -> 0 end)
 
+    workspace_path =
+      Path.join([root, "workspaces", Kollywood.Workspace.sanitize_key(issue.identifier)])
+
+    File.mkdir_p!(workspace_path)
+
+    ResumableTracker.put_state(test_pid, issue)
+    on_exit(fn -> ResumableTracker.clear_state() end)
+
+    runner = fn issue, opts ->
+      call_number = Agent.get_and_update(runner_calls, fn count -> {count + 1, count + 1} end)
+      on_event = Keyword.fetch!(opts, :on_event)
+      session_opts = Keyword.get(opts, :session_opts, %{})
+      continuation = Keyword.get(opts, :continuation)
+
+      send(
+        test_pid,
+        {:runner_attempt, call_number, Keyword.get(opts, :attempt), session_opts, continuation}
+      )
+
+      case call_number do
+        1 ->
+          Enum.each(1..5, fn turn ->
+            on_event.(%{type: :turn_started, turn: turn})
+            on_event.(%{type: :turn_succeeded, turn: turn, output: "partial work turn #{turn}"})
+          end)
+
+          {:ok, max_turns_result(issue)}
+
+        _ ->
+          {:ok, success_result(issue)}
+      end
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: ResumableTracker,
+         runner: runner,
+         auto_poll: false,
+         continuation_delay_ms: 300,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_attempt, 1, nil, %{}, nil}
+
+    assert_receive {:tracker_mark_resumable, "ISS-MAX", resumable_metadata}, 2_000
+    assert resumable_metadata.status == :agent_continuation_scheduled
+    assert resumable_metadata.retry_mode == "agent_continuation"
+    assert resumable_metadata.originating_attempt == 1
+    assert resumable_metadata.last_successful_turn == 5
+    assert resumable_metadata.failure_reason == "agent reached maximum configured turns"
+
+    assert_receive {:runner_attempt, 2, 1, continuation_session_opts, continuation_opts}, 2_000
+    assert continuation_session_opts.resumable == false
+    assert continuation_opts.mode == :agent_continuation
+    assert continuation_opts.originating_attempt == 1
+    assert continuation_opts.last_successful_turn == 5
+    assert continuation_opts.failure_reason == "agent reached maximum configured turns"
+
+    assert_receive {:tracker_mark_done, "ISS-MAX", %{status: :ok}}
+
+    status = Orchestrator.status(orchestrator)
+    assert status.completed_count == 1
+  end
+
+  test "blocks agent-phase continuation retry when workspace prerequisites are missing", %{
+    root: root
+  } do
+    %{store: workflow_store} = start_workflow_store!(root, %{})
+    issue = issue("ISS-MAX-BLOCK", "ABC-MAX-BLOCK", 1)
+    test_pid = self()
+    runner_calls = start_agent!(fn -> 0 end)
+
     ResumableTracker.put_state(test_pid, issue)
     on_exit(fn -> ResumableTracker.clear_state() end)
 
@@ -1611,27 +1687,293 @@ defmodule Kollywood.OrchestratorTest do
          tracker: ResumableTracker,
          runner: runner,
          auto_poll: false,
-         continuation_delay_ms: 300,
+         continuation_delay_ms: 50,
          retry_base_delay_ms: 20}
       )
 
     assert :ok = Orchestrator.poll_now(orchestrator)
     assert_receive {:runner_attempt, 1, nil}
-    assert_receive {:tracker_mark_resumable, "ISS-MAX", %{status: :max_turns_reached}}
+
+    assert_receive {:tracker_mark_failed, "ISS-MAX-BLOCK", reason, 1}, 1_000
+    assert reason =~ "agent-phase continuation retry blocked"
+    assert reason =~ "workspace not found"
+    assert reason =~ "Trigger a full rerun manually"
+
+    refute_receive {:runner_attempt, 2, _attempt}, 300
 
     status = Orchestrator.status(orchestrator)
-    assert status.retry_count == 1
+    assert status.retry_count == 0
+  end
 
-    assert [%{issue_id: "ISS-MAX", attempt: 1, reason: nil, due_in_ms: due_in_ms}] =
-             status.retrying
+  test "agent-phase failure schedules continuation retry with provenance and retries again on failure",
+       %{root: root} do
+    %{store: workflow_store} = start_workflow_store!(root, %{})
+    issue = issue("ISS-AGENT-CONT", "ABC-AGENT-CONT", 1)
+    test_pid = self()
+    runner_calls = start_agent!(fn -> 0 end)
 
-    assert due_in_ms <= 300
+    workspace_path =
+      Path.join([root, "workspaces", Kollywood.Workspace.sanitize_key(issue.identifier)])
 
-    assert_receive {:runner_attempt, 2, 1}, 2_000
-    assert_receive {:tracker_mark_done, "ISS-MAX", %{status: :ok}}
+    File.mkdir_p!(workspace_path)
+
+    ResumableTracker.put_state(test_pid, issue)
+    on_exit(fn -> ResumableTracker.clear_state() end)
+
+    runner = fn issue, opts ->
+      call_number = Agent.get_and_update(runner_calls, fn count -> {count + 1, count + 1} end)
+      on_event = Keyword.fetch!(opts, :on_event)
+      attempt = Keyword.get(opts, :attempt)
+      continuation = Keyword.get(opts, :continuation)
+
+      send(test_pid, {:runner_attempt, call_number, attempt, continuation})
+
+      on_event.(%{type: :turn_started, turn: 1})
+      on_event.(%{type: :turn_succeeded, turn: 1, output: "partial work"})
+
+      case call_number do
+        1 ->
+          on_event.(%{type: :turn_started, turn: 2})
+          on_event.(%{type: :turn_failed, turn: 2, reason: "agent phase failed"})
+          on_event.(%{type: :run_finished, status: :failed, reason: "agent phase failed"})
+          {:error, failed_result(issue, "agent phase failed")}
+
+        2 ->
+          on_event.(%{type: :turn_started, turn: 2})
+          on_event.(%{type: :turn_failed, turn: 2, reason: "agent phase failed again"})
+          on_event.(%{type: :run_finished, status: :failed, reason: "agent phase failed again"})
+          {:error, failed_result(issue, "agent phase failed again")}
+
+        _ ->
+          {:ok, success_result(issue)}
+      end
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: ResumableTracker,
+         runner: runner,
+         auto_poll: false,
+         continuation_delay_ms: 1_000,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_attempt, 1, nil, nil}
+    assert_receive {:tracker_mark_failed, "ISS-AGENT-CONT", "agent phase failed", 1}
 
     status = Orchestrator.status(orchestrator)
-    assert status.completed_count == 1
+
+    assert [
+             %{
+               issue_id: "ISS-AGENT-CONT",
+               attempt: 1,
+               kind: :agent_continuation,
+               reason: "agent phase failed",
+               due_in_ms: due_in_ms
+             }
+           ] = status.retrying
+
+    assert due_in_ms <= 1_000
+
+    assert_receive {:tracker_mark_resumable, "ISS-AGENT-CONT", resumable_metadata}, 2_000
+    assert resumable_metadata.retry_mode == "agent_continuation"
+    assert resumable_metadata.originating_attempt == 1
+    assert resumable_metadata.last_successful_turn == 1
+    assert resumable_metadata.failure_reason == "agent phase failed"
+
+    assert_receive {:runner_attempt, 2, 1, continuation}, 2_000
+    assert continuation.mode == :agent_continuation
+    assert continuation.originating_attempt == 1
+    assert continuation.last_successful_turn == 1
+    assert continuation.failure_reason == "agent phase failed"
+
+    assert_receive {:tracker_mark_failed, "ISS-AGENT-CONT", "agent phase failed again", 2}, 2_000
+
+    status = Orchestrator.status(orchestrator)
+
+    assert [
+             %{
+               issue_id: "ISS-AGENT-CONT",
+               attempt: 2,
+               kind: :agent_continuation,
+               reason: "agent phase failed again"
+             }
+           ] = status.retrying
+  end
+
+  test "continuation retry keeps provenance after startup failure in dispatch path", %{root: root} do
+    %{store: workflow_store} = start_workflow_store!(root, %{max_retry_backoff_ms: 200})
+    issue = issue("ISS-AGENT-CONT-START-FAIL", "ABC-AGENT-CONT-START-FAIL", 1)
+    test_pid = self()
+    runner_calls = start_agent!(fn -> 0 end)
+
+    workspace_path =
+      Path.join([root, "workspaces", Kollywood.Workspace.sanitize_key(issue.identifier)])
+
+    File.mkdir_p!(workspace_path)
+
+    agent_pool_name = unique_name(:agent_pool)
+    {:ok, pool_pid} = Kollywood.AgentPool.start_link(name: agent_pool_name)
+    Process.unlink(pool_pid)
+
+    ResumableTracker.put_state(test_pid, issue)
+
+    on_exit(fn ->
+      ResumableTracker.clear_state()
+
+      case Process.whereis(agent_pool_name) do
+        pid when is_pid(pid) ->
+          if Process.alive?(pid), do: Process.exit(pid, :kill)
+
+        _other -> :ok
+      end
+    end)
+
+    runner = fn issue, opts ->
+      call_number = Agent.get_and_update(runner_calls, fn count -> {count + 1, count + 1} end)
+      on_event = Keyword.fetch!(opts, :on_event)
+      attempt = Keyword.get(opts, :attempt)
+      continuation = Keyword.get(opts, :continuation)
+      session_opts = Keyword.get(opts, :session_opts, %{})
+
+      send(test_pid, {:runner_attempt, call_number, attempt, session_opts, continuation})
+
+      case call_number do
+        1 ->
+          on_event.(%{type: :turn_started, turn: 1})
+          on_event.(%{type: :turn_succeeded, turn: 1, output: "partial work"})
+          on_event.(%{type: :turn_started, turn: 2})
+          on_event.(%{type: :turn_failed, turn: 2, reason: "agent phase failed"})
+          on_event.(%{type: :run_finished, status: :failed, reason: "agent phase failed"})
+          {:error, failed_result(issue, "agent phase failed")}
+
+        2 ->
+          {:ok, success_result(issue)}
+
+        _other ->
+          flunk("unexpected runner invocation #{call_number}")
+      end
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: ResumableTracker,
+         runner: runner,
+         agent_pool: agent_pool_name,
+         auto_poll: false,
+         continuation_delay_ms: 60,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_attempt, 1, nil, %{}, nil}, 1_000
+
+    assert_receive {:tracker_mark_failed, "ISS-AGENT-CONT-START-FAIL", "agent phase failed", 1},
+                   2_000
+
+    Process.exit(pool_pid, :kill)
+    Process.sleep(20)
+
+    assert_receive {:tracker_mark_resumable, "ISS-AGENT-CONT-START-FAIL", resumable_metadata},
+                   2_000
+
+    assert resumable_metadata.retry_mode == "agent_continuation"
+    assert resumable_metadata.originating_attempt == 1
+    assert resumable_metadata.last_successful_turn == 1
+
+    assert_receive {:tracker_mark_failed, "ISS-AGENT-CONT-START-FAIL", startup_reason, 1}, 2_000
+    assert startup_reason =~ "run worker failed to start"
+
+    status = Orchestrator.status(orchestrator)
+
+    assert [
+             %{
+               issue_id: "ISS-AGENT-CONT-START-FAIL",
+               attempt: 1,
+               kind: :agent_continuation,
+               reason: reason
+             }
+           ] = status.retrying
+
+    assert reason =~ "run worker failed to start"
+
+    {:ok, recovered_pool_pid} = Kollywood.AgentPool.start_link(name: agent_pool_name)
+    Process.unlink(recovered_pool_pid)
+
+    assert_receive {:tracker_mark_resumable, "ISS-AGENT-CONT-START-FAIL", _}, 2_000
+    assert_receive {:runner_attempt, 2, 1, continuation_session_opts, continuation}, 2_000
+    assert continuation_session_opts.resumable == false
+    assert continuation.mode == :agent_continuation
+    assert continuation.originating_attempt == 1
+    assert continuation.last_successful_turn == 1
+    assert continuation.failure_reason == "agent phase failed"
+  end
+
+  test "blocks continuation when no successful turns are available for provenance", %{root: root} do
+    %{store: workflow_store} = start_workflow_store!(root, %{})
+    issue = issue("ISS-AGENT-FIRST-FAIL", "ABC-AGENT-FIRST-FAIL", 1)
+    test_pid = self()
+    runner_calls = start_agent!(fn -> 0 end)
+
+    workspace_path =
+      Path.join([root, "workspaces", Kollywood.Workspace.sanitize_key(issue.identifier)])
+
+    File.mkdir_p!(workspace_path)
+
+    ResumableTracker.put_state(test_pid, issue)
+    on_exit(fn -> ResumableTracker.clear_state() end)
+
+    runner = fn issue, opts ->
+      call_number = Agent.get_and_update(runner_calls, fn count -> {count + 1, count + 1} end)
+      on_event = Keyword.fetch!(opts, :on_event)
+      attempt = Keyword.get(opts, :attempt)
+
+      send(test_pid, {:runner_attempt, call_number, attempt})
+
+      case call_number do
+        1 ->
+          on_event.(%{type: :turn_started, turn: 1})
+          on_event.(%{type: :turn_failed, turn: 1, reason: "first turn failed"})
+          on_event.(%{type: :run_finished, status: :failed, reason: "first turn failed"})
+          {:error, failed_result(issue, "first turn failed")}
+
+        _ ->
+          {:ok, success_result(issue)}
+      end
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: ResumableTracker,
+         runner: runner,
+         auto_poll: false,
+         continuation_delay_ms: 50,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_attempt, 1, nil}
+    assert_receive {:tracker_mark_failed, "ISS-AGENT-FIRST-FAIL", "first turn failed", 1}, 2_000
+
+    assert_receive {:tracker_mark_failed, "ISS-AGENT-FIRST-FAIL", blocked_reason, 1}, 2_000
+    assert blocked_reason =~ "agent-phase continuation retry blocked"
+    assert blocked_reason =~ "no successful turn could be derived from run logs"
+    assert blocked_reason =~ "Trigger a full rerun manually"
+
+    refute_receive {:runner_attempt, 2, _attempt}, 500
+
+    status = Orchestrator.status(orchestrator)
+    assert status.retry_count == 0
   end
 
   test "keeps done dependencies blocked and unblocks merged dependencies", %{root: root} do

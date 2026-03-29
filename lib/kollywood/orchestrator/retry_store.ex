@@ -10,13 +10,25 @@ defmodule Kollywood.Orchestrator.RetryStore do
 
   alias Kollywood.Repo
 
-  @valid_kinds ["run", "finalize_done", "finalize_resumable"]
+  @valid_kinds [
+    "run",
+    "agent_continuation",
+    "finalize_done",
+    "finalize_resumable",
+    "finalize_pending_merge"
+  ]
 
   defmodule Entry do
     use Ecto.Schema
     import Ecto.Changeset
 
-    @valid_kinds ["run", "finalize_done", "finalize_resumable"]
+    @valid_kinds [
+      "run",
+      "agent_continuation",
+      "finalize_done",
+      "finalize_resumable",
+      "finalize_pending_merge"
+    ]
 
     @primary_key {:issue_id, :string, autogenerate: false}
     schema "orchestrator_retry_entries" do
@@ -171,7 +183,9 @@ defmodule Kollywood.Orchestrator.RetryStore do
   defp encode_kind(_kind), do: "run"
 
   defp decode_kind("finalize_done"), do: :finalize_done
+  defp decode_kind("agent_continuation"), do: :agent_continuation
   defp decode_kind("finalize_resumable"), do: :finalize_resumable
+  defp decode_kind("finalize_pending_merge"), do: :finalize_pending_merge
   defp decode_kind(_kind), do: :run
 
   defp changeset_error(changeset) do

@@ -1077,6 +1077,26 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "Checks 1/2"
     end
 
+    test "runs page distinguishes continuation retries from full reruns", %{
+      conn: conn,
+      project: project
+    } do
+      _ =
+        prepare_run_logs!(project.slug, "US-CONTINUATION",
+          retry_mode: :agent_continuation,
+          retry_provenance: %{
+            originating_attempt: 1,
+            last_successful_turn: 3,
+            failure_reason: "agent timed out"
+          }
+        )
+
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/runs")
+
+      assert html =~ "Agent continuation"
+      assert html =~ "from run #1, turn 3 (agent timed out)"
+    end
+
     test "runs page moves past transient checks_failed once remediation turn starts", %{
       conn: conn,
       project: project
@@ -1140,6 +1160,25 @@ defmodule KollywoodWeb.DashboardLiveTest do
         |> render_click()
 
       assert html =~ "No runs yet for this story."
+    end
+
+    test "run detail shows continuation retry provenance", %{conn: conn, project: project} do
+      story_id = "US-RUN-DETAIL-CONTINUATION"
+
+      _ =
+        prepare_run_logs!(project.slug, story_id,
+          retry_mode: :agent_continuation,
+          retry_provenance: %{
+            originating_attempt: 2,
+            last_successful_turn: 4,
+            failure_reason: "agent-phase timeout"
+          }
+        )
+
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
+
+      assert html =~ "Agent continuation"
+      assert html =~ "from run #2, turn 4 (agent-phase timeout)"
     end
 
     test "shows log tab bar when run logs exist", %{
@@ -1372,8 +1411,16 @@ defmodule KollywoodWeb.DashboardLiveTest do
     }
 
     issue = %{id: story_id, identifier: story_id, title: "Test #{story_id}"}
+    retry_mode = Keyword.get(opts, :retry_mode, :full_rerun)
+    retry_provenance = Keyword.get(opts, :retry_provenance, %{})
     metadata_overrides = Keyword.get(opts, :metadata_overrides, %{})
-    {:ok, context} = RunLogs.prepare_attempt(config, issue, nil, metadata_overrides)
+
+    {:ok, context} =
+      RunLogs.prepare_attempt(config, issue, nil,
+        retry_mode: retry_mode,
+        retry_provenance: retry_provenance,
+        metadata_overrides: metadata_overrides
+      )
 
     opts
     |> Keyword.get(:events, [])
@@ -1386,7 +1433,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       |> Keyword.get(:completion, %{})
       |> Map.new()
       |> Map.put_new(:status, Keyword.get(opts, :status, "finished"))
-      |> Map.put_new(:turn_count, 1)
+      |> Map.put_new(:turn_count, Keyword.get(opts, :turn_count, 1))
 
     RunLogs.complete_attempt(context, completion)
 
