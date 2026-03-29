@@ -15,6 +15,7 @@ defmodule Kollywood.Orchestrator.RunPhase do
           optional(:check_index) => pos_integer(),
           optional(:check_count) => pos_integer(),
           optional(:review_cycle) => pos_integer(),
+          optional(:testing_cycle) => pos_integer(),
           optional(:event_type) => String.t(),
           optional(:timestamp) => DateTime.t() | String.t()
         }
@@ -112,6 +113,26 @@ defmodule Kollywood.Orchestrator.RunPhase do
         "review_error" ->
           cycle = positive_integer_field(event, [:cycle])
           failed_phase(cycle_label("Review error", cycle), event_type, cycle)
+
+        "testing_started" ->
+          cycle = positive_integer_field(event, [:cycle])
+          testing_phase(cycle, "Testing", event_type)
+
+        "testing_checkpoint" ->
+          cycle = positive_integer_field(event, [:cycle])
+          testing_phase(cycle, "Testing checkpoints", event_type)
+
+        "testing_passed" ->
+          cycle = positive_integer_field(event, [:cycle])
+          testing_phase(cycle, "Testing passed", event_type)
+
+        "testing_failed" ->
+          cycle = positive_integer_field(event, [:cycle])
+          failed_phase(cycle_label("Testing failed", cycle), event_type, nil, cycle)
+
+        "testing_error" ->
+          cycle = positive_integer_field(event, [:cycle])
+          failed_phase(cycle_label("Testing error", cycle), event_type, nil, cycle)
 
         "publish_started" ->
           %{kind: "publish", label: "Publishing", event_type: event_type}
@@ -241,8 +262,19 @@ defmodule Kollywood.Orchestrator.RunPhase do
     phase(%{kind: "review", label: label, review_cycle: cycle, event_type: event_type})
   end
 
-  defp failed_phase(label, event_type, review_cycle \\ nil) do
-    phase(%{kind: "failed", label: label, review_cycle: review_cycle, event_type: event_type})
+  defp testing_phase(cycle, prefix, event_type) do
+    label = cycle_label(prefix, cycle)
+    phase(%{kind: "testing", label: label, testing_cycle: cycle, event_type: event_type})
+  end
+
+  defp failed_phase(label, event_type, review_cycle \\ nil, testing_cycle \\ nil) do
+    phase(%{
+      kind: "failed",
+      label: label,
+      review_cycle: review_cycle,
+      testing_cycle: testing_cycle,
+      event_type: event_type
+    })
   end
 
   defp cycle_label(prefix, cycle) when is_integer(cycle), do: "#{prefix} cycle #{cycle}"
@@ -310,7 +342,7 @@ defmodule Kollywood.Orchestrator.RunPhase do
   defp recoverable_terminal_phase?(_phase), do: false
 
   defp recoverable_terminal_event_type?(value) when is_binary(value) do
-    value in ["checks_failed", "review_failed"]
+    value in ["checks_failed", "review_failed", "testing_failed"]
   end
 
   defp recoverable_terminal_event_type?(value) when is_atom(value) do

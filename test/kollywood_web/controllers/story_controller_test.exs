@@ -99,7 +99,10 @@ defmodule KollywoodWeb.StoryControllerTest do
           "execution" => %{
             "agent_kind" => "cursor",
             "review_agent_kind" => "claude",
-            "review_max_cycles" => "2"
+            "review_max_cycles" => "2",
+            "testing_enabled" => "true",
+            "testing_agent_kind" => "opencode",
+            "testing_max_cycles" => "3"
           }
         }
       }
@@ -111,6 +114,9 @@ defmodule KollywoodWeb.StoryControllerTest do
     assert story["settings"]["execution"]["agent_kind"] == "cursor"
     assert story["settings"]["execution"]["review_agent_kind"] == "claude"
     assert story["settings"]["execution"]["review_max_cycles"] == 2
+    assert story["settings"]["execution"]["testing_enabled"] == true
+    assert story["settings"]["execution"]["testing_agent_kind"] == "opencode"
+    assert story["settings"]["execution"]["testing_max_cycles"] == 3
   end
 
   test "update rejects invalid execution override values", %{conn: conn, project: project} do

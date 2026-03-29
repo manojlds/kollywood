@@ -350,6 +350,56 @@ defmodule Kollywood.StepRetryTest do
     assert reason =~ "required check outputs are missing"
   end
 
+  test "retrying testing skips agent turns/checks/review, then publishes", %{
+    root: root,
+    project: project
+  } do
+    story_id = "US-TESTING-SUCCESS"
+
+    write_tracker!(project, [
+      %{
+        "id" => story_id,
+        "title" => "Testing",
+        "status" => "failed",
+        "settings" => %{"execution" => %{"testing_enabled" => true}}
+      }
+    ])
+
+    testing_cli_path = write_testing_cli!(root, "pass")
+    write_clone_testing_workflow!(project, testing_cli_path)
+
+    workspace_path = Path.join(root, "testing-workspace-success")
+    File.mkdir_p!(workspace_path)
+
+    source_context =
+      prepare_failed_attempt!(
+        project,
+        story_id,
+        workspace_path,
+        [
+          %{type: :testing_started, cycle: 1},
+          %{type: :testing_failed, cycle: 1, reason: "needs updates"}
+        ],
+        "testing failed"
+      )
+
+    assert {:ok, result} = StepRetry.retry(project, story_id, source_context.attempt, "testing")
+    assert result.retry_step == "testing"
+
+    latest = resolve_attempt!(project, story_id, result.attempt)
+    assert latest.metadata["parent_attempt"] == source_context.attempt
+    assert latest.metadata["retry_step"] == "testing"
+    assert latest.metadata["status"] == "ok"
+
+    event_types = read_event_types(latest.files.events)
+    assert "testing_started" in event_types
+    assert "testing_passed" in event_types
+    assert "publish_skipped" in event_types
+    refute "turn_started" in event_types
+    refute "checks_started" in event_types
+    refute "review_started" in event_types
+  end
+
   test "retrying publish skips checks/review and pushes commits", %{root: root, project: project} do
     story_id = "US-PUBLISH-SUCCESS"
     write_tracker!(project, [%{"id" => story_id, "title" => "Publish", "status" => "failed"}])
@@ -522,6 +572,61 @@ defmodule Kollywood.StepRetryTest do
     )
   end
 
+  defp write_clone_testing_workflow!(project, testing_cli_path) do
+    write_workflow!(
+      project,
+      """
+      ---
+      tracker:
+        kind: prd_json
+      workspace:
+        strategy: clone
+      agent:
+        kind: amp
+        command: /bin/true
+        retries_enabled: true
+      quality:
+        max_cycles: 1
+        checks:
+          required: []
+          timeout_ms: 10000
+          fail_fast: true
+          max_cycles: 1
+        review:
+          enabled: false
+          max_cycles: 1
+        testing:
+          enabled: true
+          max_cycles: 1
+          timeout_ms: 10000
+          agent:
+            kind: cursor
+            command: #{testing_cli_path}
+            args: []
+            env: {}
+            timeout_ms: 10000
+      runtime:
+        profile: full_stack
+        full_stack:
+          command: /bin/true
+          processes: []
+          env: {}
+          ports: {}
+          start_timeout_ms: 10000
+          stop_timeout_ms: 10000
+      publish:
+        mode: push
+      orchestrator:
+        retries_enabled: false
+      git:
+        base_branch: main
+      ---
+
+      Work on {{ issue.identifier }}.
+      """
+    )
+  end
+
   defp write_worktree_publish_workflow!(project, source_repo, workspaces_root) do
     write_workflow!(
       project,
@@ -647,6 +752,30 @@ defmodule Kollywood.StepRetryTest do
     prompt="$(cat)"
     review_json_path=$(printf '%s' "$prompt" | grep -oP 'Write your review to `\\K[^`]+' || echo "/tmp/review.json")
     printf '{"verdict":"#{verdict}","summary":"#{summary}","findings":[]}' > "$review_json_path"
+    """)
+
+    File.chmod!(path, 0o755)
+    path
+  end
+
+  defp write_testing_cli!(root, verdict) when verdict in ["pass", "fail"] do
+    path = Path.join(root, "fake_testing_#{verdict}_#{System.unique_integer([:positive])}.sh")
+
+    File.write!(path, """
+    #!/usr/bin/env bash
+    set -eu
+
+    if [ "#{verdict}" = "pass" ]; then
+      printf "Video artifacts/testing-success.webm\\n"
+      printf "Replay https://expect.example/replays/testing-success\\n"
+      printf "all checks passed\\n"
+      exit 0
+    else
+      printf "Video artifacts/testing-failure.webm\\n"
+      printf "Replay https://expect.example/replays/testing-failure\\n"
+      printf "1 failed, 0 passed\\n"
+      exit 1
+    fi
     """)
 
     File.chmod!(path, 0o755)

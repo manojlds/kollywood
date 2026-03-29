@@ -42,17 +42,26 @@ defmodule Kollywood.Orchestrator.RunLogsTest do
   describe "prepare_attempt/3" do
     test "creates agent.log file in attempt directory", %{context: context} do
       assert File.exists?(context.files.agent)
+      assert File.exists?(context.files.tester)
+      assert File.exists?(context.files.tester_stdout)
     end
 
     test "includes agent path in metadata files map", %{context: context} do
       metadata = File.read!(context.files.metadata) |> Jason.decode!()
       assert Map.has_key?(metadata["files"], "agent")
       assert metadata["files"]["agent"] == context.files.agent
+      assert Map.has_key?(metadata["files"], "tester")
+      assert metadata["files"]["tester"] == context.files.tester
+      assert Map.has_key?(metadata["files"], "testing_json")
+      assert metadata["files"]["testing_json"] == context.files.testing_json
     end
 
     test "includes agent in tracker_metadata", %{context: context} do
       tracker_meta = RunLogs.tracker_metadata(context)
       assert Map.has_key?(tracker_meta.run_logs.files, :agent)
+      assert Map.has_key?(tracker_meta.run_logs.files, :tester)
+      assert Map.has_key?(tracker_meta.run_logs.files, :tester_stdout)
+      assert Map.has_key?(tracker_meta.run_logs.files, :testing_json)
     end
 
     test "persists retry mode and provenance in metadata" do
@@ -226,6 +235,17 @@ defmodule Kollywood.Orchestrator.RunLogsTest do
       content = File.read!(context.files.agent)
       assert content =~ "--- Turn 2 ---"
       assert content =~ "Review failed output"
+    end
+  end
+
+  describe "append_event/2 with testing events" do
+    test "writes testing events to tester.log", %{context: context} do
+      event = %{type: :testing_passed, cycle: 1, summary: "Testing complete"}
+      assert :ok = RunLogs.append_event(context, event)
+
+      tester_log = File.read!(context.files.tester)
+      assert tester_log =~ "[tester] testing_passed"
+      assert tester_log =~ "summary=\"Testing complete\""
     end
   end
 

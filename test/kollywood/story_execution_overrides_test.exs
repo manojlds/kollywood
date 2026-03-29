@@ -110,6 +110,24 @@ defmodule Kollywood.StoryExecutionOverridesTest do
     assert reason =~ "boolean"
   end
 
+  test "defaults testing_enabled to false unless story opts in" do
+    issue = %{id: "US-126", identifier: "US-126", settings: %{"execution" => %{}}}
+
+    config =
+      base_config()
+      |> Map.put(:testing, %{enabled: true, max_cycles: 1, agent: %{kind: :amp, explicit: false}})
+      |> Map.put(:quality, %{
+        max_cycles: 2,
+        review: %{max_cycles: 1, agent: %{kind: :amp, explicit: false}},
+        testing: %{enabled: true, max_cycles: 1, agent: %{kind: :amp, explicit: false}}
+      })
+
+    assert {:ok, resolved} = StoryExecutionOverrides.resolve(config, issue)
+    assert resolved.config.testing.enabled == false
+    assert resolved.config.quality.testing.enabled == false
+    assert resolved.settings_snapshot["testing_enabled"] == false
+  end
+
   defp base_config do
     %Config{
       quality: %{
@@ -120,7 +138,6 @@ defmodule Kollywood.StoryExecutionOverridesTest do
         },
         testing: %{
           enabled: false,
-          requires_runtime: false,
           max_cycles: 1,
           timeout_ms: 10_000,
           prompt_template: nil,
@@ -134,7 +151,6 @@ defmodule Kollywood.StoryExecutionOverridesTest do
       },
       testing: %{
         enabled: false,
-        requires_runtime: false,
         max_cycles: 1,
         timeout_ms: 10_000,
         prompt_template: nil,

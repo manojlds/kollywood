@@ -177,7 +177,6 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshot do
 
     %{
       enabled: truthy?(Map.get(testing, :enabled, false)),
-      requires_runtime: truthy?(Map.get(testing, :requires_runtime, false)),
       max_cycles: positive_integer(Map.get(testing, :max_cycles), quality_limit),
       timeout_ms: positive_integer(Map.get(testing, :timeout_ms), @default_timeout_ms),
       prompt_template: optional_string(Map.get(testing, :prompt_template)),
@@ -357,7 +356,6 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshot do
 
     %{
       "enabled" => source_marker(raw, ["quality", "testing", "enabled"]),
-      "requires_runtime" => source_marker(raw, ["quality", "testing", "requires_runtime"]),
       "max_cycles" => source_marker(raw, ["quality", "testing", "max_cycles"]),
       "timeout_ms" => source_marker(raw, ["quality", "testing", "timeout_ms"]),
       "prompt_template" => source_marker(raw, ["quality", "testing", "prompt_template"]),

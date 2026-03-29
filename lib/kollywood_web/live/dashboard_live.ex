@@ -2032,6 +2032,74 @@ defmodule KollywoodWeb.DashboardLive do
                       placeholder="Use workflow default"
                     />
                   </div>
+
+                  <div>
+                    <label class="label py-1">
+                      <span class="label-text text-sm">Testing Enabled</span>
+                    </label>
+                    <select
+                      name="story[execution_testing_enabled]"
+                      class="select select-bordered select-sm w-full"
+                    >
+                      <option
+                        value=""
+                        selected={Map.get(@values, "execution_testing_enabled", "") == ""}
+                      >
+                        Use workflow default
+                      </option>
+                      <option
+                        value="true"
+                        selected={Map.get(@values, "execution_testing_enabled", "") == "true"}
+                      >
+                        Enabled
+                      </option>
+                      <option
+                        value="false"
+                        selected={Map.get(@values, "execution_testing_enabled", "") == "false"}
+                      >
+                        Disabled
+                      </option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label class="label py-1">
+                      <span class="label-text text-sm">Testing Agent Kind</span>
+                    </label>
+                    <select
+                      name="story[execution_testing_agent_kind]"
+                      class="select select-bordered select-sm w-full"
+                    >
+                      <option
+                        value=""
+                        selected={Map.get(@values, "execution_testing_agent_kind", "") == ""}
+                      >
+                        Use workflow default
+                      </option>
+                      <%= for kind <- @agent_kind_options do %>
+                        <option
+                          value={kind}
+                          selected={Map.get(@values, "execution_testing_agent_kind", "") == kind}
+                        >
+                          {kind}
+                        </option>
+                      <% end %>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label class="label py-1">
+                      <span class="label-text text-sm">Testing Max Cycles</span>
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      name="story[execution_testing_max_cycles]"
+                      value={Map.get(@values, "execution_testing_max_cycles", "")}
+                      class="input input-bordered input-sm w-full"
+                      placeholder="Use workflow default"
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -2276,6 +2344,7 @@ defmodule KollywoodWeb.DashboardLive do
           <%= for {tab, label} <- [
             {"agent", "Agent"},
             {"review_agent", "Review Agent"},
+            {"testing_agent", "Testing Agent"},
             {"worker", "Worker"}
           ] do %>
             <button
@@ -2644,6 +2713,7 @@ defmodule KollywoodWeb.DashboardLive do
               <%= for {tab, label} <- [
                 {"agent", "Agent"},
                 {"review_agent", "Review Agent"},
+                {"testing_agent", "Testing Agent"},
                 {"worker", "Worker"}
               ] do %>
                 <button
@@ -3640,7 +3710,10 @@ defmodule KollywoodWeb.DashboardLive do
       "notes" => "",
       "execution_agent_kind" => "",
       "execution_review_agent_kind" => "",
-      "execution_review_max_cycles" => ""
+      "execution_review_max_cycles" => "",
+      "execution_testing_enabled" => "",
+      "execution_testing_agent_kind" => "",
+      "execution_testing_max_cycles" => ""
     }
   end
 
@@ -3658,7 +3731,12 @@ defmodule KollywoodWeb.DashboardLive do
       "notes" => to_string(Map.get(story, "notes", "")),
       "execution_agent_kind" => story_execution_override_value(story, "agent_kind"),
       "execution_review_agent_kind" => story_execution_override_value(story, "review_agent_kind"),
-      "execution_review_max_cycles" => story_execution_override_value(story, "review_max_cycles")
+      "execution_review_max_cycles" => story_execution_override_value(story, "review_max_cycles"),
+      "execution_testing_enabled" => story_execution_override_value(story, "testing_enabled"),
+      "execution_testing_agent_kind" =>
+        story_execution_override_value(story, "testing_agent_kind"),
+      "execution_testing_max_cycles" =>
+        story_execution_override_value(story, "testing_max_cycles")
     }
   end
 
@@ -3675,6 +3753,9 @@ defmodule KollywoodWeb.DashboardLive do
         "agent_kind" -> "agentKind"
         "review_agent_kind" -> "reviewAgentKind"
         "review_max_cycles" -> "reviewMaxCycles"
+        "testing_enabled" -> "testingEnabled"
+        "testing_agent_kind" -> "testingAgentKind"
+        "testing_max_cycles" -> "testingMaxCycles"
         other -> other
       end
 
@@ -3683,6 +3764,7 @@ defmodule KollywoodWeb.DashboardLive do
     cond do
       is_binary(value) -> value
       is_integer(value) -> Integer.to_string(value)
+      is_boolean(value) -> if(value, do: "true", else: "false")
       true -> ""
     end
   end
@@ -3703,12 +3785,18 @@ defmodule KollywoodWeb.DashboardLive do
         "execution" => %{
           "agent_kind" => Map.get(params, "execution_agent_kind"),
           "review_agent_kind" => Map.get(params, "execution_review_agent_kind"),
-          "review_max_cycles" => Map.get(params, "execution_review_max_cycles")
+          "review_max_cycles" => Map.get(params, "execution_review_max_cycles"),
+          "testing_enabled" => Map.get(params, "execution_testing_enabled"),
+          "testing_agent_kind" => Map.get(params, "execution_testing_agent_kind"),
+          "testing_max_cycles" => Map.get(params, "execution_testing_max_cycles")
         }
       },
       "execution_agent_kind" => Map.get(params, "execution_agent_kind"),
       "execution_review_agent_kind" => Map.get(params, "execution_review_agent_kind"),
-      "execution_review_max_cycles" => Map.get(params, "execution_review_max_cycles")
+      "execution_review_max_cycles" => Map.get(params, "execution_review_max_cycles"),
+      "execution_testing_enabled" => Map.get(params, "execution_testing_enabled"),
+      "execution_testing_agent_kind" => Map.get(params, "execution_testing_agent_kind"),
+      "execution_testing_max_cycles" => Map.get(params, "execution_testing_max_cycles")
     }
   end
 
@@ -3729,7 +3817,10 @@ defmodule KollywoodWeb.DashboardLive do
         "notes",
         "execution_agent_kind",
         "execution_review_agent_kind",
-        "execution_review_max_cycles"
+        "execution_review_max_cycles",
+        "execution_testing_enabled",
+        "execution_testing_agent_kind",
+        "execution_testing_max_cycles"
       ])
     )
   end
@@ -5248,12 +5339,8 @@ defmodule KollywoodWeb.DashboardLive do
 
   defp snapshot_testing_toggle(snapshot) do
     enabled = snapshot_value(snapshot, ["resolved", "testing", "enabled"])
-    requires_runtime = snapshot_value(snapshot, ["resolved", "testing", "requires_runtime"])
 
     cond do
-      truthy_value?(enabled) and truthy_value?(requires_runtime) ->
-        "Enabled (runtime required)"
-
       truthy_value?(enabled) ->
         "Enabled"
 
@@ -5404,6 +5491,7 @@ defmodule KollywoodWeb.DashboardLive do
   @log_tab_file_keys %{
     "agent" => :agent_stdout,
     "review_agent" => :reviewer_stdout,
+    "testing_agent" => :tester_stdout,
     "worker" => :run
   }
 
@@ -5495,7 +5583,7 @@ defmodule KollywoodWeb.DashboardLive do
   defp read_log_tab_content(_files, _tab), do: nil
 
   defp normalize_log_tab_content(content, tab)
-       when tab in ["agent", "review_agent"] and is_binary(content) do
+       when tab in ["agent", "review_agent", "testing_agent"] and is_binary(content) do
     CursorStreamLog.render(content)
   end
 

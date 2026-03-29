@@ -23,6 +23,7 @@ defmodule Kollywood.AgentRunnerTest do
     workspace_root = Path.join(root, "workspaces")
     cli_path = Path.join(root, "fake_runner_cli.sh")
     review_cli_path = Path.join(root, "fake_review_cli.sh")
+    testing_cli_path = Path.join(root, "fake_testing_cli.sh")
     prompt_log = Path.join(root, "prompts.log")
 
     File.mkdir_p!(root)
@@ -96,6 +97,68 @@ defmodule Kollywood.AgentRunnerTest do
 
     File.chmod!(review_cli_path, 0o755)
 
+    File.write!(testing_cli_path, """
+    #!/usr/bin/env bash
+    set -eu
+
+    testing_agent=""
+    testing_prompt=""
+    testing_timeout=""
+
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -a)
+          testing_agent="$2"
+          shift 2
+          ;;
+        -m)
+          testing_prompt="$2"
+          shift 2
+          ;;
+        --timeout)
+          testing_timeout="$2"
+          shift 2
+          ;;
+        -y|--ci)
+          shift
+          ;;
+        *)
+          shift
+          ;;
+      esac
+    done
+
+    if [ -n "${TESTING_PROMPT_LOG_FILE:-}" ]; then
+      printf "TESTING_AGENT=%s\n" "$testing_agent" >> "$TESTING_PROMPT_LOG_FILE"
+      printf "TESTING_TIMEOUT=%s\n" "$testing_timeout" >> "$TESTING_PROMPT_LOG_FILE"
+      printf "TESTING_PROMPT<<%s>>\n" "$testing_prompt" >> "$TESTING_PROMPT_LOG_FILE"
+    fi
+
+    if [ -n "${TESTING_FAIL_ONCE_FILE:-}" ]; then
+      if [ ! -f "$TESTING_FAIL_ONCE_FILE" ]; then
+        touch "$TESTING_FAIL_ONCE_FILE"
+        printf "Replay https://expect.example/replays/testing-remediation\n"
+        printf "1 failed, 2 passed\n"
+        exit 1
+      fi
+    fi
+
+    verdict="${TESTING_VERDICT:-pass}"
+
+    if [ "$verdict" = "fail" ]; then
+      printf "Video artifacts/testing-failure.webm\n"
+      printf "Replay https://expect.example/replays/testing-failure\n"
+      printf "2 failed, 1 passed\n"
+      exit 1
+    else
+      printf "Video artifacts/testing-success.webm\n"
+      printf "Replay https://expect.example/replays/testing-success\n"
+      printf "all checks passed\n"
+    fi
+    """)
+
+    File.chmod!(testing_cli_path, 0o755)
+
     git_cli_path = Path.join(root, "fake_git_runner_cli.sh")
 
     File.write!(git_cli_path, """
@@ -124,6 +187,7 @@ defmodule Kollywood.AgentRunnerTest do
       cli_path: cli_path,
       git_cli_path: git_cli_path,
       review_cli_path: review_cli_path,
+      testing_cli_path: testing_cli_path,
       prompt_log: prompt_log
     }
   end
@@ -870,6 +934,145 @@ defmodule Kollywood.AgentRunnerTest do
     assert result.error =~ "review failed after 1 cycle"
     assert result.error =~ "review complete"
     assert :review_failed in Enum.map(result.events, & &1.type)
+  end
+
+  test "runs testing phase with runtime and emits checkpoint events", %{
+    root: root,
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    testing_cli_path: testing_cli_path,
+    prompt_log: prompt_log
+  } do
+    fake_devenv_log = Path.join(root, "fake_devenv_testing.log")
+    fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+
+    config =
+      runner_config(workspace_root, cli_path, prompt_log)
+      |> Map.put(:quality, %{max_cycles: 2})
+      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log))
+      |> Map.put(:testing, %{
+        enabled: true,
+        max_cycles: 1,
+        timeout_ms: 10_000,
+        agent: %{
+          explicit: true,
+          kind: :cursor,
+          command: testing_cli_path,
+          args: [],
+          env: %{"TESTING_VERDICT" => "pass"},
+          timeout_ms: 10_000
+        }
+      })
+
+    issue_with_testing =
+      Map.put(@issue, :settings, %{"execution" => %{"testing_enabled" => true}})
+
+    assert {:ok, result} =
+             AgentRunner.run_issue(issue_with_testing,
+               config: config,
+               prompt_template: "Work on {{ issue.identifier }}",
+               mode: :single_turn
+             )
+
+    assert result.status == :ok
+
+    event_types = Enum.map(result.events, & &1.type)
+    assert :testing_started in event_types
+    assert :testing_checkpoint in event_types
+    assert :testing_passed in event_types
+    assert :runtime_started in event_types
+    assert :runtime_stopped in event_types
+
+    testing_json = Path.join([workspace_root, @issue.identifier, ".kollywood", "testing.json"])
+    assert File.exists?(testing_json)
+    {:ok, payload} = testing_json |> File.read!() |> Jason.decode()
+    assert payload["verdict"] == "pass"
+  end
+
+  test "retries with remediation turn when testing fails before max cycles", %{
+    root: root,
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    testing_cli_path: testing_cli_path,
+    prompt_log: prompt_log
+  } do
+    fake_devenv_log = Path.join(root, "fake_devenv_testing_retry.log")
+    fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    fail_once_file = Path.join(root, "testing_fail_once.marker")
+
+    config =
+      runner_config(workspace_root, cli_path, prompt_log)
+      |> Map.put(:quality, %{max_cycles: 2})
+      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log))
+      |> Map.put(:testing, %{
+        enabled: true,
+        max_cycles: 2,
+        timeout_ms: 10_000,
+        agent: %{
+          explicit: true,
+          kind: :cursor,
+          command: testing_cli_path,
+          args: [],
+          env: %{"TESTING_FAIL_ONCE_FILE" => fail_once_file},
+          timeout_ms: 10_000
+        }
+      })
+
+    issue_with_testing =
+      Map.put(@issue, :settings, %{"execution" => %{"testing_enabled" => true}})
+
+    assert {:ok, result} =
+             AgentRunner.run_issue(issue_with_testing,
+               config: config,
+               prompt_template: "Work on {{ issue.identifier }}",
+               mode: :single_turn
+             )
+
+    assert result.status == :ok
+    assert result.turn_count == 2
+    assert :quality_cycle_retrying in Enum.map(result.events, & &1.type)
+    assert :testing_failed in Enum.map(result.events, & &1.type)
+    assert :testing_passed in Enum.map(result.events, & &1.type)
+
+    prompt_history = File.read!(prompt_log)
+    assert prompt_history =~ "Tester feedback from cycle 1"
+  end
+
+  test "fails when testing is enabled but runtime profile is checks_only", %{
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    testing_cli_path: testing_cli_path,
+    prompt_log: prompt_log
+  } do
+    config =
+      runner_config(workspace_root, cli_path, prompt_log)
+      |> Map.put(:testing, %{
+        enabled: true,
+        max_cycles: 1,
+        timeout_ms: 10_000,
+        agent: %{
+          explicit: true,
+          kind: :cursor,
+          command: testing_cli_path,
+          args: [],
+          env: %{},
+          timeout_ms: 10_000
+        }
+      })
+
+    issue_with_testing =
+      Map.put(@issue, :settings, %{"execution" => %{"testing_enabled" => true}})
+
+    assert {:error, result} =
+             AgentRunner.run_issue(issue_with_testing,
+               config: config,
+               prompt_template: "Work on {{ issue.identifier }}",
+               mode: :single_turn
+             )
+
+    assert result.error =~ "testing requires runtime.profile full_stack"
+    assert :testing_started in Enum.map(result.events, & &1.type)
+    assert :testing_error in Enum.map(result.events, & &1.type)
   end
 
   test "push mode pushes branch only", %{root: root, git_cli_path: git_cli_path} do

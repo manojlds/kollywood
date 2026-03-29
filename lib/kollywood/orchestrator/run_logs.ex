@@ -12,6 +12,7 @@ defmodule Kollywood.Orchestrator.RunLogs do
           run.log
           worker.log
           reviewer.log
+          tester.log
           checks.log
           runtime.log
 
@@ -47,6 +48,14 @@ defmodule Kollywood.Orchestrator.RunLogs do
     "review_error"
   ]
 
+  @testing_events [
+    "testing_started",
+    "testing_checkpoint",
+    "testing_passed",
+    "testing_failed",
+    "testing_error"
+  ]
+
   @checks_events [
     "checks_started",
     "check_started",
@@ -65,7 +74,13 @@ defmodule Kollywood.Orchestrator.RunLogs do
     "runtime_stop_failed"
   ]
 
-  @agent_log_events ["turn_succeeded", "review_passed", "review_failed"]
+  @agent_log_events [
+    "turn_succeeded",
+    "review_passed",
+    "review_failed",
+    "testing_passed",
+    "testing_failed"
+  ]
 
   @typedoc "Run-log context returned by `prepare_attempt/3`"
   @type context :: %{
@@ -318,13 +333,16 @@ defmodule Kollywood.Orchestrator.RunLogs do
           run: files.run,
           worker: files.worker,
           reviewer: files.reviewer,
+          tester: files.tester,
           checks: files.checks,
           runtime: files.runtime,
           events: files.events,
           metadata: files.metadata,
           agent: files.agent,
           agent_stdout: files.agent_stdout,
-          reviewer_stdout: files.reviewer_stdout
+          reviewer_stdout: files.reviewer_stdout,
+          tester_stdout: files.tester_stdout,
+          testing_json: files.testing_json
         }
       }
     }
@@ -432,12 +450,15 @@ defmodule Kollywood.Orchestrator.RunLogs do
       run: Path.join(attempt_dir, "run.log"),
       worker: Path.join(attempt_dir, "worker.log"),
       reviewer: Path.join(attempt_dir, "reviewer.log"),
+      tester: Path.join(attempt_dir, "tester.log"),
       checks: Path.join(attempt_dir, "checks.log"),
       runtime: Path.join(attempt_dir, "runtime.log"),
       agent: Path.join(attempt_dir, "agent.log"),
       agent_stdout: Path.join(attempt_dir, "agent_stdout.log"),
       reviewer_stdout: Path.join(attempt_dir, "reviewer_stdout.log"),
-      review_json: Path.join(attempt_dir, "review.json")
+      tester_stdout: Path.join(attempt_dir, "tester_stdout.log"),
+      review_json: Path.join(attempt_dir, "review.json"),
+      testing_json: Path.join(attempt_dir, "testing.json")
     }
   end
 
@@ -448,11 +469,13 @@ defmodule Kollywood.Orchestrator.RunLogs do
       files.run,
       files.worker,
       files.reviewer,
+      files.tester,
       files.checks,
       files.runtime,
       files.agent,
       files.agent_stdout,
-      files.reviewer_stdout
+      files.reviewer_stdout,
+      files.tester_stdout
     ]
     |> Enum.reduce_while(:ok, fn path, _acc ->
       case File.write(path, "", [:append]) do
@@ -537,13 +560,16 @@ defmodule Kollywood.Orchestrator.RunLogs do
         "run" => files.run,
         "worker" => files.worker,
         "reviewer" => files.reviewer,
+        "tester" => files.tester,
         "checks" => files.checks,
         "runtime" => files.runtime,
         "events" => files.events,
         "agent" => files.agent,
         "agent_stdout" => files.agent_stdout,
         "reviewer_stdout" => files.reviewer_stdout,
-        "review_json" => files.review_json
+        "tester_stdout" => files.tester_stdout,
+        "review_json" => files.review_json,
+        "testing_json" => files.testing_json
       }
     }
     |> Map.merge(extra_metadata)
@@ -620,6 +646,7 @@ defmodule Kollywood.Orchestrator.RunLogs do
   defp category_for_event(type) do
     cond do
       type in @review_events -> :reviewer
+      type in @testing_events -> :tester
       type in @checks_events -> :checks
       type in @runtime_events -> :runtime
       type in @worker_events -> :worker
@@ -629,6 +656,7 @@ defmodule Kollywood.Orchestrator.RunLogs do
 
   defp category_path(files, :worker), do: files.worker
   defp category_path(files, :reviewer), do: files.reviewer
+  defp category_path(files, :tester), do: files.tester
   defp category_path(files, :checks), do: files.checks
   defp category_path(files, :runtime), do: files.runtime
 

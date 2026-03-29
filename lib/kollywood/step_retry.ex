@@ -2,7 +2,7 @@ defmodule Kollywood.StepRetry do
   @moduledoc """
   Operator-triggered retries for failed terminal steps.
 
-  Step retries run from a failed phase forward (`checks`, `review`, or `publish`)
+  Step retries run from a failed phase forward (`checks`, `review`, `testing`, or `publish`)
   while reusing the existing workspace and preserving prior attempts in run logs.
   """
 
@@ -20,11 +20,12 @@ defmodule Kollywood.StepRetry do
   alias Kollywood.Tracker.PrdJson
   alias Kollywood.Workspace
 
-  @type step :: :checks | :review | :publish
+  @type step :: :checks | :review | :testing | :publish
 
   @step_labels %{
     checks: "Retry checks",
     review: "Retry review",
+    testing: "Retry testing",
     publish: "Retry publish"
   }
 
@@ -354,7 +355,7 @@ defmodule Kollywood.StepRetry do
         :ok
 
       nil ->
-        {:error, "source attempt did not fail in checks, review, or publish"}
+        {:error, "source attempt did not fail in checks, review, testing, or publish"}
 
       other ->
         {:error, "source attempt failed in #{Atom.to_string(other)}; retry that step instead"}
@@ -377,9 +378,33 @@ defmodule Kollywood.StepRetry do
     end
   end
 
+  defp ensure_prior_phase_outputs(:testing, config, events) do
+    with :ok <- ensure_checks_outputs_for_testing(config, events),
+         :ok <- ensure_review_outputs_for_testing(config, events) do
+      :ok
+    end
+  end
+
   defp ensure_prior_phase_outputs(:publish, config, events) do
     with :ok <- ensure_checks_outputs_for_publish(config, events),
-         :ok <- ensure_review_outputs_for_publish(config, events) do
+         :ok <- ensure_review_outputs_for_publish(config, events),
+         :ok <- ensure_testing_outputs_for_publish(config, events) do
+      :ok
+    end
+  end
+
+  defp ensure_checks_outputs_for_testing(config, events) do
+    if checks_required?(config) and not event_present?(events, "checks_passed") do
+      {:error, "cannot retry testing: checks did not pass in the source attempt"}
+    else
+      :ok
+    end
+  end
+
+  defp ensure_review_outputs_for_testing(config, events) do
+    if review_enabled?(config) and not event_present?(events, "review_passed") do
+      {:error, "cannot retry testing: review did not pass in the source attempt"}
+    else
       :ok
     end
   end
@@ -395,6 +420,14 @@ defmodule Kollywood.StepRetry do
   defp ensure_review_outputs_for_publish(config, events) do
     if review_enabled?(config) and not event_present?(events, "review_passed") do
       {:error, "cannot retry publish: review did not pass in the source attempt"}
+    else
+      :ok
+    end
+  end
+
+  defp ensure_testing_outputs_for_publish(config, events) do
+    if testing_enabled?(config) and not event_present?(events, "testing_passed") do
+      {:error, "cannot retry publish: testing did not pass in the source attempt"}
     else
       :ok
     end
@@ -580,9 +613,11 @@ defmodule Kollywood.StepRetry do
 
   defp parse_step(:checks), do: {:ok, :checks}
   defp parse_step(:review), do: {:ok, :review}
+  defp parse_step(:testing), do: {:ok, :testing}
   defp parse_step(:publish), do: {:ok, :publish}
   defp parse_step("checks"), do: {:ok, :checks}
   defp parse_step("review"), do: {:ok, :review}
+  defp parse_step("testing"), do: {:ok, :testing}
   defp parse_step("publish"), do: {:ok, :publish}
 
   defp parse_step(step) when is_binary(step) do
@@ -593,7 +628,7 @@ defmodule Kollywood.StepRetry do
   end
 
   defp parse_step(_step),
-    do: {:error, "retry step must be one of: checks, review, publish"}
+    do: {:error, "retry step must be one of: checks, review, testing, publish"}
 
   defp parse_attempt(value) when is_integer(value) and value > 0, do: {:ok, value}
 
@@ -619,13 +654,13 @@ defmodule Kollywood.StepRetry do
 
   defp failed_step(events) when is_list(events) do
     case last_failed_step(events) do
-      nil -> {:error, "source attempt did not fail in checks, review, or publish"}
+      nil -> {:error, "source attempt did not fail in checks, review, testing, or publish"}
       step -> {:ok, step}
     end
   end
 
   defp failed_step(_events),
-    do: {:error, "source attempt did not fail in checks, review, or publish"}
+    do: {:error, "source attempt did not fail in checks, review, testing, or publish"}
 
   defp last_failed_step(events) when is_list(events) do
     Enum.reduce(events, nil, fn event, acc ->
@@ -633,6 +668,8 @@ defmodule Kollywood.StepRetry do
         "checks_failed" -> :checks
         "review_failed" -> :review
         "review_error" -> :review
+        "testing_failed" -> :testing
+        "testing_error" -> :testing
         "publish_failed" -> :publish
         _other -> acc
       end
@@ -708,6 +745,12 @@ defmodule Kollywood.StepRetry do
     |> truthy?()
   end
 
+  defp testing_enabled?(%Config{} = config) do
+    testing_config(config)
+    |> Map.get(:enabled, false)
+    |> truthy?()
+  end
+
   defp review_config(%Config{} = config) do
     case Map.get(config, :review) do
       review when is_map(review) ->
@@ -716,6 +759,19 @@ defmodule Kollywood.StepRetry do
       _other ->
         case Map.get(config, :quality, %{}) |> Map.get(:review) do
           review when is_map(review) -> review
+          _other -> %{}
+        end
+    end
+  end
+
+  defp testing_config(%Config{} = config) do
+    case Map.get(config, :testing) do
+      testing when is_map(testing) ->
+        testing
+
+      _other ->
+        case Map.get(config, :quality, %{}) |> Map.get(:testing) do
+          testing when is_map(testing) -> testing
           _other -> %{}
         end
     end

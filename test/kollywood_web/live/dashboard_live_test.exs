@@ -669,7 +669,10 @@ defmodule KollywoodWeb.DashboardLiveTest do
           notes: "UI note",
           execution_agent_kind: "cursor",
           execution_review_agent_kind: "claude",
-          execution_review_max_cycles: "3"
+          execution_review_max_cycles: "3",
+          execution_testing_enabled: "true",
+          execution_testing_agent_kind: "opencode",
+          execution_testing_max_cycles: "4"
         }
       })
 
@@ -683,6 +686,9 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert story["settings"]["execution"]["agent_kind"] == "cursor"
       assert story["settings"]["execution"]["review_agent_kind"] == "claude"
       assert story["settings"]["execution"]["review_max_cycles"] == 3
+      assert story["settings"]["execution"]["testing_enabled"] == true
+      assert story["settings"]["execution"]["testing_agent_kind"] == "opencode"
+      assert story["settings"]["execution"]["testing_max_cycles"] == 4
     end
 
     test "edits an existing story from UI", %{conn: conn, project: project, tmp_dir: _tmp_dir} do

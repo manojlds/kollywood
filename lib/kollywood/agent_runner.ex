@@ -144,10 +144,10 @@ defmodule Kollywood.AgentRunner do
   end
 
   @doc """
-  Retries a failed terminal step (`checks`, `review`, or `publish`) using an
+  Retries a failed terminal step (`checks`, `review`, `testing`, or `publish`) using an
   existing workspace and skipping agent turns.
   """
-  @spec retry_step(map(), :checks | :review | :publish, run_opts()) ::
+  @spec retry_step(map(), :checks | :review | :testing | :publish, run_opts()) ::
           {:ok, Result.t()} | {:error, Result.t()}
   def retry_step(issue, step, opts \\ [])
 
@@ -249,11 +249,13 @@ defmodule Kollywood.AgentRunner do
        ) do
     with {:ok, state} <- run_required_checks(state, config),
          {:ok, state} <- run_review_if_enabled(state, config, 1),
+         {:ok, state} <- run_testing_if_enabled(state, config, 1),
          {:ok, state} <- run_publish(state, config) do
       {:ok, state}
     else
       {:checks_failed, reason, state} -> {:error, reason, state}
       {:review_failed, reason, state} -> {:error, reason, state}
+      {:testing_failed, reason, state} -> {:error, reason, state}
       {:error, reason, state} -> {:error, reason, state}
       {:error, reason} -> {:error, reason, state}
     end
@@ -268,10 +270,30 @@ defmodule Kollywood.AgentRunner do
          _turn_opts
        ) do
     with {:ok, state} <- run_review_if_enabled(state, config, 1),
+         {:ok, state} <- run_testing_if_enabled(state, config, 1),
          {:ok, state} <- run_publish(state, config) do
       {:ok, state}
     else
       {:review_failed, reason, state} -> {:error, reason, state}
+      {:testing_failed, reason, state} -> {:error, reason, state}
+      {:error, reason, state} -> {:error, reason, state}
+      {:error, reason} -> {:error, reason, state}
+    end
+  end
+
+  defp run_retry_step_pipeline(
+         state,
+         config,
+         _prompt_template,
+         :testing,
+         _session_opts,
+         _turn_opts
+       ) do
+    with {:ok, state} <- run_testing_if_enabled(state, config, 1),
+         {:ok, state} <- run_publish(state, config) do
+      {:ok, state}
+    else
+      {:testing_failed, reason, state} -> {:error, reason, state}
       {:error, reason, state} -> {:error, reason, state}
       {:error, reason} -> {:error, reason, state}
     end
@@ -1067,6 +1089,7 @@ defmodule Kollywood.AgentRunner do
     quality_limit = quality_max_cycles(config)
     checks_limit = min(quality_limit, checks_max_cycles(config))
     review_limit = min(quality_limit, review_max_cycles(config))
+    testing_limit = min(quality_limit, testing_max_cycles(config))
 
     run_quality_cycle(
       state,
@@ -1077,7 +1100,8 @@ defmodule Kollywood.AgentRunner do
       1,
       quality_limit,
       checks_limit,
-      review_limit
+      review_limit,
+      testing_limit
     )
   end
 
@@ -1090,18 +1114,21 @@ defmodule Kollywood.AgentRunner do
          cycle,
          quality_limit,
          checks_limit,
-         review_limit
+         review_limit,
+         testing_limit
        ) do
     state =
       emit(state, :quality_cycle_started, %{
         cycle: cycle,
         max_cycles: quality_limit,
         checks_max_cycles: checks_limit,
-        review_max_cycles: review_limit
+        review_max_cycles: review_limit,
+        testing_max_cycles: testing_limit
       })
 
     with {:ok, state} <- run_required_checks(state, config),
-         {:ok, state} <- run_review_if_enabled(state, config, cycle) do
+         {:ok, state} <- run_review_if_enabled(state, config, cycle),
+         {:ok, state} <- run_testing_if_enabled(state, config, cycle) do
       {:ok, emit(state, :quality_cycle_passed, %{cycle: cycle})}
     else
       {:checks_failed, reason, state} when cycle < checks_limit ->
@@ -1111,6 +1138,7 @@ defmodule Kollywood.AgentRunner do
             max_cycles: quality_limit,
             checks_max_cycles: checks_limit,
             review_max_cycles: review_limit,
+            testing_max_cycles: testing_limit,
             retry_reason: reason,
             retry_type: :checks
           })
@@ -1134,7 +1162,8 @@ defmodule Kollywood.AgentRunner do
               cycle + 1,
               quality_limit,
               checks_limit,
-              review_limit
+              review_limit,
+              testing_limit
             )
 
           {:error, remediation_reason, state} ->
@@ -1151,6 +1180,7 @@ defmodule Kollywood.AgentRunner do
             max_cycles: quality_limit,
             checks_max_cycles: checks_limit,
             review_max_cycles: review_limit,
+            testing_max_cycles: testing_limit,
             retry_reason: reason,
             retry_type: :review
           })
@@ -1174,7 +1204,8 @@ defmodule Kollywood.AgentRunner do
               cycle + 1,
               quality_limit,
               checks_limit,
-              review_limit
+              review_limit,
+              testing_limit
             )
 
           {:error, remediation_reason, state} ->
@@ -1183,6 +1214,48 @@ defmodule Kollywood.AgentRunner do
 
       {:review_failed, reason, state} ->
         {:error, "review failed after #{review_limit} cycle(s): #{reason}", state}
+
+      {:testing_failed, reason, state} when cycle < testing_limit ->
+        state =
+          emit(state, :quality_cycle_retrying, %{
+            cycle: cycle,
+            max_cycles: quality_limit,
+            checks_max_cycles: checks_limit,
+            review_max_cycles: review_limit,
+            testing_max_cycles: testing_limit,
+            retry_reason: reason,
+            retry_type: :testing
+          })
+
+        case run_testing_remediation_turn(
+               state,
+               config,
+               reason,
+               cycle,
+               session_opts,
+               turn_opts,
+               prompt_template
+             ) do
+          {:ok, state} ->
+            run_quality_cycle(
+              state,
+              config,
+              session_opts,
+              turn_opts,
+              prompt_template,
+              cycle + 1,
+              quality_limit,
+              checks_limit,
+              review_limit,
+              testing_limit
+            )
+
+          {:error, remediation_reason, state} ->
+            {:error, "testing remediation failed: #{remediation_reason}", state}
+        end
+
+      {:testing_failed, reason, state} ->
+        {:error, "testing failed after #{testing_limit} cycle(s): #{reason}", state}
 
       {:error, reason, state} ->
         {:error, reason, state}
@@ -1333,6 +1406,402 @@ defmodule Kollywood.AgentRunner do
     end
   end
 
+  defp run_testing_if_enabled(state, config, cycle) do
+    if testing_enabled?(config) do
+      testing_agent_kind = testing_agent_kind(config)
+
+      state =
+        emit(state, :testing_started, %{
+          agent_kind: testing_agent_kind,
+          cycle: cycle,
+          runtime_profile: runtime_profile_from_state(state)
+        })
+
+      workspace_tjp = workspace_testing_json_path(state.workspace)
+
+      with {:ok, state} <- ensure_runtime_for_testing(state),
+           :ok <- reset_testing_json(workspace_tjp),
+           {:ok, prompt} <- build_testing_prompt(state, config, cycle, workspace_tjp),
+           {:ok, testing_run} <- run_expect_testing(state, config, prompt, cycle),
+           :ok <- write_testing_json(workspace_tjp, testing_run.report) do
+        persist_testing_json(workspace_tjp, state.log_files)
+
+        case read_testing_json(workspace_tjp) do
+          {:ok, %{verdict: :pass} = testing} ->
+            state = emit_testing_checkpoints(state, testing.checkpoints, cycle)
+
+            {:ok,
+             emit(state, :testing_passed, %{
+               agent_kind: testing_agent_kind,
+               cycle: cycle,
+               summary: testing.summary,
+               checkpoint_count: length(testing.checkpoints),
+               artifact_count: length(testing.artifacts),
+               duration_ms: testing_run.duration_ms,
+               command: testing_run.command,
+               args: testing_run.args,
+               output: testing_run.output
+             })}
+
+          {:ok, %{verdict: :fail} = testing} ->
+            state = emit_testing_checkpoints(state, testing.checkpoints, cycle)
+
+            {:testing_failed, testing.feedback,
+             emit(state, :testing_failed, %{
+               agent_kind: testing_agent_kind,
+               cycle: cycle,
+               reason: testing.feedback,
+               summary: testing.summary,
+               checkpoint_count: length(testing.checkpoints),
+               artifact_count: length(testing.artifacts),
+               duration_ms: testing_run.duration_ms,
+               command: testing_run.command,
+               args: testing_run.args,
+               output: testing_run.output
+             })}
+
+          {:testing_failed, feedback} ->
+            {:testing_failed, feedback,
+             emit(state, :testing_failed, %{
+               agent_kind: testing_agent_kind,
+               cycle: cycle,
+               reason: feedback
+             })}
+
+          {:error, reason} ->
+            {:error, "testing failed: #{reason}",
+             emit(state, :testing_error, %{
+               agent_kind: testing_agent_kind,
+               cycle: cycle,
+               reason: reason
+             })}
+        end
+      else
+        {:error, reason, state} ->
+          {:error, reason,
+           emit(state, :testing_error, %{
+             agent_kind: testing_agent_kind,
+             cycle: cycle,
+             reason: reason
+           })}
+
+        {:error, reason} ->
+          {:error, "testing failed: #{reason}",
+           emit(state, :testing_error, %{
+             agent_kind: testing_agent_kind,
+             cycle: cycle,
+             reason: reason
+           })}
+      end
+    else
+      {:ok, state}
+    end
+  end
+
+  defp emit_testing_checkpoints(state, checkpoints, cycle) when is_list(checkpoints) do
+    total = length(checkpoints)
+
+    checkpoints
+    |> Enum.with_index(1)
+    |> Enum.reduce(state, fn {checkpoint, index}, acc ->
+      emit(acc, :testing_checkpoint, %{
+        cycle: cycle,
+        checkpoint_index: index,
+        checkpoint_count: total,
+        name: Map.get(checkpoint, :name),
+        status: Map.get(checkpoint, :status),
+        details: Map.get(checkpoint, :details)
+      })
+    end)
+  end
+
+  defp emit_testing_checkpoints(state, _checkpoints, _cycle), do: state
+
+  defp run_expect_testing(state, config, instruction, cycle) do
+    testing = testing_config(config)
+    testing_agent = Map.get(testing, :agent, %{})
+    backend_kind = testing_agent_kind(config)
+    timeout_ms = testing_timeout_ms(config)
+    expect_command = optional_string(Map.get(testing_agent, :command)) || "expect"
+    agent_env = map_or_empty(Map.get(testing_agent, :env, %{}))
+
+    with {:ok, expect_args} <- expect_args(testing_agent, backend_kind, instruction, timeout_ms) do
+      base_url = expect_base_url(state.runtime, agent_env)
+
+      env =
+        agent_env
+        |> Map.put("EXPECT_BASE_URL", base_url)
+        |> Map.put_new("NO_TELEMETRY", "1")
+
+      case execute_expect_command(state.runtime, expect_command, expect_args, env, timeout_ms) do
+        {:ok, exec} ->
+          output = optional_string(exec.output) || ""
+          append_testing_raw_log(state.log_files, output)
+
+          {:ok,
+           %{
+             command: exec.command,
+             args: exec.args,
+             output: output,
+             duration_ms: exec.duration_ms,
+             report:
+               expect_report_payload(
+                 :pass,
+                 output,
+                 "expect browser run passed",
+                 cycle,
+                 expect_artifacts(output)
+               )
+           }}
+
+        {:failed, exec} ->
+          output = optional_string(exec.output) || ""
+          append_testing_raw_log(state.log_files, output)
+
+          summary = expect_failure_summary(exec.reason, output)
+          details = expect_failure_details(exec.reason, output)
+
+          {:ok,
+           %{
+             command: exec.command,
+             args: exec.args,
+             output: output,
+             duration_ms: exec.duration_ms,
+             report:
+               expect_report_payload(
+                 :fail,
+                 output,
+                 summary,
+                 cycle,
+                 expect_artifacts(output),
+                 details
+               )
+           }}
+
+        {:error, reason} ->
+          {:error, "expect testing failed: #{reason}"}
+      end
+    end
+  end
+
+  defp execute_expect_command(runtime, command, args, env, timeout_ms) do
+    command_line = shell_command(command, args, env)
+
+    case Runtime.exec(runtime, command_line, timeout_ms) do
+      {:ok, output, duration_ms} ->
+        {:ok, %{command: command, args: args, output: output, duration_ms: duration_ms}}
+
+      {:error, reason, output, duration_ms} ->
+        if expect_command_not_found?(reason, output) do
+          if command == "expect" do
+            execute_expect_command(runtime, "expect-cli", args, env, timeout_ms)
+          else
+            {:error, "expect command not found (tried #{inspect(command)} and expect-cli)"}
+          end
+        else
+          {:failed,
+           %{
+             command: command,
+             args: args,
+             reason: reason,
+             output: output,
+             duration_ms: duration_ms
+           }}
+        end
+    end
+  end
+
+  defp expect_command_not_found?(reason, output) do
+    reason_text = reason |> to_string() |> String.downcase()
+    output_text = output |> to_string() |> String.downcase()
+
+    String.contains?(reason_text, "command not found") or
+      String.contains?(output_text, "command not found") or
+      reason_text == "exit code 127"
+  end
+
+  defp expect_args(testing_agent, backend_kind, instruction, timeout_ms) do
+    with {:ok, backend} <- expect_backend(backend_kind) do
+      extra_args =
+        testing_agent
+        |> Map.get(:args, [])
+        |> Enum.map(&to_string/1)
+
+      {:ok,
+       extra_args ++
+         [
+           "-a",
+           backend,
+           "-m",
+           String.trim(instruction),
+           "-y",
+           "--ci",
+           "--timeout",
+           Integer.to_string(timeout_ms)
+         ]}
+    end
+  end
+
+  defp expect_backend(kind) when kind in [:claude, :cursor, :opencode],
+    do: {:ok, Atom.to_string(kind)}
+
+  defp expect_backend(kind) do
+    {:error,
+     "quality.testing.agent.kind #{inspect(kind)} is not supported for browser testing via expect; use one of: claude, cursor, opencode"}
+  end
+
+  defp expect_base_url(runtime, agent_env) do
+    agent_base_url =
+      agent_env
+      |> map_or_empty()
+      |> Map.get("EXPECT_BASE_URL")
+      |> optional_string()
+
+    cond do
+      agent_base_url ->
+        agent_base_url
+
+      true ->
+        port =
+          get_in(runtime, [:resolved_ports, "PORT"]) ||
+            get_in(runtime, [:resolved_ports, "APP_PORT"]) ||
+            parse_optional_integer(get_in(runtime, [:env, "PORT"])) ||
+            parse_optional_integer(get_in(runtime, [:env, "APP_PORT"])) ||
+            3000
+
+        "http://127.0.0.1:#{port}"
+    end
+  end
+
+  defp parse_optional_integer(value) when is_integer(value) and value > 0, do: value
+
+  defp parse_optional_integer(value) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {parsed, ""} when parsed > 0 -> parsed
+      _other -> nil
+    end
+  end
+
+  defp parse_optional_integer(_value), do: nil
+
+  defp shell_command(command, args, env)
+       when is_binary(command) and is_list(args) and is_map(env) do
+    env_prefix =
+      env
+      |> map_or_empty()
+      |> Enum.filter(fn {key, _value} ->
+        key
+        |> to_string()
+        |> String.match?(~r/^[A-Za-z_][A-Za-z0-9_]*$/)
+      end)
+      |> Enum.map_join(" ", fn {key, value} ->
+        "#{key}=#{shell_quote(value)}"
+      end)
+
+    command_part =
+      [command | args]
+      |> Enum.map_join(" ", &shell_quote/1)
+
+    if env_prefix == "", do: command_part, else: "#{env_prefix} #{command_part}"
+  end
+
+  defp shell_quote(value) do
+    escaped =
+      value
+      |> to_string()
+      |> String.replace("'", "'\"'\"'")
+
+    "'#{escaped}'"
+  end
+
+  defp expect_report_payload(status, output, summary, cycle, artifacts, details \\ nil)
+
+  defp expect_report_payload(:pass, _output, summary, _cycle, artifacts, _details) do
+    %{
+      "verdict" => "pass",
+      "summary" => summary,
+      "checkpoints" => [
+        %{
+          "name" => "expect browser run",
+          "status" => "pass",
+          "details" => "all browser plan steps passed"
+        }
+      ],
+      "artifacts" => artifacts
+    }
+  end
+
+  defp expect_report_payload(:fail, _output, summary, _cycle, artifacts, details) do
+    %{
+      "verdict" => "fail",
+      "summary" => summary,
+      "checkpoints" => [
+        %{
+          "name" => "expect browser run",
+          "status" => "fail",
+          "details" => details || summary
+        }
+      ],
+      "artifacts" => artifacts
+    }
+  end
+
+  defp expect_failure_summary(reason, output) do
+    lines =
+      output
+      |> to_string()
+      |> String.split("\n")
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+
+    Enum.find(lines, fn line -> String.contains?(String.downcase(line), "failed") end) ||
+      "expect browser run failed (#{reason})"
+  end
+
+  defp expect_failure_details(reason, output) do
+    preview = output_preview(output)
+    if preview == "", do: "expect failed: #{reason}", else: preview
+  end
+
+  defp expect_artifacts(output) do
+    video =
+      case Regex.run(~r/^\s*Video\s+(.+)$/m, to_string(output), capture: :all_but_first) do
+        [path] -> optional_string(String.trim(path))
+        _ -> nil
+      end
+
+    replay =
+      case Regex.run(~r/^\s*Replay\s+(.+)$/m, to_string(output), capture: :all_but_first) do
+        [value] -> optional_string(String.trim(value))
+        _ -> nil
+      end
+
+    []
+    |> maybe_add_artifact(video, "video")
+    |> maybe_add_artifact(replay, "replay")
+  end
+
+  defp maybe_add_artifact(artifacts, nil, _kind), do: artifacts
+
+  defp maybe_add_artifact(artifacts, path, kind) do
+    artifacts ++ [%{"kind" => kind, "path" => path}]
+  end
+
+  defp write_testing_json(path, payload) when is_binary(path) and is_map(payload) do
+    encoded = Jason.encode_to_iodata!(payload, pretty: true)
+    File.write(path, [encoded, "\n"])
+  end
+
+  defp write_testing_json(_path, _payload), do: {:error, "testing_json path not configured"}
+
+  defp append_testing_raw_log(%{tester_stdout: path}, output)
+       when is_binary(path) and is_binary(output) and output != "" do
+    File.write(path, output, [:append])
+    :ok
+  end
+
+  defp append_testing_raw_log(_log_files, _output), do: :ok
+
   defp run_review_remediation_turn(
          state,
          config,
@@ -1433,6 +1902,109 @@ defmodule Kollywood.AgentRunner do
     else
       {:error, reason} ->
         {:error, "failed to run review remediation turn: #{reason}", state}
+    end
+  end
+
+  defp run_testing_remediation_turn(
+         state,
+         config,
+         testing_feedback,
+         cycle,
+         session_opts,
+         turn_opts,
+         prompt_template
+       ) do
+    with {:ok, prompt} <-
+           build_testing_remediation_prompt(state, testing_feedback, cycle, prompt_template),
+         {:ok, session} <- Agent.start_session(config, state.workspace, session_opts) do
+      state =
+        state
+        |> Map.put(:session, session)
+        |> emit(:session_started, %{
+          session_id: session.id,
+          adapter: session.adapter,
+          remediation: true,
+          testing_cycle: cycle
+        })
+
+      turn_number = state.turn_count + 1
+
+      run_result =
+        with :ok <- Workspace.before_run(state.workspace, config.hooks) do
+          state =
+            state
+            |> Map.put(:turn_count, turn_number)
+            |> emit(:turn_started, %{turn: turn_number, remediation: true, testing_cycle: cycle})
+
+          turn_result =
+            Agent.run_turn(
+              session,
+              prompt,
+              with_raw_log(turn_opts, state.log_files, :agent_stdout)
+            )
+
+          Workspace.after_run(state.workspace, config.hooks)
+
+          case turn_result do
+            {:ok, result} ->
+              turn_output = Map.get(result, :raw_output) || Map.get(result, :output)
+
+              {:ok,
+               state
+               |> Map.put(:last_output, result.output)
+               |> emit(:turn_succeeded, %{
+                 turn: turn_number,
+                 duration_ms: result.duration_ms,
+                 remediation: true,
+                 testing_cycle: cycle,
+                 output: turn_output,
+                 command: Map.get(result, :command),
+                 args: Map.get(result, :args, [])
+               })}
+
+            {:error, reason} ->
+              {:error, reason,
+               emit(state, :turn_failed, %{
+                 turn: turn_number,
+                 reason: reason,
+                 remediation: true,
+                 testing_cycle: cycle
+               })}
+          end
+        else
+          {:error, reason} ->
+            {:error, reason,
+             emit(state, :turn_failed, %{
+               turn: turn_number,
+               reason: reason,
+               remediation: true,
+               testing_cycle: cycle
+             })}
+        end
+
+      case run_result do
+        {:ok, run_state} ->
+          case stop_session(run_state, session) do
+            {:ok, stopped_state} ->
+              {:ok, stopped_state}
+
+            {:error, stop_reason, stopped_state} ->
+              {:error, "Failed to stop agent session: #{stop_reason}", stopped_state}
+          end
+
+        {:error, reason, run_state} ->
+          case stop_session(run_state, session) do
+            {:ok, stopped_state} ->
+              {:error, reason, stopped_state}
+
+            {:error, stop_reason, stopped_state} ->
+              {:error, combine_errors(reason, "Failed to stop agent session: #{stop_reason}"),
+               stopped_state}
+          end
+      end
+    else
+      {:error, reason} ->
+        {:error, "failed to run testing remediation turn: #{reason}", state}
     end
   end
 
@@ -1589,43 +2161,64 @@ defmodule Kollywood.AgentRunner do
     if runtime.profile == :checks_only or runtime.started? do
       {:ok, state}
     else
-      state =
-        emit(state, :runtime_starting, %{
-          runtime_profile: runtime.profile,
-          command: runtime.command,
-          workspace_path: runtime.workspace_path,
-          process_count: length(runtime.processes)
-        })
+      start_runtime(state)
+    end
+  end
 
-      case Runtime.start(runtime) do
-        {:ok, runtime} ->
-          state =
-            state
-            |> Map.put(:runtime, runtime)
-            |> emit(:runtime_started, %{
-              runtime_profile: runtime.profile,
-              workspace_path: runtime.workspace_path,
-              command: runtime.command,
-              process_count: length(runtime.processes),
-              port_offset: runtime.port_offset,
-              resolved_ports: runtime.resolved_ports
-            })
+  defp ensure_runtime_for_testing(state) do
+    runtime = state.runtime
 
-          {:ok, state}
+    cond do
+      runtime.started? ->
+        {:ok, state}
 
-        {:error, reason, runtime} ->
-          state =
-            state
-            |> Map.put(:runtime, runtime)
-            |> emit(:runtime_start_failed, %{
-              runtime_profile: runtime.profile,
-              workspace_path: runtime.workspace_path,
-              command: runtime.command,
-              reason: reason
-            })
+      runtime.profile != :full_stack ->
+        {:error, "testing requires runtime.profile full_stack", state}
 
-          {:error, reason, state}
-      end
+      true ->
+        start_runtime(state)
+    end
+  end
+
+  defp start_runtime(state) do
+    runtime = state.runtime
+
+    state =
+      emit(state, :runtime_starting, %{
+        runtime_profile: runtime.profile,
+        command: runtime.command,
+        workspace_path: runtime.workspace_path,
+        process_count: length(runtime.processes)
+      })
+
+    case Runtime.start(runtime) do
+      {:ok, runtime} ->
+        state =
+          state
+          |> Map.put(:runtime, runtime)
+          |> emit(:runtime_started, %{
+            runtime_profile: runtime.profile,
+            workspace_path: runtime.workspace_path,
+            command: runtime.command,
+            process_count: length(runtime.processes),
+            port_offset: runtime.port_offset,
+            resolved_ports: runtime.resolved_ports
+          })
+
+        {:ok, state}
+
+      {:error, reason, runtime} ->
+        state =
+          state
+          |> Map.put(:runtime, runtime)
+          |> emit(:runtime_start_failed, %{
+            runtime_profile: runtime.profile,
+            workspace_path: runtime.workspace_path,
+            command: runtime.command,
+            reason: reason
+          })
+
+        {:error, reason, state}
     end
   end
 
@@ -1762,6 +2355,173 @@ defmodule Kollywood.AgentRunner do
     end
   end
 
+  defp read_testing_json(nil), do: {:error, "testing_json path not configured"}
+
+  defp read_testing_json(path) do
+    case File.read(path) do
+      {:ok, content} ->
+        case Jason.decode(content) do
+          {:ok, %{"verdict" => verdict} = testing} when verdict in ["pass", "fail"] ->
+            summary = Map.get(testing, "summary", "") |> to_string() |> String.trim()
+            checkpoints = normalize_testing_checkpoints(Map.get(testing, "checkpoints", []))
+            artifacts = normalize_testing_artifacts(Map.get(testing, "artifacts", []))
+
+            if verdict == "pass" do
+              {:ok,
+               %{
+                 verdict: :pass,
+                 summary: summary,
+                 checkpoints: checkpoints,
+                 artifacts: artifacts
+               }}
+            else
+              {:ok,
+               %{
+                 verdict: :fail,
+                 summary: summary,
+                 checkpoints: checkpoints,
+                 artifacts: artifacts,
+                 feedback: format_testing_feedback(summary, checkpoints)
+               }}
+            end
+
+          {:ok, _other} ->
+            {:testing_failed,
+             "tester wrote invalid testing.json: missing `verdict` (expected \"pass\" or \"fail\")"}
+
+          {:error, reason} ->
+            {:testing_failed, "failed to parse testing.json: #{inspect(reason)}"}
+        end
+
+      {:error, :enoent} ->
+        {:testing_failed, "tester did not write testing.json"}
+
+      {:error, reason} ->
+        {:error, "failed to read testing.json: #{inspect(reason)}"}
+    end
+  end
+
+  defp normalize_testing_checkpoints(value) when is_list(value) do
+    value
+    |> Enum.map(&normalize_testing_checkpoint/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp normalize_testing_checkpoints(_value), do: []
+
+  defp normalize_testing_checkpoint(value) when is_map(value) do
+    name =
+      field(value, :name) ||
+        field(value, :title) ||
+        field(value, :id) ||
+        "checkpoint"
+
+    details =
+      field(value, :details) ||
+        field(value, :description) ||
+        field(value, :note)
+
+    status = normalize_testing_checkpoint_status(field(value, :status))
+
+    if is_nil(status) do
+      nil
+    else
+      %{
+        name: to_string(name),
+        status: status,
+        details: optional_string(to_string(details || ""))
+      }
+    end
+  end
+
+  defp normalize_testing_checkpoint(_value), do: nil
+
+  defp normalize_testing_checkpoint_status(value) when is_binary(value) do
+    case value |> String.trim() |> String.downcase() do
+      "pass" -> "pass"
+      "passed" -> "pass"
+      "ok" -> "pass"
+      "fail" -> "fail"
+      "failed" -> "fail"
+      "warning" -> "warning"
+      "warn" -> "warning"
+      "skipped" -> "skipped"
+      "" -> nil
+      other -> other
+    end
+  end
+
+  defp normalize_testing_checkpoint_status(value) when is_atom(value) do
+    value
+    |> Atom.to_string()
+    |> normalize_testing_checkpoint_status()
+  end
+
+  defp normalize_testing_checkpoint_status(_value), do: nil
+
+  defp normalize_testing_artifacts(value) when is_list(value) do
+    value
+    |> Enum.map(&normalize_testing_artifact/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp normalize_testing_artifacts(_value), do: []
+
+  defp normalize_testing_artifact(value) when is_map(value) do
+    path = optional_string(to_string(field(value, :path) || ""))
+
+    if is_nil(path) do
+      nil
+    else
+      %{
+        kind: optional_string(to_string(field(value, :kind) || "")),
+        path: path,
+        description: optional_string(to_string(field(value, :description) || ""))
+      }
+    end
+  end
+
+  defp normalize_testing_artifact(_value), do: nil
+
+  defp format_testing_feedback(summary, checkpoints) when is_list(checkpoints) do
+    failing =
+      checkpoints
+      |> Enum.filter(fn checkpoint -> Map.get(checkpoint, :status) == "fail" end)
+      |> Enum.map(fn checkpoint ->
+        name = Map.get(checkpoint, :name, "checkpoint")
+        details = optional_string(Map.get(checkpoint, :details))
+
+        if details do
+          "- #{name}: #{details}"
+        else
+          "- #{name}"
+        end
+      end)
+
+    cond do
+      failing != [] and summary != "" ->
+        [summary, "", "Failed checkpoints:", Enum.join(failing, "\n")]
+        |> Enum.join("\n")
+        |> String.trim()
+
+      failing != [] ->
+        ["Failed checkpoints:", Enum.join(failing, "\n")]
+        |> Enum.join("\n")
+        |> String.trim()
+
+      summary != "" ->
+        summary
+
+      true ->
+        "tester reported a failing verdict"
+    end
+  end
+
+  defp format_testing_feedback(summary, _checkpoints) when is_binary(summary) and summary != "",
+    do: summary
+
+  defp format_testing_feedback(_summary, _checkpoints), do: "tester reported a failing verdict"
+
   defp reset_review_json(path) when is_binary(path) do
     case File.rm(path) do
       :ok -> :ok
@@ -1771,6 +2531,16 @@ defmodule Kollywood.AgentRunner do
   end
 
   defp reset_review_json(_path), do: {:error, "review_json path not configured"}
+
+  defp reset_testing_json(path) when is_binary(path) do
+    case File.rm(path) do
+      :ok -> :ok
+      {:error, :enoent} -> :ok
+      {:error, reason} -> {:error, "failed to reset testing.json: #{inspect(reason)}"}
+    end
+  end
+
+  defp reset_testing_json(_path), do: {:error, "testing_json path not configured"}
 
   defp format_review_feedback(review) do
     summary = Map.get(review, "summary", "") |> to_string() |> String.trim()
@@ -1810,6 +2580,20 @@ defmodule Kollywood.AgentRunner do
     end
   end
 
+  defp build_testing_prompt(state, config, cycle, tjp) do
+    template = testing_prompt_template(config)
+
+    variables =
+      PromptBuilder.build_variables(state.issue, state.attempt)
+      |> Map.put("testing_json_path", tjp)
+      |> Map.put("cycle", cycle)
+
+    case PromptBuilder.render(template, variables) do
+      {:ok, prompt} -> {:ok, prompt}
+      {:error, reason} -> {:error, "failed to render testing prompt: #{reason}"}
+    end
+  end
+
   defp workspace_review_json_path(%{path: path}) when is_binary(path) do
     dir = Path.join(path, ".kollywood")
     File.mkdir_p!(dir)
@@ -1823,12 +2607,32 @@ defmodule Kollywood.AgentRunner do
         "kollywood_review_#{System.unique_integer([:positive, :monotonic])}.json"
       )
 
+  defp workspace_testing_json_path(%{path: path}) when is_binary(path) do
+    dir = Path.join(path, ".kollywood")
+    File.mkdir_p!(dir)
+    Path.join(dir, "testing.json")
+  end
+
+  defp workspace_testing_json_path(_),
+    do:
+      Path.join(
+        System.tmp_dir!(),
+        "kollywood_testing_#{System.unique_integer([:positive, :monotonic])}.json"
+      )
+
   defp persist_review_json(src, %{review_json: dest}) when is_binary(dest) do
     File.copy(src, dest)
     :ok
   end
 
   defp persist_review_json(_src, _log_files), do: :ok
+
+  defp persist_testing_json(src, %{testing_json: dest}) when is_binary(dest) do
+    File.copy(src, dest)
+    :ok
+  end
+
+  defp persist_testing_json(_src, _log_files), do: :ok
 
   defp build_review_remediation_prompt(state, review_feedback, cycle, prompt_template) do
     base_variables = PromptBuilder.build_variables(state.issue, state.attempt)
@@ -1861,6 +2665,40 @@ defmodule Kollywood.AgentRunner do
     case PromptBuilder.render(remediation_template, variables) do
       {:ok, prompt} -> {:ok, prompt}
       {:error, reason} -> {:error, "failed to render remediation prompt: #{reason}"}
+    end
+  end
+
+  defp build_testing_remediation_prompt(state, testing_feedback, cycle, prompt_template) do
+    base_variables = PromptBuilder.build_variables(state.issue, state.attempt)
+
+    base_prompt =
+      case PromptBuilder.render(prompt_template, base_variables) do
+        {:ok, prompt} -> prompt
+        {:error, _reason} -> ""
+      end
+
+    remediation_template =
+      """
+      Continue working on issue {{ issue.identifier }}: {{ issue.title }}.
+
+      Previous assignment:
+      {{ base_prompt }}
+
+      Tester feedback from cycle {{ cycle }}:
+      {{ testing_feedback }}
+
+      Fix the issues raised by testing so the feature behaves correctly end-to-end.
+      """
+
+    variables =
+      base_variables
+      |> Map.put("testing_feedback", testing_feedback)
+      |> Map.put("cycle", cycle)
+      |> Map.put("base_prompt", base_prompt)
+
+    case PromptBuilder.render(remediation_template, variables) do
+      {:ok, prompt} -> {:ok, prompt}
+      {:error, reason} -> {:error, "failed to render testing remediation prompt: #{reason}"}
     end
   end
 
@@ -1937,6 +2775,13 @@ defmodule Kollywood.AgentRunner do
     |> truthy?()
   end
 
+  defp testing_enabled?(config) do
+    config
+    |> testing_config()
+    |> Map.get(:enabled, false)
+    |> truthy?()
+  end
+
   defp quality_max_cycles(config) do
     case quality_config(config) |> Map.get(:max_cycles) do
       value when not is_nil(value) ->
@@ -1968,9 +2813,35 @@ defmodule Kollywood.AgentRunner do
     |> positive_integer(default_limit)
   end
 
+  defp testing_max_cycles(config) do
+    default_limit = quality_max_cycles(config)
+
+    config
+    |> testing_config()
+    |> Map.get(:max_cycles, default_limit)
+    |> positive_integer(default_limit)
+  end
+
+  defp testing_timeout_ms(config) do
+    config
+    |> testing_config()
+    |> Map.get(:timeout_ms, 7_200_000)
+    |> positive_integer(7_200_000)
+  end
+
   defp review_agent_kind(config) do
     config
     |> review_config()
+    |> get_in([Access.key(:agent, %{}), Access.key(:kind)])
+    |> case do
+      value when value in [:amp, :claude, :cursor, :opencode, :pi] -> value
+      _other -> Map.get(config.agent, :kind)
+    end
+  end
+
+  defp testing_agent_kind(config) do
+    config
+    |> testing_config()
     |> get_in([Access.key(:agent, %{}), Access.key(:kind)])
     |> case do
       value when value in [:amp, :claude, :cursor, :opencode, :pi] -> value
@@ -2015,10 +2886,36 @@ defmodule Kollywood.AgentRunner do
   @doc "Returns the default review prompt template used when none is configured in WORKFLOW.md."
   def default_review_prompt_template, do: @default_review_prompt_template
 
+  @default_testing_prompt_template """
+  You are testing work for issue {{ issue.identifier }}: {{ issue.title }}.
+
+  Issue description:
+  {{ issue.description }}
+
+  Validate implemented behavior end-to-end (UI/API/CLI as relevant) using the running runtime.
+  Use EXPECT_BASE_URL for browser and HTTP checks. Focus on:
+  - acceptance criteria and issue scope
+  - regressions in nearby behavior
+  - boundary and invalid-input scenarios
+
+  Prefer concrete reproduction steps when something fails, and gather screenshots/videos when
+  they materially improve debugging.
+  """
+
+  @doc "Returns the default testing prompt template used when none is configured in WORKFLOW.md."
+  def default_testing_prompt_template, do: @default_testing_prompt_template
+
   defp review_prompt_template(config) do
     case config |> review_config() |> Map.get(:prompt_template) do
       value when is_binary(value) and value != "" -> value
       _other -> @default_review_prompt_template
+    end
+  end
+
+  defp testing_prompt_template(config) do
+    case config |> testing_config() |> Map.get(:prompt_template) do
+      value when is_binary(value) and value != "" -> value
+      _other -> @default_testing_prompt_template
     end
   end
 
@@ -2045,6 +2942,19 @@ defmodule Kollywood.AgentRunner do
       _other ->
         case quality_config(config) |> Map.get(:review) do
           review when is_map(review) -> review
+          _other -> %{}
+        end
+    end
+  end
+
+  defp testing_config(config) do
+    case Map.get(config, :testing) do
+      testing when is_map(testing) ->
+        testing
+
+      _other ->
+        case quality_config(config) |> Map.get(:testing) do
+          testing when is_map(testing) -> testing
           _other -> %{}
         end
     end
@@ -2177,10 +3087,10 @@ defmodule Kollywood.AgentRunner do
   defp parse_mode(mode) when mode in [:single_turn, :max_turns], do: {:ok, mode}
   defp parse_mode(_mode), do: {:error, "mode must be :single_turn or :max_turns"}
 
-  defp parse_retry_step(step) when step in [:checks, :review, :publish], do: {:ok, step}
+  defp parse_retry_step(step) when step in [:checks, :review, :testing, :publish], do: {:ok, step}
 
   defp parse_retry_step(_step),
-    do: {:error, "retry step must be one of: :checks, :review, :publish"}
+    do: {:error, "retry step must be one of: :checks, :review, :testing, :publish"}
 
   defp parse_attempt(nil), do: {:ok, nil}
   defp parse_attempt(value) when is_integer(value) and value >= 0, do: {:ok, value}
@@ -2268,6 +3178,9 @@ defmodule Kollywood.AgentRunner do
   end
 
   defp blank_error?(value), do: not (is_binary(value) and String.trim(value) != "")
+
+  defp map_or_empty(value) when is_map(value), do: value
+  defp map_or_empty(_value), do: %{}
 
   defp optional_string(value) when is_binary(value) and value != "", do: value
   defp optional_string(_value), do: nil
