@@ -181,7 +181,16 @@ defmodule Kollywood.StoryExecutionOverridesTest do
       polling: %{},
       hooks: %{},
       checks: %{required: [], timeout_ms: 10_000, fail_fast: true},
-      runtime: %{profile: :checks_only, full_stack: %{}},
+      runtime: %{
+        kind: :host,
+        command: "devenv",
+        processes: [],
+        env: %{},
+        ports: %{},
+        port_offset_mod: 1000,
+        start_timeout_ms: 120_000,
+        stop_timeout_ms: 60_000
+      },
       publish: %{},
       git: %{},
       raw: %{}

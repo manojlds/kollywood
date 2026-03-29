@@ -896,7 +896,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "Publish"
       assert html =~ "Enabled (pr, github)"
       assert html =~ "Runtime"
-      assert html =~ "Enabled (full_stack)"
+      assert html =~ "Enabled (devenv, 1 process)"
       assert html =~ "Current WORKFLOW.md fingerprint differs from this run attempt."
     end
 
@@ -916,6 +916,47 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "Retry unavailable for this run"
       refute html =~ "Full rerun"
       refute html =~ "Run finished"
+    end
+
+    test "run detail shows testing report checkpoints and artifacts", %{
+      conn: conn,
+      project: project
+    } do
+      story_id = "US-TESTING-REPORT"
+      context = prepare_run_logs!(project.slug, story_id)
+
+      report = %{
+        "verdict" => "pass",
+        "summary" => "Testing completed successfully",
+        "checkpoints" => [
+          %{"name" => "acceptance flow", "status" => "pass", "details" => "validated end-to-end"}
+        ],
+        "artifacts" => [
+          %{
+            "kind" => "screenshot",
+            "path" => "artifacts/testing-success.png",
+            "stored_path" => Path.join(context.files.testing_artifacts_dir, "001_smoke.png")
+          },
+          %{
+            "kind" => "replay",
+            "path" => "https://agent-browser.local/replays/testing-success"
+          }
+        ]
+      }
+
+      File.mkdir_p!(context.files.testing_artifacts_dir)
+      File.write!(context.files.testing_report, Jason.encode!(report, pretty: true))
+      RunLogs.complete_attempt(context, %{status: "ok"})
+
+      {:ok, _view, html} =
+        live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
+
+      assert html =~ "Testing report"
+      assert html =~ "PASS"
+      assert html =~ "Testing completed successfully"
+      assert html =~ "acceptance flow"
+      assert html =~ "artifacts/testing-success.png"
+      assert html =~ "agent-browser.local/replays/testing-success"
     end
 
     test "run detail shows enabled retry action for failed checks attempt", %{
@@ -1539,7 +1580,8 @@ defmodule KollywoodWeb.DashboardLiveTest do
           "mode" => "pr"
         },
         "runtime" => %{
-          "profile" => "full_stack"
+          "command" => "devenv",
+          "processes" => ["server"]
         }
       },
       "sources" => %{}

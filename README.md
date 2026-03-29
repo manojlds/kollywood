@@ -167,9 +167,9 @@ Quality gates are configured in `.kollywood/WORKFLOW.md`:
 - `quality.max_cycles`: overall maximum quality loop cycles
 - `quality.checks.required`: shell commands that must pass before a story can be marked done
 - `quality.checks.max_cycles`: maximum cycles allowed for checks remediation
-- `runtime.profile`: runtime isolation profile (`checks_only` or `full_stack`)
-- `runtime.full_stack`: per-worktree devenv process/env/port settings used for isolated checks
-- `runtime.full_stack.port_offset_mod`: offset pool size for concurrent `full_stack` runs (offsets are leased strictly; exhaustion fails fast)
+- `runtime.command`: runtime command used for process orchestration (defaults to `devenv`)
+- `runtime.processes`: named devenv processes started for testing/preview runtime
+- `runtime.port_offset_mod`: offset pool size for concurrent runtime sessions (offsets are leased strictly; exhaustion fails fast)
 - `quality.review.enabled`: when true, runs a reviewer agent round and requires a `review.json` verdict (`"pass"`/`"fail"`)
 - `quality.review.max_cycles`: maximum cycles allowed for review remediation
 - `quality.review.agent`: reviewer adapter settings (kind/command/args/env/timeout)

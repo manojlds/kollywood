@@ -54,6 +54,10 @@ defmodule Kollywood.Orchestrator.RunLogsTest do
       assert metadata["files"]["tester"] == context.files.tester
       assert Map.has_key?(metadata["files"], "testing_json")
       assert metadata["files"]["testing_json"] == context.files.testing_json
+      assert Map.has_key?(metadata["files"], "testing_report")
+      assert metadata["files"]["testing_report"] == context.files.testing_report
+      assert Map.has_key?(metadata["files"], "testing_artifacts_dir")
+      assert metadata["files"]["testing_artifacts_dir"] == context.files.testing_artifacts_dir
     end
 
     test "includes agent in tracker_metadata", %{context: context} do
@@ -62,6 +66,8 @@ defmodule Kollywood.Orchestrator.RunLogsTest do
       assert Map.has_key?(tracker_meta.run_logs.files, :tester)
       assert Map.has_key?(tracker_meta.run_logs.files, :tester_stdout)
       assert Map.has_key?(tracker_meta.run_logs.files, :testing_json)
+      assert Map.has_key?(tracker_meta.run_logs.files, :testing_report)
+      assert Map.has_key?(tracker_meta.run_logs.files, :testing_artifacts_dir)
     end
 
     test "persists retry mode and provenance in metadata" do
@@ -161,6 +167,36 @@ defmodule Kollywood.Orchestrator.RunLogsTest do
       assert metadata["turn_count"] == 3
       assert metadata["last_successful_turn"] == 2
       assert metadata["status"] == "failed"
+    end
+
+    test "captures testing report metadata when testing_report.json exists", %{context: context} do
+      File.mkdir_p!(context.files.testing_artifacts_dir)
+
+      report = %{
+        "verdict" => "pass",
+        "summary" => "testing complete",
+        "checkpoints" => [
+          %{"name" => "smoke", "status" => "pass", "details" => "ok"}
+        ],
+        "artifacts" => [
+          %{
+            "kind" => "screenshot",
+            "path" => "artifacts/testing-success.png",
+            "stored_path" => Path.join(context.files.testing_artifacts_dir, "001_smoke.png")
+          }
+        ]
+      }
+
+      File.write!(context.files.testing_report, Jason.encode!(report, pretty: true))
+
+      assert :ok = RunLogs.complete_attempt(context, %{status: :ok, turn_count: 1})
+
+      metadata = File.read!(context.files.metadata) |> Jason.decode!()
+      assert metadata["testing_report"]["verdict"] == "pass"
+      assert metadata["testing_report"]["summary"] == "testing complete"
+      assert is_list(metadata["testing_artifacts"])
+      assert length(metadata["testing_artifacts"]) == 1
+      assert hd(metadata["testing_artifacts"])["kind"] == "screenshot"
     end
   end
 

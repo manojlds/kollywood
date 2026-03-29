@@ -265,14 +265,13 @@ defmodule Kollywood.ConfigTest do
     assert config.checks.max_cycles == 1
 
     assert config.runtime.kind == :host
-    assert config.runtime.profile == :checks_only
-    assert config.runtime.full_stack.command == "devenv"
-    assert config.runtime.full_stack.processes == []
-    assert config.runtime.full_stack.env == %{}
-    assert config.runtime.full_stack.ports == %{}
-    assert config.runtime.full_stack.port_offset_mod == 1000
-    assert config.runtime.full_stack.start_timeout_ms == 120_000
-    assert config.runtime.full_stack.stop_timeout_ms == 60_000
+    assert config.runtime.command == "devenv"
+    assert config.runtime.processes == []
+    assert config.runtime.env == %{}
+    assert config.runtime.ports == %{}
+    assert config.runtime.port_offset_mod == 1000
+    assert config.runtime.start_timeout_ms == 120_000
+    assert config.runtime.stop_timeout_ms == 60_000
 
     assert config.quality.max_cycles == 1
 
@@ -682,24 +681,22 @@ defmodule Kollywood.ConfigTest do
     assert msg =~ "Invalid publish.auto_create_pr"
   end
 
-  test "parses full_stack runtime settings" do
+  test "parses runtime settings" do
     content = """
     ---
     runtime:
-      profile: full_stack
-      full_stack:
-        command: /usr/local/bin/devenv
-        processes:
-          - server
-          - worker
-        env:
-          MIX_ENV: test
-        ports:
-          PORT: "4000"
-          LIVEBOOK_PORT: 8080
-        port_offset_mod: 250
-        start_timeout_ms: 30000
-        stop_timeout_ms: 15000
+      command: /usr/local/bin/devenv
+      processes:
+        - server
+        - worker
+      env:
+        MIX_ENV: test
+      ports:
+        PORT: "4000"
+        LIVEBOOK_PORT: 8080
+      port_offset_mod: 250
+      start_timeout_ms: 30000
+      stop_timeout_ms: 15000
     workspace:
       root: /tmp
     agent:
@@ -709,21 +706,20 @@ defmodule Kollywood.ConfigTest do
     """
 
     assert {:ok, config, _} = Config.parse(content)
-    assert config.runtime.profile == :full_stack
-    assert config.runtime.full_stack.command == "/usr/local/bin/devenv"
-    assert config.runtime.full_stack.processes == ["server", "worker"]
-    assert config.runtime.full_stack.env == %{"MIX_ENV" => "test"}
-    assert config.runtime.full_stack.ports == %{"PORT" => 4000, "LIVEBOOK_PORT" => 8080}
-    assert config.runtime.full_stack.port_offset_mod == 250
-    assert config.runtime.full_stack.start_timeout_ms == 30_000
-    assert config.runtime.full_stack.stop_timeout_ms == 15_000
+    assert config.runtime.command == "/usr/local/bin/devenv"
+    assert config.runtime.processes == ["server", "worker"]
+    assert config.runtime.env == %{"MIX_ENV" => "test"}
+    assert config.runtime.ports == %{"PORT" => 4000, "LIVEBOOK_PORT" => 8080}
+    assert config.runtime.port_offset_mod == 250
+    assert config.runtime.start_timeout_ms == 30_000
+    assert config.runtime.stop_timeout_ms == 15_000
   end
 
-  test "rejects invalid runtime profile" do
+  test "rejects invalid runtime kind" do
     content = """
     ---
     runtime:
-      profile: invalid
+      kind: invalid
     workspace:
       root: /tmp
     agent:
@@ -733,17 +729,32 @@ defmodule Kollywood.ConfigTest do
     """
 
     assert {:error, msg} = Config.parse(content)
-    assert msg =~ "runtime.profile"
+    assert msg =~ "runtime.kind must be one of: host, docker"
   end
 
-  test "rejects invalid runtime.full_stack port value" do
+  test "rejects legacy runtime.profile key" do
     content = """
     ---
     runtime:
-      profile: full_stack
+      profile: checks_only
+    workspace:
+      root: /tmp
+    agent:
+      kind: pi
+    ---
+    prompt
+    """
+
+    assert {:error, msg} = Config.parse(content)
+    assert msg =~ "runtime.profile is no longer supported"
+  end
+
+  test "rejects legacy runtime.full_stack key" do
+    content = """
+    ---
+    runtime:
       full_stack:
-        ports:
-          PORT: not-a-number
+        command: devenv
     workspace:
       root: /tmp
     agent:
@@ -753,13 +764,31 @@ defmodule Kollywood.ConfigTest do
     """
 
     assert {:error, msg} = Config.parse(content)
-    assert msg =~ "runtime.full_stack.ports.PORT"
+    assert msg =~ "runtime.full_stack is no longer supported"
+  end
+
+  test "rejects invalid runtime port value" do
+    content = """
+    ---
+    runtime:
+      ports:
+        PORT: not-a-number
+    workspace:
+      root: /tmp
+    agent:
+      kind: pi
+    ---
+    prompt
+    """
+
+    assert {:error, msg} = Config.parse(content)
+    assert msg =~ "runtime.ports.PORT"
   end
 
   test "rejects non-map runtime section" do
     content = """
     ---
-    runtime: full_stack
+    runtime: devenv
     workspace:
       root: /tmp
     agent:

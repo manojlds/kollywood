@@ -15,6 +15,8 @@ defmodule Kollywood.Orchestrator.RunLogs do
           tester.log
           checks.log
           runtime.log
+          testing_report.json
+          testing_artifacts/
 
   `run.log` is a merged stream, while category files keep focused slices for
   worker/reviewer/check/runtime output.
@@ -291,6 +293,7 @@ defmodule Kollywood.Orchestrator.RunLogs do
       files.metadata
       |> read_json_file()
       |> Map.merge(update)
+      |> Map.merge(testing_report_metadata(files))
 
     with :ok <- write_json(files.metadata, metadata),
          :ok <-
@@ -342,7 +345,9 @@ defmodule Kollywood.Orchestrator.RunLogs do
           agent_stdout: files.agent_stdout,
           reviewer_stdout: files.reviewer_stdout,
           tester_stdout: files.tester_stdout,
-          testing_json: files.testing_json
+          testing_json: files.testing_json,
+          testing_report: files.testing_report,
+          testing_artifacts_dir: files.testing_artifacts_dir
         }
       }
     }
@@ -458,7 +463,9 @@ defmodule Kollywood.Orchestrator.RunLogs do
       reviewer_stdout: Path.join(attempt_dir, "reviewer_stdout.log"),
       tester_stdout: Path.join(attempt_dir, "tester_stdout.log"),
       review_json: Path.join(attempt_dir, "review.json"),
-      testing_json: Path.join(attempt_dir, "testing.json")
+      testing_json: Path.join(attempt_dir, "testing.json"),
+      testing_report: Path.join(attempt_dir, "testing_report.json"),
+      testing_artifacts_dir: Path.join(attempt_dir, "testing_artifacts")
     }
   end
 
@@ -569,11 +576,46 @@ defmodule Kollywood.Orchestrator.RunLogs do
         "reviewer_stdout" => files.reviewer_stdout,
         "tester_stdout" => files.tester_stdout,
         "review_json" => files.review_json,
-        "testing_json" => files.testing_json
+        "testing_json" => files.testing_json,
+        "testing_report" => files.testing_report,
+        "testing_artifacts_dir" => files.testing_artifacts_dir
       }
     }
     |> Map.merge(extra_metadata)
   end
+
+  defp testing_report_metadata(files) when is_map(files) do
+    report =
+      files
+      |> testing_report_file_path()
+      |> read_json_file()
+
+    if map_size(report) > 0 do
+      %{
+        "testing_report" => report,
+        "testing_artifacts" => Map.get(report, "artifacts", [])
+      }
+    else
+      %{}
+    end
+  end
+
+  defp testing_report_metadata(_files), do: %{}
+
+  defp testing_report_file_path(files) when is_map(files) do
+    explicit = Map.get(files, :testing_report) || Map.get(files, "testing_report")
+
+    cond do
+      is_binary(explicit) and File.exists?(explicit) ->
+        explicit
+
+      true ->
+        fallback = Map.get(files, :testing_json) || Map.get(files, "testing_json")
+        if is_binary(fallback) and File.exists?(fallback), do: fallback, else: nil
+    end
+  end
+
+  defp testing_report_file_path(_files), do: nil
 
   defp parse_prepare_attempt_opts(opts) when is_list(opts) do
     if Keyword.keyword?(opts) do
@@ -765,7 +807,7 @@ defmodule Kollywood.Orchestrator.RunLogs do
     File.write(path, [payload, "\n"])
   end
 
-  defp read_json_file(path) do
+  defp read_json_file(path) when is_binary(path) do
     with {:ok, content} <- File.read(path),
          {:ok, decoded} <- Jason.decode(content),
          true <- is_map(decoded) do
@@ -774,6 +816,8 @@ defmodule Kollywood.Orchestrator.RunLogs do
       _other -> %{}
     end
   end
+
+  defp read_json_file(_path), do: %{}
 
   defp normalize_status_value(value) when is_binary(value), do: value
   defp normalize_status_value(value) when is_atom(value), do: Atom.to_string(value)

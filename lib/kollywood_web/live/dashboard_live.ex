@@ -2340,6 +2340,8 @@ defmodule KollywoodWeb.DashboardLive do
           workflow_fingerprint_status={@workflow_fingerprint_status}
         />
 
+        <.testing_report_section report={@run_detail["testing_report"]} />
+
         <div class="flex gap-0 border-b border-base-300">
           <%= for {tab, label} <- [
             {"agent", "Agent"},
@@ -2457,6 +2459,132 @@ defmodule KollywoodWeb.DashboardLive do
       ]}>
         {@value}
       </p>
+    </div>
+    """
+  end
+
+  attr :report, :map, default: nil
+
+  defp testing_report_section(assigns) do
+    report = if is_map(assigns.report), do: assigns.report, else: nil
+    checkpoints = if report, do: Map.get(report, "checkpoints", []), else: []
+    artifacts = if report, do: Map.get(report, "artifacts", []), else: []
+    verdict = if report, do: Map.get(report, "verdict"), else: nil
+    summary = if report, do: Map.get(report, "summary"), else: nil
+
+    assigns =
+      assigns
+      |> assign(:report, report)
+      |> assign(:checkpoints, if(is_list(checkpoints), do: checkpoints, else: []))
+      |> assign(:artifacts, if(is_list(artifacts), do: artifacts, else: []))
+      |> assign(:verdict, verdict)
+      |> assign(:summary, summary)
+
+    ~H"""
+    <div class="card bg-base-200 border border-base-300">
+      <div class="card-body gap-4">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <h3 class="card-title text-lg">Testing report</h3>
+
+          <%= if @report do %>
+            <span class={testing_verdict_badge_class(@verdict)}>
+              {String.upcase(to_string(@verdict || "unknown"))}
+            </span>
+          <% end %>
+        </div>
+
+        <%= if @report do %>
+          <div class="text-xs text-base-content/60">
+            {length(@checkpoints)} checkpoints - {length(@artifacts)} artifacts
+          </div>
+
+          <%= if is_binary(@summary) and String.trim(@summary) != "" do %>
+            <p class="text-sm text-base-content/80 break-words">{@summary}</p>
+          <% end %>
+
+          <%= if @checkpoints != [] do %>
+            <div class="space-y-2">
+              <%= for checkpoint <- @checkpoints do %>
+                <div class="rounded-lg border border-base-300 bg-base-100 p-3">
+                  <div class="flex flex-wrap items-center justify-between gap-2">
+                    <p class="text-sm font-medium">{Map.get(checkpoint, "name") || "checkpoint"}</p>
+                    <span class={testing_checkpoint_badge_class(Map.get(checkpoint, "status"))}>
+                      {String.upcase(to_string(Map.get(checkpoint, "status") || "unknown"))}
+                    </span>
+                  </div>
+                  <%= if details = Map.get(checkpoint, "details") do %>
+                    <p class="mt-2 text-xs text-base-content/70 break-words">{details}</p>
+                  <% end %>
+                </div>
+              <% end %>
+            </div>
+          <% end %>
+
+          <%= if @artifacts != [] do %>
+            <div class="overflow-x-auto">
+              <table class="table table-sm">
+                <thead>
+                  <tr>
+                    <th>Kind</th>
+                    <th>Artifact</th>
+                    <th>Stored</th>
+                    <th>Notes</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <%= for artifact <- @artifacts do %>
+                    <% path = Map.get(artifact, "path") %>
+                    <% stored_path = Map.get(artifact, "stored_path") %>
+                    <% storage_error = Map.get(artifact, "storage_error") %>
+                    <% description = Map.get(artifact, "description") %>
+                    <tr>
+                      <td class="align-top">
+                        <span class="badge badge-ghost text-xs">
+                          {Map.get(artifact, "kind") || "artifact"}
+                        </span>
+                      </td>
+                      <td class="align-top">
+                        <%= if is_binary(path) and http_url?(path) do %>
+                          <a
+                            href={path}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="link link-primary text-xs break-all"
+                          >
+                            {path}
+                          </a>
+                        <% else %>
+                          <span class="font-mono text-xs break-all">{path || "n/a"}</span>
+                        <% end %>
+                      </td>
+                      <td class="align-top">
+                        <%= if is_binary(stored_path) and String.trim(stored_path) != "" do %>
+                          <span class="font-mono text-xs break-all">{stored_path}</span>
+                        <% else %>
+                          <span class="text-xs text-base-content/50">Not stored</span>
+                        <% end %>
+                      </td>
+                      <td class="align-top">
+                        <%= if is_binary(storage_error) and String.trim(storage_error) != "" do %>
+                          <span class="text-xs text-error break-words">{storage_error}</span>
+                        <% else %>
+                          <span class="text-xs text-base-content/60 break-words">
+                            {description || "—"}
+                          </span>
+                        <% end %>
+                      </td>
+                    </tr>
+                  <% end %>
+                </tbody>
+              </table>
+            </div>
+          <% end %>
+        <% else %>
+          <p class="text-sm text-base-content/60 italic">
+            No testing report captured for this run.
+          </p>
+        <% end %>
+      </div>
     </div>
     """
   end
@@ -2708,6 +2836,8 @@ defmodule KollywoodWeb.DashboardLive do
             <%= if @run_detail && @run_detail["retry_summary"] do %>
               <p class="break-words text-xs text-base-content/60">{@run_detail["retry_summary"]}</p>
             <% end %>
+
+            <.testing_report_section report={if(@run_detail, do: @run_detail["testing_report"])} />
 
             <div class="flex gap-0 border-b border-base-300">
               <%= for {tab, label} <- [
@@ -3211,24 +3341,6 @@ defmodule KollywoodWeb.DashboardLive do
                           selected={(get_in(@workflow.parsed, ["runtime", "kind"]) || "host") == k}
                         >
                           {k}
-                        </option>
-                      <% end %>
-                    </select>
-                  </div>
-                  <div>
-                    <label class="label pb-1"><span class="label-text text-sm">Profile</span></label>
-                    <select
-                      name="settings[runtime][profile]"
-                      class="select select-bordered select-sm w-full"
-                    >
-                      <%= for p <- ["checks_only", "full_stack"] do %>
-                        <option
-                          value={p}
-                          selected={
-                            (get_in(@workflow.parsed, ["runtime", "profile"]) || "checks_only") == p
-                          }
-                        >
-                          {p}
                         </option>
                       <% end %>
                     </select>
@@ -4481,11 +4593,9 @@ defmodule KollywoodWeb.DashboardLive do
 
     new_runtime =
       existing_runtime
+      |> Map.delete("profile")
+      |> Map.delete("full_stack")
       |> Map.put("kind", Map.get(runtime_p, "kind", Map.get(existing_runtime, "kind", "host")))
-      |> Map.put(
-        "profile",
-        Map.get(runtime_p, "profile", Map.get(existing_runtime, "profile", "checks_only"))
-      )
 
     base_branch =
       Map.get(git_p, "base_branch", get_in(parsed, ["git", "base_branch"]) || "main")
@@ -5246,6 +5356,7 @@ defmodule KollywoodWeb.DashboardLive do
     phase = derive_phase_map(Path.dirname(files.metadata), metadata)
     retry_mode = normalize_retry_mode(Map.get(metadata, "retry_mode"))
     retry_provenance = normalize_retry_provenance(Map.get(metadata, "retry_provenance"))
+    testing_report = load_testing_report(metadata, files)
 
     %{
       "metadata" => metadata,
@@ -5258,9 +5369,135 @@ defmodule KollywoodWeb.DashboardLive do
       "retry_provenance" => retry_provenance,
       "retry_summary" => retry_summary(retry_mode, retry_provenance),
       "retry_action" => StepRetry.retry_action(project, story_id, Map.get(metadata, "attempt")),
+      "testing_report" => testing_report,
       "active_log_content" => content
     }
   end
+
+  defp load_testing_report(metadata, files) when is_map(metadata) and is_map(files) do
+    metadata_report =
+      case Map.get(metadata, "testing_report") do
+        report when is_map(report) -> normalize_testing_report(report)
+        _other -> nil
+      end
+
+    metadata_report || read_testing_report_from_files(files)
+  end
+
+  defp load_testing_report(_metadata, _files), do: nil
+
+  defp read_testing_report_from_files(files) when is_map(files) do
+    [Map.get(files, :testing_report), Map.get(files, :testing_json)]
+    |> Enum.find_value(fn path ->
+      if is_binary(path) and File.exists?(path) do
+        with {:ok, content} <- File.read(path),
+             {:ok, decoded} <- Jason.decode(content),
+             true <- is_map(decoded) do
+          normalize_testing_report(decoded)
+        else
+          _other -> nil
+        end
+      else
+        nil
+      end
+    end)
+  end
+
+  defp read_testing_report_from_files(_files), do: nil
+
+  defp normalize_testing_report(report) when is_map(report) do
+    verdict =
+      report
+      |> map_field(:verdict)
+      |> maybe_string()
+      |> case do
+        nil -> nil
+        value -> String.downcase(value)
+      end
+
+    if verdict in ["pass", "fail"] do
+      checkpoints =
+        report
+        |> map_field(:checkpoints)
+        |> normalize_testing_report_checkpoints()
+
+      artifacts =
+        report
+        |> map_field(:artifacts)
+        |> normalize_testing_report_artifacts()
+
+      %{
+        "verdict" => verdict,
+        "summary" => maybe_string(map_field(report, :summary)),
+        "checkpoints" => checkpoints,
+        "artifacts" => artifacts
+      }
+    else
+      nil
+    end
+  end
+
+  defp normalize_testing_report(_report), do: nil
+
+  defp normalize_testing_report_checkpoints(checkpoints) when is_list(checkpoints) do
+    checkpoints
+    |> Enum.map(&normalize_testing_report_checkpoint/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp normalize_testing_report_checkpoints(_checkpoints), do: []
+
+  defp normalize_testing_report_checkpoint(checkpoint) when is_map(checkpoint) do
+    name = maybe_string(map_field(checkpoint, :name)) || "checkpoint"
+
+    status =
+      checkpoint
+      |> map_field(:status)
+      |> maybe_string()
+      |> case do
+        nil -> nil
+        value -> String.downcase(value)
+      end
+
+    if is_nil(status) do
+      nil
+    else
+      %{
+        "name" => name,
+        "status" => status,
+        "details" => maybe_string(map_field(checkpoint, :details))
+      }
+    end
+  end
+
+  defp normalize_testing_report_checkpoint(_checkpoint), do: nil
+
+  defp normalize_testing_report_artifacts(artifacts) when is_list(artifacts) do
+    artifacts
+    |> Enum.map(&normalize_testing_report_artifact/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp normalize_testing_report_artifacts(_artifacts), do: []
+
+  defp normalize_testing_report_artifact(artifact) when is_map(artifact) do
+    path = maybe_string(map_field(artifact, :path))
+
+    if is_nil(path) do
+      nil
+    else
+      %{
+        "kind" => maybe_string(map_field(artifact, :kind)),
+        "path" => path,
+        "description" => maybe_string(map_field(artifact, :description)),
+        "source_path" => maybe_string(map_field(artifact, :source_path)),
+        "stored_path" => maybe_string(map_field(artifact, :stored_path)),
+        "storage_error" => maybe_string(map_field(artifact, :storage_error))
+      }
+    end
+  end
+
+  defp normalize_testing_report_artifact(_artifact), do: nil
 
   defp workflow_fingerprint_status(snapshot, current_workflow_identity) do
     attempt_sha = snapshot |> snapshot_value(["workflow", "sha256"]) |> maybe_string()
@@ -5384,11 +5621,63 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp snapshot_runtime_toggle(snapshot) do
-    case snapshot |> snapshot_value(["resolved", "runtime", "profile"]) |> maybe_string() do
-      profile when is_binary(profile) -> "Enabled (#{profile})"
-      _other -> "Unavailable"
+    command = snapshot |> snapshot_value(["resolved", "runtime", "command"]) |> maybe_string()
+
+    process_count =
+      case snapshot_value(snapshot, ["resolved", "runtime", "processes"]) do
+        processes when is_list(processes) -> length(processes)
+        _other -> 0
+      end
+
+    cond do
+      process_count > 0 and command ->
+        suffix = if(process_count == 1, do: "", else: "es")
+        "Enabled (#{command}, #{process_count} process#{suffix})"
+
+      process_count > 0 ->
+        suffix = if(process_count == 1, do: "", else: "es")
+        "Enabled (#{process_count} process#{suffix})"
+
+      command ->
+        "Configured (no processes)"
+
+      true ->
+        "Unavailable"
     end
   end
+
+  defp testing_verdict_badge_class("pass"),
+    do: "badge badge-success badge-outline text-xs font-semibold"
+
+  defp testing_verdict_badge_class("fail"),
+    do: "badge badge-error badge-outline text-xs font-semibold"
+
+  defp testing_verdict_badge_class(_verdict),
+    do: "badge badge-ghost text-xs font-semibold"
+
+  defp testing_checkpoint_badge_class(status) when status in ["pass", "passed", "ok"] do
+    "badge badge-success badge-outline text-xs"
+  end
+
+  defp testing_checkpoint_badge_class(status) when status in ["fail", "failed"] do
+    "badge badge-error badge-outline text-xs"
+  end
+
+  defp testing_checkpoint_badge_class(status) when status in ["warning", "warn"] do
+    "badge badge-warning badge-outline text-xs"
+  end
+
+  defp testing_checkpoint_badge_class(status) when status in ["skipped", "skip"] do
+    "badge badge-ghost text-xs"
+  end
+
+  defp testing_checkpoint_badge_class(_status), do: "badge badge-ghost text-xs"
+
+  defp http_url?(value) when is_binary(value) do
+    String.starts_with?(value, "http://") or String.starts_with?(value, "https://")
+  end
+
+  defp http_url?(_value), do: false
 
   defp current_workflow_identity(project) do
     path = workflow_path(project)
