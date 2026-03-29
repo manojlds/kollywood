@@ -318,8 +318,8 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert merged_pos < failed_pos
 
       assert html =~ "flex min-w-full items-start gap-3"
-      assert html =~ "min-w-72 w-0 flex-1 overflow-hidden"
-      refute html =~ "min-w-[17.5rem] basis-0 flex-1"
+      assert html =~ "min-w-[18rem] basis-[18rem] grow shrink-0 overflow-hidden"
+      refute html =~ "min-w-72 w-0 flex-1 overflow-hidden"
       refute html =~ "grid-flow-col auto-cols-[minmax(17.5rem,_1fr)]"
       refute Regex.match?(~r/restoreViewPreference\(\)\s*this\.persistCurrentView\(\)/, html)
     end

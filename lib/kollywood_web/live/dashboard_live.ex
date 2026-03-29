@@ -1597,7 +1597,7 @@ defmodule KollywoodWeb.DashboardLive do
   defp stories_kanban_column(assigns) do
     assigns =
       assign(assigns, :column_classes, [
-        "min-w-72 w-0 flex-1 overflow-hidden rounded-xl border border-base-300 bg-base-200/60",
+        "min-w-[18rem] basis-[18rem] grow shrink-0 overflow-hidden rounded-xl border border-base-300 bg-base-200/60",
         assigns.status == "draft" && "opacity-80"
       ])
 
