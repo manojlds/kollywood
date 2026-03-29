@@ -26,6 +26,7 @@ defmodule Kollywood.Orchestrator do
   alias Kollywood.Orchestrator.RunSettingsSnapshot
   alias Kollywood.Publisher
   alias Kollywood.RepoSync
+  alias Kollywood.StoryExecutionOverrides
   alias Kollywood.Tracker
   alias Kollywood.Workspace
   alias Kollywood.WorkflowStore
@@ -1019,10 +1020,18 @@ defmodule Kollywood.Orchestrator do
     issue_id = issue_id(issue)
     identifier = issue_identifier(issue)
 
-    with :ok <- tracker_prepare_issue_for_run(tracker, config, issue_id) do
+    with {:ok, resolved_story_execution} <- resolve_story_execution(config, issue),
+         :ok <- tracker_prepare_issue_for_run(tracker, config, issue_id) do
       orchestrator_pid = self()
       {user_on_event, runner_opts} = Keyword.pop(state.runner_opts, :on_event)
-      run_log_context = prepare_run_log_context(config, issue, attempt, state.workflow_store)
+      run_log_context =
+        prepare_run_log_context(
+          config,
+          issue,
+          attempt,
+          state.workflow_store,
+          resolved_story_execution.settings_snapshot
+        )
 
       session_opts = if field(issue, :resumable), do: %{resumable: true}, else: %{}
 
@@ -1035,7 +1044,9 @@ defmodule Kollywood.Orchestrator do
       run_opts =
         [
           workflow_store: state.workflow_store,
-          config: config,
+          config: resolved_story_execution.config,
+          story_overrides_resolved: true,
+          run_settings_snapshot: resolved_story_execution.settings_snapshot,
           attempt: attempt,
           session_opts: session_opts,
           log_files: log_files,
@@ -1091,6 +1102,21 @@ defmodule Kollywood.Orchestrator do
           |> release_claim(issue_id)
       end
     else
+      {:error, {:story_overrides_invalid, reason}} ->
+        retry_attempt = retry_attempt_from_run_attempt(attempt)
+        failure_reason = "invalid story execution settings: #{reason}"
+
+        state
+        |> tracker_mark_failed(issue_id, failure_reason, retry_attempt)
+        |> schedule_retry(
+          issue_id,
+          issue,
+          retry_attempt,
+          failure_reason,
+          retry_backoff_delay_ms(state, retry_attempt)
+        )
+        |> release_claim(issue_id)
+
       {:error, reason} ->
         retry_attempt = retry_attempt_from_run_attempt(attempt)
 
@@ -1103,6 +1129,13 @@ defmodule Kollywood.Orchestrator do
           retry_backoff_delay_ms(state, retry_attempt)
         )
         |> release_claim(issue_id)
+    end
+  end
+
+  defp resolve_story_execution(config, issue) do
+    case StoryExecutionOverrides.resolve(config, issue) do
+      {:ok, resolved} -> {:ok, resolved}
+      {:error, reason} -> {:error, {:story_overrides_invalid, reason}}
     end
   end
 
@@ -2479,12 +2512,13 @@ defmodule Kollywood.Orchestrator do
     end
   end
 
-  defp prepare_run_log_context(config, issue, attempt, workflow_store) do
+  defp prepare_run_log_context(config, issue, attempt, workflow_store, run_settings_snapshot) do
     metadata_overrides = %{
       "settings_snapshot" =>
         RunSettingsSnapshot.build(config,
           workflow_identity: RunSettingsSnapshot.workflow_identity(workflow_store, config)
-        )
+        ),
+      "run_settings" => if(is_map(run_settings_snapshot), do: run_settings_snapshot, else: %{})
     }
 
     case RunLogs.prepare_attempt(config, issue, attempt, metadata_overrides) do

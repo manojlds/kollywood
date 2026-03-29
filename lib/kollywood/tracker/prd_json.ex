@@ -9,6 +9,7 @@ defmodule Kollywood.Tracker.PrdJson do
   @behaviour Kollywood.Tracker
 
   alias Kollywood.Config
+  alias Kollywood.StoryExecutionOverrides
 
   @default_path "prd.json"
   @default_priority 99
@@ -269,22 +270,24 @@ defmodule Kollywood.Tracker.PrdJson do
          {:ok, priority} <- parse_priority_input(fetch_input(attrs, [:priority]), next_priority),
          {:ok, depends_on} <- parse_depends_on(fetch_input(attrs, [:depends_on, :dependsOn])),
          :ok <- validate_dependencies(depends_on, story_id, stories),
+         {:ok, settings} <- parse_story_settings_input(fetch_input(attrs, [:settings])),
          acceptance_criteria <-
            parse_acceptance_criteria(
              fetch_input(attrs, [:acceptance_criteria, :acceptanceCriteria])
            ) do
-      {:ok,
-       %{
-         "id" => story_id,
-         "title" => title,
-         "description" => optional_string_value(fetch_input(attrs, [:description]), ""),
-         "acceptanceCriteria" => acceptance_criteria,
-         "priority" => priority,
-         "status" => status,
-         "dependsOn" => depends_on,
-         "notes" => optional_string_value(fetch_input(attrs, [:notes]), ""),
-         "passes" => status in ["done", "merged"]
-       }}
+      story = %{
+        "id" => story_id,
+        "title" => title,
+        "description" => optional_string_value(fetch_input(attrs, [:description]), ""),
+        "acceptanceCriteria" => acceptance_criteria,
+        "priority" => priority,
+        "status" => status,
+        "dependsOn" => depends_on,
+        "notes" => optional_string_value(fetch_input(attrs, [:notes]), ""),
+        "passes" => status in ["done", "merged"]
+      }
+
+      {:ok, merge_story_settings(story, settings)}
     end
   end
 
@@ -297,7 +300,8 @@ defmodule Kollywood.Tracker.PrdJson do
          {:ok, story} <- maybe_update_story_priority(story, attrs),
          {:ok, story} <- maybe_update_story_status(story, attrs),
          {:ok, story} <- maybe_update_story_acceptance_criteria(story, attrs),
-         {:ok, story} <- maybe_update_story_dependencies(story, attrs, stories) do
+         {:ok, story} <- maybe_update_story_dependencies(story, attrs, stories),
+         {:ok, story} <- maybe_update_story_settings(story, attrs) do
       {:ok, story}
     end
   end
@@ -373,6 +377,18 @@ defmodule Kollywood.Tracker.PrdJson do
         with {:ok, depends_on} <- parse_depends_on(value),
              :ok <- validate_dependencies(depends_on, story_id(story), stories) do
           {:ok, Map.put(story, "dependsOn", depends_on)}
+        end
+    end
+  end
+
+  defp maybe_update_story_settings(story, attrs) do
+    case fetch_input(attrs, [:settings]) do
+      :error ->
+        {:ok, story}
+
+      value ->
+        with {:ok, settings} <- parse_story_settings_input(value) do
+          {:ok, merge_story_settings(story, settings)}
         end
     end
   end
@@ -561,6 +577,44 @@ defmodule Kollywood.Tracker.PrdJson do
 
   defp parse_acceptance_criteria(_value), do: []
 
+  defp parse_story_settings_input(:error), do: {:ok, %{}}
+  defp parse_story_settings_input(nil), do: {:ok, %{}}
+
+  defp parse_story_settings_input(settings) when is_map(settings) do
+    StoryExecutionOverrides.normalize_settings(settings)
+  end
+
+  defp parse_story_settings_input(_settings), do: {:error, "story settings must be an object"}
+
+  defp merge_story_settings(story, normalized_settings)
+       when is_map(story) and is_map(normalized_settings) do
+    existing_settings =
+      case field(story, :settings) do
+        value when is_map(value) -> value
+        _other -> %{}
+      end
+
+    merged_settings =
+      existing_settings
+      |> Map.delete("execution")
+      |> Map.delete(:execution)
+      |> Map.merge(normalized_settings)
+
+    story
+    |> Map.delete("settings")
+    |> Map.delete(:settings)
+    |> maybe_put_story_settings(merged_settings)
+  end
+
+  defp merge_story_settings(story, _normalized_settings), do: story
+
+  defp maybe_put_story_settings(story, settings)
+       when is_map(settings) and map_size(settings) > 0 do
+    Map.put(story, "settings", settings)
+  end
+
+  defp maybe_put_story_settings(story, _settings), do: story
+
   defp optional_string_value(value, default) do
     case optional_string(value) do
       nil -> default
@@ -736,6 +790,7 @@ defmodule Kollywood.Tracker.PrdJson do
       blocked_by: blocker_list(story.depends_on, stories_by_id),
       resumable: story.resumable,
       pr_url: story.pr_url,
+      settings: story.settings,
       created_at: nil
     }
   end
@@ -792,7 +847,8 @@ defmodule Kollywood.Tracker.PrdJson do
       depends_on: string_list(field(story, :dependsOn)),
       notes: optional_string(field(story, :notes)),
       resumable: field(story, :resumable) == true,
-      pr_url: optional_string(field(story, :pr_url))
+      pr_url: optional_string(field(story, :pr_url)),
+      settings: field(story, :settings)
     }
   end
 

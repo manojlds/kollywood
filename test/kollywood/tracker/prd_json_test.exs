@@ -240,11 +240,21 @@ defmodule Kollywood.Tracker.PrdJsonTest do
              PrdJson.create_story(path, %{
                "title" => "Created story",
                "status" => "draft",
-               "dependsOn" => "US-100"
+               "dependsOn" => "US-100",
+               "settings" => %{
+                 "execution" => %{
+                   "agent_kind" => "cursor",
+                   "review_agent_kind" => "claude",
+                   "review_max_cycles" => "3"
+                 }
+               }
              })
 
     created_id = created["id"]
     assert created["status"] == "draft"
+    assert created["settings"]["execution"]["agent_kind"] == "cursor"
+    assert created["settings"]["execution"]["review_agent_kind"] == "claude"
+    assert created["settings"]["execution"]["review_max_cycles"] == 3
 
     assert {:ok, updated} =
              PrdJson.update_story(path, created_id, %{
@@ -261,6 +271,26 @@ defmodule Kollywood.Tracker.PrdJsonTest do
 
     assert {:ok, stories} = PrdJson.list_stories(path)
     refute Enum.any?(stories, &(Map.get(&1, "id") == created_id))
+  end
+
+  test "rejects invalid execution overrides on story update", %{root: root} do
+    path = Path.join(root, "prd.json")
+
+    write_prd!(path, [
+      %{"id" => "US-300", "title" => "Override validation", "status" => "open", "priority" => 1}
+    ])
+
+    assert {:error, reason} =
+             PrdJson.update_story(path, "US-300", %{
+               "settings" => %{
+                 "execution" => %{
+                   "agent_kind" => "not-valid"
+                 }
+               }
+             })
+
+    assert reason =~ "agent_kind"
+    assert reason =~ "must be one of"
   end
 
   test "manual status updates cannot move to in_progress", %{root: root} do
