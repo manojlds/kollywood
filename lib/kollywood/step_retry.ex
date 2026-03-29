@@ -494,8 +494,9 @@ defmodule Kollywood.StepRetry do
     %{
       id: story_id,
       identifier: story_id,
-      title: optional_string(story["title"]) || story_id,
-      description: optional_string(story["description"]) || ""
+      title: optional_string(field(story, :title)) || story_id,
+      description: optional_string(field(story, :description)) || "",
+      settings: field(story, :settings)
     }
   end
 
