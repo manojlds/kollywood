@@ -794,6 +794,67 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "/projects/#{project.slug}/runs/US-002"
     end
 
+    test "run detail shows snapshot-backed settings with workflow drift warning", %{
+      conn: conn,
+      project: project
+    } do
+      story_id = "US-SNAPSHOT"
+
+      write_workflow!(project, """
+      ---
+      agent:
+        kind: claude
+      workspace:
+        strategy: clone
+      ---
+
+      Body
+      """)
+
+      _ =
+        prepare_run_logs!(project.slug, story_id,
+          metadata_overrides: %{"settings_snapshot" => settings_snapshot_fixture()}
+        )
+
+      {:ok, _view, html} =
+        live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
+
+      assert html =~ "Settings used"
+      assert html =~ "Attempt workflow fingerprint"
+      assert html =~ "attempt-sha-123"
+      assert html =~ "Workflow version"
+      assert html =~ "v1.2.3"
+      assert html =~ "Main agent"
+      assert html =~ "claude 7200000ms (/usr/bin/claude)"
+      assert html =~ "Review agent"
+      assert html =~ "cursor 600000ms (/usr/bin/cursor-review)"
+      assert html =~ "Review cycles"
+      assert html =~ "2"
+      assert html =~ "Checks"
+      assert html =~ "Enabled (2 required)"
+      assert html =~ "Review"
+      assert html =~ "Enabled"
+      assert html =~ "Publish"
+      assert html =~ "Enabled (pr, github)"
+      assert html =~ "Runtime"
+      assert html =~ "Enabled (full_stack)"
+      assert html =~ "Current WORKFLOW.md fingerprint differs from this run attempt."
+    end
+
+    test "run detail shows legacy fallback when snapshot is unavailable", %{
+      conn: conn,
+      project: project
+    } do
+      story_id = "US-LEGACY-SNAPSHOT"
+      _ = prepare_run_logs!(project.slug, story_id)
+
+      {:ok, _view, html} =
+        live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
+
+      assert html =~ "Settings used"
+      assert html =~ "Settings snapshot unavailable."
+    end
+
     test "run detail shows enabled retry action for failed checks attempt", %{
       conn: conn,
       project: project,
@@ -1330,6 +1391,46 @@ defmodule KollywoodWeb.DashboardLiveTest do
     RunLogs.complete_attempt(context, completion)
 
     context
+  end
+
+  defp settings_snapshot_fixture do
+    %{
+      "schema_version" => 1,
+      "captured_at" => "2026-03-29T00:00:00Z",
+      "workflow" => %{
+        "path" => "/tmp/attempt-workflow.md",
+        "sha256" => "attempt-sha-123",
+        "identity_source" => "workflow_file",
+        "version" => "v1.2.3"
+      },
+      "resolved" => %{
+        "agent" => %{
+          "kind" => "claude",
+          "command" => "/usr/bin/claude",
+          "timeout_ms" => 7_200_000
+        },
+        "review" => %{
+          "enabled" => true,
+          "max_cycles" => 2,
+          "agent" => %{
+            "kind" => "cursor",
+            "command" => "/usr/bin/cursor-review",
+            "timeout_ms" => 600_000
+          }
+        },
+        "checks" => %{
+          "required" => ["mix test", "mix format --check-formatted"]
+        },
+        "publish" => %{
+          "provider" => "github",
+          "mode" => "pr"
+        },
+        "runtime" => %{
+          "profile" => "full_stack"
+        }
+      },
+      "sources" => %{}
+    }
   end
 
   defp append_story!(project, story) do
