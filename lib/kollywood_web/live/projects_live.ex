@@ -206,7 +206,6 @@ defmodule KollywoodWeb.ProjectsLive do
                   <span class={"badge badge-sm #{if project.enabled, do: "badge-success", else: "badge-ghost"}"}>
                     {if project.enabled, do: "Active", else: "Disabled"}
                   </span>
-
                 </div>
               </.link>
               <button
