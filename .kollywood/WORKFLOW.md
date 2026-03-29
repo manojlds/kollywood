@@ -21,20 +21,19 @@ agent:
 quality:
   checks:
     fail_fast: true
-    max_cycles: 2
+    max_cycles: 3
     required:
       - "devenv shell -- mix format --check-formatted"
       - "devenv shell -- bash -c \"PHX_SERVER= MIX_ENV=test mix test\""
     timeout_ms: 1800000
-  max_cycles: 4
+  max_cycles: 6
   review:
     agent:
       kind: cursor
       timeout_ms: 7200000
     enabled: true
-    max_cycles: 2
+    max_cycles: 3
 runtime:
-  kind: host
   full_stack:
     command: devenv
     env: {}
@@ -42,6 +41,7 @@ runtime:
       PORT: 4000
     processes:
       - server
+  kind: host
   profile: checks_only
 hooks:
   before_run: "bash -lc 'if [ -f .kollywood/AGENTS.md ]; then cp .kollywood/AGENTS.md AGENTS.md; fi; devenv shell -- sh -c \"mix deps.get && MIX_ENV=test mix deps.compile\"'"
