@@ -116,8 +116,6 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshot do
     %{
       enabled: truthy?(Map.get(review, :enabled, false)),
       max_cycles: positive_integer(Map.get(review, :max_cycles), quality_limit),
-      pass_token: optional_string(Map.get(review, :pass_token)) || "REVIEW_PASS",
-      fail_token: optional_string(Map.get(review, :fail_token)) || "REVIEW_FAIL",
       prompt_template: optional_string(Map.get(review, :prompt_template)),
       agent_explicit: review_agent_explicit,
       agent: resolved_review_agent(config, review_agent, review_agent_explicit)
@@ -239,8 +237,6 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshot do
     %{
       "enabled" => source_marker(raw, ["quality", "review", "enabled"]),
       "max_cycles" => source_marker(raw, ["quality", "review", "max_cycles"]),
-      "pass_token" => source_marker(raw, ["quality", "review", "pass_token"]),
-      "fail_token" => source_marker(raw, ["quality", "review", "fail_token"]),
       "prompt_template" => source_marker(raw, ["quality", "review", "prompt_template"]),
       "agent_explicit" => if(review_agent_explicit, do: "workflow", else: "derived"),
       "agent" => %{

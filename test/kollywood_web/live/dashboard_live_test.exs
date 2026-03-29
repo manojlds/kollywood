@@ -173,6 +173,10 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       assert html =~ "Project Settings"
       assert html =~ project.name
+      assert html =~ "Repository"
+      assert html =~ project.repository
+      refute html =~ "Local Path"
+      refute html =~ Projects.local_path(project)
       assert html =~ "WORKFLOW.md"
       assert html =~ "value=\"cursor\""
     end
@@ -281,8 +285,6 @@ defmodule KollywoodWeb.DashboardLiveTest do
             "review" => %{
               "enabled" => "false",
               "max_cycles" => "1",
-              "pass_token" => "REVIEW_PASS",
-              "fail_token" => "REVIEW_FAIL",
               "agent_custom" => "false",
               "agent" => %{}
             }
@@ -296,6 +298,8 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert content =~ "mode: auto_merge"
       assert content =~ "max_concurrent_agents: 3"
       assert content =~ "retries_enabled: true"
+      refute content =~ "pass_token:"
+      refute content =~ "fail_token:"
       refute content =~ "auto_push:"
       refute content =~ "auto_create_pr:"
     end

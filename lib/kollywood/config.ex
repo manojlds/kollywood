@@ -341,8 +341,6 @@ defmodule Kollywood.Config do
       enabled: boolean(Map.get(review, "enabled", false), false),
       max_cycles:
         positive_integer(Map.get(review, "max_cycles", quality_max_cycles), quality_max_cycles),
-      pass_token: optional_string(Map.get(review, "pass_token")) || "REVIEW_PASS",
-      fail_token: optional_string(Map.get(review, "fail_token")) || "REVIEW_FAIL",
       prompt_template: optional_string(Map.get(review, "prompt_template")),
       agent: %{
         explicit: review_agent_explicit,
