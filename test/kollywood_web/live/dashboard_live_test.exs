@@ -317,9 +317,10 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert done_pos < merged_pos
       assert merged_pos < failed_pos
 
-      assert html =~ "flex min-w-max gap-3"
-      assert html =~ "xl:flex-1"
-      assert html =~ "w-[17.5rem]"
+      assert html =~ "flex min-w-full items-start gap-3"
+      assert html =~ "min-w-[17.5rem] basis-0 flex-1"
+      refute html =~ "xl:w-0 xl:basis-0 xl:flex-1 xl:min-w-0"
+      refute html =~ "w-[17.5rem] shrink-0"
       refute html =~ "grid-flow-col auto-cols-[minmax(17.5rem,_1fr)]"
       refute Regex.match?(~r/restoreViewPreference\(\)\s*this\.persistCurrentView\(\)/, html)
     end
@@ -331,6 +332,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       |> element("button[phx-click='set_stories_view'][phx-value-view='list']")
       |> render_click()
 
+      assert_patch(view, ~p"/projects/#{project.slug}/stories?#{[view: "list"]}")
       assert has_element?(view, "#stories-list-view")
       refute has_element?(view, "#stories-kanban-view")
 
@@ -338,8 +340,16 @@ defmodule KollywoodWeb.DashboardLiveTest do
       |> element("button[phx-click='set_stories_view'][phx-value-view='kanban']")
       |> render_click()
 
+      assert_patch(view, ~p"/projects/#{project.slug}/stories")
       assert has_element?(view, "#stories-kanban-view")
       refute has_element?(view, "#stories-list-view")
+    end
+
+    test "respects stories view query parameter", %{conn: conn, project: project} do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories?#{[view: "list"]}")
+
+      assert has_element?(view, "#stories-list-view")
+      refute has_element?(view, "#stories-kanban-view")
     end
 
     test "list view groups stories by state order with collapsible sections", %{
@@ -399,6 +409,13 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       assert html =~ "US-001"
       assert html =~ "Back to Stories"
+    end
+
+    test "story detail back link keeps list view query", %{conn: conn, project: project} do
+      {:ok, _view, html} =
+        live(conn, ~p"/projects/#{project.slug}/stories/US-001?#{[view: "list"]}")
+
+      assert html =~ ~s(href="/projects/#{project.slug}/stories?view=list")
     end
 
     test "story detail details tab shows story content", %{conn: conn, project: project} do
