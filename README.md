@@ -173,7 +173,53 @@ Quality gates are configured in `.kollywood/WORKFLOW.md`:
 - `quality.review.enabled`: when true, runs a reviewer agent round and requires a `review.json` verdict (`"pass"`/`"fail"`)
 - `quality.review.max_cycles`: maximum cycles allowed for review remediation
 - `quality.review.agent`: reviewer adapter settings (kind/command/args/env/timeout)
+- `quality.testing.enabled`: when true, enables tester-agent validation after review
+- `quality.testing.requires_runtime`: when true, testing expects app/api runtime availability
+- `quality.testing.max_cycles`: maximum tester remediation cycles
+- `quality.testing.agent`: optional tester-agent overrides (kind/command/args/env/timeout)
+- `preview.enabled`: enables per-story preview policy metadata for pending-merge flows
+- `preview.ttl_minutes`: default preview time-to-live before automatic shutdown
+- `preview.reuse_testing_runtime`: whether preview should prefer reusing testing runtime state
+- `preview.allow_on_demand_from_pending_merge`: allows user-triggered preview spin-up in `pending_merge`
 - default command timeouts are 30 minutes unless overridden in workflow config
+
+Example testing + preview workflow config:
+
+```yaml
+quality:
+  max_cycles: 2
+  testing:
+    enabled: true
+    requires_runtime: true
+    max_cycles: 2
+    timeout_ms: 600000
+    prompt_template: |
+      Validate what was implemented and write testing artifacts.
+    agent:
+      kind: cursor
+      timeout_ms: 600000
+
+preview:
+  enabled: true
+  ttl_minutes: 120
+  reuse_testing_runtime: true
+  allow_on_demand_from_pending_merge: true
+```
+
+Per-story execution overrides can also enable testing/preview:
+
+```json
+{
+  "settings": {
+    "execution": {
+      "testing_enabled": true,
+      "preview_enabled": true,
+      "testing_agent_kind": "cursor",
+      "testing_max_cycles": 2
+    }
+  }
+}
+```
 
 Repo-specific agent guidance can live in `.kollywood/AGENTS.md`.
 The default `before_run` hook copies it to `AGENTS.md` in each workspace when present.

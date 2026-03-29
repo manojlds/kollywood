@@ -7,6 +7,10 @@ defmodule Kollywood.StoryExecutionOverrides do
     * `settings.execution.agent_kind`
     * `settings.execution.review_agent_kind`
     * `settings.execution.review_max_cycles`
+    * `settings.execution.testing_enabled`
+    * `settings.execution.preview_enabled`
+    * `settings.execution.testing_agent_kind`
+    * `settings.execution.testing_max_cycles`
   """
 
   alias Kollywood.Config
@@ -18,15 +22,27 @@ defmodule Kollywood.StoryExecutionOverrides do
     agent_kind
     review_agent_kind
     review_max_cycles
+    testing_enabled
+    preview_enabled
+    testing_agent_kind
+    testing_max_cycles
     agentKind
     reviewAgentKind
     reviewMaxCycles
+    testingEnabled
+    previewEnabled
+    testingAgentKind
+    testingMaxCycles
   )
 
   @type overrides :: %{
           optional(:agent_kind) => Config.agent_kind(),
           optional(:review_agent_kind) => Config.agent_kind(),
-          optional(:review_max_cycles) => pos_integer()
+          optional(:review_max_cycles) => pos_integer(),
+          optional(:testing_enabled) => boolean(),
+          optional(:preview_enabled) => boolean(),
+          optional(:testing_agent_kind) => Config.agent_kind(),
+          optional(:testing_max_cycles) => pos_integer()
         }
 
   @type resolved :: %{
@@ -94,11 +110,28 @@ defmodule Kollywood.StoryExecutionOverrides do
 
     quality_max = quality_max_cycles(config)
     review_max = positive_integer(Map.get(review, :max_cycles), quality_max) |> min(quality_max)
+    testing = map_or_empty(Map.get(config, :testing))
+    testing_agent = map_or_empty(Map.get(testing, :agent))
+    testing_explicit = Map.get(testing_agent, :explicit, false) == true
+
+    testing_kind =
+      if testing_explicit do
+        resolve_existing_agent_kind(Map.get(testing_agent, :kind), agent_kind)
+      else
+        agent_kind
+      end
+
+    testing_max = positive_integer(Map.get(testing, :max_cycles), quality_max) |> min(quality_max)
+    preview = map_or_empty(Map.get(config, :preview))
 
     %{
       "agent_kind" => Atom.to_string(agent_kind),
       "review_agent_kind" => Atom.to_string(review_kind),
       "review_max_cycles" => review_max,
+      "testing_enabled" => truthy?(Map.get(testing, :enabled, false)),
+      "testing_agent_kind" => Atom.to_string(testing_kind),
+      "testing_max_cycles" => testing_max,
+      "preview_enabled" => truthy?(Map.get(preview, :enabled, false)),
       "story_overrides" => overrides_to_snapshot(overrides)
     }
   end
@@ -133,12 +166,36 @@ defmodule Kollywood.StoryExecutionOverrides do
            parse_optional_positive_integer(
              fetch_input(execution, [:review_max_cycles, :reviewMaxCycles]),
              "story settings.execution.review_max_cycles"
+           ),
+         {:ok, testing_enabled} <-
+           parse_optional_boolean(
+             fetch_input(execution, [:testing_enabled, :testingEnabled]),
+             "story settings.execution.testing_enabled"
+           ),
+         {:ok, preview_enabled} <-
+           parse_optional_boolean(
+             fetch_input(execution, [:preview_enabled, :previewEnabled]),
+             "story settings.execution.preview_enabled"
+           ),
+         {:ok, testing_agent_kind} <-
+           parse_optional_agent_kind(
+             fetch_input(execution, [:testing_agent_kind, :testingAgentKind]),
+             "story settings.execution.testing_agent_kind"
+           ),
+         {:ok, testing_max_cycles} <-
+           parse_optional_positive_integer(
+             fetch_input(execution, [:testing_max_cycles, :testingMaxCycles]),
+             "story settings.execution.testing_max_cycles"
            ) do
       overrides =
         %{}
         |> maybe_put(:agent_kind, agent_kind)
         |> maybe_put(:review_agent_kind, review_agent_kind)
         |> maybe_put(:review_max_cycles, review_max_cycles)
+        |> maybe_put(:testing_enabled, testing_enabled)
+        |> maybe_put(:preview_enabled, preview_enabled)
+        |> maybe_put(:testing_agent_kind, testing_agent_kind)
+        |> maybe_put(:testing_max_cycles, testing_max_cycles)
 
       {:ok, overrides}
     end
@@ -183,7 +240,7 @@ defmodule Kollywood.StoryExecutionOverrides do
       :ok
     else
       {:error,
-       "story settings.execution includes unsupported fields: #{Enum.join(unknown, ", ")}. Allowed: agent_kind, review_agent_kind, review_max_cycles"}
+       "story settings.execution includes unsupported fields: #{Enum.join(unknown, ", ")}. Allowed: agent_kind, review_agent_kind, review_max_cycles, testing_enabled, preview_enabled, testing_agent_kind, testing_max_cycles"}
     end
   end
 
@@ -242,21 +299,49 @@ defmodule Kollywood.StoryExecutionOverrides do
   defp parse_optional_positive_integer(_value, label),
     do: {:error, "#{label} must be a positive integer"}
 
+  defp parse_optional_boolean(nil, _label), do: {:ok, nil}
+
+  defp parse_optional_boolean(value, _label) when is_boolean(value), do: {:ok, value}
+
+  defp parse_optional_boolean(value, label) when is_binary(value) do
+    case String.trim(value) do
+      "" ->
+        {:ok, nil}
+
+      normalized ->
+        case String.downcase(normalized) do
+          "true" -> {:ok, true}
+          "false" -> {:ok, false}
+          _other -> {:error, "#{label} must be a boolean"}
+        end
+    end
+  end
+
+  defp parse_optional_boolean(_value, label), do: {:error, "#{label} must be a boolean"}
+
   defp apply_overrides(%Config{} = config, overrides) do
     agent = map_or_empty(Map.get(config, :agent))
     review = map_or_empty(Map.get(config, :review))
     review_agent = map_or_empty(Map.get(review, :agent))
+    testing = map_or_empty(Map.get(config, :testing))
+    testing_agent = map_or_empty(Map.get(testing, :agent))
+    preview = map_or_empty(Map.get(config, :preview))
 
     quality = map_or_empty(Map.get(config, :quality))
     quality_review = map_or_empty(Map.get(quality, :review))
     quality_review_agent = map_or_empty(Map.get(quality_review, :agent))
+    quality_testing = map_or_empty(Map.get(quality, :testing))
+    quality_testing_agent = map_or_empty(Map.get(quality_testing, :agent))
 
     current_agent_kind = resolve_existing_agent_kind(Map.get(agent, :kind), :amp)
     review_explicit = Map.get(review_agent, :explicit, false) == true
+    testing_explicit = Map.get(testing_agent, :explicit, false) == true
 
     agent_kind = Map.get(overrides, :agent_kind, current_agent_kind)
     review_kind_override = Map.get(overrides, :review_agent_kind)
     has_review_kind_override = review_kind_override in @valid_agent_kinds
+    testing_kind_override = Map.get(overrides, :testing_agent_kind)
+    has_testing_kind_override = testing_kind_override in @valid_agent_kinds
 
     review_kind =
       cond do
@@ -270,14 +355,44 @@ defmodule Kollywood.StoryExecutionOverrides do
           agent_kind
       end
 
+    testing_kind =
+      cond do
+        has_testing_kind_override ->
+          testing_kind_override
+
+        testing_explicit ->
+          resolve_existing_agent_kind(Map.get(testing_agent, :kind), agent_kind)
+
+        true ->
+          agent_kind
+      end
+
     review_explicit = review_explicit or has_review_kind_override
+    testing_explicit = testing_explicit or has_testing_kind_override
 
     quality_max = quality_max_cycles(config)
     default_review_max = positive_integer(Map.get(review, :max_cycles), quality_max)
     requested_review_max = Map.get(overrides, :review_max_cycles, default_review_max)
+    default_testing_max = positive_integer(Map.get(testing, :max_cycles), quality_max)
+    requested_testing_max = Map.get(overrides, :testing_max_cycles, default_testing_max)
 
     review_max_cycles =
       requested_review_max |> positive_integer(default_review_max) |> min(quality_max)
+
+    testing_max_cycles =
+      requested_testing_max |> positive_integer(default_testing_max) |> min(quality_max)
+
+    testing_enabled =
+      case Map.fetch(overrides, :testing_enabled) do
+        {:ok, value} when is_boolean(value) -> value
+        _other -> truthy?(Map.get(testing, :enabled, false))
+      end
+
+    preview_enabled =
+      case Map.fetch(overrides, :preview_enabled) do
+        {:ok, value} when is_boolean(value) -> value
+        _other -> truthy?(Map.get(preview, :enabled, false))
+      end
 
     resolved_agent = Map.put(agent, :kind, agent_kind)
 
@@ -291,6 +406,17 @@ defmodule Kollywood.StoryExecutionOverrides do
       |> Map.put(:agent, resolved_review_agent)
       |> Map.put(:max_cycles, review_max_cycles)
 
+    resolved_testing_agent =
+      testing_agent
+      |> Map.put(:kind, testing_kind)
+      |> Map.put(:explicit, testing_explicit)
+
+    resolved_testing =
+      testing
+      |> Map.put(:agent, resolved_testing_agent)
+      |> Map.put(:max_cycles, testing_max_cycles)
+      |> Map.put(:enabled, testing_enabled)
+
     resolved_quality_review_agent =
       quality_review_agent
       |> Map.put(:kind, review_kind)
@@ -301,13 +427,33 @@ defmodule Kollywood.StoryExecutionOverrides do
       |> Map.put(:agent, resolved_quality_review_agent)
       |> Map.put(:max_cycles, review_max_cycles)
 
-    resolved_quality = Map.put(quality, :review, resolved_quality_review)
+    resolved_quality_testing_agent =
+      quality_testing_agent
+      |> Map.put(:kind, testing_kind)
+      |> Map.put(:explicit, testing_explicit)
+
+    resolved_quality_testing =
+      quality_testing
+      |> Map.put(:agent, resolved_quality_testing_agent)
+      |> Map.put(:max_cycles, testing_max_cycles)
+      |> Map.put(:enabled, testing_enabled)
+
+    resolved_quality =
+      quality
+      |> Map.put(:review, resolved_quality_review)
+      |> Map.put(:testing, resolved_quality_testing)
+
+    resolved_preview =
+      preview
+      |> Map.put(:enabled, preview_enabled)
 
     resolved_config = %{
       config
       | agent: resolved_agent,
         review: resolved_review,
-        quality: resolved_quality
+        testing: resolved_testing,
+        quality: resolved_quality,
+        preview: resolved_preview
     }
 
     %{
@@ -325,6 +471,10 @@ defmodule Kollywood.StoryExecutionOverrides do
       {:agent_kind, kind}, acc -> Map.put(acc, "agent_kind", Atom.to_string(kind))
       {:review_agent_kind, kind}, acc -> Map.put(acc, "review_agent_kind", Atom.to_string(kind))
       {:review_max_cycles, value}, acc -> Map.put(acc, "review_max_cycles", value)
+      {:testing_enabled, value}, acc -> Map.put(acc, "testing_enabled", value)
+      {:preview_enabled, value}, acc -> Map.put(acc, "preview_enabled", value)
+      {:testing_agent_kind, kind}, acc -> Map.put(acc, "testing_agent_kind", Atom.to_string(kind))
+      {:testing_max_cycles, value}, acc -> Map.put(acc, "testing_max_cycles", value)
     end)
   end
 
@@ -370,6 +520,23 @@ defmodule Kollywood.StoryExecutionOverrides do
   end
 
   defp positive_integer(_value, fallback), do: fallback
+
+  defp truthy?(value) when is_boolean(value), do: value
+
+  defp truthy?(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> String.downcase()
+    |> case do
+      "true" -> true
+      "1" -> true
+      "yes" -> true
+      "on" -> true
+      _other -> false
+    end
+  end
+
+  defp truthy?(_value), do: false
 
   defp fetch_input(map, keys) when is_map(map) and is_list(keys) do
     Enum.find_value(keys, nil, fn key ->

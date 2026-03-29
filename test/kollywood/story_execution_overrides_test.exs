@@ -10,7 +10,11 @@ defmodule Kollywood.StoryExecutionOverridesTest do
                "execution" => %{
                  "agent_kind" => "cursor",
                  "review_agent_kind" => "claude",
-                 "review_max_cycles" => "3"
+                 "review_max_cycles" => "3",
+                 "testing_enabled" => "true",
+                 "preview_enabled" => true,
+                 "testing_agent_kind" => "opencode",
+                 "testing_max_cycles" => "2"
                }
              })
 
@@ -18,7 +22,11 @@ defmodule Kollywood.StoryExecutionOverridesTest do
              "execution" => %{
                "agent_kind" => "cursor",
                "review_agent_kind" => "claude",
-               "review_max_cycles" => 3
+               "review_max_cycles" => 3,
+               "testing_enabled" => true,
+               "preview_enabled" => true,
+               "testing_agent_kind" => "opencode",
+               "testing_max_cycles" => 2
              }
            }
   end
@@ -44,7 +52,11 @@ defmodule Kollywood.StoryExecutionOverridesTest do
         "execution" => %{
           "agent_kind" => "cursor",
           "review_agent_kind" => "claude",
-          "review_max_cycles" => 9
+          "review_max_cycles" => 9,
+          "testing_enabled" => true,
+          "preview_enabled" => true,
+          "testing_agent_kind" => "opencode",
+          "testing_max_cycles" => 10
         }
       }
     }
@@ -56,11 +68,22 @@ defmodule Kollywood.StoryExecutionOverridesTest do
     assert resolved.config.review.agent.explicit == true
     assert resolved.config.review.max_cycles == 2
     assert resolved.config.quality.review.max_cycles == 2
+    assert resolved.config.testing.enabled == true
+    assert resolved.config.preview.enabled == true
+    assert resolved.config.testing.agent.kind == :opencode
+    assert resolved.config.testing.agent.explicit == true
+    assert resolved.config.testing.max_cycles == 2
+    assert resolved.config.quality.testing.max_cycles == 2
 
     assert resolved.settings_snapshot["agent_kind"] == "cursor"
     assert resolved.settings_snapshot["review_agent_kind"] == "claude"
     assert resolved.settings_snapshot["review_max_cycles"] == 2
+    assert resolved.settings_snapshot["testing_enabled"] == true
+    assert resolved.settings_snapshot["preview_enabled"] == true
+    assert resolved.settings_snapshot["testing_agent_kind"] == "opencode"
+    assert resolved.settings_snapshot["testing_max_cycles"] == 2
     assert resolved.settings_snapshot["story_overrides"]["review_max_cycles"] == 9
+    assert resolved.settings_snapshot["story_overrides"]["testing_max_cycles"] == 10
   end
 
   test "rejects invalid override values" do
@@ -75,6 +98,18 @@ defmodule Kollywood.StoryExecutionOverridesTest do
     assert reason =~ "positive integer"
   end
 
+  test "rejects invalid testing_enabled override values" do
+    issue = %{
+      id: "US-125",
+      identifier: "US-125",
+      settings: %{"execution" => %{"testing_enabled" => "definitely"}}
+    }
+
+    assert {:error, reason} = StoryExecutionOverrides.resolve(base_config(), issue)
+    assert reason =~ "testing_enabled"
+    assert reason =~ "boolean"
+  end
+
   defp base_config do
     %Config{
       quality: %{
@@ -82,12 +117,36 @@ defmodule Kollywood.StoryExecutionOverridesTest do
         review: %{
           max_cycles: 1,
           agent: %{kind: :amp, explicit: false}
+        },
+        testing: %{
+          enabled: false,
+          requires_runtime: false,
+          max_cycles: 1,
+          timeout_ms: 10_000,
+          prompt_template: nil,
+          agent: %{kind: :amp, explicit: false}
         }
       },
       review: %{
         enabled: true,
         max_cycles: 1,
         agent: %{kind: :amp, explicit: false}
+      },
+      testing: %{
+        enabled: false,
+        requires_runtime: false,
+        max_cycles: 1,
+        timeout_ms: 10_000,
+        prompt_template: nil,
+        agent: %{kind: :amp, explicit: false}
+      },
+      preview: %{
+        enabled: false,
+        ttl_minutes: 120,
+        reuse_testing_runtime: true,
+        allow_on_demand_from_pending_merge: true,
+        start_timeout_ms: 120_000,
+        stop_timeout_ms: 60_000
       },
       agent: %{
         kind: :amp,
