@@ -882,6 +882,8 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       assert html =~ "Settings used"
       assert html =~ "Settings snapshot unavailable."
+      assert html =~ "Actions"
+      assert html =~ "Retry unavailable for this run"
     end
 
     test "run detail shows enabled retry action for failed checks attempt", %{
