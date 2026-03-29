@@ -2114,6 +2114,25 @@ defmodule KollywoodWeb.DashboardLive do
   attr :project, Project, required: true
 
   defp run_detail_section(assigns) do
+    snapshot =
+      if is_map(assigns.run_detail),
+        do: Map.get(assigns.run_detail, "settings_snapshot"),
+        else: nil
+
+    current_workflow_identity =
+      if is_map(assigns.run_detail),
+        do: Map.get(assigns.run_detail, "current_workflow_identity"),
+        else: %{}
+
+    assigns =
+      assigns
+      |> assign(:settings_snapshot, snapshot)
+      |> assign(:current_workflow_identity, current_workflow_identity)
+      |> assign(
+        :workflow_fingerprint_status,
+        workflow_fingerprint_status(snapshot, current_workflow_identity)
+      )
+
     ~H"""
     <div class="flex flex-col gap-4 h-full">
       <div class="flex items-center gap-4">
@@ -2148,6 +2167,12 @@ defmodule KollywoodWeb.DashboardLive do
       </div>
 
       <%= if @run_detail do %>
+        <.settings_used_section
+          snapshot={@settings_snapshot}
+          current_workflow_identity={@current_workflow_identity}
+          workflow_fingerprint_status={@workflow_fingerprint_status}
+        />
+
         <div class="flex gap-0 border-b border-base-300">
           <%= for {tab, label} <- [
             {"agent", "Agent"},
@@ -2189,6 +2214,80 @@ defmodule KollywoodWeb.DashboardLive do
         }
       }
     </script>
+    """
+  end
+
+  attr :snapshot, :map, default: nil
+  attr :current_workflow_identity, :map, default: %{}
+  attr :workflow_fingerprint_status, :atom, default: :unknown
+
+  defp settings_used_section(assigns) do
+    ~H"""
+    <div class="card bg-base-200 border border-base-300">
+      <div class="card-body gap-4">
+        <h3 class="card-title text-lg">Settings used</h3>
+
+        <%= if @snapshot do %>
+          <div class="grid gap-3 sm:grid-cols-2">
+            <.settings_used_field
+              label="Attempt workflow fingerprint"
+              value={snapshot_workflow_fingerprint(@snapshot)}
+              mono={true}
+            />
+            <.settings_used_field
+              label="Current workflow fingerprint"
+              value={current_workflow_fingerprint(@current_workflow_identity)}
+              mono={true}
+            />
+            <.settings_used_field
+              label="Workflow version"
+              value={snapshot_workflow_version(@snapshot)}
+            />
+            <.settings_used_field
+              label="Workflow path"
+              value={snapshot_workflow_path(@snapshot)}
+              mono={true}
+            />
+          </div>
+
+          <%= if @workflow_fingerprint_status == :mismatch do %>
+            <div class="alert alert-warning text-sm">
+              Current WORKFLOW.md fingerprint differs from this run attempt.
+            </div>
+          <% end %>
+
+          <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            <.settings_used_field label="Main agent" value={snapshot_main_agent(@snapshot)} />
+            <.settings_used_field label="Review agent" value={snapshot_review_agent(@snapshot)} />
+            <.settings_used_field label="Review cycles" value={snapshot_review_cycles(@snapshot)} />
+            <.settings_used_field label="Checks" value={snapshot_checks_toggle(@snapshot)} />
+            <.settings_used_field label="Review" value={snapshot_review_toggle(@snapshot)} />
+            <.settings_used_field label="Publish" value={snapshot_publish_toggle(@snapshot)} />
+            <.settings_used_field label="Runtime" value={snapshot_runtime_toggle(@snapshot)} />
+          </div>
+        <% else %>
+          <p class="text-sm text-base-content/60 italic">Settings snapshot unavailable.</p>
+        <% end %>
+      </div>
+    </div>
+    """
+  end
+
+  attr :label, :string, required: true
+  attr :value, :string, required: true
+  attr :mono, :boolean, default: false
+
+  defp settings_used_field(assigns) do
+    ~H"""
+    <div class="rounded-lg border border-base-300 bg-base-100 p-3 min-w-0">
+      <p class="text-xs font-semibold text-base-content/55 uppercase tracking-wide">{@label}</p>
+      <p class={[
+        "mt-1 min-w-0 break-words text-sm",
+        @mono && "font-mono text-xs break-all"
+      ]}>
+        {@value}
+      </p>
+    </div>
     """
   end
 
@@ -4538,11 +4637,186 @@ defmodule KollywoodWeb.DashboardLive do
     %{
       "metadata" => metadata,
       "settings_snapshot" => RunLogs.settings_snapshot(metadata),
+      "current_workflow_identity" => current_workflow_identity(project),
       "phase" => phase,
       "phase_label" => RunPhase.label(phase),
       "retry_action" => StepRetry.retry_action(project, story_id, Map.get(metadata, "attempt")),
       "active_log_content" => content
     }
+  end
+
+  defp workflow_fingerprint_status(snapshot, current_workflow_identity) do
+    attempt_sha = snapshot |> snapshot_value(["workflow", "sha256"]) |> maybe_string()
+
+    current_sha =
+      current_workflow_identity |> map_or_empty() |> Map.get("sha256") |> maybe_string()
+
+    cond do
+      is_nil(attempt_sha) or is_nil(current_sha) -> :unknown
+      attempt_sha == current_sha -> :match
+      true -> :mismatch
+    end
+  end
+
+  defp snapshot_workflow_fingerprint(snapshot) do
+    snapshot
+    |> snapshot_value(["workflow", "sha256"])
+    |> to_display_text("Unavailable")
+  end
+
+  defp current_workflow_fingerprint(workflow_identity) do
+    workflow_identity
+    |> map_or_empty()
+    |> Map.get("sha256")
+    |> to_display_text("Unavailable")
+  end
+
+  defp snapshot_workflow_version(snapshot) do
+    snapshot
+    |> snapshot_value(["workflow", "version"])
+    |> to_display_text("Not recorded")
+  end
+
+  defp snapshot_workflow_path(snapshot) do
+    snapshot
+    |> snapshot_value(["workflow", "path"])
+    |> to_display_text("Unavailable")
+  end
+
+  defp snapshot_main_agent(snapshot) do
+    snapshot
+    |> snapshot_value(["resolved", "agent"])
+    |> format_agent_snapshot()
+  end
+
+  defp snapshot_review_agent(snapshot) do
+    snapshot
+    |> snapshot_value(["resolved", "review", "agent"])
+    |> format_agent_snapshot()
+  end
+
+  defp snapshot_review_cycles(snapshot) do
+    snapshot
+    |> snapshot_value(["resolved", "review", "max_cycles"])
+    |> to_display_text("Unavailable")
+  end
+
+  defp snapshot_checks_toggle(snapshot) do
+    case snapshot_value(snapshot, ["resolved", "checks", "required"]) do
+      required when is_list(required) and required != [] ->
+        "Enabled (#{length(required)} required)"
+
+      required when is_list(required) ->
+        "Disabled"
+
+      _other ->
+        "Unavailable"
+    end
+  end
+
+  defp snapshot_review_toggle(snapshot) do
+    snapshot
+    |> snapshot_value(["resolved", "review", "enabled"])
+    |> toggle_text()
+  end
+
+  defp snapshot_publish_toggle(snapshot) do
+    mode = snapshot |> snapshot_value(["resolved", "publish", "mode"]) |> maybe_string()
+    provider = snapshot |> snapshot_value(["resolved", "publish", "provider"]) |> maybe_string()
+
+    cond do
+      mode && provider -> "Enabled (#{mode}, #{provider})"
+      mode -> "Enabled (#{mode})"
+      provider -> "Enabled (#{provider})"
+      true -> "Unavailable"
+    end
+  end
+
+  defp snapshot_runtime_toggle(snapshot) do
+    case snapshot |> snapshot_value(["resolved", "runtime", "profile"]) |> maybe_string() do
+      profile when is_binary(profile) -> "Enabled (#{profile})"
+      _other -> "Unavailable"
+    end
+  end
+
+  defp current_workflow_identity(project) do
+    path = workflow_path(project)
+
+    cond do
+      not is_binary(path) or String.trim(path) == "" ->
+        %{}
+
+      not File.exists?(path) ->
+        %{"path" => path}
+
+      true ->
+        case File.read(path) do
+          {:ok, content} ->
+            %{"path" => path, "sha256" => sha256_hex(content)}
+
+          {:error, _reason} ->
+            %{"path" => path}
+        end
+    end
+  end
+
+  defp snapshot_value(snapshot, path) when is_map(snapshot) and is_list(path),
+    do: get_in(snapshot, path)
+
+  defp snapshot_value(_snapshot, _path), do: nil
+
+  defp format_agent_snapshot(agent) when is_map(agent) do
+    kind = maybe_string(Map.get(agent, "kind")) || "unknown"
+    command = maybe_string(Map.get(agent, "command"))
+
+    timeout_label =
+      case Map.get(agent, "timeout_ms") do
+        timeout when is_integer(timeout) -> " #{timeout}ms"
+        _other -> ""
+      end
+
+    if command, do: "#{kind}#{timeout_label} (#{command})", else: "#{kind}#{timeout_label}"
+  end
+
+  defp format_agent_snapshot(_agent), do: "Unavailable"
+
+  defp toggle_text(true), do: "Enabled"
+  defp toggle_text(false), do: "Disabled"
+  defp toggle_text(_value), do: "Unavailable"
+
+  defp map_or_empty(value) when is_map(value), do: value
+  defp map_or_empty(_value), do: %{}
+
+  defp maybe_string(value) when is_binary(value) do
+    value = String.trim(value)
+    if value == "", do: nil, else: value
+  end
+
+  defp maybe_string(value) when is_atom(value), do: value |> Atom.to_string() |> maybe_string()
+  defp maybe_string(_value), do: nil
+
+  defp to_display_text(value, _fallback) when is_integer(value), do: Integer.to_string(value)
+  defp to_display_text(value, _fallback) when is_float(value), do: Float.to_string(value)
+
+  defp to_display_text(value, _fallback) when is_boolean(value),
+    do: if(value, do: "true", else: "false")
+
+  defp to_display_text(value, fallback) when is_binary(value) do
+    maybe_string(value) || fallback
+  end
+
+  defp to_display_text(value, fallback) when is_atom(value) do
+    value
+    |> Atom.to_string()
+    |> to_display_text(fallback)
+  end
+
+  defp to_display_text(_value, fallback), do: fallback
+
+  defp sha256_hex(payload) when is_binary(payload) do
+    :sha256
+    |> :crypto.hash(payload)
+    |> Base.encode16(case: :lower)
   end
 
   defp derive_project_roots(project) do
