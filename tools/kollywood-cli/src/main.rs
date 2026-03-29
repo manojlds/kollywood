@@ -997,22 +997,18 @@ fn build_edit_payload(args: &StoryEditArgs) -> Result<Value> {
         payload.insert("notes".to_string(), Value::String(value));
     }
 
-    if args.clear_depends_on {
+    let depends_on = normalize_list_values(&args.depends_on);
+    if !depends_on.is_empty() {
+        payload.insert("dependsOn".to_string(), json!(depends_on));
+    } else if args.clear_depends_on {
         payload.insert("dependsOn".to_string(), json!([]));
-    } else {
-        let depends_on = normalize_list_values(&args.depends_on);
-        if !depends_on.is_empty() {
-            payload.insert("dependsOn".to_string(), json!(depends_on));
-        }
     }
 
-    if args.clear_acceptance {
+    let acceptance = normalize_list_values(&args.acceptance);
+    if !acceptance.is_empty() {
+        payload.insert("acceptanceCriteria".to_string(), json!(acceptance));
+    } else if args.clear_acceptance {
         payload.insert("acceptanceCriteria".to_string(), json!([]));
-    } else {
-        let acceptance = normalize_list_values(&args.acceptance);
-        if !acceptance.is_empty() {
-            payload.insert("acceptanceCriteria".to_string(), json!(acceptance));
-        }
     }
 
     if payload.is_empty() {
@@ -1153,7 +1149,10 @@ fn fallback<'a>(value: &'a str, default: &'a str) -> &'a str {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_list_values, parse_import_records, plan_delete_missing, ImportMode};
+    use super::{
+        build_edit_payload, normalize_list_values, parse_import_records, plan_delete_missing,
+        ImportMode, StoryEditArgs,
+    };
     use serde_json::{Map, Value};
 
     #[test]
@@ -1233,5 +1232,120 @@ mod tests {
         ]);
 
         assert_eq!(parsed, vec!["US-001", "US-002", "US-003"]);
+    }
+
+    #[test]
+    fn build_edit_payload_acceptance_values_win_over_clear_flag() {
+        let args = StoryEditArgs {
+            project: None,
+            story_id: "US-001".to_string(),
+            title: None,
+            status: None,
+            priority: None,
+            description: None,
+            notes: None,
+            depends_on: Vec::new(),
+            clear_depends_on: false,
+            acceptance: vec!["criterion one, criterion two".to_string()],
+            clear_acceptance: true,
+            json: false,
+        };
+
+        let payload = build_edit_payload(&args).expect("payload should build");
+        let object = payload.as_object().expect("payload must be an object");
+        let acceptance = object
+            .get("acceptanceCriteria")
+            .and_then(Value::as_array)
+            .expect("acceptanceCriteria should be present");
+
+        assert_eq!(
+            acceptance,
+            &vec![
+                Value::String("criterion one".to_string()),
+                Value::String("criterion two".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn build_edit_payload_clear_acceptance_without_values_sets_empty_array() {
+        let args = StoryEditArgs {
+            project: None,
+            story_id: "US-001".to_string(),
+            title: None,
+            status: None,
+            priority: None,
+            description: None,
+            notes: None,
+            depends_on: Vec::new(),
+            clear_depends_on: false,
+            acceptance: Vec::new(),
+            clear_acceptance: true,
+            json: false,
+        };
+
+        let payload = build_edit_payload(&args).expect("payload should build");
+        let object = payload.as_object().expect("payload must be an object");
+
+        assert_eq!(
+            object.get("acceptanceCriteria"),
+            Some(&Value::Array(Vec::new()))
+        );
+    }
+
+    #[test]
+    fn build_edit_payload_depends_on_values_win_over_clear_flag() {
+        let args = StoryEditArgs {
+            project: None,
+            story_id: "US-001".to_string(),
+            title: None,
+            status: None,
+            priority: None,
+            description: None,
+            notes: None,
+            depends_on: vec!["US-010, US-011".to_string()],
+            clear_depends_on: true,
+            acceptance: Vec::new(),
+            clear_acceptance: false,
+            json: false,
+        };
+
+        let payload = build_edit_payload(&args).expect("payload should build");
+        let object = payload.as_object().expect("payload must be an object");
+        let depends_on = object
+            .get("dependsOn")
+            .and_then(Value::as_array)
+            .expect("dependsOn should be present");
+
+        assert_eq!(
+            depends_on,
+            &vec![
+                Value::String("US-010".to_string()),
+                Value::String("US-011".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn build_edit_payload_clear_depends_on_without_values_sets_empty_array() {
+        let args = StoryEditArgs {
+            project: None,
+            story_id: "US-001".to_string(),
+            title: None,
+            status: None,
+            priority: None,
+            description: None,
+            notes: None,
+            depends_on: Vec::new(),
+            clear_depends_on: true,
+            acceptance: Vec::new(),
+            clear_acceptance: false,
+            json: false,
+        };
+
+        let payload = build_edit_payload(&args).expect("payload should build");
+        let object = payload.as_object().expect("payload must be an object");
+
+        assert_eq!(object.get("dependsOn"), Some(&Value::Array(Vec::new())));
     }
 }
