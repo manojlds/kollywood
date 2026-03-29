@@ -841,7 +841,9 @@ defmodule KollywoodWeb.DashboardLive do
                   <.run_status_badge status={run.status} />
                   <span class="font-mono text-xs text-base-content/60 shrink-0">{run.story_id}</span>
                   <span class="text-sm truncate flex-1">{run.story_title}</span>
-                  <span class="text-xs text-base-content/60 shrink-0">{run.phase_label}</span>
+                  <%= if show_recent_activity_phase_label?(run) do %>
+                    <span class="text-xs text-base-content/60 shrink-0">{run.phase_label}</span>
+                  <% end %>
                   <span class="text-xs text-base-content/50 shrink-0">
                     Run {run_number(run.attempt)}
                   </span>
@@ -2854,6 +2856,18 @@ defmodule KollywoodWeb.DashboardLive do
                   </div>
                   <div>
                     <label class="label pb-1">
+                      <span class="label-text text-sm">Max Agents</span>
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      name="settings[agent][max_concurrent_agents]"
+                      value={get_in(@workflow.parsed, ["agent", "max_concurrent_agents"]) || 1}
+                      class="input input-bordered input-sm w-full"
+                    />
+                  </div>
+                  <div>
+                    <label class="label pb-1">
                       <span class="label-text text-sm">Timeout (ms)</span>
                     </label>
                     <input
@@ -3472,6 +3486,23 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp show_run_detail_phase_label?(_phase_label), do: false
+
+  defp show_recent_activity_phase_label?(run) when is_map(run) do
+    phase_label = Map.get(run, :phase_label) || Map.get(run, "phase_label")
+    status = normalize_run_status(Map.get(run, :status) || Map.get(run, "status"))
+
+    show_run_detail_phase_label?(phase_label) and status not in ["ok", "finished", "failed", "stopped"]
+  end
+
+  defp show_recent_activity_phase_label?(_run), do: false
+
+  defp normalize_run_status(status) when is_atom(status),
+    do: status |> Atom.to_string() |> normalize_run_status()
+
+  defp normalize_run_status(status) when is_binary(status),
+    do: status |> String.trim() |> String.downcase()
+
+  defp normalize_run_status(_status), do: ""
 
   attr :retry_action, :map, default: nil
   attr :story_id, :string, required: true
@@ -4254,6 +4285,14 @@ defmodule KollywoodWeb.DashboardLive do
       |> Map.put(
         "max_turns",
         parse_form_int(agent_p, "max_turns", Map.get(existing_agent, "max_turns", 20))
+      )
+      |> Map.put(
+        "max_concurrent_agents",
+        parse_form_int(
+          agent_p,
+          "max_concurrent_agents",
+          Map.get(existing_agent, "max_concurrent_agents", 1)
+        )
       )
       |> Map.put(
         "timeout_ms",
