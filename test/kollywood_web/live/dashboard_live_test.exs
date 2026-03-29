@@ -179,6 +179,8 @@ defmodule KollywoodWeb.DashboardLiveTest do
       refute html =~ Projects.local_path(project)
       assert html =~ "WORKFLOW.md"
       assert html =~ "value=\"cursor\""
+      assert html =~ "Stop checks at the first failure."
+      assert html =~ "report all failures in one cycle."
     end
 
     test "shows workflow editor with frontmatter and body textareas when WORKFLOW.md exists", %{
@@ -302,6 +304,78 @@ defmodule KollywoodWeb.DashboardLiveTest do
       refute content =~ "fail_token:"
       refute content =~ "auto_push:"
       refute content =~ "auto_create_pr:"
+    end
+
+    test "save settings persists checks.fail_fast toggle", %{
+      conn: conn,
+      project: project,
+      tmp_dir: _tmp_dir
+    } do
+      write_workflow!(project, """
+      ---
+      agent:
+        kind: cursor
+      workspace:
+        strategy: clone
+      quality:
+        checks:
+          required:
+            - mix test
+          timeout_ms: 10000
+          fail_fast: true
+          max_cycles: 1
+      publish:
+        mode: push
+      git:
+        base_branch: main
+      ---
+
+      Body here.
+      """)
+
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/settings")
+
+      view
+      |> element("form[phx-submit='save_settings']")
+      |> render_submit(%{
+        settings: %{
+          agent: %{
+            "kind" => "cursor",
+            "max_turns" => "1",
+            "max_concurrent_agents" => "1",
+            "retries_enabled" => "false",
+            "command" => ""
+          },
+          workspace: %{"strategy" => "clone"},
+          quality: %{
+            "max_cycles" => "1",
+            "checks" => %{
+              "required" => "mix test",
+              "timeout_ms" => "10000",
+              "fail_fast" => "false",
+              "max_cycles" => "1"
+            },
+            "review" => %{
+              "enabled" => "false",
+              "max_cycles" => "1",
+              "agent_custom" => "false",
+              "agent" => %{}
+            },
+            "testing" => %{
+              "enabled" => "false",
+              "max_cycles" => "1",
+              "timeout_ms" => "10000",
+              "agent_custom" => "false",
+              "agent" => %{}
+            }
+          },
+          publish: %{"provider" => "", "mode" => "push", "pr_type" => "ready"},
+          git: %{"base_branch" => "main"}
+        }
+      })
+
+      {:ok, config, _prompt} = Projects.workflow_path(project) |> File.read!() |> Config.parse()
+      assert config.checks.fail_fast == false
     end
   end
 
