@@ -281,7 +281,6 @@ defmodule Kollywood.ConfigTest do
     assert config.review.agent.kind == :pi
 
     assert config.testing.enabled == false
-    assert config.testing.requires_runtime == false
     assert config.testing.max_cycles == 1
     assert config.testing.timeout_ms == 7_200_000
     assert config.testing.prompt_template == nil
@@ -354,7 +353,6 @@ defmodule Kollywood.ConfigTest do
       max_cycles: 4
       testing:
         enabled: true
-        requires_runtime: true
         max_cycles: 3
         timeout_ms: 180000
         prompt_template: "Test {{ issue.identifier }}"
@@ -384,7 +382,6 @@ defmodule Kollywood.ConfigTest do
     assert {:ok, config, _} = Config.parse(content)
 
     assert config.testing.enabled == true
-    assert config.testing.requires_runtime == true
     assert config.testing.max_cycles == 3
     assert config.testing.timeout_ms == 180_000
     assert config.testing.prompt_template == "Test {{ issue.identifier }}"

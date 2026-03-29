@@ -344,11 +344,6 @@ defmodule Kollywood.Config do
                      Map.get(testing, "enabled", false),
                      "quality.testing.enabled"
                    ),
-                 {:ok, requires_runtime} <-
-                   parse_boolean_field(
-                     Map.get(testing, "requires_runtime", false),
-                     "quality.testing.requires_runtime"
-                   ),
                  {:ok, max_cycles} <-
                    parse_positive_integer_field(
                      Map.get(testing, "max_cycles", quality_max_cycles),
@@ -387,7 +382,6 @@ defmodule Kollywood.Config do
               {:ok,
                %{
                  enabled: enabled,
-                 requires_runtime: requires_runtime,
                  max_cycles: max_cycles,
                  timeout_ms: timeout_ms,
                  prompt_template: optional_string(Map.get(testing, "prompt_template")),

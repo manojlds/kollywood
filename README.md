@@ -174,7 +174,6 @@ Quality gates are configured in `.kollywood/WORKFLOW.md`:
 - `quality.review.max_cycles`: maximum cycles allowed for review remediation
 - `quality.review.agent`: reviewer adapter settings (kind/command/args/env/timeout)
 - `quality.testing.enabled`: when true, enables tester-agent validation after review
-- `quality.testing.requires_runtime`: when true, testing expects app/api runtime availability
 - `quality.testing.max_cycles`: maximum tester remediation cycles
 - `quality.testing.agent`: optional tester-agent overrides (kind/command/args/env/timeout)
 - `preview.enabled`: enables per-story preview policy metadata for pending-merge flows
@@ -190,7 +189,6 @@ quality:
   max_cycles: 2
   testing:
     enabled: true
-    requires_runtime: true
     max_cycles: 2
     timeout_ms: 600000
     prompt_template: |

@@ -385,7 +385,7 @@ defmodule Kollywood.StoryExecutionOverrides do
     testing_enabled =
       case Map.fetch(overrides, :testing_enabled) do
         {:ok, value} when is_boolean(value) -> value
-        _other -> truthy?(Map.get(testing, :enabled, false))
+        _other -> false
       end
 
     preview_enabled =

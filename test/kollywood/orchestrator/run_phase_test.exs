@@ -37,6 +37,14 @@ defmodule Kollywood.Orchestrator.RunPhaseTest do
       assert phase.label == "Review cycle 2"
     end
 
+    test "derives testing cycle phase" do
+      phase = RunPhase.from_events([%{type: :testing_started, cycle: 1}])
+
+      assert phase.kind == "testing"
+      assert phase.testing_cycle == 1
+      assert phase.label == "Testing cycle 1"
+    end
+
     test "derives publish phase" do
       phase = RunPhase.from_events([%{type: :publish_started}])
 
@@ -84,6 +92,18 @@ defmodule Kollywood.Orchestrator.RunPhaseTest do
       assert phase.kind == "review"
       assert phase.review_cycle == 2
       assert phase.label == "Review cycle 2"
+    end
+
+    test "advances after transient testing_failed when next testing cycle starts" do
+      phase =
+        RunPhase.from_events([
+          %{type: :testing_failed, cycle: 1},
+          %{type: :testing_started, cycle: 2}
+        ])
+
+      assert phase.kind == "testing"
+      assert phase.testing_cycle == 2
+      assert phase.label == "Testing cycle 2"
     end
 
     test "keeps last known phase when a recognized stale event arrives later" do
