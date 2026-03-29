@@ -34,15 +34,13 @@ quality:
     enabled: true
     max_cycles: 3
 runtime:
-  full_stack:
-    command: devenv
-    env: {}
-    ports:
-      PORT: 4000
-    processes:
-      - server
   kind: host
-  profile: checks_only
+  command: devenv
+  env: {}
+  ports:
+    PORT: 4000
+  processes:
+    - server
 hooks:
   before_run: "bash -lc 'if [ -f .kollywood/AGENTS.md ]; then cp .kollywood/AGENTS.md AGENTS.md; fi; devenv shell -- sh -c \"mix deps.get && MIX_ENV=test mix deps.compile\"'"
 publish:

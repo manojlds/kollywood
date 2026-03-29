@@ -250,14 +250,6 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshot do
 
   defp resolved_runtime_settings(%Config{} = config) do
     runtime = map_or_empty(Map.get(config, :runtime))
-    full_stack = map_or_empty(Map.get(runtime, :full_stack))
-
-    profile =
-      case Map.get(runtime, :profile) do
-        :full_stack -> :full_stack
-        "full_stack" -> :full_stack
-        _other -> :checks_only
-      end
 
     kind =
       case Map.get(runtime, :kind) do
@@ -268,16 +260,13 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshot do
 
     %{
       kind: kind,
-      profile: profile,
-      full_stack: %{
-        command: optional_string(Map.get(full_stack, :command)) || "devenv",
-        processes: string_list(Map.get(full_stack, :processes, [])),
-        env: string_map(Map.get(full_stack, :env, %{})),
-        ports: ports_map(Map.get(full_stack, :ports, %{})),
-        port_offset_mod: positive_integer(Map.get(full_stack, :port_offset_mod), 1000),
-        start_timeout_ms: positive_integer(Map.get(full_stack, :start_timeout_ms), 120_000),
-        stop_timeout_ms: positive_integer(Map.get(full_stack, :stop_timeout_ms), 60_000)
-      }
+      command: optional_string(Map.get(runtime, :command)) || "devenv",
+      processes: string_list(Map.get(runtime, :processes, [])),
+      env: string_map(Map.get(runtime, :env, %{})),
+      ports: ports_map(Map.get(runtime, :ports, %{})),
+      port_offset_mod: positive_integer(Map.get(runtime, :port_offset_mod), 1000),
+      start_timeout_ms: positive_integer(Map.get(runtime, :start_timeout_ms), 120_000),
+      stop_timeout_ms: positive_integer(Map.get(runtime, :stop_timeout_ms), 60_000)
     }
   end
 
@@ -447,16 +436,14 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshot do
     raw = map_or_empty(Map.get(config, :raw))
 
     %{
-      "profile" => source_marker(raw, ["runtime", "profile"]),
-      "full_stack" => %{
-        "command" => source_marker(raw, ["runtime", "full_stack", "command"]),
-        "processes" => source_marker(raw, ["runtime", "full_stack", "processes"]),
-        "env" => source_marker(raw, ["runtime", "full_stack", "env"]),
-        "ports" => source_marker(raw, ["runtime", "full_stack", "ports"]),
-        "port_offset_mod" => source_marker(raw, ["runtime", "full_stack", "port_offset_mod"]),
-        "start_timeout_ms" => source_marker(raw, ["runtime", "full_stack", "start_timeout_ms"]),
-        "stop_timeout_ms" => source_marker(raw, ["runtime", "full_stack", "stop_timeout_ms"])
-      }
+      "kind" => source_marker(raw, ["runtime", "kind"]),
+      "command" => source_marker(raw, ["runtime", "command"]),
+      "processes" => source_marker(raw, ["runtime", "processes"]),
+      "env" => source_marker(raw, ["runtime", "env"]),
+      "ports" => source_marker(raw, ["runtime", "ports"]),
+      "port_offset_mod" => source_marker(raw, ["runtime", "port_offset_mod"]),
+      "start_timeout_ms" => source_marker(raw, ["runtime", "start_timeout_ms"]),
+      "stop_timeout_ms" => source_marker(raw, ["runtime", "stop_timeout_ms"])
     }
   end
 

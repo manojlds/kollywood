@@ -101,59 +101,67 @@ defmodule Kollywood.AgentRunnerTest do
     #!/usr/bin/env bash
     set -eu
 
-    testing_agent=""
-    testing_prompt=""
-    testing_timeout=""
+    prompt=""
 
-    while [ "$#" -gt 0 ]; do
-      case "$1" in
-        -a)
-          testing_agent="$2"
-          shift 2
-          ;;
-        -m)
-          testing_prompt="$2"
-          shift 2
-          ;;
-        --timeout)
-          testing_timeout="$2"
-          shift 2
-          ;;
-        -y|--ci)
-          shift
-          ;;
-        *)
-          shift
-          ;;
-      esac
-    done
+    if [ "$#" -gt 0 ]; then
+      prompt="${@: -1}"
+    else
+      prompt="$(cat)"
+    fi
 
     if [ -n "${TESTING_PROMPT_LOG_FILE:-}" ]; then
-      printf "TESTING_AGENT=%s\n" "$testing_agent" >> "$TESTING_PROMPT_LOG_FILE"
-      printf "TESTING_TIMEOUT=%s\n" "$testing_timeout" >> "$TESTING_PROMPT_LOG_FILE"
-      printf "TESTING_PROMPT<<%s>>\n" "$testing_prompt" >> "$TESTING_PROMPT_LOG_FILE"
+      printf "TESTING_PROMPT<<%s>>\n" "$prompt" >> "$TESTING_PROMPT_LOG_FILE"
     fi
+
+    testing_json_path=$(printf '%s' "$prompt" | grep -oP 'Write your testing report to `\\K[^`]+' || true)
+
+    if [ -z "$testing_json_path" ]; then
+      testing_json_path="/tmp/testing_fallback.json"
+    fi
+
+    write_testing_json() {
+      payload="$1"
+
+      if [ -n "${TESTING_APPEND_MODE:-}" ]; then
+        printf '%s' "$payload" >> "$testing_json_path"
+      else
+        printf '%s' "$payload" > "$testing_json_path"
+      fi
+    }
+
+    write_artifact_file() {
+      artifact_path="$1"
+      mkdir -p "$(dirname "$artifact_path")"
+      printf 'artifact' > "$artifact_path"
+    }
 
     if [ -n "${TESTING_FAIL_ONCE_FILE:-}" ]; then
       if [ ! -f "$TESTING_FAIL_ONCE_FILE" ]; then
         touch "$TESTING_FAIL_ONCE_FILE"
-        printf "Replay https://expect.example/replays/testing-remediation\n"
-        printf "1 failed, 2 passed\n"
-        exit 1
+        write_artifact_file "artifacts/testing-remediation-failure.png"
+        write_testing_json '{"verdict":"fail","summary":"address testing feedback","checkpoints":[{"name":"smoke","status":"fail","details":"endpoint returned 500"}],"artifacts":[{"kind":"screenshot","path":"artifacts/testing-remediation-failure.png"},{"kind":"replay","path":"https://agent-browser.local/replays/testing-remediation"}]}'
+        echo "testing failed once"
+        exit 0
       fi
+    fi
+
+    if [ -n "${TESTING_SLEEP_SECS:-}" ]; then
+      sleep "$TESTING_SLEEP_SECS"
     fi
 
     verdict="${TESTING_VERDICT:-pass}"
 
     if [ "$verdict" = "fail" ]; then
-      printf "Video artifacts/testing-failure.webm\n"
-      printf "Replay https://expect.example/replays/testing-failure\n"
-      printf "2 failed, 1 passed\n"
-      exit 1
+      write_artifact_file "artifacts/testing-failure.png"
+      write_artifact_file "artifacts/testing-failure.webm"
+      write_testing_json '{"verdict":"fail","summary":"testing failed","checkpoints":[{"name":"smoke","status":"fail","details":"runtime check failed"}],"artifacts":[{"kind":"screenshot","path":"artifacts/testing-failure.png"},{"kind":"video","path":"artifacts/testing-failure.webm"},{"kind":"replay","path":"https://agent-browser.local/replays/testing-failure"}]}'
+      echo "testing failed"
+      exit 0
     else
-      printf "Video artifacts/testing-success.webm\n"
-      printf "Replay https://expect.example/replays/testing-success\n"
-      printf "all checks passed\n"
+      write_artifact_file "artifacts/testing-success.png"
+      write_artifact_file "artifacts/testing-success.webm"
+      write_testing_json '{"verdict":"pass","summary":"testing complete","checkpoints":[{"name":"smoke","status":"pass","details":"runtime check passed"}],"artifacts":[{"kind":"screenshot","path":"artifacts/testing-success.png"},{"kind":"video","path":"artifacts/testing-success.webm"},{"kind":"replay","path":"https://agent-browser.local/replays/testing-success"}]}'
+      echo "testing passed"
     fi
     """)
 
@@ -421,7 +429,7 @@ defmodule Kollywood.AgentRunnerTest do
     assert :checks_passed in Enum.map(result.events, & &1.type)
   end
 
-  test "checks_only profile runs checks without starting runtime processes", %{
+  test "checks run without starting runtime processes", %{
     root: root,
     workspace_root: workspace_root,
     cli_path: cli_path,
@@ -449,7 +457,7 @@ defmodule Kollywood.AgentRunnerTest do
     refute File.exists?(fake_devenv_log)
   end
 
-  test "full_stack profile starts isolated runtime and runs checks in devenv shell", %{
+  test "checks do not run inside runtime shell even when runtime is configured", %{
     root: root,
     workspace_root: workspace_root,
     cli_path: cli_path,
@@ -462,48 +470,11 @@ defmodule Kollywood.AgentRunnerTest do
       runner_config(workspace_root, cli_path, prompt_log)
       |> Map.put(:checks, %{
         required: [
-          "test \"$RUNTIME_SENTINEL\" = \"ok\"",
-          "test \"$KOLLYWOOD_RUNTIME_PROFILE\" = \"full_stack\"",
-          "test -n \"$APP_PORT\""
+          "test \"$RUNTIME_SENTINEL\" = \"ok\""
         ],
         timeout_ms: 10_000,
         fail_fast: true
       })
-      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log))
-
-    template = "Work on {{ issue.identifier }}"
-
-    assert {:ok, result} =
-             AgentRunner.run_issue(@issue,
-               config: config,
-               prompt_template: template,
-               mode: :single_turn
-             )
-
-    event_types = Enum.map(result.events, & &1.type)
-    assert :runtime_starting in event_types
-    assert :runtime_started in event_types
-    assert :runtime_stopping in event_types
-    assert :runtime_stopped in event_types
-
-    log = File.read!(fake_devenv_log)
-    assert log =~ "processes up --detach --strict-ports server"
-    assert log =~ "shell -- bash -lc test \"$RUNTIME_SENTINEL\" = \"ok\""
-    assert log =~ "processes down"
-  end
-
-  test "full_stack runtime is stopped when checks fail", %{
-    root: root,
-    workspace_root: workspace_root,
-    cli_path: cli_path,
-    prompt_log: prompt_log
-  } do
-    fake_devenv_log = Path.join(root, "fake_devenv_fail.log")
-    fake_devenv = write_fake_devenv!(root, fake_devenv_log)
-
-    config =
-      runner_config(workspace_root, cli_path, prompt_log)
-      |> Map.put(:checks, %{required: ["exit 3"], timeout_ms: 10_000, fail_fast: true})
       |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log))
 
     template = "Work on {{ issue.identifier }}"
@@ -516,20 +487,70 @@ defmodule Kollywood.AgentRunnerTest do
              )
 
     assert result.error =~ "required checks failed"
+    event_types = Enum.map(result.events, & &1.type)
+    refute :runtime_starting in event_types
+    refute :runtime_started in event_types
+    refute :runtime_stopping in event_types
+    refute :runtime_stopped in event_types
+    refute File.exists?(fake_devenv_log)
+  end
+
+  test "runtime is stopped when testing fails", %{
+    root: root,
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    testing_cli_path: testing_cli_path,
+    prompt_log: prompt_log
+  } do
+    fake_devenv_log = Path.join(root, "fake_devenv_fail.log")
+    fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+
+    config =
+      runner_config(workspace_root, cli_path, prompt_log)
+      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log))
+      |> Map.put(:testing, %{
+        enabled: true,
+        max_cycles: 1,
+        timeout_ms: 10_000,
+        agent: %{
+          explicit: true,
+          kind: :cursor,
+          command: testing_cli_path,
+          args: [],
+          env: %{"TESTING_VERDICT" => "fail"},
+          timeout_ms: 10_000
+        }
+      })
+
+    issue_with_testing =
+      Map.put(@issue, :settings, %{"execution" => %{"testing_enabled" => true}})
+
+    template = "Work on {{ issue.identifier }}"
+
+    assert {:error, result} =
+             AgentRunner.run_issue(issue_with_testing,
+               config: config,
+               prompt_template: template,
+               mode: :single_turn
+             )
+
+    assert result.error =~ "testing failed after 1 cycle"
 
     event_types = Enum.map(result.events, & &1.type)
     assert :runtime_started in event_types
     assert :runtime_stopped in event_types
+    assert :testing_failed in event_types
 
     log = File.read!(fake_devenv_log)
     assert log =~ "processes up --detach --strict-ports server"
     assert log =~ "processes down"
   end
 
-  test "full_stack runtime attempts shutdown after startup failure", %{
+  test "runtime attempts shutdown after startup failure during testing", %{
     root: root,
     workspace_root: workspace_root,
     cli_path: cli_path,
+    testing_cli_path: testing_cli_path,
     prompt_log: prompt_log
   } do
     fake_devenv_log = Path.join(root, "fake_devenv_start_fail.log")
@@ -537,17 +558,32 @@ defmodule Kollywood.AgentRunnerTest do
 
     runtime =
       full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log)
-      |> put_in([:full_stack, :env, "FAKE_DEVENV_FAIL_UP"], "1")
+      |> put_in([:env, "FAKE_DEVENV_FAIL_UP"], "1")
 
     config =
       runner_config(workspace_root, cli_path, prompt_log)
-      |> Map.put(:checks, %{required: ["test -d ."], timeout_ms: 10_000, fail_fast: true})
       |> Map.put(:runtime, runtime)
+      |> Map.put(:testing, %{
+        enabled: true,
+        max_cycles: 1,
+        timeout_ms: 10_000,
+        agent: %{
+          explicit: true,
+          kind: :cursor,
+          command: testing_cli_path,
+          args: [],
+          env: %{},
+          timeout_ms: 10_000
+        }
+      })
+
+    issue_with_testing =
+      Map.put(@issue, :settings, %{"execution" => %{"testing_enabled" => true}})
 
     template = "Work on {{ issue.identifier }}"
 
     assert {:error, result} =
-             AgentRunner.run_issue(@issue,
+             AgentRunner.run_issue(issue_with_testing,
                config: config,
                prompt_template: template,
                mode: :single_turn
@@ -565,10 +601,11 @@ defmodule Kollywood.AgentRunnerTest do
     assert log =~ "processes down"
   end
 
-  test "full_stack runtime identity env cannot be overridden by user env", %{
+  test "runtime identity env cannot be overridden by user env", %{
     root: root,
     workspace_root: workspace_root,
     cli_path: cli_path,
+    testing_cli_path: testing_cli_path,
     prompt_log: prompt_log
   } do
     fake_devenv_log = Path.join(root, "fake_devenv_identity.log")
@@ -577,37 +614,51 @@ defmodule Kollywood.AgentRunnerTest do
 
     runtime =
       full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log)
-      |> put_in([:full_stack, :env, "KOLLYWOOD_RUNTIME_WORKTREE_KEY"], "tampered-key")
-      |> put_in([:full_stack, :env, "KOLLYWOOD_RUNTIME_WORKTREE_PATH"], "/tmp/tampered-path")
+      |> put_in([:env, "KOLLYWOOD_RUNTIME_WORKTREE_KEY"], "tampered-key")
+      |> put_in([:env, "KOLLYWOOD_RUNTIME_WORKTREE_PATH"], "/tmp/tampered-path")
 
     config =
       runner_config(workspace_root, cli_path, prompt_log)
-      |> Map.put(:checks, %{
-        required: [
-          "test \"$KOLLYWOOD_RUNTIME_WORKTREE_KEY\" = \"#{@issue.identifier}\"",
-          "test \"$KOLLYWOOD_RUNTIME_WORKTREE_PATH\" = \"#{expected_workspace_path}\""
-        ],
-        timeout_ms: 10_000,
-        fail_fast: true
-      })
       |> Map.put(:runtime, runtime)
+      |> Map.put(:testing, %{
+        enabled: true,
+        max_cycles: 1,
+        timeout_ms: 10_000,
+        agent: %{
+          explicit: true,
+          kind: :cursor,
+          command: testing_cli_path,
+          args: [],
+          env: %{"TESTING_VERDICT" => "pass"},
+          timeout_ms: 10_000
+        }
+      })
+
+    issue_with_testing =
+      Map.put(@issue, :settings, %{"execution" => %{"testing_enabled" => true}})
 
     template = "Work on {{ issue.identifier }}"
 
     assert {:ok, result} =
-             AgentRunner.run_issue(@issue,
+             AgentRunner.run_issue(issue_with_testing,
                config: config,
                prompt_template: template,
                mode: :single_turn
              )
 
     assert result.status == :ok
+
+    log = File.read!(fake_devenv_log)
+    assert log =~ "ENV:KEY=#{@issue.identifier} PATH=#{expected_workspace_path}"
+    refute log =~ "ENV:KEY=tampered-key"
+    refute log =~ "PATH=/tmp/tampered-path"
   end
 
-  test "full_stack runtime fails fast when no isolated port offset is available", %{
+  test "runtime fails fast when no isolated port offset is available", %{
     root: root,
     workspace_root: workspace_root,
     cli_path: cli_path,
+    testing_cli_path: testing_cli_path,
     prompt_log: prompt_log
   } do
     fake_devenv_log = Path.join(root, "fake_devenv_offset_exhausted.log")
@@ -615,17 +666,40 @@ defmodule Kollywood.AgentRunnerTest do
 
     runtime =
       full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log)
-      |> put_in([:full_stack, :port_offset_mod], 1)
+      |> put_in([:port_offset_mod], 1)
 
     config =
       runner_config(workspace_root, cli_path, prompt_log)
-      |> Map.put(:checks, %{required: ["sleep 1"], timeout_ms: 10_000, fail_fast: true})
       |> Map.put(:runtime, runtime)
+      |> Map.put(:testing, %{
+        enabled: true,
+        max_cycles: 1,
+        timeout_ms: 10_000,
+        agent: %{
+          explicit: true,
+          kind: :cursor,
+          command: testing_cli_path,
+          args: [],
+          env: %{
+            "TESTING_VERDICT" => "pass",
+            "TESTING_SLEEP_SECS" => "1"
+          },
+          timeout_ms: 10_000
+        }
+      })
 
     template = "Work on {{ issue.identifier }}"
 
-    first_issue = %{@issue | id: "ISS-ISO-1", identifier: "ISO-1"}
-    second_issue = %{@issue | id: "ISS-ISO-2", identifier: "ISO-2"}
+    first_issue =
+      @issue
+      |> Map.merge(%{id: "ISS-ISO-1", identifier: "ISO-1"})
+      |> Map.put(:settings, %{"execution" => %{"testing_enabled" => true}})
+
+    second_issue =
+      @issue
+      |> Map.merge(%{id: "ISS-ISO-2", identifier: "ISO-2"})
+      |> Map.put(:settings, %{"execution" => %{"testing_enabled" => true}})
+
     parent = self()
 
     first_task =
@@ -987,6 +1061,81 @@ defmodule Kollywood.AgentRunnerTest do
     assert File.exists?(testing_json)
     {:ok, payload} = testing_json |> File.read!() |> Jason.decode()
     assert payload["verdict"] == "pass"
+
+    artifact_kinds =
+      payload
+      |> Map.get("artifacts", [])
+      |> Enum.map(&Map.get(&1, "kind"))
+
+    assert "screenshot" in artifact_kinds
+    assert "video" in artifact_kinds
+    assert "replay" in artifact_kinds
+  end
+
+  test "persists testing report and local artifacts to run-log paths", %{
+    root: root,
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    testing_cli_path: testing_cli_path,
+    prompt_log: prompt_log
+  } do
+    fake_devenv_log = Path.join(root, "fake_devenv_testing_artifacts.log")
+    fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+
+    attempt_dir = Path.join(root, "attempt-testing-artifacts")
+    File.mkdir_p!(attempt_dir)
+
+    log_files = %{
+      testing_json: Path.join(attempt_dir, "testing.json"),
+      testing_report: Path.join(attempt_dir, "testing_report.json"),
+      testing_artifacts_dir: Path.join(attempt_dir, "testing_artifacts")
+    }
+
+    config =
+      runner_config(workspace_root, cli_path, prompt_log)
+      |> Map.put(:quality, %{max_cycles: 2})
+      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log))
+      |> Map.put(:testing, %{
+        enabled: true,
+        max_cycles: 1,
+        timeout_ms: 10_000,
+        agent: %{
+          explicit: true,
+          kind: :cursor,
+          command: testing_cli_path,
+          args: [],
+          env: %{"TESTING_VERDICT" => "pass"},
+          timeout_ms: 10_000
+        }
+      })
+
+    issue_with_testing =
+      Map.put(@issue, :settings, %{"execution" => %{"testing_enabled" => true}})
+
+    assert {:ok, result} =
+             AgentRunner.run_issue(issue_with_testing,
+               config: config,
+               prompt_template: "Work on {{ issue.identifier }}",
+               mode: :single_turn,
+               log_files: log_files
+             )
+
+    assert result.status == :ok
+    assert File.exists?(log_files.testing_json)
+    assert File.exists?(log_files.testing_report)
+    assert File.dir?(log_files.testing_artifacts_dir)
+
+    report = log_files.testing_report |> File.read!() |> Jason.decode!()
+    assert report["verdict"] == "pass"
+
+    stored_artifacts =
+      report
+      |> Map.get("artifacts", [])
+      |> Enum.filter(fn artifact ->
+        is_binary(artifact["stored_path"]) and String.trim(artifact["stored_path"]) != ""
+      end)
+
+    assert length(stored_artifacts) >= 2
   end
 
   test "retries with remediation turn when testing fails before max cycles", %{
@@ -1038,7 +1187,7 @@ defmodule Kollywood.AgentRunnerTest do
     assert prompt_history =~ "Tester feedback from cycle 1"
   end
 
-  test "fails when testing is enabled but runtime profile is checks_only", %{
+  test "fails when testing is enabled but runtime processes are not configured", %{
     workspace_root: workspace_root,
     cli_path: cli_path,
     testing_cli_path: testing_cli_path,
@@ -1070,7 +1219,7 @@ defmodule Kollywood.AgentRunnerTest do
                mode: :single_turn
              )
 
-    assert result.error =~ "testing requires runtime.profile full_stack"
+    assert result.error =~ "testing requires runtime.processes to be configured"
     assert :testing_started in Enum.map(result.events, & &1.type)
     assert :testing_error in Enum.map(result.events, & &1.type)
   end
@@ -1345,16 +1494,14 @@ defmodule Kollywood.AgentRunnerTest do
       },
       checks: %{required: [], timeout_ms: 10_000, fail_fast: true},
       runtime: %{
-        profile: :checks_only,
-        full_stack: %{
-          command: "devenv",
-          processes: [],
-          env: %{},
-          ports: %{},
-          port_offset_mod: 1000,
-          start_timeout_ms: 120_000,
-          stop_timeout_ms: 60_000
-        }
+        kind: :host,
+        command: "devenv",
+        processes: [],
+        env: %{},
+        ports: %{},
+        port_offset_mod: 1000,
+        start_timeout_ms: 120_000,
+        stop_timeout_ms: 60_000
       },
       review: %{enabled: false, max_cycles: 1, agent: %{kind: :amp}},
       agent: %{
@@ -1587,16 +1734,14 @@ defmodule Kollywood.AgentRunnerTest do
       hooks: hooks,
       checks: %{required: [], timeout_ms: 10_000, fail_fast: true},
       runtime: %{
-        profile: :checks_only,
-        full_stack: %{
-          command: "devenv",
-          processes: [],
-          env: %{},
-          ports: %{},
-          port_offset_mod: 1000,
-          start_timeout_ms: 120_000,
-          stop_timeout_ms: 60_000
-        }
+        kind: :host,
+        command: "devenv",
+        processes: [],
+        env: %{},
+        ports: %{},
+        port_offset_mod: 1000,
+        start_timeout_ms: 120_000,
+        stop_timeout_ms: 60_000
       },
       review: %{enabled: false, max_cycles: 1, agent: %{kind: agent.kind}},
       agent: agent,
@@ -1605,20 +1750,25 @@ defmodule Kollywood.AgentRunnerTest do
   end
 
   defp full_stack_runtime(profile, command, log_path) do
+    processes =
+      if profile == :checks_only do
+        []
+      else
+        ["server"]
+      end
+
     %{
-      profile: profile,
-      full_stack: %{
-        command: command,
-        processes: ["server"],
-        env: %{
-          "FAKE_DEVENV_LOG" => log_path,
-          "RUNTIME_SENTINEL" => "ok"
-        },
-        ports: %{"APP_PORT" => 4100},
-        port_offset_mod: 1000,
-        start_timeout_ms: 10_000,
-        stop_timeout_ms: 10_000
-      }
+      kind: :host,
+      command: command,
+      processes: processes,
+      env: %{
+        "FAKE_DEVENV_LOG" => log_path,
+        "RUNTIME_SENTINEL" => "ok"
+      },
+      ports: %{"APP_PORT" => 4100},
+      port_offset_mod: 1000,
+      start_timeout_ms: 10_000,
+      stop_timeout_ms: 10_000
     }
   end
 

@@ -3222,11 +3222,23 @@ defmodule Kollywood.Orchestrator do
   defp maybe_complete_run_logs(_run_entry, _completion), do: :ok
 
   defp runtime_profile(config) do
-    case get_in(config, [Access.key(:runtime, %{}), Access.key(:profile)]) do
-      :full_stack -> :full_stack
-      "full_stack" -> :full_stack
-      _other -> :checks_only
-    end
+    runtime = get_in(config, [Access.key(:runtime, %{})]) || %{}
+
+    processes =
+      runtime
+      |> Map.get(:processes, Map.get(runtime, "processes", []))
+      |> case do
+        value when is_list(value) ->
+          value
+          |> Enum.map(&to_string/1)
+          |> Enum.map(&String.trim/1)
+          |> Enum.reject(&(&1 == ""))
+
+        _other ->
+          []
+      end
+
+    if processes == [], do: :checks_only, else: :full_stack
   end
 
   defp initial_runtime_process_state(:full_stack), do: :pending

@@ -606,14 +606,13 @@ defmodule Kollywood.StepRetryTest do
             env: {}
             timeout_ms: 10000
       runtime:
-        profile: full_stack
-        full_stack:
-          command: /bin/true
-          processes: []
-          env: {}
-          ports: {}
-          start_timeout_ms: 10000
-          stop_timeout_ms: 10000
+        command: /bin/true
+        processes:
+          - server
+        env: {}
+        ports: {}
+        start_timeout_ms: 10000
+        stop_timeout_ms: 10000
       publish:
         mode: push
       orchestrator:
@@ -765,16 +764,28 @@ defmodule Kollywood.StepRetryTest do
     #!/usr/bin/env bash
     set -eu
 
+    prompt=""
+
+    if [ "$#" -gt 0 ]; then
+      prompt="${@: -1}"
+    else
+      prompt="$(cat)"
+    fi
+
+    testing_json_path=$(printf '%s' "$prompt" | grep -oP 'Write your testing report to `\\K[^`]+' || true)
+
+    if [ -z "$testing_json_path" ]; then
+      testing_json_path="/tmp/testing.json"
+    fi
+
     if [ "#{verdict}" = "pass" ]; then
-      printf "Video artifacts/testing-success.webm\\n"
-      printf "Replay https://expect.example/replays/testing-success\\n"
-      printf "all checks passed\\n"
+      printf '{"verdict":"pass","summary":"testing complete","checkpoints":[{"name":"smoke","status":"pass","details":"runtime check passed"}],"artifacts":[{"kind":"screenshot","path":"artifacts/testing-success.png"},{"kind":"video","path":"artifacts/testing-success.webm"},{"kind":"replay","path":"https://agent-browser.local/replays/testing-success"}]}' > "$testing_json_path"
+      printf "testing passed\\n"
       exit 0
     else
-      printf "Video artifacts/testing-failure.webm\\n"
-      printf "Replay https://expect.example/replays/testing-failure\\n"
-      printf "1 failed, 0 passed\\n"
-      exit 1
+      printf '{"verdict":"fail","summary":"needs updates","checkpoints":[{"name":"smoke","status":"fail","details":"runtime check failed"}],"artifacts":[{"kind":"screenshot","path":"artifacts/testing-failure.png"},{"kind":"video","path":"artifacts/testing-failure.webm"},{"kind":"replay","path":"https://agent-browser.local/replays/testing-failure"}]}' > "$testing_json_path"
+      printf "testing failed\\n"
+      exit 0
     fi
     """)
 

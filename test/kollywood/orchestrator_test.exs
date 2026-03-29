@@ -652,7 +652,7 @@ defmodule Kollywood.OrchestratorTest do
   end
 
   test "status shows runtime process state for running issues", %{root: root} do
-    %{store: workflow_store} = start_workflow_store!(root, %{runtime_profile: "full_stack"})
+    %{store: workflow_store} = start_workflow_store!(root, %{runtime_processes: ["server"]})
     issue = issue("ISS-RT", "ABC-RT", 1)
     test_pid = self()
     issues_agent = start_agent!(fn -> [issue] end)
@@ -889,7 +889,7 @@ defmodule Kollywood.OrchestratorTest do
   end
 
   test "status run phase does not regress on out-of-order runner events", %{root: root} do
-    %{store: workflow_store} = start_workflow_store!(root, %{runtime_profile: "checks_only"})
+    %{store: workflow_store} = start_workflow_store!(root, %{runtime_processes: []})
     issue = issue("ISS-PHASE-ORDER", "ABC-PHASE-ORDER", 1)
     test_pid = self()
     issues_agent = start_agent!(fn -> [issue] end)
@@ -1163,7 +1163,8 @@ defmodule Kollywood.OrchestratorTest do
     assert get_in(settings_snapshot, ["resolved", "testing", "enabled"]) == "false"
     assert get_in(settings_snapshot, ["resolved", "testing", "agent", "kind"]) == "amp"
     assert get_in(settings_snapshot, ["resolved", "preview", "enabled"]) == "false"
-    assert get_in(settings_snapshot, ["resolved", "runtime", "profile"]) == "checks_only"
+    assert get_in(settings_snapshot, ["resolved", "runtime", "command"]) == "devenv"
+    assert get_in(settings_snapshot, ["resolved", "runtime", "processes"]) == []
     assert get_in(settings_snapshot, ["sources", "testing", "enabled"]) == "default"
     assert get_in(settings_snapshot, ["sources", "preview", "enabled"]) == "default"
     assert get_in(settings_snapshot, ["sources", "publish", "mode"]) == "provider_default"
@@ -3117,7 +3118,7 @@ defmodule Kollywood.OrchestratorTest do
         retries_enabled: Map.get(opts, :retries_enabled, true),
         stale_threshold_multiplier: Map.get(opts, :stale_threshold_multiplier),
         watchdog_check_interval_ms: Map.get(opts, :watchdog_check_interval_ms),
-        runtime_profile: Map.get(opts, :runtime_profile, "checks_only")
+        runtime_processes: Map.get(opts, :runtime_processes, [])
       })
 
     path = Path.join(root, "workflow_#{System.unique_integer([:positive])}.md")
@@ -3164,6 +3165,19 @@ defmodule Kollywood.OrchestratorTest do
           ""
       end
 
+    runtime_processes_line =
+      opts
+      |> Map.get(:runtime_processes, [])
+      |> case do
+        values when is_list(values) and values != [] ->
+          values
+          |> Enum.map(&to_string/1)
+          |> Enum.map_join("\n", fn value -> "      - #{value}" end)
+
+        _other ->
+          "      []"
+      end
+
     """
     ---
     tracker:
@@ -3175,7 +3189,9 @@ defmodule Kollywood.OrchestratorTest do
     polling:
       interval_ms: #{Map.get(opts, :poll_interval_ms, 1000)}#{stale_threshold_multiplier_line}#{watchdog_check_interval_line}
     runtime:
-      profile: #{Map.get(opts, :runtime_profile, "checks_only")}
+      command: devenv
+      processes:
+    #{runtime_processes_line}
     workspace:
       root: #{workspace_root}
       strategy: clone

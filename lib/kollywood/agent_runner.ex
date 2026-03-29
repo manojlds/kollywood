@@ -1422,12 +1422,12 @@ defmodule Kollywood.AgentRunner do
       with {:ok, state} <- ensure_runtime_for_testing(state),
            :ok <- reset_testing_json(workspace_tjp),
            {:ok, prompt} <- build_testing_prompt(state, config, cycle, workspace_tjp),
-           {:ok, testing_run} <- run_expect_testing(state, config, prompt, cycle),
-           :ok <- write_testing_json(workspace_tjp, testing_run.report) do
+           {:ok, testing_run} <- run_testing_turn(state, config, prompt, state.log_files) do
         persist_testing_json(workspace_tjp, state.log_files)
 
         case read_testing_json(workspace_tjp) do
           {:ok, %{verdict: :pass} = testing} ->
+            testing = persist_testing_report(testing, state.workspace, state.log_files)
             state = emit_testing_checkpoints(state, testing.checkpoints, cycle)
 
             {:ok,
@@ -1444,6 +1444,7 @@ defmodule Kollywood.AgentRunner do
              })}
 
           {:ok, %{verdict: :fail} = testing} ->
+            testing = persist_testing_report(testing, state.workspace, state.log_files)
             state = emit_testing_checkpoints(state, testing.checkpoints, cycle)
 
             {:testing_failed, testing.feedback,
@@ -1516,291 +1517,6 @@ defmodule Kollywood.AgentRunner do
   end
 
   defp emit_testing_checkpoints(state, _checkpoints, _cycle), do: state
-
-  defp run_expect_testing(state, config, instruction, cycle) do
-    testing = testing_config(config)
-    testing_agent = Map.get(testing, :agent, %{})
-    backend_kind = testing_agent_kind(config)
-    timeout_ms = testing_timeout_ms(config)
-    expect_command = optional_string(Map.get(testing_agent, :command)) || "expect"
-    agent_env = map_or_empty(Map.get(testing_agent, :env, %{}))
-
-    with {:ok, expect_args} <- expect_args(testing_agent, backend_kind, instruction, timeout_ms) do
-      base_url = expect_base_url(state.runtime, agent_env)
-
-      env =
-        agent_env
-        |> Map.put("EXPECT_BASE_URL", base_url)
-        |> Map.put_new("NO_TELEMETRY", "1")
-
-      case execute_expect_command(state.runtime, expect_command, expect_args, env, timeout_ms) do
-        {:ok, exec} ->
-          output = optional_string(exec.output) || ""
-          append_testing_raw_log(state.log_files, output)
-
-          {:ok,
-           %{
-             command: exec.command,
-             args: exec.args,
-             output: output,
-             duration_ms: exec.duration_ms,
-             report:
-               expect_report_payload(
-                 :pass,
-                 output,
-                 "expect browser run passed",
-                 cycle,
-                 expect_artifacts(output)
-               )
-           }}
-
-        {:failed, exec} ->
-          output = optional_string(exec.output) || ""
-          append_testing_raw_log(state.log_files, output)
-
-          summary = expect_failure_summary(exec.reason, output)
-          details = expect_failure_details(exec.reason, output)
-
-          {:ok,
-           %{
-             command: exec.command,
-             args: exec.args,
-             output: output,
-             duration_ms: exec.duration_ms,
-             report:
-               expect_report_payload(
-                 :fail,
-                 output,
-                 summary,
-                 cycle,
-                 expect_artifacts(output),
-                 details
-               )
-           }}
-
-        {:error, reason} ->
-          {:error, "expect testing failed: #{reason}"}
-      end
-    end
-  end
-
-  defp execute_expect_command(runtime, command, args, env, timeout_ms) do
-    command_line = shell_command(command, args, env)
-
-    case Runtime.exec(runtime, command_line, timeout_ms) do
-      {:ok, output, duration_ms} ->
-        {:ok, %{command: command, args: args, output: output, duration_ms: duration_ms}}
-
-      {:error, reason, output, duration_ms} ->
-        if expect_command_not_found?(reason, output) do
-          if command == "expect" do
-            execute_expect_command(runtime, "expect-cli", args, env, timeout_ms)
-          else
-            {:error, "expect command not found (tried #{inspect(command)} and expect-cli)"}
-          end
-        else
-          {:failed,
-           %{
-             command: command,
-             args: args,
-             reason: reason,
-             output: output,
-             duration_ms: duration_ms
-           }}
-        end
-    end
-  end
-
-  defp expect_command_not_found?(reason, output) do
-    reason_text = reason |> to_string() |> String.downcase()
-    output_text = output |> to_string() |> String.downcase()
-
-    String.contains?(reason_text, "command not found") or
-      String.contains?(output_text, "command not found") or
-      reason_text == "exit code 127"
-  end
-
-  defp expect_args(testing_agent, backend_kind, instruction, timeout_ms) do
-    with {:ok, backend} <- expect_backend(backend_kind) do
-      extra_args =
-        testing_agent
-        |> Map.get(:args, [])
-        |> Enum.map(&to_string/1)
-
-      {:ok,
-       extra_args ++
-         [
-           "-a",
-           backend,
-           "-m",
-           String.trim(instruction),
-           "-y",
-           "--ci",
-           "--timeout",
-           Integer.to_string(timeout_ms)
-         ]}
-    end
-  end
-
-  defp expect_backend(kind) when kind in [:claude, :cursor, :opencode],
-    do: {:ok, Atom.to_string(kind)}
-
-  defp expect_backend(kind) do
-    {:error,
-     "quality.testing.agent.kind #{inspect(kind)} is not supported for browser testing via expect; use one of: claude, cursor, opencode"}
-  end
-
-  defp expect_base_url(runtime, agent_env) do
-    agent_base_url =
-      agent_env
-      |> map_or_empty()
-      |> Map.get("EXPECT_BASE_URL")
-      |> optional_string()
-
-    cond do
-      agent_base_url ->
-        agent_base_url
-
-      true ->
-        port =
-          get_in(runtime, [:resolved_ports, "PORT"]) ||
-            get_in(runtime, [:resolved_ports, "APP_PORT"]) ||
-            parse_optional_integer(get_in(runtime, [:env, "PORT"])) ||
-            parse_optional_integer(get_in(runtime, [:env, "APP_PORT"])) ||
-            3000
-
-        "http://127.0.0.1:#{port}"
-    end
-  end
-
-  defp parse_optional_integer(value) when is_integer(value) and value > 0, do: value
-
-  defp parse_optional_integer(value) when is_binary(value) do
-    case Integer.parse(String.trim(value)) do
-      {parsed, ""} when parsed > 0 -> parsed
-      _other -> nil
-    end
-  end
-
-  defp parse_optional_integer(_value), do: nil
-
-  defp shell_command(command, args, env)
-       when is_binary(command) and is_list(args) and is_map(env) do
-    env_prefix =
-      env
-      |> map_or_empty()
-      |> Enum.filter(fn {key, _value} ->
-        key
-        |> to_string()
-        |> String.match?(~r/^[A-Za-z_][A-Za-z0-9_]*$/)
-      end)
-      |> Enum.map_join(" ", fn {key, value} ->
-        "#{key}=#{shell_quote(value)}"
-      end)
-
-    command_part =
-      [command | args]
-      |> Enum.map_join(" ", &shell_quote/1)
-
-    if env_prefix == "", do: command_part, else: "#{env_prefix} #{command_part}"
-  end
-
-  defp shell_quote(value) do
-    escaped =
-      value
-      |> to_string()
-      |> String.replace("'", "'\"'\"'")
-
-    "'#{escaped}'"
-  end
-
-  defp expect_report_payload(status, output, summary, cycle, artifacts, details \\ nil)
-
-  defp expect_report_payload(:pass, _output, summary, _cycle, artifacts, _details) do
-    %{
-      "verdict" => "pass",
-      "summary" => summary,
-      "checkpoints" => [
-        %{
-          "name" => "expect browser run",
-          "status" => "pass",
-          "details" => "all browser plan steps passed"
-        }
-      ],
-      "artifacts" => artifacts
-    }
-  end
-
-  defp expect_report_payload(:fail, _output, summary, _cycle, artifacts, details) do
-    %{
-      "verdict" => "fail",
-      "summary" => summary,
-      "checkpoints" => [
-        %{
-          "name" => "expect browser run",
-          "status" => "fail",
-          "details" => details || summary
-        }
-      ],
-      "artifacts" => artifacts
-    }
-  end
-
-  defp expect_failure_summary(reason, output) do
-    lines =
-      output
-      |> to_string()
-      |> String.split("\n")
-      |> Enum.map(&String.trim/1)
-      |> Enum.reject(&(&1 == ""))
-
-    Enum.find(lines, fn line -> String.contains?(String.downcase(line), "failed") end) ||
-      "expect browser run failed (#{reason})"
-  end
-
-  defp expect_failure_details(reason, output) do
-    preview = output_preview(output)
-    if preview == "", do: "expect failed: #{reason}", else: preview
-  end
-
-  defp expect_artifacts(output) do
-    video =
-      case Regex.run(~r/^\s*Video\s+(.+)$/m, to_string(output), capture: :all_but_first) do
-        [path] -> optional_string(String.trim(path))
-        _ -> nil
-      end
-
-    replay =
-      case Regex.run(~r/^\s*Replay\s+(.+)$/m, to_string(output), capture: :all_but_first) do
-        [value] -> optional_string(String.trim(value))
-        _ -> nil
-      end
-
-    []
-    |> maybe_add_artifact(video, "video")
-    |> maybe_add_artifact(replay, "replay")
-  end
-
-  defp maybe_add_artifact(artifacts, nil, _kind), do: artifacts
-
-  defp maybe_add_artifact(artifacts, path, kind) do
-    artifacts ++ [%{"kind" => kind, "path" => path}]
-  end
-
-  defp write_testing_json(path, payload) when is_binary(path) and is_map(payload) do
-    encoded = Jason.encode_to_iodata!(payload, pretty: true)
-    File.write(path, [encoded, "\n"])
-  end
-
-  defp write_testing_json(_path, _payload), do: {:error, "testing_json path not configured"}
-
-  defp append_testing_raw_log(%{tester_stdout: path}, output)
-       when is_binary(path) and is_binary(output) and output != "" do
-    File.write(path, output, [:append])
-    :ok
-  end
-
-  defp append_testing_raw_log(_log_files, _output), do: :ok
 
   defp run_review_remediation_turn(
          state,
@@ -2156,13 +1872,7 @@ defmodule Kollywood.AgentRunner do
   end
 
   defp ensure_runtime_for_checks(state) do
-    runtime = state.runtime
-
-    if runtime.profile == :checks_only or runtime.started? do
-      {:ok, state}
-    else
-      start_runtime(state)
-    end
+    {:ok, state}
   end
 
   defp ensure_runtime_for_testing(state) do
@@ -2172,8 +1882,8 @@ defmodule Kollywood.AgentRunner do
       runtime.started? ->
         {:ok, state}
 
-      runtime.profile != :full_stack ->
-        {:error, "testing requires runtime.profile full_stack", state}
+      not runtime_processes_configured?(runtime) ->
+        {:error, "testing requires runtime.processes to be configured", state}
 
       true ->
         start_runtime(state)
@@ -2272,7 +1982,16 @@ defmodule Kollywood.AgentRunner do
   defp runtime_profile_from_state(state) do
     state
     |> Map.get(:runtime, %{})
-    |> Map.get(:profile, :checks_only)
+    |> Map.get(:profile, :full_stack)
+  end
+
+  defp runtime_processes_configured?(runtime) do
+    runtime
+    |> Map.get(:processes, [])
+    |> case do
+      processes when is_list(processes) -> processes != []
+      _other -> false
+    end
   end
 
   defp runtime_kind(config) do
@@ -2296,10 +2015,28 @@ defmodule Kollywood.AgentRunner do
     end
   end
 
+  defp run_testing_turn(state, config, prompt, log_files) do
+    testing_config = tester_config(config, state.runtime)
+    tester_opts = with_raw_log(%{}, log_files, :tester_stdout)
+
+    case Agent.start_session(testing_config, state.workspace, %{}) do
+      {:ok, session} ->
+        turn_result = Agent.run_turn(session, prompt, tester_opts)
+        stop_result = Agent.stop_session(session)
+        normalize_testing_turn_result(turn_result, stop_result)
+
+      {:error, reason} ->
+        {:error, "failed to start tester session: #{reason}"}
+    end
+  end
+
   defp with_raw_log(opts, %{agent_stdout: path}, :agent_stdout) when is_binary(path),
     do: Map.put(opts, :raw_log, path)
 
   defp with_raw_log(opts, %{reviewer_stdout: path}, :reviewer_stdout) when is_binary(path),
+    do: Map.put(opts, :raw_log, path)
+
+  defp with_raw_log(opts, %{tester_stdout: path}, :tester_stdout) when is_binary(path),
     do: Map.put(opts, :raw_log, path)
 
   defp with_raw_log(opts, _log_files, _key), do: opts
@@ -2324,6 +2061,36 @@ defmodule Kollywood.AgentRunner do
   defp normalize_review_turn_result(other_result, other_stop_result) do
     {:error,
      "reviewer returned unexpected results: turn=#{inspect(other_result)} stop=#{inspect(other_stop_result)}"}
+  end
+
+  defp normalize_testing_turn_result({:ok, result}, :ok) when is_map(result) do
+    case Map.get(result, :output) do
+      output when is_binary(output) ->
+        {:ok,
+         %{
+           output: output,
+           command: Map.get(result, :command),
+           args: Map.get(result, :args, []),
+           duration_ms: Map.get(result, :duration_ms, 0)
+         }}
+
+      _other ->
+        {:error, "tester returned result without output"}
+    end
+  end
+
+  defp normalize_testing_turn_result({:error, reason}, :ok),
+    do: {:error, "tester turn failed: #{reason}"}
+
+  defp normalize_testing_turn_result({:ok, _result}, {:error, stop_reason}),
+    do: {:error, "failed to stop tester session: #{stop_reason}"}
+
+  defp normalize_testing_turn_result({:error, reason}, {:error, stop_reason}),
+    do: {:error, "tester turn failed: #{reason}; failed to stop tester session: #{stop_reason}"}
+
+  defp normalize_testing_turn_result(other_result, other_stop_result) do
+    {:error,
+     "tester returned unexpected results: turn=#{inspect(other_result)} stop=#{inspect(other_stop_result)}"}
   end
 
   defp read_review_json(nil), do: {:error, "review_json path not configured"}
@@ -2587,12 +2354,140 @@ defmodule Kollywood.AgentRunner do
       PromptBuilder.build_variables(state.issue, state.attempt)
       |> Map.put("testing_json_path", tjp)
       |> Map.put("cycle", cycle)
+      |> Map.put("runtime_base_url", testing_runtime_base_url(state.runtime))
+      |> Map.put("runtime_urls_json", testing_runtime_urls_json(state.runtime))
+      |> Map.put("runtime_url_hints", testing_runtime_url_hints(state.runtime))
 
     case PromptBuilder.render(template, variables) do
       {:ok, prompt} -> {:ok, prompt}
       {:error, reason} -> {:error, "failed to render testing prompt: #{reason}"}
     end
   end
+
+  defp testing_runtime_base_url(runtime) do
+    case default_runtime_port(runtime) do
+      nil -> "http://127.0.0.1:3000"
+      port -> "http://127.0.0.1:#{port}"
+    end
+  end
+
+  defp testing_runtime_urls_json(runtime) do
+    runtime
+    |> testing_runtime_urls()
+    |> Jason.encode!()
+  end
+
+  defp testing_runtime_url_hints(runtime) do
+    urls = testing_runtime_urls(runtime)
+
+    if map_size(urls) == 0 do
+      "- (no explicit runtime ports found; use the base URL)"
+    else
+      urls
+      |> Enum.sort_by(fn {name, _url} -> name end)
+      |> Enum.map_join("\n", fn {name, url} -> "- #{name}: #{url}" end)
+    end
+  end
+
+  defp testing_runtime_urls(runtime) when is_map(runtime) do
+    resolved =
+      runtime
+      |> Map.get(:resolved_ports, %{})
+      |> map_or_empty()
+
+    env =
+      runtime
+      |> Map.get(:env, %{})
+      |> map_or_empty()
+
+    ports =
+      resolved
+      |> Enum.reduce(%{}, fn {name, value}, acc ->
+        case parse_runtime_port(value) do
+          nil -> acc
+          port -> Map.put(acc, to_string(name), port)
+        end
+      end)
+      |> then(fn acc ->
+        if map_size(acc) == 0 do
+          acc
+          |> maybe_put_port("APP_PORT", Map.get(env, "APP_PORT"))
+          |> maybe_put_port("PORT", Map.get(env, "PORT"))
+        else
+          acc
+        end
+      end)
+
+    ports
+    |> Enum.reduce(%{}, fn {name, port}, acc ->
+      Map.put(acc, name, "http://127.0.0.1:#{port}")
+    end)
+  end
+
+  defp testing_runtime_urls(_runtime), do: %{}
+
+  defp default_runtime_port(runtime) do
+    runtime
+    |> Map.get(:resolved_ports, %{})
+    |> map_or_empty()
+    |> then(fn ports ->
+      parse_runtime_port(Map.get(ports, "APP_PORT")) ||
+        parse_runtime_port(Map.get(ports, "PORT")) ||
+        runtime
+        |> Map.get(:env, %{})
+        |> map_or_empty()
+        |> then(fn env ->
+          parse_runtime_port(Map.get(env, "APP_PORT")) || parse_runtime_port(Map.get(env, "PORT"))
+        end)
+    end)
+  end
+
+  defp testing_runtime_env(runtime) do
+    urls = testing_runtime_urls(runtime)
+    base_url = testing_runtime_base_url(runtime)
+
+    url_env =
+      urls
+      |> Enum.reduce(%{}, fn {name, url}, acc ->
+        env_key = "KOLLYWOOD_URL_" <> normalize_runtime_env_suffix(name)
+        Map.put(acc, env_key, url)
+      end)
+
+    %{
+      "KOLLYWOOD_RUNTIME_BASE_URL" => base_url,
+      "KOLLYWOOD_BASE_URL" => base_url,
+      "KOLLYWOOD_RUNTIME_URLS_JSON" => Jason.encode!(urls)
+    }
+    |> Map.merge(url_env)
+  end
+
+  defp normalize_runtime_env_suffix(name) do
+    normalized =
+      name
+      |> to_string()
+      |> String.upcase()
+      |> String.replace(~r/[^A-Z0-9_]/, "_")
+
+    if String.match?(normalized, ~r/^[0-9]/), do: "P_#{normalized}", else: normalized
+  end
+
+  defp maybe_put_port(acc, key, value) when is_map(acc) do
+    case parse_runtime_port(value) do
+      nil -> acc
+      port -> Map.put_new(acc, key, port)
+    end
+  end
+
+  defp parse_runtime_port(value) when is_integer(value) and value > 0, do: value
+
+  defp parse_runtime_port(value) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {port, ""} when port > 0 -> port
+      _other -> nil
+    end
+  end
+
+  defp parse_runtime_port(_value), do: nil
 
   defp workspace_review_json_path(%{path: path}) when is_binary(path) do
     dir = Path.join(path, ".kollywood")
@@ -2628,11 +2523,231 @@ defmodule Kollywood.AgentRunner do
   defp persist_review_json(_src, _log_files), do: :ok
 
   defp persist_testing_json(src, %{testing_json: dest}) when is_binary(dest) do
+    _ = File.mkdir_p(Path.dirname(dest))
     File.copy(src, dest)
     :ok
   end
 
   defp persist_testing_json(_src, _log_files), do: :ok
+
+  defp persist_testing_report(%{} = testing, workspace, log_files) do
+    workspace_path = workspace_path(workspace)
+    report_path = testing_report_path(log_files)
+    artifacts_dir = testing_artifacts_dir(log_files)
+
+    if is_binary(report_path) or is_binary(artifacts_dir) do
+      artifacts =
+        if is_binary(artifacts_dir) do
+          testing
+          |> Map.get(:artifacts, [])
+          |> persist_testing_artifacts(workspace_path, artifacts_dir)
+        else
+          Map.get(testing, :artifacts, [])
+        end
+
+      report = Map.put(testing, :artifacts, artifacts)
+      _ = write_testing_report(report, report_path)
+      report
+    else
+      testing
+    end
+  end
+
+  defp persist_testing_report(testing, _workspace, _log_files), do: testing
+
+  defp persist_testing_artifacts(artifacts, workspace_path, artifacts_dir)
+       when is_list(artifacts) do
+    artifacts
+    |> Enum.with_index(1)
+    |> Enum.map(fn {artifact, index} ->
+      persist_testing_artifact(artifact, index, workspace_path, artifacts_dir)
+    end)
+  end
+
+  defp persist_testing_artifacts(_artifacts, _workspace_path, _artifacts_dir), do: []
+
+  defp persist_testing_artifact(%{} = artifact, index, workspace_path, artifacts_dir) do
+    path = optional_string(Map.get(artifact, :path))
+
+    cond do
+      is_nil(path) ->
+        artifact
+
+      testing_artifact_remote_path?(path) ->
+        artifact
+
+      not is_binary(workspace_path) ->
+        Map.put(artifact, :storage_error, "workspace path unavailable")
+
+      not is_binary(artifacts_dir) ->
+        Map.put(artifact, :storage_error, "testing artifacts directory unavailable")
+
+      true ->
+        source_path = resolve_testing_artifact_source(path, workspace_path)
+
+        cond do
+          not is_binary(source_path) ->
+            Map.put(artifact, :storage_error, "invalid artifact path: #{path}")
+
+          not File.exists?(source_path) ->
+            artifact
+            |> Map.put(:source_path, source_path)
+            |> Map.put(:storage_error, "artifact file not found")
+
+          not File.regular?(source_path) ->
+            artifact
+            |> Map.put(:source_path, source_path)
+            |> Map.put(:storage_error, "artifact path is not a file")
+
+          true ->
+            _ = File.mkdir_p(artifacts_dir)
+            dest_path = testing_artifact_dest_path(artifact, index, source_path, artifacts_dir)
+
+            case File.copy(source_path, dest_path) do
+              {:ok, _bytes} ->
+                artifact
+                |> Map.put(:source_path, source_path)
+                |> Map.put(:stored_path, dest_path)
+
+              {:error, reason} ->
+                artifact
+                |> Map.put(:source_path, source_path)
+                |> Map.put(:storage_error, "failed to copy artifact: #{inspect(reason)}")
+            end
+        end
+    end
+  end
+
+  defp persist_testing_artifact(artifact, _index, _workspace_path, _artifacts_dir), do: artifact
+
+  defp testing_artifact_remote_path?(path) when is_binary(path) do
+    String.match?(path, ~r/^[a-z][a-z0-9+.-]*:\/\//i)
+  end
+
+  defp testing_artifact_remote_path?(_path), do: false
+
+  defp resolve_testing_artifact_source(path, workspace_path)
+       when is_binary(path) and is_binary(workspace_path) do
+    if Path.type(path) == :absolute do
+      Path.expand(path)
+    else
+      Path.expand(path, workspace_path)
+    end
+  end
+
+  defp resolve_testing_artifact_source(_path, _workspace_path), do: nil
+
+  defp testing_artifact_dest_path(artifact, index, source_path, artifacts_dir)
+       when is_map(artifact) and is_integer(index) and is_binary(source_path) and
+              is_binary(artifacts_dir) do
+    kind =
+      artifact
+      |> Map.get(:kind)
+      |> optional_string()
+      |> Kernel.||("artifact")
+      |> sanitize_testing_artifact_segment()
+
+    basename =
+      source_path
+      |> Path.basename()
+      |> sanitize_testing_artifact_segment()
+      |> case do
+        "" -> "artifact"
+        value -> value
+      end
+
+    prefix = index |> Integer.to_string() |> String.pad_leading(3, "0")
+    Path.join(artifacts_dir, "#{prefix}_#{kind}_#{basename}")
+  end
+
+  defp sanitize_testing_artifact_segment(value) when is_binary(value) do
+    value
+    |> String.replace(~r/[^A-Za-z0-9._-]/, "_")
+    |> String.trim("_")
+  end
+
+  defp sanitize_testing_artifact_segment(value),
+    do: value |> to_string() |> sanitize_testing_artifact_segment()
+
+  defp write_testing_report(%{} = testing, path) when is_binary(path) do
+    _ = File.mkdir_p(Path.dirname(path))
+    payload = testing_report_payload(testing)
+    encoded = Jason.encode_to_iodata!(payload, pretty: true)
+    File.write(path, [encoded, "\n"])
+  end
+
+  defp write_testing_report(_testing, _path), do: :ok
+
+  defp testing_report_path(%{testing_report: path}) when is_binary(path), do: path
+
+  defp testing_report_path(%{testing_json: testing_json}) when is_binary(testing_json) do
+    Path.join(Path.dirname(testing_json), "testing_report.json")
+  end
+
+  defp testing_report_path(_log_files), do: nil
+
+  defp testing_artifacts_dir(%{testing_artifacts_dir: path}) when is_binary(path), do: path
+
+  defp testing_artifacts_dir(%{testing_json: testing_json}) when is_binary(testing_json) do
+    Path.join(Path.dirname(testing_json), "testing_artifacts")
+  end
+
+  defp testing_artifacts_dir(_log_files), do: nil
+
+  defp testing_report_payload(%{} = testing) do
+    %{
+      "verdict" => testing_verdict_string(Map.get(testing, :verdict)),
+      "summary" => Map.get(testing, :summary),
+      "checkpoints" => testing_checkpoint_payloads(Map.get(testing, :checkpoints, [])),
+      "artifacts" => testing_artifact_payloads(Map.get(testing, :artifacts, []))
+    }
+    |> compact_report_map()
+  end
+
+  defp testing_report_payload(_testing), do: %{}
+
+  defp testing_verdict_string(:pass), do: "pass"
+  defp testing_verdict_string(:fail), do: "fail"
+  defp testing_verdict_string(value) when is_binary(value), do: value
+  defp testing_verdict_string(value) when is_atom(value), do: Atom.to_string(value)
+  defp testing_verdict_string(_value), do: nil
+
+  defp testing_checkpoint_payloads(checkpoints) when is_list(checkpoints) do
+    Enum.map(checkpoints, fn checkpoint ->
+      %{
+        "name" => Map.get(checkpoint, :name),
+        "status" => Map.get(checkpoint, :status),
+        "details" => Map.get(checkpoint, :details)
+      }
+      |> compact_report_map()
+    end)
+  end
+
+  defp testing_checkpoint_payloads(_checkpoints), do: []
+
+  defp testing_artifact_payloads(artifacts) when is_list(artifacts) do
+    Enum.map(artifacts, fn artifact ->
+      %{
+        "kind" => Map.get(artifact, :kind),
+        "path" => Map.get(artifact, :path),
+        "description" => Map.get(artifact, :description),
+        "source_path" => Map.get(artifact, :source_path),
+        "stored_path" => Map.get(artifact, :stored_path),
+        "storage_error" => Map.get(artifact, :storage_error)
+      }
+      |> compact_report_map()
+    end)
+  end
+
+  defp testing_artifact_payloads(_artifacts), do: []
+
+  defp compact_report_map(map) when is_map(map) do
+    map
+    |> Enum.reject(fn {_k, v} ->
+      v in [nil, ""] or (is_list(v) and v == []) or (is_map(v) and map_size(v) == 0)
+    end)
+    |> Map.new()
+  end
 
   defp build_review_remediation_prompt(state, review_feedback, cycle, prompt_template) do
     base_variables = PromptBuilder.build_variables(state.issue, state.attempt)
@@ -2742,6 +2857,73 @@ defmodule Kollywood.AgentRunner do
       else
         # No review.agent configured — use main agent config as-is, just cap max_turns to 1
         Map.put(base_agent, :max_turns, 1)
+      end
+
+    %Config{config | agent: merged_agent}
+  end
+
+  defp tester_config(config, runtime) do
+    testing_agent =
+      config
+      |> testing_config()
+      |> Map.get(:agent, %{})
+
+    base_agent = Map.get(config, :agent, %{})
+    runtime_env = testing_runtime_env(runtime)
+    default_timeout = testing_timeout_ms(config)
+
+    merged_agent =
+      if Map.get(testing_agent, :explicit, false) do
+        # testing.agent explicitly configured — start from base agent, apply overrides
+        base_agent
+        |> Map.put(:kind, Map.get(testing_agent, :kind, Map.get(base_agent, :kind)))
+        |> Map.put(:max_turns, 1)
+        |> then(fn a ->
+          case Map.get(testing_agent, :command) do
+            nil -> a
+            cmd -> Map.put(a, :command, cmd)
+          end
+        end)
+        |> then(fn a ->
+          case Map.get(testing_agent, :args) do
+            [] -> a
+            args -> Map.put(a, :args, args)
+          end
+        end)
+        |> Map.put(
+          :env,
+          base_agent
+          |> Map.get(:env, %{})
+          |> map_or_empty()
+          |> Map.merge(Map.get(testing_agent, :env, %{}) |> map_or_empty())
+          |> Map.merge(runtime_env)
+        )
+        |> Map.put(
+          :timeout_ms,
+          positive_integer(
+            Map.get(
+              testing_agent,
+              :timeout_ms,
+              Map.get(base_agent, :timeout_ms, default_timeout)
+            ),
+            default_timeout
+          )
+        )
+      else
+        # No testing.agent configured — use main agent config with runtime env and cap max_turns.
+        base_agent
+        |> Map.put(:max_turns, 1)
+        |> Map.put(
+          :env,
+          base_agent
+          |> Map.get(:env, %{})
+          |> map_or_empty()
+          |> Map.merge(runtime_env)
+        )
+        |> Map.put(
+          :timeout_ms,
+          positive_integer(Map.get(base_agent, :timeout_ms), default_timeout)
+        )
       end
 
     %Config{config | agent: merged_agent}
@@ -2892,14 +3074,45 @@ defmodule Kollywood.AgentRunner do
   Issue description:
   {{ issue.description }}
 
-  Validate implemented behavior end-to-end (UI/API/CLI as relevant) using the running runtime.
-  Use EXPECT_BASE_URL for browser and HTTP checks. Focus on:
-  - acceptance criteria and issue scope
-  - regressions in nearby behavior
-  - boundary and invalid-input scenarios
+  Runtime URLs (injected by runtime):
+  - Base URL: {{ runtime_base_url }}
+  - URL map (JSON): {{ runtime_urls_json }}
+  - URL hints:
+  {{ runtime_url_hints }}
 
-  Prefer concrete reproduction steps when something fails, and gather screenshots/videos when
-  they materially improve debugging.
+  First inspect what changed in this workspace (diff/log/files) and map behavior to story scope.
+  Then validate implemented behavior end-to-end (UI/API/CLI as relevant), including:
+  - acceptance flow for this issue
+  - nearby regression flow affected by the implementation
+  - one boundary or invalid-input scenario
+
+  For browser validation, use `agent-browser` when available. Capture evidence:
+  - at least one screenshot
+  - at least one end-to-end video (`.webm` preferred)
+  - include replay/trace/HAR artifacts when they help debugging
+
+  Write your testing report to `{{ testing_json_path }}` as one JSON object:
+  {
+    "verdict": "pass",
+    "summary": "One or two sentence outcome.",
+    "checkpoints": [
+      {"name":"acceptance flow","status":"pass","details":"what was validated"},
+      {"name":"boundary case","status":"fail","details":"what failed and repro notes"}
+    ],
+    "artifacts": [
+      {"kind":"screenshot","path":".kollywood/artifacts/testing/smoke.png","description":"optional"},
+      {"kind":"video","path":".kollywood/artifacts/testing/demo.webm","description":"optional"},
+      {"kind":"replay","path":".kollywood/artifacts/testing/replay.html","description":"optional"},
+      {"kind":"trace","path":".kollywood/artifacts/testing/trace.zip","description":"optional"}
+    ]
+  }
+
+  Rules:
+  - `verdict` must be exactly `"pass"` or `"fail"`.
+  - Include at least one checkpoint.
+  - Use `"fail"` if acceptance behavior fails or required coverage is missing.
+  - Overwrite `{{ testing_json_path }}` exactly once (do not append multiple JSON objects).
+  - If behavior fails, include clear repro details in checkpoint `details`.
   """
 
   @doc "Returns the default testing prompt template used when none is configured in WORKFLOW.md."

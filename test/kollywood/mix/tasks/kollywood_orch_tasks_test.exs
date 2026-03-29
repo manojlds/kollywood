@@ -83,7 +83,7 @@ defmodule Mix.Tasks.Kollywood.OrchTasksTest do
 
     config =
       workflow_config(root)
-      |> put_in([Access.key(:runtime), Access.key(:profile)], :full_stack)
+      |> put_in([Access.key(:runtime), Access.key(:processes)], ["server"])
 
     orchestrator =
       start_supervised!(
@@ -345,16 +345,14 @@ defmodule Mix.Tasks.Kollywood.OrchTasksTest do
       },
       checks: %{required: [], timeout_ms: 10_000, fail_fast: true},
       runtime: %{
-        profile: :checks_only,
-        full_stack: %{
-          command: "devenv",
-          processes: [],
-          env: %{},
-          ports: %{},
-          port_offset_mod: 1000,
-          start_timeout_ms: 120_000,
-          stop_timeout_ms: 60_000
-        }
+        kind: :host,
+        command: "devenv",
+        processes: [],
+        env: %{},
+        ports: %{},
+        port_offset_mod: 1000,
+        start_timeout_ms: 120_000,
+        stop_timeout_ms: 60_000
       },
       review: %{enabled: false, max_cycles: 1, agent: %{kind: :amp}},
       agent: %{

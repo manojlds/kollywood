@@ -2,8 +2,7 @@ defmodule Kollywood.Runtime.Host do
   @moduledoc """
   Host runtime — executes commands directly on the machine.
 
-  Handles both `checks_only` (bare shell) and `full_stack` (devenv processes)
-  profiles, port-offset isolation, and process lifecycle.
+  Uses devenv process lifecycle with port-offset isolation.
   """
 
   @behaviour Kollywood.Runtime
@@ -15,12 +14,11 @@ defmodule Kollywood.Runtime.Host do
   @impl true
   def init(config, workspace) do
     runtime_config = config_section(config)
-    profile = parse_profile(runtime_config)
 
     base = %{
       kind: :host,
-      profile: profile,
-      process_state: if(profile == :full_stack, do: :pending, else: :not_required),
+      profile: :full_stack,
+      process_state: :pending,
       started?: false,
       command: nil,
       processes: [],
@@ -39,41 +37,35 @@ defmodule Kollywood.Runtime.Host do
       workspace_path: nil
     }
 
-    case {profile, workspace} do
-      {_, nil} ->
+    case workspace do
+      nil ->
         base
 
-      {:checks_only, ws} ->
-        workspace_key = Map.get(ws, :key) || Path.basename(ws.path)
-        workspace_identity = workspace_identity(workspace_key, ws.path)
-
-        %{base | workspace_key: workspace_key, workspace_identity: workspace_identity, workspace_path: ws.path}
-
-      {:full_stack, ws} ->
-        full_stack = full_stack_section(runtime_config)
+      ws ->
         workspace_key = Map.get(ws, :key) || Path.basename(ws.path)
         workspace_path = ws.path
         workspace_identity = workspace_identity(workspace_key, workspace_path)
 
-        user_env = env_map(field(full_stack, :env))
-        port_bases = ports_map(field(full_stack, :ports))
-        port_offset_mod = pos_int(field(full_stack, :port_offset_mod), 1000)
+        user_env = env_map(field(runtime_config, :env))
+        port_bases = ports_map(field(runtime_config, :ports))
+        port_offset_mod = pos_int(field(runtime_config, :port_offset_mod), 1000)
         port_offset_seed = port_offset_seed(workspace_identity, port_offset_mod)
         resolved_ports = resolve_ports(port_bases, port_offset_seed)
 
         %{
           base
-          | command: optional_string(field(full_stack, :command)) || "devenv",
-            processes: process_list(field(full_stack, :processes)),
-            env: build_env(workspace_key, workspace_path, user_env, port_offset_seed, resolved_ports),
+          | command: optional_string(field(runtime_config, :command)) || "devenv",
+            processes: process_list(field(runtime_config, :processes)),
+            env:
+              build_env(workspace_key, workspace_path, user_env, port_offset_seed, resolved_ports),
             user_env: user_env,
             port_bases: port_bases,
             resolved_ports: resolved_ports,
             port_offset: port_offset_seed,
             port_offset_mod: port_offset_mod,
             port_offset_seed: port_offset_seed,
-            start_timeout_ms: pos_int(field(full_stack, :start_timeout_ms), 120_000),
-            stop_timeout_ms: pos_int(field(full_stack, :stop_timeout_ms), 60_000),
+            start_timeout_ms: pos_int(field(runtime_config, :start_timeout_ms), 120_000),
+            stop_timeout_ms: pos_int(field(runtime_config, :stop_timeout_ms), 60_000),
             workspace_key: workspace_key,
             workspace_identity: workspace_identity,
             workspace_path: workspace_path
@@ -82,11 +74,9 @@ defmodule Kollywood.Runtime.Host do
   end
 
   @impl true
-  def start(%{profile: :checks_only} = state), do: {:ok, state}
+  def start(%{started?: true} = state), do: {:ok, state}
 
-  def start(%{profile: :full_stack, started?: true} = state), do: {:ok, state}
-
-  def start(%{profile: :full_stack} = state) do
+  def start(state) do
     with {:ok, state} <- ensure_isolation(state) do
       args = start_args(state)
 
@@ -106,9 +96,7 @@ defmodule Kollywood.Runtime.Host do
   end
 
   @impl true
-  def stop(%{profile: :checks_only} = state), do: {:ok, state}
-
-  def stop(%{profile: :full_stack} = state) do
+  def stop(state) do
     if stop_required?(state) do
       case execute(
              state.command,
@@ -130,27 +118,11 @@ defmodule Kollywood.Runtime.Host do
   end
 
   @impl true
-  def exec(%{profile: :full_stack} = state, command, timeout_ms) do
-    execute(
-      state.command,
-      ["shell", "--", "bash", "-lc", command],
-      state.workspace_path,
-      state.env,
-      timeout_ms
-    )
-  end
-
   def exec(state, command, timeout_ms) do
     execute("bash", ["-lc", command], state.workspace_path, %{}, timeout_ms)
   end
 
   @impl true
-  def wrap_agent_command(%{profile: :full_stack} = _state, command, args) do
-    # On host full_stack, the agent still runs directly — devenv shell wrapping
-    # only applies to check commands, not to the agent CLI itself.
-    {command, args, %{}}
-  end
-
   def wrap_agent_command(_state, command, args) do
     {command, args, %{}}
   end
@@ -179,7 +151,15 @@ defmodule Kollywood.Runtime.Host do
     case acquire_lease(modulus, seed) do
       {:ok, offset, lease_name} ->
         resolved_ports = resolve_ports(state.port_bases, offset)
-        env = build_env(state.workspace_key, state.workspace_path, state.user_env, offset, resolved_ports)
+
+        env =
+          build_env(
+            state.workspace_key,
+            state.workspace_path,
+            state.user_env,
+            offset,
+            resolved_ports
+          )
 
         {:ok,
          %{
@@ -268,7 +248,6 @@ defmodule Kollywood.Runtime.Host do
 
   defp build_env(workspace_key, workspace_path, user_env, port_offset, resolved_ports) do
     builtins = %{
-      "KOLLYWOOD_RUNTIME_PROFILE" => "full_stack",
       "KOLLYWOOD_RUNTIME_WORKTREE_KEY" => to_string(workspace_key),
       "KOLLYWOOD_RUNTIME_WORKTREE_PATH" => to_string(workspace_path),
       "KOLLYWOOD_RUNTIME_PORT_OFFSET" => Integer.to_string(port_offset)
@@ -297,28 +276,15 @@ defmodule Kollywood.Runtime.Host do
     Map.get(config || %{}, :runtime) || %{}
   end
 
-  defp full_stack_section(runtime_config) do
-    case field(runtime_config, :full_stack) do
-      value when is_map(value) -> value
-      _ -> %{}
-    end
-  end
-
-  defp parse_profile(runtime_config) do
-    case field(runtime_config, :profile) do
-      :full_stack -> :full_stack
-      "full_stack" -> :full_stack
-      _ -> :checks_only
-    end
-  end
-
   defp process_list(value) when is_list(value) do
     value |> Enum.map(&to_string/1) |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
   end
 
   defp process_list(_), do: []
 
-  defp env_map(value) when is_map(value), do: Map.new(value, fn {k, v} -> {to_string(k), to_string(v)} end)
+  defp env_map(value) when is_map(value),
+    do: Map.new(value, fn {k, v} -> {to_string(k), to_string(v)} end)
+
   defp env_map(_), do: %{}
 
   defp ports_map(value) when is_map(value) do
