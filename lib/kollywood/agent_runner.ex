@@ -1285,21 +1285,37 @@ defmodule Kollywood.AgentRunner do
       # attempt dir afterward for persistence/UI access.
       workspace_rjp = workspace_review_json_path(state.workspace)
 
-      with {:ok, prompt} <- build_review_prompt(state, config, cycle, workspace_rjp),
-           {:ok, _output} <- run_review_turn(state, config, prompt, state.log_files),
-           {:ok, verdict} <- read_review_json(workspace_rjp) do
+      with :ok <- reset_review_json(workspace_rjp),
+           {:ok, prompt} <- build_review_prompt(state, config, cycle, workspace_rjp),
+           {:ok, _output} <- run_review_turn(state, config, prompt, state.log_files) do
         persist_review_json(workspace_rjp, state.log_files)
 
-        case verdict do
-          :pass ->
+        case read_review_json(workspace_rjp) do
+          {:ok, :pass} ->
             {:ok, emit(state, :review_passed, %{agent_kind: review_agent_kind, cycle: cycle})}
 
-          {:fail, feedback} ->
+          {:ok, {:fail, feedback}} ->
             {:review_failed, feedback,
              emit(state, :review_failed, %{
                agent_kind: review_agent_kind,
                cycle: cycle,
                reason: feedback
+             })}
+
+          {:review_failed, feedback} ->
+            {:review_failed, feedback,
+             emit(state, :review_failed, %{
+               agent_kind: review_agent_kind,
+               cycle: cycle,
+               reason: feedback
+             })}
+
+          {:error, reason} ->
+            {:error, "review failed: #{reason}",
+             emit(state, :review_error, %{
+               agent_kind: review_agent_kind,
+               cycle: cycle,
+               reason: reason
              })}
         end
       else
@@ -2115,19 +2131,30 @@ defmodule Kollywood.AgentRunner do
             {:ok, {:fail, feedback}}
 
           {:ok, _other} ->
-            {:error, "review.json missing valid verdict field (expected \"pass\" or \"fail\")"}
+            {:review_failed,
+             "reviewer wrote invalid review.json: missing `verdict` (expected \"pass\" or \"fail\")"}
 
           {:error, reason} ->
-            {:error, "failed to parse review.json: #{inspect(reason)}"}
+            {:review_failed, "failed to parse review.json: #{inspect(reason)}"}
         end
 
       {:error, :enoent} ->
-        {:error, "reviewer did not write review.json"}
+        {:review_failed, "reviewer did not write review.json"}
 
       {:error, reason} ->
         {:error, "failed to read review.json: #{inspect(reason)}"}
     end
   end
+
+  defp reset_review_json(path) when is_binary(path) do
+    case File.rm(path) do
+      :ok -> :ok
+      {:error, :enoent} -> :ok
+      {:error, reason} -> {:error, "failed to reset review.json: #{inspect(reason)}"}
+    end
+  end
+
+  defp reset_review_json(_path), do: {:error, "review_json path not configured"}
 
   defp format_review_feedback(review) do
     summary = Map.get(review, "summary", "") |> to_string() |> String.trim()
@@ -2365,6 +2392,7 @@ defmodule Kollywood.AgentRunner do
   - `"major"`: significant quality issues (poor design, missing error handling, test coverage gaps)
   - `"minor"`: style issues, naming, nice-to-haves
   - Omit findings for severities with no issues
+  - Overwrite `{{ review_json_path }}` with exactly one JSON object; do not append multiple JSON objects
   - Write the file, then stop — do not print the review to stdout
   """
 

@@ -64,16 +64,34 @@ defmodule Kollywood.AgentRunnerTest do
     # Extract review.json path from prompt
     review_json_path=$(printf '%s' "$prompt" | grep -oP 'Write your review to `\\K[^`]+' || echo "/tmp/review_fallback.json")
 
+    write_review_json() {
+      payload="$1"
+      if [ -n "${REVIEW_APPEND_MODE:-}" ]; then
+        printf '%s' "$payload" >> "$review_json_path"
+      else
+        printf '%s' "$payload" > "$review_json_path"
+      fi
+    }
+
+    if [ -n "${REVIEW_INVALID_JSON_ONCE_FILE:-}" ]; then
+      if [ ! -f "$REVIEW_INVALID_JSON_ONCE_FILE" ]; then
+        touch "$REVIEW_INVALID_JSON_ONCE_FILE"
+        write_review_json '{"verdict":"pass","summary":"review complete","findings":[]}
+    {"verdict":"fail","summary":"stale reviewer output","findings":[{"severity":"critical","description":"stale review appended"}]}'
+        exit 0
+      fi
+    fi
+
     if [ -n "${REVIEW_FAIL_ONCE_FILE:-}" ]; then
       if [ ! -f "$REVIEW_FAIL_ONCE_FILE" ]; then
         touch "$REVIEW_FAIL_ONCE_FILE"
-        printf '{"verdict":"fail","summary":"address review feedback","findings":[{"severity":"critical","description":"missing regression test"}]}' > "$review_json_path"
+        write_review_json '{"verdict":"fail","summary":"address review feedback","findings":[{"severity":"critical","description":"missing regression test"}]}'
         exit 0
       fi
     fi
 
     verdict="${REVIEW_VERDICT:-pass}"
-    printf '{"verdict":"%s","summary":"review complete","findings":[]}' "$verdict" > "$review_json_path"
+    write_review_json "$(printf '{"verdict":"%s","summary":"review complete","findings":[]}' "$verdict")"
     """)
 
     File.chmod!(review_cli_path, 0o755)
@@ -658,6 +676,88 @@ defmodule Kollywood.AgentRunnerTest do
     prompt_history = File.read!(prompt_log)
     assert prompt_history =~ "Work on ABC-123"
     assert prompt_history =~ "Reviewer feedback from cycle 1"
+  end
+
+  test "retries with remediation turn when reviewer emits malformed review.json", %{
+    root: root,
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    review_cli_path: review_cli_path,
+    prompt_log: prompt_log
+  } do
+    invalid_json_once_file = Path.join(root, "review_invalid_json_once.marker")
+
+    config =
+      runner_config(workspace_root, cli_path, prompt_log)
+      |> Map.put(:review, %{
+        enabled: true,
+        max_cycles: 2,
+        agent: %{
+          explicit: true,
+          kind: :pi,
+          command: review_cli_path,
+          args: [],
+          env: %{"REVIEW_INVALID_JSON_ONCE_FILE" => invalid_json_once_file},
+          timeout_ms: 10_000
+        }
+      })
+
+    assert {:ok, result} =
+             AgentRunner.run_issue(@issue,
+               config: config,
+               prompt_template: "Work on {{ issue.identifier }}",
+               mode: :single_turn
+             )
+
+    assert result.status == :ok
+    assert result.turn_count == 2
+    assert :quality_cycle_retrying in Enum.map(result.events, & &1.type)
+    assert :review_failed in Enum.map(result.events, & &1.type)
+    assert :review_passed in Enum.map(result.events, & &1.type)
+
+    review_failed_event = Enum.find(result.events, &(&1.type == :review_failed))
+    assert review_failed_event.reason =~ "failed to parse review.json"
+
+    prompt_history = File.read!(prompt_log)
+    assert prompt_history =~ "Reviewer feedback from cycle 1"
+  end
+
+  test "clears stale review.json before review to avoid concatenated outputs", %{
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    review_cli_path: review_cli_path,
+    prompt_log: prompt_log
+  } do
+    stale_review_json =
+      Path.join([workspace_root, @issue.identifier, ".kollywood", "review.json"])
+
+    File.mkdir_p!(Path.dirname(stale_review_json))
+    File.write!(stale_review_json, "{\"verdict\":\"fail\",\"summary\":\"stale\",\"findings\":[]}")
+
+    config =
+      runner_config(workspace_root, cli_path, prompt_log)
+      |> Map.put(:review, %{
+        enabled: true,
+        agent: %{
+          explicit: true,
+          kind: :pi,
+          command: review_cli_path,
+          args: [],
+          env: %{"REVIEW_APPEND_MODE" => "1", "REVIEW_VERDICT" => "pass"},
+          timeout_ms: 10_000
+        }
+      })
+
+    assert {:ok, result} =
+             AgentRunner.run_issue(@issue,
+               config: config,
+               prompt_template: "Work on {{ issue.identifier }}",
+               mode: :single_turn
+             )
+
+    assert result.status == :ok
+    assert :review_passed in Enum.map(result.events, & &1.type)
+    refute :review_failed in Enum.map(result.events, & &1.type)
   end
 
   test "applies story override for review_max_cycles during execution", %{
