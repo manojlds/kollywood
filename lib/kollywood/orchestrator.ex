@@ -36,7 +36,7 @@ defmodule Kollywood.Orchestrator do
   @default_repo_sync_timeout_ms 15_000
   @default_claim_ttl_ms 86_400_000
   @default_completed_ttl_ms 60_000
-  @default_max_concurrent_agents 5
+  @default_max_concurrent_agents 1
   @default_global_max_concurrent_agents 5
   @default_max_retry_backoff_ms 300_000
   @default_retry_base_delay_ms 10_000
@@ -3364,28 +3364,7 @@ defmodule Kollywood.Orchestrator do
       %{}
   end
 
-  defp default_project_limit_fetcher do
-    if Code.ensure_loaded?(Kollywood.Projects) and
-         function_exported?(Kollywood.Projects, :list_projects, 0) do
-      Kollywood.Projects.list_projects()
-      |> Enum.reduce(%{}, fn project, acc ->
-        project_slug = optional_trimmed_string(Map.get(project, :slug))
-        limit = positive_integer(Map.get(project, :max_concurrent_agents), nil)
-
-        if is_binary(project_slug) and is_integer(limit) do
-          Map.put(acc, project_slug, limit)
-        else
-          acc
-        end
-      end)
-    else
-      %{}
-    end
-  rescue
-    _ -> %{}
-  catch
-    :exit, _ -> %{}
-  end
+  defp default_project_limit_fetcher, do: %{}
 
   defp normalize_project_limits(limits) when is_map(limits) do
     Enum.reduce(limits, %{}, fn {project_key, value}, acc ->

@@ -87,8 +87,7 @@ defmodule KollywoodWeb.ProjectController do
       name: project.name,
       provider: project.provider,
       local_path: Projects.local_path(project),
-      repository: project.repository,
-      max_concurrent_agents: project.max_concurrent_agents
+      repository: project.repository
     }
   end
 end

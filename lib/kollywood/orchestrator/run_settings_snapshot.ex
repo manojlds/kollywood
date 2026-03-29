@@ -192,7 +192,15 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshot do
         _other -> :checks_only
       end
 
+    kind =
+      case Map.get(runtime, :kind) do
+        :docker -> :docker
+        "docker" -> :docker
+        _ -> :host
+      end
+
     %{
+      kind: kind,
       profile: profile,
       full_stack: %{
         command: optional_string(Map.get(full_stack, :command)) || "devenv",

@@ -13,7 +13,19 @@ defmodule KollywoodWeb.StoryControllerTest do
       )
 
     File.mkdir_p!(root)
-    tracker_path = Path.join(root, "prd.json")
+
+    slug = "story-api-#{System.unique_integer([:positive])}"
+
+    {:ok, project} =
+      Projects.create_project(%{
+        name: "Story API #{System.unique_integer([:positive])}",
+        slug: slug,
+        provider: :local,
+        repository: root
+      })
+
+    tracker_path = Projects.tracker_path(project)
+    File.mkdir_p!(Path.dirname(tracker_path))
 
     write_prd!(tracker_path, [
       %{
@@ -32,17 +44,9 @@ defmodule KollywoodWeb.StoryControllerTest do
       }
     ])
 
-    {:ok, project} =
-      Projects.create_project(%{
-        name: "Story API #{System.unique_integer([:positive])}",
-        slug: "story-api-#{System.unique_integer([:positive])}",
-        provider: :local,
-        repository: root,
-        tracker_path: tracker_path
-      })
-
     on_exit(fn ->
       File.rm_rf!(root)
+      File.rm_rf!(Path.dirname(tracker_path))
     end)
 
     %{project: project, tracker_path: tracker_path}

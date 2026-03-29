@@ -36,6 +36,7 @@ quality:
     max_cycles: 2
     pass_token: REVIEW_PASS
 runtime:
+  kind: host
   full_stack:
     command: devenv
     env: {}

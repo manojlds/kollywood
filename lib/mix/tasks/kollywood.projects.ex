@@ -61,7 +61,6 @@ defmodule Mix.Tasks.Kollywood.Projects do
           name: :string,
           path: :string,
           slug: :string,
-          tracker_path: :string,
           default_branch: :string,
           disabled: :boolean
         ]
@@ -84,7 +83,6 @@ defmodule Mix.Tasks.Kollywood.Projects do
         enabled: not Keyword.get(opts, :disabled, false)
       }
       |> maybe_put(:slug, opts[:slug])
-      |> maybe_put(:tracker_path, opts[:tracker_path])
 
     create_project(attrs)
   end
