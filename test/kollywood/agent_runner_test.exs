@@ -401,6 +401,78 @@ defmodule Kollywood.AgentRunnerTest do
     assert :checks_failed in Enum.map(result.events, & &1.type)
   end
 
+  test "fail-fast checks stop after the first failing command", %{
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    prompt_log: prompt_log
+  } do
+    config =
+      runner_config(workspace_root, cli_path, prompt_log)
+      |> Map.put(:checks, %{
+        required: ["exit 3", "exit 7"],
+        timeout_ms: 10_000,
+        fail_fast: true
+      })
+
+    template = "Work on {{ issue.identifier }}"
+
+    assert {:error, result} =
+             AgentRunner.run_issue(@issue,
+               config: config,
+               prompt_template: template,
+               mode: :single_turn
+             )
+
+    assert result.error =~ "required checks failed"
+    assert result.error =~ "check #1 failed (exit 3): exit code 3"
+    refute result.error =~ "check #2 failed"
+
+    checks_started_event = Enum.find(result.events, &(&1.type == :checks_started))
+    assert checks_started_event.fail_fast == true
+
+    check_started_events = Enum.filter(result.events, &(&1.type == :check_started))
+    assert length(check_started_events) == 1
+
+    check_failed_events = Enum.filter(result.events, &(&1.type == :check_failed))
+    assert length(check_failed_events) == 1
+  end
+
+  test "disabled fail-fast checks report every failing command in one cycle", %{
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    prompt_log: prompt_log
+  } do
+    config =
+      runner_config(workspace_root, cli_path, prompt_log)
+      |> Map.put(:checks, %{
+        required: ["exit 3", "exit 7"],
+        timeout_ms: 10_000,
+        fail_fast: false
+      })
+
+    template = "Work on {{ issue.identifier }}"
+
+    assert {:error, result} =
+             AgentRunner.run_issue(@issue,
+               config: config,
+               prompt_template: template,
+               mode: :single_turn
+             )
+
+    assert result.error =~ "required checks failed"
+    assert result.error =~ "check #1 failed (exit 3): exit code 3"
+    assert result.error =~ "check #2 failed (exit 7): exit code 7"
+
+    checks_started_event = Enum.find(result.events, &(&1.type == :checks_started))
+    assert checks_started_event.fail_fast == false
+
+    check_started_events = Enum.filter(result.events, &(&1.type == :check_started))
+    assert length(check_started_events) == 2
+
+    check_failed_events = Enum.filter(result.events, &(&1.type == :check_failed))
+    assert length(check_failed_events) == 2
+  end
+
   test "passes required check commands on successful turn", %{
     workspace_root: workspace_root,
     cli_path: cli_path,
