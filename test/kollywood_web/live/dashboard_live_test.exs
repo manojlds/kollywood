@@ -179,8 +179,10 @@ defmodule KollywoodWeb.DashboardLiveTest do
       refute html =~ Projects.local_path(project)
       assert html =~ "WORKFLOW.md"
       assert html =~ "value=\"cursor\""
-      assert html =~ "Stop checks at the first failure."
-      assert html =~ "report all failures in one cycle."
+      assert html =~ "When enabled, checks stop at the first failure."
+
+      assert html =~
+               ~r/When disabled,\s+all\s+configured checks run\s+so every failure is reported in one cycle\./
     end
 
     test "shows workflow editor with frontmatter and body textareas when WORKFLOW.md exists", %{
