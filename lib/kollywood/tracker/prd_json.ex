@@ -284,6 +284,8 @@ defmodule Kollywood.Tracker.PrdJson do
         "status" => status,
         "dependsOn" => depends_on,
         "notes" => optional_string_value(fetch_input(attrs, [:notes]), ""),
+        "testingNotes" =>
+          optional_string_value(fetch_input(attrs, [:testing_notes, :testingNotes]), ""),
         "passes" => status in ["done", "merged"]
       }
 
@@ -297,6 +299,7 @@ defmodule Kollywood.Tracker.PrdJson do
          {:ok, story} <- maybe_update_story_title(story, attrs),
          {:ok, story} <- maybe_update_story_description(story, attrs),
          {:ok, story} <- maybe_update_story_notes(story, attrs),
+         {:ok, story} <- maybe_update_story_testing_notes(story, attrs),
          {:ok, story} <- maybe_update_story_priority(story, attrs),
          {:ok, story} <- maybe_update_story_status(story, attrs),
          {:ok, story} <- maybe_update_story_acceptance_criteria(story, attrs),
@@ -330,6 +333,13 @@ defmodule Kollywood.Tracker.PrdJson do
     case fetch_input(attrs, [:notes]) do
       :error -> {:ok, story}
       value -> {:ok, Map.put(story, "notes", optional_string_value(value, ""))}
+    end
+  end
+
+  defp maybe_update_story_testing_notes(story, attrs) do
+    case fetch_input(attrs, [:testing_notes, :testingNotes]) do
+      :error -> {:ok, story}
+      value -> {:ok, Map.put(story, "testingNotes", optional_string_value(value, ""))}
     end
   end
 
@@ -790,6 +800,7 @@ defmodule Kollywood.Tracker.PrdJson do
       blocked_by: blocker_list(story.depends_on, stories_by_id),
       resumable: story.resumable,
       pr_url: story.pr_url,
+      testing_notes: story.testing_notes,
       settings: story.settings,
       created_at: nil
     }
@@ -846,6 +857,9 @@ defmodule Kollywood.Tracker.PrdJson do
       status: story_status(story),
       depends_on: string_list(field(story, :dependsOn)),
       notes: optional_string(field(story, :notes)),
+      testing_notes:
+        optional_string(field(story, :testingNotes)) ||
+          optional_string(field(story, :testing_notes)),
       resumable: field(story, :resumable) == true,
       pr_url: optional_string(field(story, :pr_url)),
       settings: field(story, :settings)

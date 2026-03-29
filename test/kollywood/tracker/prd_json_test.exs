@@ -31,7 +31,8 @@ defmodule Kollywood.Tracker.PrdJsonTest do
         "status" => "open",
         "priority" => 2,
         "dependsOn" => ["US-001"],
-        "acceptanceCriteria" => ["passes tests"]
+        "acceptanceCriteria" => ["passes tests"],
+        "testingNotes" => "Tester-only note for smoke flow"
       },
       %{
         "id" => "US-003",
@@ -63,6 +64,8 @@ defmodule Kollywood.Tracker.PrdJsonTest do
                state: "done"
              }
            ]
+
+    assert issue_two.testing_notes == "Tester-only note for smoke flow"
 
     assert issue_three.blocked_by == [
              %{
@@ -241,6 +244,7 @@ defmodule Kollywood.Tracker.PrdJsonTest do
                "title" => "Created story",
                "status" => "draft",
                "dependsOn" => "US-100",
+               "testingNotes" => "Run through smoke path before sign-off.",
                "settings" => %{
                  "execution" => %{
                    "agent_kind" => "cursor",
@@ -263,17 +267,20 @@ defmodule Kollywood.Tracker.PrdJsonTest do
     assert created["settings"]["execution"]["preview_enabled"] == true
     assert created["settings"]["execution"]["testing_agent_kind"] == "opencode"
     assert created["settings"]["execution"]["testing_max_cycles"] == 2
+    assert created["testingNotes"] == "Run through smoke path before sign-off."
 
     assert {:ok, updated} =
              PrdJson.update_story(path, created_id, %{
                "title" => "Updated title",
                "status" => "open",
-               "priority" => 4
+               "priority" => 4,
+               "testingNotes" => "Updated tester direction."
              })
 
     assert updated["title"] == "Updated title"
     assert updated["status"] == "open"
     assert updated["priority"] == 4
+    assert updated["testingNotes"] == "Updated tester direction."
 
     assert :ok = PrdJson.delete_story(path, created_id)
 

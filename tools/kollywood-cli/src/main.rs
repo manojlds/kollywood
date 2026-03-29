@@ -147,6 +147,9 @@ struct StoryAddArgs {
     #[arg(long, help = "Optional story notes")]
     notes: Option<String>,
 
+    #[arg(long = "testing-notes", help = "Optional notes for testing agent only")]
+    testing_notes: Option<String>,
+
     #[arg(
         long = "depends-on",
         help = "Dependency story id; repeat or pass comma-separated values"
@@ -188,6 +191,9 @@ struct StoryEditArgs {
 
     #[arg(long, help = "Updated notes")]
     notes: Option<String>,
+
+    #[arg(long = "testing-notes", help = "Updated notes for testing agent only")]
+    testing_notes: Option<String>,
 
     #[arg(
         long = "depends-on",
@@ -821,6 +827,8 @@ fn validate_update_record(record: &Map<String, Value>) -> Result<()> {
         "priority",
         "description",
         "notes",
+        "testingNotes",
+        "testing_notes",
         "dependsOn",
         "depends_on",
         "acceptanceCriteria",
@@ -833,7 +841,7 @@ fn validate_update_record(record: &Map<String, Value>) -> Result<()> {
         Ok(())
     } else {
         bail!(
-            "update requires at least one mutable field (title/status/priority/description/notes/dependsOn/acceptanceCriteria)"
+            "update requires at least one mutable field (title/status/priority/description/notes/testingNotes/dependsOn/acceptanceCriteria)"
         )
     }
 }
@@ -961,6 +969,10 @@ fn build_add_payload(args: &StoryAddArgs) -> Result<Value> {
         payload.insert("notes".to_string(), Value::String(value));
     }
 
+    if let Some(value) = clean_optional(args.testing_notes.as_deref()) {
+        payload.insert("testingNotes".to_string(), Value::String(value));
+    }
+
     let depends_on = normalize_list_values(&args.depends_on);
     if !depends_on.is_empty() {
         payload.insert("dependsOn".to_string(), json!(depends_on));
@@ -997,6 +1009,10 @@ fn build_edit_payload(args: &StoryEditArgs) -> Result<Value> {
         payload.insert("notes".to_string(), Value::String(value));
     }
 
+    if let Some(value) = clean_optional(args.testing_notes.as_deref()) {
+        payload.insert("testingNotes".to_string(), Value::String(value));
+    }
+
     let depends_on = normalize_list_values(&args.depends_on);
     if !depends_on.is_empty() {
         payload.insert("dependsOn".to_string(), json!(depends_on));
@@ -1013,7 +1029,7 @@ fn build_edit_payload(args: &StoryEditArgs) -> Result<Value> {
 
     if payload.is_empty() {
         bail!(
-            "no updates provided (set at least one field such as --title, --status, --priority, --depends-on, or --acceptance)"
+            "no updates provided (set at least one field such as --title, --status, --priority, --testing-notes, --depends-on, or --acceptance)"
         );
     }
 
@@ -1150,8 +1166,8 @@ fn fallback<'a>(value: &'a str, default: &'a str) -> &'a str {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_edit_payload, normalize_list_values, parse_import_records, plan_delete_missing,
-        ImportMode, StoryEditArgs,
+        build_add_payload, build_edit_payload, normalize_list_values, parse_import_records,
+        plan_delete_missing, ImportMode, StoryAddArgs, StoryEditArgs,
     };
     use serde_json::{Map, Value};
 
@@ -1244,6 +1260,7 @@ mod tests {
             priority: None,
             description: None,
             notes: None,
+            testing_notes: None,
             depends_on: Vec::new(),
             clear_depends_on: false,
             acceptance: vec!["criterion one, criterion two".to_string()],
@@ -1277,6 +1294,7 @@ mod tests {
             priority: None,
             description: None,
             notes: None,
+            testing_notes: None,
             depends_on: Vec::new(),
             clear_depends_on: false,
             acceptance: Vec::new(),
@@ -1303,6 +1321,7 @@ mod tests {
             priority: None,
             description: None,
             notes: None,
+            testing_notes: None,
             depends_on: vec!["US-010, US-011".to_string()],
             clear_depends_on: true,
             acceptance: Vec::new(),
@@ -1336,6 +1355,7 @@ mod tests {
             priority: None,
             description: None,
             notes: None,
+            testing_notes: None,
             depends_on: Vec::new(),
             clear_depends_on: true,
             acceptance: Vec::new(),
@@ -1347,5 +1367,59 @@ mod tests {
         let object = payload.as_object().expect("payload must be an object");
 
         assert_eq!(object.get("dependsOn"), Some(&Value::Array(Vec::new())));
+    }
+
+    #[test]
+    fn build_add_payload_includes_testing_notes_when_provided() {
+        let args = StoryAddArgs {
+            project: None,
+            title: "Story title".to_string(),
+            id: None,
+            status: None,
+            priority: None,
+            description: None,
+            notes: None,
+            testing_notes: Some("Only for tester".to_string()),
+            depends_on: Vec::new(),
+            acceptance: Vec::new(),
+            json: false,
+        };
+
+        let payload = build_add_payload(&args).expect("payload should build");
+        let object = payload.as_object().expect("payload must be an object");
+
+        assert_eq!(
+            object.get("testingNotes"),
+            Some(&Value::String("Only for tester".to_string()))
+        );
+    }
+
+    #[test]
+    fn build_edit_payload_includes_testing_notes_when_provided() {
+        let args = StoryEditArgs {
+            project: None,
+            story_id: "US-001".to_string(),
+            title: None,
+            status: None,
+            priority: None,
+            description: None,
+            notes: None,
+            testing_notes: Some("Retest checkout with promo code".to_string()),
+            depends_on: Vec::new(),
+            clear_depends_on: false,
+            acceptance: Vec::new(),
+            clear_acceptance: false,
+            json: false,
+        };
+
+        let payload = build_edit_payload(&args).expect("payload should build");
+        let object = payload.as_object().expect("payload must be an object");
+
+        assert_eq!(
+            object.get("testingNotes"),
+            Some(&Value::String(
+                "Retest checkout with promo code".to_string()
+            ))
+        );
     }
 }

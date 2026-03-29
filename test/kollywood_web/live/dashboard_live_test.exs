@@ -741,6 +741,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
           status: "draft",
           dependsOn: "US-001",
           notes: "UI note",
+          testingNotes: "Tester-only guidance",
           execution_agent_kind: "cursor",
           execution_review_agent_kind: "claude",
           execution_review_max_cycles: "3",
@@ -763,6 +764,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert story["settings"]["execution"]["testing_enabled"] == true
       assert story["settings"]["execution"]["testing_agent_kind"] == "opencode"
       assert story["settings"]["execution"]["testing_max_cycles"] == 4
+      assert story["testingNotes"] == "Tester-only guidance"
     end
 
     test "edits an existing story from UI", %{conn: conn, project: project, tmp_dir: _tmp_dir} do
@@ -783,7 +785,8 @@ defmodule KollywoodWeb.DashboardLiveTest do
           priority: "7",
           status: "done",
           dependsOn: "",
-          notes: "Updated notes"
+          notes: "Updated notes",
+          testingNotes: "Updated tester note"
         }
       })
 
@@ -794,6 +797,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert story["title"] == "Updated Story Title"
       assert story["status"] == "done"
       assert story["priority"] == 7
+      assert story["testingNotes"] == "Updated tester note"
     end
 
     test "deletes a story from UI", %{conn: conn, project: project, tmp_dir: _tmp_dir} do
@@ -1012,6 +1016,11 @@ defmodule KollywoodWeb.DashboardLiveTest do
             "stored_path" => Path.join(context.files.testing_artifacts_dir, "001_smoke.png")
           },
           %{
+            "kind" => "video",
+            "path" => "artifacts/testing-success.webm",
+            "stored_path" => Path.join(context.files.testing_artifacts_dir, "002_demo.webm")
+          },
+          %{
             "kind" => "replay",
             "path" => "https://agent-browser.local/replays/testing-success"
           }
@@ -1019,11 +1028,25 @@ defmodule KollywoodWeb.DashboardLiveTest do
       }
 
       File.mkdir_p!(context.files.testing_artifacts_dir)
+      File.mkdir_p!(context.files.testing_cycles_dir)
+      File.write!(Path.join(context.files.testing_artifacts_dir, "001_smoke.png"), "png")
+      File.write!(Path.join(context.files.testing_artifacts_dir, "002_demo.webm"), "webm")
+
+      File.write!(
+        Path.join(context.files.testing_cycles_dir, "cycle-001.json"),
+        Jason.encode!(report, pretty: true)
+      )
+
       File.write!(context.files.testing_report, Jason.encode!(report, pretty: true))
       RunLogs.complete_attempt(context, %{status: "ok"})
 
-      {:ok, _view, html} =
+      {:ok, view, _html} =
         live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
+
+      html =
+        view
+        |> element("button[phx-click='set_run_detail_panel_tab'][phx-value-tab='reports']")
+        |> render_click()
 
       assert html =~ "Testing report"
       assert html =~ "PASS"
@@ -1031,6 +1054,50 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "acceptance flow"
       assert html =~ "artifacts/testing-success.png"
       assert html =~ "agent-browser.local/replays/testing-success"
+      assert html =~ "Per-cycle testing.json"
+      assert html =~ ~s(/projects/#{project.slug}/runs/#{story_id}/1/artifacts/001_smoke.png)
+      assert html =~ ~s(/projects/#{project.slug}/runs/#{story_id}/1/artifacts/002_demo.webm)
+    end
+
+    test "run detail reports tab shows review report json view", %{
+      conn: conn,
+      project: project
+    } do
+      story_id = "US-REVIEW-REPORT"
+      context = prepare_run_logs!(project.slug, story_id)
+
+      review_report = %{
+        "verdict" => "fail",
+        "summary" => "Found blocking review issue",
+        "findings" => [
+          %{"severity" => "critical", "description" => "Missing regression test coverage"}
+        ]
+      }
+
+      File.mkdir_p!(context.files.review_cycles_dir)
+
+      File.write!(
+        Path.join(context.files.review_cycles_dir, "cycle-001.json"),
+        Jason.encode!(review_report, pretty: true)
+      )
+
+      File.write!(context.files.review_json, Jason.encode!(review_report, pretty: true))
+      RunLogs.complete_attempt(context, %{status: "failed"})
+
+      {:ok, view, _html} =
+        live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
+
+      html =
+        view
+        |> element("button[phx-click='set_run_detail_panel_tab'][phx-value-tab='reports']")
+        |> render_click()
+
+      assert html =~ "Review report"
+      assert html =~ "FAIL"
+      assert html =~ "Found blocking review issue"
+      assert html =~ "Missing regression test coverage"
+      assert html =~ "Per-cycle review.json"
+      assert html =~ "Raw review.json"
     end
 
     test "run detail shows enabled retry action for failed checks attempt", %{

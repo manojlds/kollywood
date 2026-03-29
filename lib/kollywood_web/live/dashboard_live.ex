@@ -42,6 +42,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:current_scope, nil)
       |> assign(:selected_story, nil)
       |> assign(:story_detail_tab, "details")
+      |> assign(:run_detail_panel_tab, "logs")
       |> assign(:active_log_tab, "agent")
       |> assign(:log_poll_timer, nil)
       |> assign(:story_form_mode, nil)
@@ -102,9 +103,8 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   def handle_info(:poll_logs, socket) do
-    story_id = socket.assigns.run_detail_story_id
     tab = socket.assigns.active_log_tab
-    run_detail = load_run_detail_latest(socket.assigns.current_project, story_id, tab)
+    run_detail = load_selected_run_detail(socket, tab)
     socket = assign(socket, :run_detail, run_detail)
 
     if run_detail && get_in(run_detail, ["metadata", "status"]) == "running" do
@@ -116,8 +116,7 @@ defmodule KollywoodWeb.DashboardLive do
 
   @impl true
   def handle_event("set_log_tab", %{"tab" => tab}, socket) do
-    story_id = socket.assigns.run_detail_story_id
-    run_detail = load_run_detail_latest(socket.assigns.current_project, story_id, tab)
+    run_detail = load_selected_run_detail(socket, tab)
 
     socket =
       socket
@@ -125,6 +124,11 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:run_detail, run_detail)
 
     {:noreply, socket}
+  end
+
+  def handle_event("set_run_detail_panel_tab", %{"tab" => tab}, socket) do
+    next_tab = if tab in ["logs", "reports"], do: tab, else: "logs"
+    {:noreply, assign(socket, :run_detail_panel_tab, next_tab)}
   end
 
   def handle_event("set_story_tab", %{"tab" => tab}, socket) do
@@ -601,6 +605,7 @@ defmodule KollywoodWeb.DashboardLive do
                   story={@selected_story}
                   story_id={@run_detail_story_id}
                   run_detail={@run_detail}
+                  run_detail_panel_tab={@run_detail_panel_tab}
                   active_log_tab={@active_log_tab}
                   story_detail_tab={@story_detail_tab}
                   project={@current_project}
@@ -613,6 +618,7 @@ defmodule KollywoodWeb.DashboardLive do
                   run_detail={@run_detail}
                   story_id={@run_detail_story_id}
                   attempt={@run_detail_attempt}
+                  run_detail_panel_tab={@run_detail_panel_tab}
                   active_log_tab={@active_log_tab}
                   project={@current_project}
                   stories_view={@stories_view}
@@ -725,6 +731,17 @@ defmodule KollywoodWeb.DashboardLive do
                   </h3>
                   <div class="prose prose-sm max-w-none text-base-content/70">
                     {raw(markdown_to_html(@selected_story["notes"]))}
+                  </div>
+                </div>
+              <% end %>
+
+              <%= if story_testing_notes(@selected_story) != "" do %>
+                <div class="mb-4">
+                  <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
+                    Testing Notes (Tester Only)
+                  </h3>
+                  <div class="prose prose-sm max-w-none text-base-content/70">
+                    {raw(markdown_to_html(story_testing_notes(@selected_story)))}
                   </div>
                 </div>
               <% end %>
@@ -2132,6 +2149,17 @@ defmodule KollywoodWeb.DashboardLive do
                 >{Map.get(@values, "notes", "")}</textarea>
               </div>
 
+              <div>
+                <label class="label py-1">
+                  <span class="label-text text-sm">Testing Notes (Testing Agent Only)</span>
+                </label>
+                <textarea
+                  name="story[testingNotes]"
+                  rows="3"
+                  class="textarea textarea-bordered w-full text-sm"
+                >{Map.get(@values, "testingNotes", "")}</textarea>
+              </div>
+
               <div class="flex items-center justify-end gap-2 pt-2">
                 <button type="button" phx-click="cancel_story_form" class="btn btn-ghost btn-sm">
                   Cancel
@@ -2278,6 +2306,7 @@ defmodule KollywoodWeb.DashboardLive do
   attr :run_detail, :map, default: nil
   attr :story_id, :string, default: nil
   attr :attempt, :string, default: nil
+  attr :run_detail_panel_tab, :string, default: "logs"
   attr :active_log_tab, :string, default: "agent"
   attr :project, Project, required: true
   attr :stories_view, :string, default: @default_stories_view
@@ -2340,22 +2369,18 @@ defmodule KollywoodWeb.DashboardLive do
           workflow_fingerprint_status={@workflow_fingerprint_status}
         />
 
-        <.testing_report_section report={@run_detail["testing_report"]} />
-
         <div class="flex gap-0 border-b border-base-300">
           <%= for {tab, label} <- [
-            {"agent", "Agent"},
-            {"review_agent", "Review Agent"},
-            {"testing_agent", "Testing Agent"},
-            {"worker", "Worker"}
+            {"logs", "Logs"},
+            {"reports", "Reports"}
           ] do %>
             <button
-              phx-click="set_log_tab"
+              phx-click="set_run_detail_panel_tab"
               phx-value-tab={tab}
               class={[
                 "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
-                @active_log_tab == tab && "border-primary text-primary",
-                @active_log_tab != tab &&
+                @run_detail_panel_tab == tab && "border-primary text-primary",
+                @run_detail_panel_tab != tab &&
                   "border-transparent text-base-content/60 hover:text-base-content"
               ]}
             >
@@ -2364,14 +2389,54 @@ defmodule KollywoodWeb.DashboardLive do
           <% end %>
         </div>
 
-        <%= if @run_detail["active_log_content"] do %>
-          <pre
-            id="log-output"
-            phx-hook=".LogScroll"
-            class="font-mono text-xs leading-relaxed bg-base-300 p-4 rounded-lg overflow-auto max-h-[75vh] whitespace-pre-wrap"
-          ><.ansi_log content={@run_detail["active_log_content"]} /></pre>
+        <%= if @run_detail_panel_tab == "reports" do %>
+          <div class="space-y-4">
+            <.review_report_section
+              report={@run_detail["review_report"]}
+              cycles={@run_detail["review_cycles"]}
+              cycle_reports={@run_detail["review_cycle_reports"]}
+            />
+            <.testing_report_section
+              report={@run_detail["testing_report"]}
+              cycles={@run_detail["testing_cycles"]}
+              cycle_reports={@run_detail["testing_cycle_reports"]}
+              project_slug={@project.slug}
+              story_id={@story_id}
+              attempt={Map.get(@run_detail["metadata"], "attempt")}
+            />
+          </div>
         <% else %>
-          <p class="text-base-content/50 text-sm italic">No output yet.</p>
+          <div class="flex gap-0 border-b border-base-300">
+            <%= for {tab, label} <- [
+              {"agent", "Agent"},
+              {"review_agent", "Review Agent"},
+              {"testing_agent", "Testing Agent"},
+              {"worker", "Worker"}
+            ] do %>
+              <button
+                phx-click="set_log_tab"
+                phx-value-tab={tab}
+                class={[
+                  "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
+                  @active_log_tab == tab && "border-primary text-primary",
+                  @active_log_tab != tab &&
+                    "border-transparent text-base-content/60 hover:text-base-content"
+                ]}
+              >
+                {label}
+              </button>
+            <% end %>
+          </div>
+
+          <%= if @run_detail["active_log_content"] do %>
+            <pre
+              id="log-output"
+              phx-hook=".LogScroll"
+              class="font-mono text-xs leading-relaxed bg-base-300 p-4 rounded-lg overflow-auto max-h-[75vh] whitespace-pre-wrap"
+            ><.ansi_log content={@run_detail["active_log_content"]} /></pre>
+          <% else %>
+            <p class="text-base-content/50 text-sm italic">No output yet.</p>
+          <% end %>
         <% end %>
       <% else %>
         <p class="text-base-content/50 text-sm italic">No run logs found for this story.</p>
@@ -2464,6 +2529,134 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   attr :report, :map, default: nil
+  attr :cycles, :list, default: []
+  attr :cycle_reports, :list, default: []
+
+  defp review_report_section(assigns) do
+    report = if is_map(assigns.report), do: assigns.report, else: nil
+    findings = if report, do: Map.get(report, "findings", []), else: []
+    verdict = if report, do: Map.get(report, "verdict"), else: nil
+    summary = if report, do: Map.get(report, "summary"), else: nil
+    raw_json = if report, do: pretty_json(Map.get(report, "raw")), else: nil
+
+    assigns =
+      assigns
+      |> assign(:report, report)
+      |> assign(:findings, if(is_list(findings), do: findings, else: []))
+      |> assign(:verdict, verdict)
+      |> assign(:summary, summary)
+      |> assign(:raw_json, raw_json)
+      |> assign(:cycles, normalize_report_cycles(assigns.cycles))
+      |> assign(:cycle_reports, normalize_review_cycle_reports(assigns.cycle_reports))
+
+    ~H"""
+    <div class="card bg-base-200 border border-base-300">
+      <div class="card-body gap-4">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <h3 class="card-title text-lg">Review report</h3>
+
+          <%= if @report do %>
+            <span class={review_verdict_badge_class(@verdict)}>
+              {String.upcase(to_string(@verdict || "unknown"))}
+            </span>
+          <% end %>
+        </div>
+
+        <%= if @report do %>
+          <div class="text-xs text-base-content/60">
+            {length(@findings)} findings - {length(@cycles)} cycles
+          </div>
+
+          <%= if @cycles != [] do %>
+            <div class="flex flex-wrap gap-2">
+              <%= for cycle <- @cycles do %>
+                <% cycle_num = Map.get(cycle, "cycle") %>
+                <% cycle_label = if is_integer(cycle_num), do: "Cycle #{cycle_num}", else: "Cycle ?" %>
+                <span class={testing_checkpoint_badge_class(Map.get(cycle, "status"))}>
+                  {cycle_label}: {String.upcase(to_string(Map.get(cycle, "status") || "unknown"))}
+                </span>
+              <% end %>
+            </div>
+          <% end %>
+
+          <%= if is_binary(@summary) and String.trim(@summary) != "" do %>
+            <p class="text-sm text-base-content/80 break-words">{@summary}</p>
+          <% end %>
+
+          <%= if @findings != [] do %>
+            <div class="space-y-2">
+              <%= for finding <- @findings do %>
+                <% severity = Map.get(finding, "severity") || "minor" %>
+                <div class="rounded-lg border border-base-300 bg-base-100 p-3">
+                  <div class="flex flex-wrap items-center justify-between gap-2">
+                    <span class={review_finding_severity_badge_class(severity)}>
+                      {String.upcase(to_string(severity))}
+                    </span>
+                  </div>
+                  <p class="mt-2 text-xs text-base-content/80 break-words">
+                    {Map.get(finding, "description") || "No description provided."}
+                  </p>
+                </div>
+              <% end %>
+            </div>
+          <% end %>
+
+          <%= if @cycle_reports != [] do %>
+            <div class="space-y-2">
+              <p class="text-xs font-semibold text-base-content/55 uppercase tracking-wide">
+                Per-cycle review.json
+              </p>
+              <%= for cycle_report <- @cycle_reports do %>
+                <% cycle_num = Map.get(cycle_report, "cycle") %>
+                <% cycle_label = if is_integer(cycle_num), do: "Cycle #{cycle_num}", else: "Cycle ?" %>
+                <% cycle_verdict = Map.get(cycle_report, "verdict") || "unknown" %>
+                <% cycle_summary = Map.get(cycle_report, "summary") %>
+                <% cycle_findings = Map.get(cycle_report, "findings", []) %>
+                <% cycle_raw_json = pretty_json(Map.get(cycle_report, "raw")) %>
+                <details class="rounded-lg border border-base-300 bg-base-100 p-3">
+                  <summary class="cursor-pointer text-sm font-medium">
+                    {cycle_label} - {String.upcase(to_string(cycle_verdict))}
+                    <%= if is_binary(cycle_summary) and String.trim(cycle_summary) != "" do %>
+                      - {cycle_summary}
+                    <% end %>
+                  </summary>
+                  <div class="mt-3 space-y-2">
+                    <%= if cycle_findings != [] do %>
+                      <div class="text-xs text-base-content/70">
+                        {length(cycle_findings)} findings in this cycle
+                      </div>
+                    <% end %>
+                    <%= if is_binary(cycle_raw_json) and String.trim(cycle_raw_json) != "" do %>
+                      <pre class="font-mono text-xs whitespace-pre-wrap break-words">{cycle_raw_json}</pre>
+                    <% end %>
+                  </div>
+                </details>
+              <% end %>
+            </div>
+          <% end %>
+
+          <%= if is_binary(@raw_json) and String.trim(@raw_json) != "" do %>
+            <details class="rounded-lg border border-base-300 bg-base-100 p-3">
+              <summary class="cursor-pointer text-sm font-medium">Raw review.json</summary>
+              <pre class="mt-3 font-mono text-xs whitespace-pre-wrap break-words">{@raw_json}</pre>
+            </details>
+          <% end %>
+        <% else %>
+          <p class="text-sm text-base-content/60 italic">
+            No review report captured for this run.
+          </p>
+        <% end %>
+      </div>
+    </div>
+    """
+  end
+
+  attr :report, :map, default: nil
+  attr :cycles, :list, default: []
+  attr :cycle_reports, :list, default: []
+  attr :project_slug, :string, default: nil
+  attr :story_id, :string, default: nil
+  attr :attempt, :any, default: nil
 
   defp testing_report_section(assigns) do
     report = if is_map(assigns.report), do: assigns.report, else: nil
@@ -2471,14 +2664,44 @@ defmodule KollywoodWeb.DashboardLive do
     artifacts = if report, do: Map.get(report, "artifacts", []), else: []
     verdict = if report, do: Map.get(report, "verdict"), else: nil
     summary = if report, do: Map.get(report, "summary"), else: nil
+    raw_json = if report, do: pretty_json(Map.get(report, "raw")), else: nil
+
+    artifacts =
+      if is_list(artifacts) do
+        Enum.map(artifacts, fn artifact ->
+          attach_testing_artifact_preview(
+            artifact,
+            assigns.project_slug,
+            assigns.story_id,
+            assigns.attempt
+          )
+        end)
+      else
+        []
+      end
+
+    cycle_reports =
+      assigns.cycle_reports
+      |> normalize_testing_cycle_reports()
+      |> Enum.map(fn cycle_report ->
+        attach_testing_report_artifact_previews(
+          cycle_report,
+          assigns.project_slug,
+          assigns.story_id,
+          assigns.attempt
+        )
+      end)
 
     assigns =
       assigns
       |> assign(:report, report)
       |> assign(:checkpoints, if(is_list(checkpoints), do: checkpoints, else: []))
-      |> assign(:artifacts, if(is_list(artifacts), do: artifacts, else: []))
+      |> assign(:artifacts, artifacts)
       |> assign(:verdict, verdict)
       |> assign(:summary, summary)
+      |> assign(:raw_json, raw_json)
+      |> assign(:cycles, normalize_report_cycles(assigns.cycles))
+      |> assign(:cycle_reports, cycle_reports)
 
     ~H"""
     <div class="card bg-base-200 border border-base-300">
@@ -2495,8 +2718,20 @@ defmodule KollywoodWeb.DashboardLive do
 
         <%= if @report do %>
           <div class="text-xs text-base-content/60">
-            {length(@checkpoints)} checkpoints - {length(@artifacts)} artifacts
+            {length(@checkpoints)} checkpoints - {length(@artifacts)} artifacts - {length(@cycles)} cycles
           </div>
+
+          <%= if @cycles != [] do %>
+            <div class="flex flex-wrap gap-2">
+              <%= for cycle <- @cycles do %>
+                <% cycle_num = Map.get(cycle, "cycle") %>
+                <% cycle_label = if is_integer(cycle_num), do: "Cycle #{cycle_num}", else: "Cycle ?" %>
+                <span class={testing_checkpoint_badge_class(Map.get(cycle, "status"))}>
+                  {cycle_label}: {String.upcase(to_string(Map.get(cycle, "status") || "unknown"))}
+                </span>
+              <% end %>
+            </div>
+          <% end %>
 
           <%= if is_binary(@summary) and String.trim(@summary) != "" do %>
             <p class="text-sm text-base-content/80 break-words">{@summary}</p>
@@ -2521,63 +2756,68 @@ defmodule KollywoodWeb.DashboardLive do
           <% end %>
 
           <%= if @artifacts != [] do %>
-            <div class="overflow-x-auto">
-              <table class="table table-sm">
-                <thead>
-                  <tr>
-                    <th>Kind</th>
-                    <th>Artifact</th>
-                    <th>Stored</th>
-                    <th>Notes</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <%= for artifact <- @artifacts do %>
-                    <% path = Map.get(artifact, "path") %>
-                    <% stored_path = Map.get(artifact, "stored_path") %>
-                    <% storage_error = Map.get(artifact, "storage_error") %>
-                    <% description = Map.get(artifact, "description") %>
-                    <tr>
-                      <td class="align-top">
-                        <span class="badge badge-ghost text-xs">
-                          {Map.get(artifact, "kind") || "artifact"}
-                        </span>
-                      </td>
-                      <td class="align-top">
-                        <%= if is_binary(path) and http_url?(path) do %>
-                          <a
-                            href={path}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            class="link link-primary text-xs break-all"
-                          >
-                            {path}
-                          </a>
-                        <% else %>
-                          <span class="font-mono text-xs break-all">{path || "n/a"}</span>
+            <.testing_artifacts_table artifacts={@artifacts} />
+          <% end %>
+
+          <%= if @cycle_reports != [] do %>
+            <div class="space-y-2">
+              <p class="text-xs font-semibold text-base-content/55 uppercase tracking-wide">
+                Per-cycle testing.json
+              </p>
+              <%= for cycle_report <- @cycle_reports do %>
+                <% cycle_num = Map.get(cycle_report, "cycle") %>
+                <% cycle_label = if is_integer(cycle_num), do: "Cycle #{cycle_num}", else: "Cycle ?" %>
+                <% cycle_verdict = Map.get(cycle_report, "verdict") || "unknown" %>
+                <% cycle_summary = Map.get(cycle_report, "summary") %>
+                <% cycle_checkpoints = Map.get(cycle_report, "checkpoints", []) %>
+                <% cycle_artifacts = Map.get(cycle_report, "artifacts", []) %>
+                <% cycle_raw_json = pretty_json(Map.get(cycle_report, "raw")) %>
+                <details class="rounded-lg border border-base-300 bg-base-100 p-3">
+                  <summary class="cursor-pointer text-sm font-medium">
+                    {cycle_label} - {String.upcase(to_string(cycle_verdict))}
+                    <%= if is_binary(cycle_summary) and String.trim(cycle_summary) != "" do %>
+                      - {cycle_summary}
+                    <% end %>
+                  </summary>
+                  <div class="mt-3 space-y-3">
+                    <%= if cycle_checkpoints != [] do %>
+                      <div class="space-y-2">
+                        <%= for checkpoint <- cycle_checkpoints do %>
+                          <div class="rounded-lg border border-base-300 bg-base-200 p-2">
+                            <div class="flex flex-wrap items-center justify-between gap-2">
+                              <p class="text-sm font-medium">
+                                {Map.get(checkpoint, "name") || "checkpoint"}
+                              </p>
+                              <span class={
+                                testing_checkpoint_badge_class(Map.get(checkpoint, "status"))
+                              }>
+                                {String.upcase(to_string(Map.get(checkpoint, "status") || "unknown"))}
+                              </span>
+                            </div>
+                            <%= if details = Map.get(checkpoint, "details") do %>
+                              <p class="mt-1 text-xs text-base-content/70 break-words">{details}</p>
+                            <% end %>
+                          </div>
                         <% end %>
-                      </td>
-                      <td class="align-top">
-                        <%= if is_binary(stored_path) and String.trim(stored_path) != "" do %>
-                          <span class="font-mono text-xs break-all">{stored_path}</span>
-                        <% else %>
-                          <span class="text-xs text-base-content/50">Not stored</span>
-                        <% end %>
-                      </td>
-                      <td class="align-top">
-                        <%= if is_binary(storage_error) and String.trim(storage_error) != "" do %>
-                          <span class="text-xs text-error break-words">{storage_error}</span>
-                        <% else %>
-                          <span class="text-xs text-base-content/60 break-words">
-                            {description || "—"}
-                          </span>
-                        <% end %>
-                      </td>
-                    </tr>
-                  <% end %>
-                </tbody>
-              </table>
+                      </div>
+                    <% end %>
+                    <%= if cycle_artifacts != [] do %>
+                      <.testing_artifacts_table artifacts={cycle_artifacts} />
+                    <% end %>
+                    <%= if is_binary(cycle_raw_json) and String.trim(cycle_raw_json) != "" do %>
+                      <pre class="font-mono text-xs whitespace-pre-wrap break-words">{cycle_raw_json}</pre>
+                    <% end %>
+                  </div>
+                </details>
+              <% end %>
             </div>
+          <% end %>
+
+          <%= if is_binary(@raw_json) and String.trim(@raw_json) != "" do %>
+            <details class="rounded-lg border border-base-300 bg-base-100 p-3">
+              <summary class="cursor-pointer text-sm font-medium">Raw testing.json</summary>
+              <pre class="mt-3 font-mono text-xs whitespace-pre-wrap break-words">{@raw_json}</pre>
+            </details>
           <% end %>
         <% else %>
           <p class="text-sm text-base-content/60 italic">
@@ -2589,11 +2829,109 @@ defmodule KollywoodWeb.DashboardLive do
     """
   end
 
+  attr :artifacts, :list, default: []
+
+  defp testing_artifacts_table(assigns) do
+    ~H"""
+    <div class="overflow-x-auto">
+      <table class="table table-sm">
+        <thead>
+          <tr>
+            <th>Kind</th>
+            <th>Preview</th>
+            <th>Artifact</th>
+            <th>Stored</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          <%= for artifact <- @artifacts do %>
+            <% kind = Map.get(artifact, "kind") || "artifact" %>
+            <% path = Map.get(artifact, "path") %>
+            <% stored_path = Map.get(artifact, "stored_path") %>
+            <% stored_url = Map.get(artifact, "stored_url") %>
+            <% storage_error = Map.get(artifact, "storage_error") %>
+            <% description = Map.get(artifact, "description") %>
+            <% preview_url = Map.get(artifact, "preview_url") %>
+            <% preview_type = Map.get(artifact, "preview_type") %>
+            <tr>
+              <td class="align-top">
+                <span class="badge badge-ghost text-xs">{kind}</span>
+              </td>
+              <td class="align-top min-w-[14rem]">
+                <%= if preview_type == "image" and is_binary(preview_url) do %>
+                  <img
+                    src={preview_url}
+                    alt={description || kind}
+                    class="max-h-40 rounded-lg border border-base-300 bg-base-100"
+                  />
+                <% else %>
+                  <%= if preview_type == "video" and is_binary(preview_url) do %>
+                    <video
+                      controls
+                      preload="metadata"
+                      class="max-h-40 rounded-lg border border-base-300 bg-base-100"
+                    >
+                      <source src={preview_url} />
+                    </video>
+                  <% else %>
+                    <span class="text-xs text-base-content/50">No inline preview</span>
+                  <% end %>
+                <% end %>
+              </td>
+              <td class="align-top">
+                <%= if is_binary(path) and http_url?(path) do %>
+                  <a
+                    href={path}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="link link-primary text-xs break-all"
+                  >
+                    {path}
+                  </a>
+                <% else %>
+                  <span class="font-mono text-xs break-all">{path || "n/a"}</span>
+                <% end %>
+              </td>
+              <td class="align-top">
+                <%= if is_binary(stored_url) do %>
+                  <a
+                    href={stored_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="link link-primary text-xs break-all"
+                  >
+                    {stored_path}
+                  </a>
+                <% else %>
+                  <%= if is_binary(stored_path) and String.trim(stored_path) != "" do %>
+                    <span class="font-mono text-xs break-all">{stored_path}</span>
+                  <% else %>
+                    <span class="text-xs text-base-content/50">Not stored</span>
+                  <% end %>
+                <% end %>
+              </td>
+              <td class="align-top">
+                <%= if is_binary(storage_error) and String.trim(storage_error) != "" do %>
+                  <span class="text-xs text-error break-words">{storage_error}</span>
+                <% else %>
+                  <span class="text-xs text-base-content/60 break-words">{description || "—"}</span>
+                <% end %>
+              </td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+    """
+  end
+
   # -- Story Detail Section --
 
   attr :story, :map, default: nil
   attr :story_id, :string, default: nil
   attr :run_detail, :map, default: nil
+  attr :run_detail_panel_tab, :string, default: "logs"
   attr :active_log_tab, :string, default: "agent"
   attr :story_detail_tab, :string, default: "details"
   attr :project, Project, required: true
@@ -2776,6 +3114,17 @@ defmodule KollywoodWeb.DashboardLive do
               </div>
             <% end %>
 
+            <%= if story_testing_notes(@story) != "" do %>
+              <div>
+                <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide mb-2">
+                  Testing Notes (Tester Only)
+                </h3>
+                <div class="prose prose-sm max-w-none text-base-content/70">
+                  {raw(markdown_to_html(story_testing_notes(@story)))}
+                </div>
+              </div>
+            <% end %>
+
             <%= if depends_on = @story["dependsOn"] do %>
               <%= if depends_on != [] do %>
                 <div>
@@ -2837,22 +3186,18 @@ defmodule KollywoodWeb.DashboardLive do
               <p class="break-words text-xs text-base-content/60">{@run_detail["retry_summary"]}</p>
             <% end %>
 
-            <.testing_report_section report={if(@run_detail, do: @run_detail["testing_report"])} />
-
             <div class="flex gap-0 border-b border-base-300">
               <%= for {tab, label} <- [
-                {"agent", "Agent"},
-                {"review_agent", "Review Agent"},
-                {"testing_agent", "Testing Agent"},
-                {"worker", "Worker"}
+                {"logs", "Logs"},
+                {"reports", "Reports"}
               ] do %>
                 <button
-                  phx-click="set_log_tab"
+                  phx-click="set_run_detail_panel_tab"
                   phx-value-tab={tab}
                   class={[
                     "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
-                    @active_log_tab == tab && "border-primary text-primary",
-                    @active_log_tab != tab &&
+                    @run_detail_panel_tab == tab && "border-primary text-primary",
+                    @run_detail_panel_tab != tab &&
                       "border-transparent text-base-content/60 hover:text-base-content"
                   ]}
                 >
@@ -2861,14 +3206,54 @@ defmodule KollywoodWeb.DashboardLive do
               <% end %>
             </div>
 
-            <%= if @run_detail && @run_detail["active_log_content"] do %>
-              <pre
-                id="log-output"
-                phx-hook=".LogScroll"
-                class="font-mono text-xs leading-relaxed bg-base-300 p-4 rounded-lg overflow-auto max-h-[75vh] whitespace-pre-wrap"
-              ><.ansi_log content={@run_detail["active_log_content"]} /></pre>
+            <%= if @run_detail_panel_tab == "reports" do %>
+              <div class="space-y-4">
+                <.review_report_section
+                  report={if(@run_detail, do: @run_detail["review_report"])}
+                  cycles={if(@run_detail, do: @run_detail["review_cycles"])}
+                  cycle_reports={if(@run_detail, do: @run_detail["review_cycle_reports"])}
+                />
+                <.testing_report_section
+                  report={if(@run_detail, do: @run_detail["testing_report"])}
+                  cycles={if(@run_detail, do: @run_detail["testing_cycles"])}
+                  cycle_reports={if(@run_detail, do: @run_detail["testing_cycle_reports"])}
+                  project_slug={@project.slug}
+                  story_id={@story_id}
+                  attempt={if(@run_detail, do: get_in(@run_detail, ["metadata", "attempt"]))}
+                />
+              </div>
             <% else %>
-              <p class="text-base-content/50 text-sm italic">No output yet.</p>
+              <div class="flex gap-0 border-b border-base-300">
+                <%= for {tab, label} <- [
+                  {"agent", "Agent"},
+                  {"review_agent", "Review Agent"},
+                  {"testing_agent", "Testing Agent"},
+                  {"worker", "Worker"}
+                ] do %>
+                  <button
+                    phx-click="set_log_tab"
+                    phx-value-tab={tab}
+                    class={[
+                      "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
+                      @active_log_tab == tab && "border-primary text-primary",
+                      @active_log_tab != tab &&
+                        "border-transparent text-base-content/60 hover:text-base-content"
+                    ]}
+                  >
+                    {label}
+                  </button>
+                <% end %>
+              </div>
+
+              <%= if @run_detail && @run_detail["active_log_content"] do %>
+                <pre
+                  id="log-output"
+                  phx-hook=".LogScroll"
+                  class="font-mono text-xs leading-relaxed bg-base-300 p-4 rounded-lg overflow-auto max-h-[75vh] whitespace-pre-wrap"
+                ><.ansi_log content={@run_detail["active_log_content"]} /></pre>
+              <% else %>
+                <p class="text-base-content/50 text-sm italic">No output yet.</p>
+              <% end %>
             <% end %>
           <% else %>
             <%= if @story_attempts == [] do %>
@@ -3827,6 +4212,7 @@ defmodule KollywoodWeb.DashboardLive do
       "status" => "draft",
       "dependsOn" => "",
       "notes" => "",
+      "testingNotes" => "",
       "execution_agent_kind" => "",
       "execution_review_agent_kind" => "",
       "execution_review_max_cycles" => "",
@@ -3848,6 +4234,7 @@ defmodule KollywoodWeb.DashboardLive do
       "status" => normalize_status(Map.get(story, "status", "open")),
       "dependsOn" => depends_on_text(Map.get(story, "dependsOn")),
       "notes" => to_string(Map.get(story, "notes", "")),
+      "testingNotes" => story_testing_notes(story),
       "execution_agent_kind" => story_execution_override_value(story, "agent_kind"),
       "execution_review_agent_kind" => story_execution_override_value(story, "review_agent_kind"),
       "execution_review_max_cycles" => story_execution_override_value(story, "review_max_cycles"),
@@ -3900,6 +4287,7 @@ defmodule KollywoodWeb.DashboardLive do
       "status" => Map.get(params, "status"),
       "dependsOn" => Map.get(params, "dependsOn"),
       "notes" => Map.get(params, "notes"),
+      "testingNotes" => Map.get(params, "testingNotes"),
       "settings" => %{
         "execution" => %{
           "agent_kind" => Map.get(params, "execution_agent_kind"),
@@ -3934,6 +4322,7 @@ defmodule KollywoodWeb.DashboardLive do
         "status",
         "dependsOn",
         "notes",
+        "testingNotes",
         "execution_agent_kind",
         "execution_review_agent_kind",
         "execution_review_max_cycles",
@@ -3947,6 +4336,17 @@ defmodule KollywoodWeb.DashboardLive do
   defp merge_story_form_values(_existing, attrs) when is_map(attrs), do: attrs
   defp merge_story_form_values(existing, _attrs) when is_map(existing), do: existing
   defp merge_story_form_values(_existing, _attrs), do: %{}
+
+  defp story_testing_notes(story) when is_map(story) do
+    value = Map.get(story, "testingNotes") || Map.get(story, "testing_notes")
+
+    case value do
+      notes when is_binary(notes) -> notes
+      _other -> ""
+    end
+  end
+
+  defp story_testing_notes(_story), do: ""
 
   defp clear_story_form(socket) do
     socket
@@ -5337,6 +5737,23 @@ defmodule KollywoodWeb.DashboardLive do
     end)
   end
 
+  defp load_selected_run_detail(socket, tab) do
+    project = socket.assigns.current_project
+    story_id = socket.assigns.run_detail_story_id
+    attempt = socket.assigns.run_detail_attempt
+
+    cond do
+      project == nil or not is_binary(story_id) ->
+        nil
+
+      is_binary(attempt) and String.trim(attempt) != "" ->
+        load_run_detail_for_attempt(project, story_id, attempt, tab)
+
+      true ->
+        load_run_detail_latest(project, story_id, tab)
+    end
+  end
+
   defp load_run_detail_for_attempt(nil, _story_id, _attempt, _tab), do: nil
   defp load_run_detail_for_attempt(_project, nil, _attempt, _tab), do: nil
 
@@ -5363,7 +5780,13 @@ defmodule KollywoodWeb.DashboardLive do
     phase = derive_phase_map(Path.dirname(files.metadata), metadata)
     retry_mode = normalize_retry_mode(Map.get(metadata, "retry_mode"))
     retry_provenance = normalize_retry_provenance(Map.get(metadata, "retry_provenance"))
+    events = read_events_jsonl(files.events)
+    review_report = load_review_report(metadata, files)
+    review_cycle_reports = load_review_cycle_reports(files)
     testing_report = load_testing_report(metadata, files)
+    testing_cycle_reports = load_testing_cycle_reports(files)
+    review_cycles = review_cycle_summaries(events)
+    testing_cycles = testing_cycle_summaries(events)
 
     %{
       "metadata" => metadata,
@@ -5376,10 +5799,173 @@ defmodule KollywoodWeb.DashboardLive do
       "retry_provenance" => retry_provenance,
       "retry_summary" => retry_summary(retry_mode, retry_provenance),
       "retry_action" => StepRetry.retry_action(project, story_id, Map.get(metadata, "attempt")),
+      "review_report" => review_report,
+      "review_cycles" => review_cycles,
+      "review_cycle_reports" => review_cycle_reports,
       "testing_report" => testing_report,
+      "testing_cycles" => testing_cycles,
+      "testing_cycle_reports" => testing_cycle_reports,
       "active_log_content" => content
     }
   end
+
+  defp load_review_report(metadata, files) when is_map(metadata) and is_map(files) do
+    metadata_report =
+      case Map.get(metadata, "review_report") do
+        report when is_map(report) -> normalize_review_report(report)
+        _other -> nil
+      end
+
+    metadata_report || read_review_report_from_files(files)
+  end
+
+  defp load_review_report(_metadata, _files), do: nil
+
+  defp read_review_report_from_files(files) when is_map(files) do
+    [Map.get(files, :review_json)]
+    |> Enum.find_value(fn path ->
+      if is_binary(path) and File.exists?(path) do
+        with {:ok, content} <- File.read(path),
+             {:ok, decoded} <- Jason.decode(content),
+             true <- is_map(decoded) do
+          normalize_review_report(decoded)
+        else
+          _other -> nil
+        end
+      else
+        nil
+      end
+    end)
+  end
+
+  defp read_review_report_from_files(_files), do: nil
+
+  defp load_review_cycle_reports(files) when is_map(files) do
+    load_cycle_reports(files, :review_cycles_dir, &normalize_review_report/1)
+  end
+
+  defp load_review_cycle_reports(_files), do: []
+
+  defp normalize_review_report(report) when is_map(report) do
+    verdict =
+      report
+      |> map_field(:verdict)
+      |> maybe_string()
+      |> case do
+        nil -> nil
+        value -> String.downcase(value)
+      end
+
+    if verdict in ["pass", "fail"] do
+      findings =
+        report
+        |> map_field(:findings)
+        |> normalize_review_report_findings()
+
+      %{
+        "verdict" => verdict,
+        "summary" => maybe_string(map_field(report, :summary)),
+        "findings" => findings,
+        "raw" => report
+      }
+    else
+      nil
+    end
+  end
+
+  defp normalize_review_report(_report), do: nil
+
+  defp normalize_review_report_findings(findings) when is_list(findings) do
+    findings
+    |> Enum.map(&normalize_review_report_finding/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp normalize_review_report_findings(_findings), do: []
+
+  defp normalize_review_report_finding(finding) when is_map(finding) do
+    description = maybe_string(map_field(finding, :description))
+
+    severity =
+      finding
+      |> map_field(:severity)
+      |> maybe_string()
+      |> case do
+        nil -> "minor"
+        value -> String.downcase(value)
+      end
+
+    if is_binary(description) do
+      %{
+        "severity" => severity,
+        "description" => description
+      }
+    else
+      nil
+    end
+  end
+
+  defp normalize_review_report_finding(_finding), do: nil
+
+  defp review_cycle_summaries(events) when is_list(events) do
+    events
+    |> Enum.filter(fn event ->
+      event_type = map_field(event, :type) |> maybe_string()
+      event_type in ["review_passed", "review_failed", "review_error"]
+    end)
+    |> Enum.map(fn event ->
+      event_type = map_field(event, :type) |> maybe_string()
+
+      status =
+        case event_type do
+          "review_passed" -> "pass"
+          "review_failed" -> "fail"
+          "review_error" -> "error"
+          _other -> "unknown"
+        end
+
+      %{
+        "cycle" => positive_integer_or_nil(map_field(event, :cycle)),
+        "status" => status,
+        "summary" =>
+          maybe_string(map_field(event, :reason)) ||
+            maybe_string(map_field(event, :summary))
+      }
+    end)
+    |> Enum.sort_by(fn item -> {Map.get(item, "cycle") || 0, Map.get(item, "status") || ""} end)
+  end
+
+  defp review_cycle_summaries(_events), do: []
+
+  defp testing_cycle_summaries(events) when is_list(events) do
+    events
+    |> Enum.filter(fn event ->
+      event_type = map_field(event, :type) |> maybe_string()
+      event_type in ["testing_passed", "testing_failed", "testing_error"]
+    end)
+    |> Enum.map(fn event ->
+      event_type = map_field(event, :type) |> maybe_string()
+
+      status =
+        case event_type do
+          "testing_passed" -> "pass"
+          "testing_failed" -> "fail"
+          "testing_error" -> "error"
+          _other -> "unknown"
+        end
+
+      %{
+        "cycle" => positive_integer_or_nil(map_field(event, :cycle)),
+        "status" => status,
+        "summary" =>
+          maybe_string(map_field(event, :summary)) ||
+            maybe_string(map_field(event, :reason))
+      }
+    end)
+    |> Enum.sort_by(fn item -> {Map.get(item, "cycle") || 0, Map.get(item, "status") || ""} end)
+  end
+
+  defp testing_cycle_summaries(_events), do: []
 
   defp load_testing_report(metadata, files) when is_map(metadata) and is_map(files) do
     metadata_report =
@@ -5412,6 +5998,77 @@ defmodule KollywoodWeb.DashboardLive do
 
   defp read_testing_report_from_files(_files), do: nil
 
+  defp load_testing_cycle_reports(files) when is_map(files) do
+    load_cycle_reports(files, :testing_cycles_dir, &normalize_testing_report/1)
+  end
+
+  defp load_testing_cycle_reports(_files), do: []
+
+  defp load_cycle_reports(files, dir_key, normalizer)
+       when is_map(files) and is_atom(dir_key) and is_function(normalizer, 1) do
+    files
+    |> cycle_report_paths(dir_key)
+    |> Enum.map(fn path ->
+      with {:ok, decoded} <- read_cycle_report_json(path),
+           normalized when is_map(normalized) <- normalizer.(decoded) do
+        normalized
+        |> Map.put("cycle", cycle_report_number(path))
+        |> Map.put("path", path)
+      else
+        _other -> nil
+      end
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.sort_by(fn cycle_report ->
+      {Map.get(cycle_report, "cycle") || 0, Map.get(cycle_report, "path") || ""}
+    end)
+  end
+
+  defp load_cycle_reports(_files, _dir_key, _normalizer), do: []
+
+  defp cycle_report_paths(files, dir_key) when is_map(files) and is_atom(dir_key) do
+    case files |> map_field(dir_key) |> maybe_string() do
+      nil ->
+        []
+
+      dir ->
+        case File.ls(dir) do
+          {:ok, entries} ->
+            entries
+            |> Enum.filter(&String.match?(&1, ~r/^cycle-\d+\.json$/))
+            |> Enum.sort()
+            |> Enum.map(&Path.join(dir, &1))
+
+          {:error, _reason} ->
+            []
+        end
+    end
+  end
+
+  defp cycle_report_paths(_files, _dir_key), do: []
+
+  defp read_cycle_report_json(path) when is_binary(path) do
+    with true <- File.exists?(path),
+         {:ok, content} <- File.read(path),
+         {:ok, decoded} <- Jason.decode(content),
+         true <- is_map(decoded) do
+      {:ok, decoded}
+    else
+      _other -> {:error, :invalid_cycle_report}
+    end
+  end
+
+  defp read_cycle_report_json(_path), do: {:error, :invalid_cycle_report}
+
+  defp cycle_report_number(path) when is_binary(path) do
+    case Regex.run(~r/^cycle-(\d+)\.json$/, Path.basename(path)) do
+      [_, value] -> positive_integer_or_nil(value)
+      _other -> nil
+    end
+  end
+
+  defp cycle_report_number(_path), do: nil
+
   defp normalize_testing_report(report) when is_map(report) do
     verdict =
       report
@@ -5437,7 +6094,8 @@ defmodule KollywoodWeb.DashboardLive do
         "verdict" => verdict,
         "summary" => maybe_string(map_field(report, :summary)),
         "checkpoints" => checkpoints,
-        "artifacts" => artifacts
+        "artifacts" => artifacts,
+        "raw" => report
       }
     else
       nil
@@ -5653,6 +6311,126 @@ defmodule KollywoodWeb.DashboardLive do
     end
   end
 
+  defp normalize_report_cycles(cycles) when is_list(cycles) do
+    cycles
+    |> Enum.map(fn cycle ->
+      if is_map(cycle) do
+        %{
+          "cycle" => positive_integer_or_nil(map_field(cycle, :cycle)),
+          "status" =>
+            cycle
+            |> map_field(:status)
+            |> maybe_string()
+            |> case do
+              nil -> nil
+              value -> String.downcase(value)
+            end,
+          "summary" => maybe_string(map_field(cycle, :summary))
+        }
+      else
+        nil
+      end
+    end)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp normalize_report_cycles(_cycles), do: []
+
+  defp normalize_review_cycle_reports(cycle_reports) when is_list(cycle_reports) do
+    cycle_reports
+    |> Enum.map(fn cycle_report ->
+      if is_map(cycle_report) do
+        verdict =
+          cycle_report
+          |> map_field(:verdict)
+          |> maybe_string()
+          |> case do
+            nil -> nil
+            value -> String.downcase(value)
+          end
+
+        if verdict in ["pass", "fail"] do
+          %{
+            "cycle" => positive_integer_or_nil(map_field(cycle_report, :cycle)),
+            "verdict" => verdict,
+            "summary" => maybe_string(map_field(cycle_report, :summary)),
+            "findings" =>
+              cycle_report
+              |> map_field(:findings)
+              |> normalize_review_report_findings(),
+            "raw" => map_field(cycle_report, :raw) || cycle_report
+          }
+        end
+      end
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.sort_by(fn cycle_report ->
+      {Map.get(cycle_report, "cycle") || 0, Map.get(cycle_report, "verdict") || ""}
+    end)
+  end
+
+  defp normalize_review_cycle_reports(_cycle_reports), do: []
+
+  defp normalize_testing_cycle_reports(cycle_reports) when is_list(cycle_reports) do
+    cycle_reports
+    |> Enum.map(fn cycle_report ->
+      if is_map(cycle_report) do
+        verdict =
+          cycle_report
+          |> map_field(:verdict)
+          |> maybe_string()
+          |> case do
+            nil -> nil
+            value -> String.downcase(value)
+          end
+
+        if verdict in ["pass", "fail"] do
+          %{
+            "cycle" => positive_integer_or_nil(map_field(cycle_report, :cycle)),
+            "verdict" => verdict,
+            "summary" => maybe_string(map_field(cycle_report, :summary)),
+            "checkpoints" =>
+              cycle_report
+              |> map_field(:checkpoints)
+              |> normalize_testing_report_checkpoints(),
+            "artifacts" =>
+              cycle_report
+              |> map_field(:artifacts)
+              |> normalize_testing_report_artifacts(),
+            "raw" => map_field(cycle_report, :raw) || cycle_report
+          }
+        end
+      end
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.sort_by(fn cycle_report ->
+      {Map.get(cycle_report, "cycle") || 0, Map.get(cycle_report, "verdict") || ""}
+    end)
+  end
+
+  defp normalize_testing_cycle_reports(_cycle_reports), do: []
+
+  defp review_verdict_badge_class("pass"),
+    do: "badge badge-success badge-outline text-xs font-semibold"
+
+  defp review_verdict_badge_class("fail"),
+    do: "badge badge-error badge-outline text-xs font-semibold"
+
+  defp review_verdict_badge_class(_verdict),
+    do: "badge badge-ghost text-xs font-semibold"
+
+  defp review_finding_severity_badge_class("critical"),
+    do: "badge badge-error badge-outline text-xs font-semibold"
+
+  defp review_finding_severity_badge_class("major"),
+    do: "badge badge-warning badge-outline text-xs font-semibold"
+
+  defp review_finding_severity_badge_class("minor"),
+    do: "badge badge-info badge-outline text-xs font-semibold"
+
+  defp review_finding_severity_badge_class(_severity),
+    do: "badge badge-ghost text-xs font-semibold"
+
   defp testing_verdict_badge_class("pass"),
     do: "badge badge-success badge-outline text-xs font-semibold"
 
@@ -5680,11 +6458,117 @@ defmodule KollywoodWeb.DashboardLive do
 
   defp testing_checkpoint_badge_class(_status), do: "badge badge-ghost text-xs"
 
+  defp attach_testing_artifact_preview(artifact, project_slug, story_id, attempt)
+       when is_map(artifact) do
+    stored_path = maybe_string(Map.get(artifact, "stored_path"))
+    path = maybe_string(Map.get(artifact, "path"))
+    kind = maybe_string(Map.get(artifact, "kind"))
+    preview_type = testing_artifact_preview_type(kind, path, stored_path)
+    stored_url = testing_artifact_route(project_slug, story_id, attempt, stored_path)
+
+    preview_url =
+      cond do
+        preview_type in ["image", "video"] and is_binary(stored_url) ->
+          stored_url
+
+        preview_type in ["image", "video"] and is_binary(path) and http_url?(path) ->
+          path
+
+        true ->
+          nil
+      end
+
+    artifact
+    |> Map.put("stored_url", stored_url)
+    |> Map.put("preview_type", preview_type)
+    |> Map.put("preview_url", preview_url)
+  end
+
+  defp attach_testing_artifact_preview(artifact, _project_slug, _story_id, _attempt), do: artifact
+
+  defp attach_testing_report_artifact_previews(report, project_slug, story_id, attempt)
+       when is_map(report) do
+    artifacts =
+      report
+      |> Map.get("artifacts", [])
+      |> case do
+        values when is_list(values) ->
+          Enum.map(values, fn artifact ->
+            attach_testing_artifact_preview(artifact, project_slug, story_id, attempt)
+          end)
+
+        _other ->
+          []
+      end
+
+    Map.put(report, "artifacts", artifacts)
+  end
+
+  defp attach_testing_report_artifact_previews(report, _project_slug, _story_id, _attempt),
+    do: report
+
+  defp testing_artifact_preview_type(kind, path, stored_path) do
+    normalized_kind =
+      kind
+      |> maybe_string()
+      |> case do
+        nil -> nil
+        value -> String.downcase(value)
+      end
+
+    extension =
+      [stored_path, path]
+      |> Enum.find_value(fn item ->
+        item
+        |> maybe_string()
+        |> case do
+          nil -> nil
+          value -> value |> Path.extname() |> String.downcase()
+        end
+      end)
+
+    cond do
+      normalized_kind in ["screenshot", "image"] -> "image"
+      normalized_kind == "video" -> "video"
+      extension in [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"] -> "image"
+      extension in [".webm", ".mp4", ".mov", ".m4v", ".ogv"] -> "video"
+      true -> nil
+    end
+  end
+
+  defp testing_artifact_route(project_slug, story_id, attempt, stored_path)
+       when is_binary(project_slug) and is_binary(story_id) and is_binary(stored_path) do
+    case parse_attempt(attempt) do
+      attempt_num when is_integer(attempt_num) and attempt_num > 0 ->
+        filename = Path.basename(stored_path)
+
+        if maybe_string(filename) do
+          ~p"/projects/#{project_slug}/runs/#{story_id}/#{attempt_num}/artifacts/#{filename}"
+        else
+          nil
+        end
+
+      _other ->
+        nil
+    end
+  end
+
+  defp testing_artifact_route(_project_slug, _story_id, _attempt, _stored_path), do: nil
+
   defp http_url?(value) when is_binary(value) do
     String.starts_with?(value, "http://") or String.starts_with?(value, "https://")
   end
 
   defp http_url?(_value), do: false
+
+  defp pretty_json(value) when is_map(value) or is_list(value) do
+    case Jason.encode(value, pretty: true) do
+      {:ok, encoded} -> encoded
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp pretty_json(_value), do: nil
 
   defp current_workflow_identity(project) do
     path = workflow_path(project)

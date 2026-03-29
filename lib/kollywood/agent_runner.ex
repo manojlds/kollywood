@@ -452,7 +452,7 @@ defmodule Kollywood.AgentRunner do
   end
 
   defp build_prompt(state, config, prompt_template, 1) do
-    variables = PromptBuilder.build_variables(state.issue, state.attempt)
+    variables = prompt_variables(state.issue, state.attempt)
     resume_context = build_resume_context(state.workspace, Map.get(state, :continuation))
 
     variables =
@@ -1363,6 +1363,7 @@ defmodule Kollywood.AgentRunner do
            {:ok, prompt} <- build_review_prompt(state, config, cycle, workspace_rjp),
            {:ok, _output} <- run_review_turn(state, config, prompt, state.log_files) do
         persist_review_json(workspace_rjp, state.log_files)
+        persist_review_cycle_json(workspace_rjp, state.log_files, cycle)
 
         case read_review_json(workspace_rjp) do
           {:ok, :pass} ->
@@ -1424,10 +1425,12 @@ defmodule Kollywood.AgentRunner do
            {:ok, prompt} <- build_testing_prompt(state, config, cycle, workspace_tjp),
            {:ok, testing_run} <- run_testing_turn(state, config, prompt, state.log_files) do
         persist_testing_json(workspace_tjp, state.log_files)
+        persist_testing_cycle_json(workspace_tjp, state.log_files, cycle)
 
         case read_testing_json(workspace_tjp) do
           {:ok, %{verdict: :pass} = testing} ->
             testing = persist_testing_report(testing, state.workspace, state.log_files)
+            persist_testing_cycle_report(testing, state.log_files, cycle)
             state = emit_testing_checkpoints(state, testing.checkpoints, cycle)
 
             {:ok,
@@ -1445,6 +1448,7 @@ defmodule Kollywood.AgentRunner do
 
           {:ok, %{verdict: :fail} = testing} ->
             testing = persist_testing_report(testing, state.workspace, state.log_files)
+            persist_testing_cycle_report(testing, state.log_files, cycle)
             state = emit_testing_checkpoints(state, testing.checkpoints, cycle)
 
             {:testing_failed, testing.feedback,
@@ -1828,7 +1832,7 @@ defmodule Kollywood.AgentRunner do
   end
 
   defp build_checks_remediation_prompt(state, checks_feedback, cycle, prompt_template) do
-    base_variables = PromptBuilder.build_variables(state.issue, state.attempt)
+    base_variables = prompt_variables(state.issue, state.attempt)
 
     base_prompt =
       case PromptBuilder.render(prompt_template, base_variables) do
@@ -2337,7 +2341,7 @@ defmodule Kollywood.AgentRunner do
     template = review_prompt_template(config)
 
     variables =
-      PromptBuilder.build_variables(state.issue, state.attempt)
+      prompt_variables(state.issue, state.attempt)
       |> Map.put("review_json_path", rjp)
       |> Map.put("cycle", cycle)
 
@@ -2351,7 +2355,7 @@ defmodule Kollywood.AgentRunner do
     template = testing_prompt_template(config)
 
     variables =
-      PromptBuilder.build_variables(state.issue, state.attempt)
+      prompt_variables(state.issue, state.attempt, include_testing_notes: true)
       |> Map.put("testing_json_path", tjp)
       |> Map.put("cycle", cycle)
       |> Map.put("runtime_base_url", testing_runtime_base_url(state.runtime))
@@ -2529,6 +2533,44 @@ defmodule Kollywood.AgentRunner do
   end
 
   defp persist_testing_json(_src, _log_files), do: :ok
+
+  defp persist_review_cycle_json(src, %{review_cycles_dir: dir}, cycle)
+       when is_binary(src) and is_binary(dir) and is_integer(cycle) and cycle > 0 do
+    if File.exists?(src) do
+      _ = File.mkdir_p(dir)
+      File.copy(src, Path.join(dir, cycle_report_filename(cycle)))
+    end
+
+    :ok
+  end
+
+  defp persist_review_cycle_json(_src, _log_files, _cycle), do: :ok
+
+  defp persist_testing_cycle_json(src, %{testing_cycles_dir: dir}, cycle)
+       when is_binary(src) and is_binary(dir) and is_integer(cycle) and cycle > 0 do
+    if File.exists?(src) do
+      _ = File.mkdir_p(dir)
+      File.copy(src, Path.join(dir, cycle_report_filename(cycle)))
+    end
+
+    :ok
+  end
+
+  defp persist_testing_cycle_json(_src, _log_files, _cycle), do: :ok
+
+  defp persist_testing_cycle_report(%{} = testing, %{testing_cycles_dir: dir}, cycle)
+       when is_binary(dir) and is_integer(cycle) and cycle > 0 do
+    path = Path.join(dir, cycle_report_filename(cycle))
+    _ = write_testing_report(testing, path)
+    :ok
+  end
+
+  defp persist_testing_cycle_report(_testing, _log_files, _cycle), do: :ok
+
+  defp cycle_report_filename(cycle) when is_integer(cycle) and cycle > 0 do
+    padded = cycle |> Integer.to_string() |> String.pad_leading(3, "0")
+    "cycle-" <> padded <> ".json"
+  end
 
   defp persist_testing_report(%{} = testing, workspace, log_files) do
     workspace_path = workspace_path(workspace)
@@ -2750,7 +2792,7 @@ defmodule Kollywood.AgentRunner do
   end
 
   defp build_review_remediation_prompt(state, review_feedback, cycle, prompt_template) do
-    base_variables = PromptBuilder.build_variables(state.issue, state.attempt)
+    base_variables = prompt_variables(state.issue, state.attempt)
 
     base_prompt =
       case PromptBuilder.render(prompt_template, base_variables) do
@@ -2784,7 +2826,7 @@ defmodule Kollywood.AgentRunner do
   end
 
   defp build_testing_remediation_prompt(state, testing_feedback, cycle, prompt_template) do
-    base_variables = PromptBuilder.build_variables(state.issue, state.attempt)
+    base_variables = prompt_variables(state.issue, state.attempt)
 
     base_prompt =
       case PromptBuilder.render(prompt_template, base_variables) do
@@ -3074,14 +3116,21 @@ defmodule Kollywood.AgentRunner do
   Issue description:
   {{ issue.description }}
 
+  Testing notes (for testing agent only):
+  {{ testing_notes }}
+
   Runtime URLs (injected by runtime):
   - Base URL: {{ runtime_base_url }}
   - URL map (JSON): {{ runtime_urls_json }}
   - URL hints:
   {{ runtime_url_hints }}
 
-  First inspect what changed in this workspace (diff/log/files) and map behavior to story scope.
-  Then validate implemented behavior end-to-end (UI/API/CLI as relevant), including:
+  Keep this run fast and focused:
+  - inspect only the issue-relevant diff/files (avoid full-history scans)
+  - run targeted validation only (avoid full test suites unless explicitly required)
+  - finish evidence collection with minimal retries and bounded waits
+
+  Validate implemented behavior end-to-end (UI/API/CLI as relevant), including:
   - acceptance flow for this issue
   - nearby regression flow affected by the implementation
   - one boundary or invalid-input scenario
@@ -3090,6 +3139,10 @@ defmodule Kollywood.AgentRunner do
   - at least one screenshot
   - at least one end-to-end video (`.webm` preferred)
   - include replay/trace/HAR artifacts when they help debugging
+  - avoid interactive commands/flags (for example `snapshot -i`) in CI/agent runs
+  - avoid waiting for `networkidle` on apps with long-lived traffic; prefer bounded waits
+  - if a browser command appears stuck, retry once with a short timeout and continue with direct captures
+  - verify runtime URL reachability with short, bounded probes; if base URL fails, quickly try URL-map entries
 
   Write your testing report to `{{ testing_json_path }}` as one JSON object:
   {
@@ -3394,6 +3447,46 @@ defmodule Kollywood.AgentRunner do
 
   defp map_or_empty(value) when is_map(value), do: value
   defp map_or_empty(_value), do: %{}
+
+  defp prompt_variables(issue, attempt, opts \\ []) do
+    include_testing_notes? = Keyword.get(opts, :include_testing_notes, false)
+
+    variables =
+      issue
+      |> strip_testing_notes()
+      |> PromptBuilder.build_variables(attempt)
+
+    if include_testing_notes? do
+      notes = testing_notes(issue)
+      issue_variables = variables |> Map.get("issue", %{}) |> Map.put("testing_notes", notes)
+
+      variables
+      |> Map.put("issue", issue_variables)
+      |> Map.put("testing_notes", notes)
+    else
+      variables
+    end
+  end
+
+  defp strip_testing_notes(issue) when is_map(issue) do
+    Map.drop(issue, [:testing_notes, :testingNotes, "testing_notes", "testingNotes"])
+  end
+
+  defp strip_testing_notes(issue), do: issue
+
+  defp testing_notes(issue) do
+    issue
+    |> raw_testing_notes()
+    |> optional_string()
+    |> Kernel.||("")
+  end
+
+  defp raw_testing_notes(issue) do
+    case field(issue, :testing_notes) do
+      nil -> field(issue, :testingNotes)
+      value -> value
+    end
+  end
 
   defp optional_string(value) when is_binary(value) and value != "", do: value
   defp optional_string(_value), do: nil

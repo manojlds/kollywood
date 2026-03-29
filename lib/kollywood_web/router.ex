@@ -24,6 +24,11 @@ defmodule KollywoodWeb.Router do
     live "/projects/:project_slug/stories", DashboardLive, :stories
     live "/projects/:project_slug/stories/:story_id", DashboardLive, :story_detail
     live "/projects/:project_slug/runs", DashboardLive, :runs
+
+    get "/projects/:project_slug/runs/:story_id/:attempt/artifacts/:filename",
+        RunArtifactsController,
+        :show
+
     live "/projects/:project_slug/runs/:story_id", DashboardLive, :run_detail
     live "/projects/:project_slug/runs/:story_id/:attempt", DashboardLive, :run_detail
     live "/projects/:project_slug/settings", DashboardLive, :settings
