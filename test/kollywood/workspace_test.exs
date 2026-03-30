@@ -274,6 +274,35 @@ defmodule Kollywood.WorkspaceTest do
     refute branches =~ "kw/WT-5"
   end
 
+  test "cleanup_for_issue removes stale worktree registration when path is missing", %{root: root} do
+    source = setup_git_repo(root)
+    wt_root = Path.join(root, "worktrees")
+
+    config = %{
+      workspace: %{root: wt_root, strategy: :worktree, source: source, branch_prefix: "kw/"},
+      hooks: @no_hooks
+    }
+
+    {:ok, workspace} = Workspace.create_for_issue("WT-STALE", config)
+    assert File.dir?(workspace.path)
+
+    File.rm_rf!(workspace.path)
+    refute File.exists?(workspace.path)
+
+    assert :ok = Workspace.cleanup_for_issue("WT-STALE", config, @no_hooks)
+
+    {branches, 0} =
+      System.cmd("git", ["branch", "--list", "kw/WT-STALE"], cd: source, stderr_to_stdout: true)
+
+    assert String.trim(branches) == ""
+
+    {worktrees, 0} =
+      System.cmd("git", ["worktree", "list", "--porcelain"], cd: source, stderr_to_stdout: true)
+
+    refute worktrees =~ workspace.path
+    refute worktrees =~ "kw/WT-STALE"
+  end
+
   test "merges worktree branch into main and pushes origin", %{root: root} do
     %{origin: origin, source: source} = setup_worktree_remote_repo(root)
     wt_root = Path.join(root, "worktrees")

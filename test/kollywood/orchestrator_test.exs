@@ -2348,6 +2348,12 @@ defmodule Kollywood.OrchestratorTest do
 
   test "marks issue merged when publish_merged event is present", %{root: root} do
     issue = issue("ISS-MERGED", "ABC-MERGED", 1)
+    workspace_root = Path.join(root, "workspaces")
+    workspace_path = Path.join(workspace_root, Kollywood.Workspace.sanitize_key(issue.identifier))
+
+    File.mkdir_p!(workspace_path)
+    File.write!(Path.join(workspace_path, "scratch.txt"), "temp")
+    assert File.dir?(workspace_path)
 
     config = %Config{
       tracker: %{
@@ -2358,7 +2364,7 @@ defmodule Kollywood.OrchestratorTest do
         test_issues: [issue]
       },
       polling: %{interval_ms: 1000},
-      workspace: %{root: Path.join(root, "workspaces"), strategy: :clone},
+      workspace: %{root: workspace_root, strategy: :clone},
       hooks: %{},
       checks: %{},
       runtime: %{},
@@ -2395,6 +2401,7 @@ defmodule Kollywood.OrchestratorTest do
     assert :ok = Orchestrator.poll_now(orchestrator)
     assert_receive {:tracker_mark_done, "ISS-MERGED"}
     assert_receive {:tracker_mark_merged, "ISS-MERGED"}
+    refute File.exists?(workspace_path)
   end
 
   test "keeps issue pending_merge when publish creates PR", %{root: root} do
@@ -2510,6 +2517,15 @@ defmodule Kollywood.OrchestratorTest do
       |> Map.put(:state, "pending_merge")
       |> Map.put(:pr_url, "https://example.test/pulls/1")
 
+    workspace_root = Path.join(root, "workspaces")
+
+    pending_workspace_path =
+      Path.join(workspace_root, Kollywood.Workspace.sanitize_key(pending_issue.identifier))
+
+    File.mkdir_p!(pending_workspace_path)
+    File.write!(Path.join(pending_workspace_path, "scratch.txt"), "temp")
+    assert File.dir?(pending_workspace_path)
+
     dependent_issue =
       issue("ISS-DEP-1", "ABC-DEP-1", 2)
       |> Map.put(:blocked_by, [%{id: "ISS-PM-1", state: "pending_merge"}])
@@ -2524,7 +2540,7 @@ defmodule Kollywood.OrchestratorTest do
         terminal_states: ["Done", "Merged", "Cancelled"]
       },
       polling: %{interval_ms: 1000},
-      workspace: %{root: Path.join(root, "workspaces"), strategy: :clone},
+      workspace: %{root: workspace_root, strategy: :clone},
       hooks: %{},
       checks: %{},
       runtime: %{},
@@ -2568,6 +2584,7 @@ defmodule Kollywood.OrchestratorTest do
 
     assert_receive {:tracker_mark_merged, "ISS-PM-1"}
     refute_receive {:runner_started, "ISS-DEP-1"}, 100
+    refute File.exists?(pending_workspace_path)
 
     assert :ok = Orchestrator.poll_now(orchestrator)
     assert_receive {:runner_started, "ISS-DEP-1"}

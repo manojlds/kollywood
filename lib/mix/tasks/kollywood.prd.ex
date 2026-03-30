@@ -246,13 +246,13 @@ defmodule Mix.Tasks.Kollywood.Prd do
     case Kollywood.Tracker.PrdJson.reset_story(path, story_id, clear_notes: clear_notes?) do
       :ok ->
         if fresh_worktree? do
-          case remove_story_worktree(workspace_root, story_id) do
+          case remove_story_worktree(path, workspace_root, story_id) do
             :ok -> :ok
             {:error, reason} -> Mix.raise(reason)
           end
         end
 
-        Mix.shell().info("Reset #{story_id} for rerun in #{path}")
+        Mix.shell().info("Reset #{story_id} to a fresh draft state in #{path}")
 
       {:error, reason} ->
         Mix.raise(reason)
@@ -682,23 +682,112 @@ defmodule Mix.Tasks.Kollywood.Prd do
 
   defp expand_user_path(_path), do: Path.expand(@default_workspace_root)
 
-  defp remove_story_worktree(workspace_root, story_id) do
-    workspace_path = Path.join(workspace_root, story_id)
+  defp remove_story_worktree(tracker_path, workspace_root, story_id) do
+    key = Kollywood.Workspace.sanitize_key(story_id)
+    workspace_path = Path.join(workspace_root, key)
+    existed_before? = File.exists?(workspace_path)
 
-    if File.exists?(workspace_path) do
-      case File.rm_rf(workspace_path) do
-        {:ok, _entries} ->
-          Mix.shell().info("Removed worktree workspace #{workspace_path}")
+    config = cleanup_workspace_config(tracker_path, workspace_root)
+
+    case Kollywood.Workspace.cleanup_for_issue(story_id, config, %{}) do
+      :ok ->
+        if File.exists?(workspace_path) do
+          {:error, "Failed to remove workspace #{workspace_path}"}
+        else
+          if existed_before? do
+            Mix.shell().info("Removed worktree workspace #{workspace_path}")
+          else
+            Mix.shell().info(
+              "No worktree workspace found at #{workspace_path} (pruned if needed)"
+            )
+          end
+
           :ok
+        end
 
-        {:error, reason, _path} ->
-          {:error, "Failed to remove workspace #{workspace_path}: #{inspect(reason)}"}
-      end
-    else
-      Mix.shell().info("No worktree workspace found at #{workspace_path}")
-      :ok
+      {:error, reason} ->
+        {:error, "Failed to remove workspace #{workspace_path}: #{reason}"}
     end
   end
+
+  defp cleanup_workspace_config(tracker_path, workspace_root) do
+    source_repo = infer_source_repo(tracker_path, workspace_root)
+
+    workspace =
+      %{
+        root: workspace_root,
+        strategy: if(is_binary(source_repo), do: :worktree, else: :clone),
+        branch_prefix: "kollywood/"
+      }
+      |> maybe_put_source(source_repo)
+
+    %{workspace: workspace}
+  end
+
+  defp maybe_put_source(workspace, source_repo) when is_binary(source_repo),
+    do: Map.put(workspace, :source, source_repo)
+
+  defp maybe_put_source(workspace, _source_repo), do: workspace
+
+  defp infer_source_repo(tracker_path, workspace_root) do
+    [
+      infer_source_repo_from_tracker_path(tracker_path),
+      infer_source_repo_from_workspace_root(workspace_root)
+    ]
+    |> Enum.find(&valid_source_repo?/1)
+  end
+
+  defp infer_source_repo_from_tracker_path(tracker_path) do
+    tracker_path = Path.expand(tracker_path)
+    projects_root = Path.join(Kollywood.ServiceConfig.kollywood_home(), "projects")
+    relative = Path.relative_to(tracker_path, projects_root)
+
+    cond do
+      relative == tracker_path or relative == "." or String.starts_with?(relative, "..") ->
+        nil
+
+      true ->
+        case String.split(relative, "/", parts: 3) do
+          [slug, "prd.json"] when slug != "" ->
+            Kollywood.ServiceConfig.project_repos_path(slug)
+
+          [slug, _rest] when slug != "" ->
+            Kollywood.ServiceConfig.project_repos_path(slug)
+
+          _other ->
+            nil
+        end
+    end
+  end
+
+  defp infer_source_repo_from_workspace_root(workspace_root) do
+    workspace_root = Path.expand(workspace_root)
+    workspaces_root = Kollywood.ServiceConfig.workspaces_dir()
+    relative = Path.relative_to(workspace_root, workspaces_root)
+
+    cond do
+      relative == workspace_root or relative == "." or String.starts_with?(relative, "..") ->
+        nil
+
+      true ->
+        case String.split(relative, "/", parts: 2) do
+          [slug] when slug != "" ->
+            Kollywood.ServiceConfig.project_repos_path(slug)
+
+          [slug, _rest] when slug != "" ->
+            Kollywood.ServiceConfig.project_repos_path(slug)
+
+          _other ->
+            nil
+        end
+    end
+  end
+
+  defp valid_source_repo?(source_repo) when is_binary(source_repo) do
+    File.dir?(source_repo) and File.exists?(Path.join(source_repo, ".git"))
+  end
+
+  defp valid_source_repo?(_source_repo), do: false
 
   defp story_id(story) do
     story

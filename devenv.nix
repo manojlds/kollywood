@@ -12,7 +12,6 @@ in
 
   env = {
     MIX_ENV = "dev";
-    PORT = "4000";
   };
 
   processes.server = {
@@ -33,12 +32,13 @@ in
 
     ready = {
       exec = ''
-        ${curl} -fsS "http://127.0.0.1:''${PORT:-4000}/"
+        ${curl} -fsS "http://127.0.0.1:''${PORT:-4000}/" >/dev/null
       '';
       initial_delay = 1;
       period = 1;
-      timeout = 1;
-      failure_threshold = 30;
+      probe_timeout = 2;
+      failure_threshold = 120;
+      timeout = 130;
       success_threshold = 1;
     };
   };

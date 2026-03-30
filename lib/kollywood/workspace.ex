@@ -22,20 +22,28 @@ defmodule Kollywood.Workspace do
           key: String.t(),
           root: String.t(),
           strategy: atom(),
-          branch: String.t() | nil
+          branch: String.t() | nil,
+          source: String.t() | nil
         }
 
-  defstruct [:path, :key, :root, :strategy, :branch]
+  @empty_hooks %{after_create: nil, before_run: nil, after_run: nil, before_remove: nil}
+
+  defstruct [:path, :key, :root, :strategy, :branch, :source]
 
   @doc """
   Creates or reuses a workspace for the given issue identifier.
   """
   @spec create_for_issue(String.t(), map()) :: {:ok, t()} | {:error, String.t()}
   def create_for_issue(identifier, config) do
-    root = expand_root(config.workspace.root || Kollywood.ServiceConfig.workspaces_dir())
+    workspace_config = Map.get(config, :workspace, %{})
+
+    root =
+      expand_root(Map.get(workspace_config, :root) || Kollywood.ServiceConfig.workspaces_dir())
+
     key = sanitize_key(identifier)
     path = Path.join(root, key)
-    strategy = Map.get(config.workspace, :strategy, :directory)
+    strategy = Map.get(workspace_config, :strategy, :directory)
+    source = source_from_workspace_config(workspace_config)
 
     with :ok <- validate_path(path, root),
          :ok <- File.mkdir_p(root) do
@@ -43,7 +51,8 @@ defmodule Kollywood.Workspace do
         path: path,
         key: key,
         root: root,
-        strategy: strategy
+        strategy: strategy,
+        source: source
       }
 
       if File.dir?(path) do
@@ -52,6 +61,40 @@ defmodule Kollywood.Workspace do
       else
         create_new(workspace, identifier, config)
       end
+    end
+  end
+
+  @doc """
+  Removes the workspace for an issue identifier without creating it first.
+
+  This is resilient to stale worktree metadata where the workspace directory may
+  already be missing from disk.
+  """
+  @spec cleanup_for_issue(String.t(), map(), map()) :: :ok | {:error, String.t()}
+  def cleanup_for_issue(identifier, config, hooks \\ %{})
+      when is_binary(identifier) and is_map(config) do
+    workspace_config = Map.get(config, :workspace, %{})
+
+    root =
+      expand_root(Map.get(workspace_config, :root) || Kollywood.ServiceConfig.workspaces_dir())
+
+    key = sanitize_key(identifier)
+    path = Path.join(root, key)
+    strategy = Map.get(workspace_config, :strategy, :directory)
+    branch_prefix = Map.get(workspace_config, :branch_prefix, "kollywood/")
+    source = source_from_workspace_config(workspace_config)
+
+    workspace = %__MODULE__{
+      path: path,
+      key: key,
+      root: root,
+      strategy: strategy,
+      branch: if(strategy == :worktree, do: "#{branch_prefix}#{key}", else: nil),
+      source: source
+    }
+
+    with :ok <- validate_path(path, root) do
+      remove(workspace, normalize_hooks(hooks))
     end
   end
 
@@ -83,6 +126,8 @@ defmodule Kollywood.Workspace do
   """
   @spec remove(t(), map()) :: :ok
   def remove(%__MODULE__{} = workspace, hooks) do
+    hooks = normalize_hooks(hooks)
+
     case run_hook(hooks.before_remove, workspace.path, "before_remove") do
       :ok ->
         :ok
@@ -192,9 +237,11 @@ defmodule Kollywood.Workspace do
   end
 
   defp create_worktree(workspace, identifier, config) do
-    source = expand_root(config.workspace.source || ".")
-    prefix = Map.get(config.workspace, :branch_prefix, "kollywood/")
+    workspace_config = Map.get(config, :workspace, %{})
+    source = expand_root(Map.get(workspace_config, :source) || ".")
+    prefix = Map.get(workspace_config, :branch_prefix, "kollywood/")
     branch = "#{prefix}#{workspace.key}"
+    workspace = %{workspace | source: source}
 
     Logger.info("Creating worktree for #{identifier} at #{workspace.path} (branch: #{branch})")
 
@@ -227,36 +274,16 @@ defmodule Kollywood.Workspace do
   # --- Private: removal ---
 
   defp do_remove(%__MODULE__{strategy: :worktree} = workspace) do
-    # Find the source repo by reading the worktree's .git file
-    git_file = Path.join(workspace.path, ".git")
-
-    source =
-      case File.read(git_file) do
-        {:ok, content} ->
-          # .git file contains "gitdir: /path/to/source/.git/worktrees/<name>"
-          content
-          |> String.trim()
-          |> String.replace_prefix("gitdir: ", "")
-          |> Path.dirname()
-          |> Path.dirname()
-          |> Path.dirname()
-
-        _ ->
-          workspace.root
-      end
-
-    case git(["worktree", "remove", "--force", workspace.path], source) do
-      {_, 0} ->
-        Logger.info("Removed worktree at #{workspace.path}")
-
-        if workspace.branch do
-          git(["branch", "-D", workspace.branch], source)
-        end
-
+    case resolve_source_repo_for_cleanup(workspace) do
+      {:ok, source} ->
+        _ = maybe_remove_worktree_path(source, workspace.path)
+        _ = maybe_prune_worktrees(source)
+        _ = maybe_delete_worktree_branch(source, workspace.branch)
+        _ = ensure_workspace_path_removed(workspace.path)
         :ok
 
-      {output, _} ->
-        Logger.error("Failed to remove worktree: #{String.trim(output)}")
+      :error ->
+        _ = ensure_workspace_path_removed(workspace.path)
         :ok
     end
   end
@@ -276,15 +303,141 @@ defmodule Kollywood.Workspace do
   # --- Private: helpers ---
 
   defp maybe_set_branch(workspace, config) do
+    workspace_config = Map.get(config, :workspace, %{})
+
     case workspace.strategy do
       :worktree ->
-        prefix = Map.get(config.workspace, :branch_prefix, "kollywood/")
+        prefix = Map.get(workspace_config, :branch_prefix, "kollywood/")
         %{workspace | branch: "#{prefix}#{workspace.key}"}
 
       _ ->
         workspace
     end
   end
+
+  defp source_from_workspace_config(workspace_config) when is_map(workspace_config) do
+    case Map.get(workspace_config, :source) do
+      source when is_binary(source) and source != "" -> expand_root(source)
+      _other -> nil
+    end
+  end
+
+  defp source_from_workspace_config(_workspace_config), do: nil
+
+  defp normalize_hooks(hooks) when is_map(hooks), do: Map.merge(@empty_hooks, hooks)
+  defp normalize_hooks(_hooks), do: @empty_hooks
+
+  defp resolve_source_repo_for_cleanup(%__MODULE__{source: source})
+       when is_binary(source) and source != "" do
+    expanded = expand_root(source)
+
+    if git_repo_dir?(expanded) do
+      {:ok, expanded}
+    else
+      :error
+    end
+  end
+
+  defp resolve_source_repo_for_cleanup(workspace) do
+    case source_from_worktree_git_file(workspace.path) do
+      {:ok, source} ->
+        if git_repo_dir?(source) do
+          {:ok, source}
+        else
+          :error
+        end
+
+      :error ->
+        :error
+    end
+  end
+
+  defp source_from_worktree_git_file(path) when is_binary(path) do
+    git_file = Path.join(path, ".git")
+
+    case File.read(git_file) do
+      {:ok, content} ->
+        source =
+          content
+          |> String.trim()
+          |> String.replace_prefix("gitdir: ", "")
+          |> Path.dirname()
+          |> Path.dirname()
+          |> Path.dirname()
+
+        {:ok, source}
+
+      _other ->
+        :error
+    end
+  end
+
+  defp source_from_worktree_git_file(_path), do: :error
+
+  defp maybe_remove_worktree_path(source, workspace_path) do
+    case git(["worktree", "remove", "--force", workspace_path], source) do
+      {_output, 0} ->
+        Logger.info("Removed worktree at #{workspace_path}")
+        :ok
+
+      {output, _code} ->
+        Logger.debug(
+          "worktree remove returned non-zero for #{workspace_path} (continuing): #{String.trim(output)}"
+        )
+
+        :ok
+    end
+  end
+
+  defp maybe_prune_worktrees(source) do
+    case git(["worktree", "prune"], source) do
+      {_output, 0} ->
+        :ok
+
+      {output, _code} ->
+        Logger.debug("worktree prune returned non-zero in #{source}: #{String.trim(output)}")
+        :ok
+    end
+  end
+
+  defp maybe_delete_worktree_branch(_source, branch) when branch in [nil, ""], do: :ok
+
+  defp maybe_delete_worktree_branch(source, branch) when is_binary(branch) do
+    case git(["branch", "-D", branch], source) do
+      {_output, 0} ->
+        Logger.info("Deleted worktree branch #{branch}")
+        :ok
+
+      {output, _code} ->
+        Logger.debug(
+          "branch cleanup returned non-zero for #{branch} in #{source} (continuing): #{String.trim(output)}"
+        )
+
+        :ok
+    end
+  end
+
+  defp ensure_workspace_path_removed(workspace_path) do
+    if File.exists?(workspace_path) do
+      case File.rm_rf(workspace_path) do
+        {:ok, _entries} ->
+          Logger.info("Removed workspace path at #{workspace_path}")
+          :ok
+
+        {:error, reason, path} ->
+          Logger.error("Failed to remove workspace path at #{path}: #{inspect(reason)}")
+          :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  defp git_repo_dir?(path) when is_binary(path) do
+    File.dir?(path) and File.exists?(Path.join(path, ".git"))
+  end
+
+  defp git_repo_dir?(_path), do: false
 
   defp expand_root(root) do
     root
@@ -456,23 +609,24 @@ defmodule Kollywood.Workspace do
     e -> {:error, "#{name} hook failed: #{Exception.message(e)}"}
   end
 
+  defp source_repo(%__MODULE__{strategy: :worktree, source: source} = workspace)
+       when is_binary(source) and source != "" do
+    expanded = expand_root(source)
+
+    if git_repo_dir?(expanded) do
+      {:ok, expanded}
+    else
+      source_repo(%{workspace | source: nil})
+    end
+  end
+
   defp source_repo(%__MODULE__{strategy: :worktree} = workspace) do
-    git_file = Path.join(workspace.path, ".git")
-
-    case File.read(git_file) do
-      {:ok, content} ->
-        source =
-          content
-          |> String.trim()
-          |> String.replace_prefix("gitdir: ", "")
-          |> Path.dirname()
-          |> Path.dirname()
-          |> Path.dirname()
-
+    case source_from_worktree_git_file(workspace.path) do
+      {:ok, source} ->
         {:ok, source}
 
-      {:error, reason} ->
-        {:error, "could not read worktree .git file: #{inspect(reason)}"}
+      :error ->
+        {:error, "could not read worktree .git file"}
     end
   end
 
