@@ -14,8 +14,8 @@ defmodule Mix.Tasks.Kollywood.Prd do
       mix kollywood.prd add --title "Story title" --acceptance "Criterion A" --acceptance "Criterion B"
 
       mix kollywood.prd set-status STORY_ID STATUS [--path PATH]
-      mix kollywood.prd reset STORY_ID [--path PATH] [--clear-notes] [--fresh-worktree]
-      mix kollywood.prd rerun STORY_ID [--path PATH] [--clear-notes] [--fresh-worktree]
+      mix kollywood.prd reset STORY_ID [--path PATH] [--clear-notes]
+      mix kollywood.prd rerun STORY_ID [--path PATH] [--clear-notes]
       mix kollywood.prd validate [--path PATH]
 
   ## Status values
@@ -223,7 +223,6 @@ defmodule Mix.Tasks.Kollywood.Prd do
         strict: [
           path: :string,
           clear_notes: :boolean,
-          fresh_worktree: :boolean,
           workspace_root: :string
         ],
         aliases: [p: :path]
@@ -240,16 +239,13 @@ defmodule Mix.Tasks.Kollywood.Prd do
 
     path = resolved_path(Keyword.get(opts, :path))
     clear_notes? = Keyword.get(opts, :clear_notes, false)
-    fresh_worktree? = Keyword.get(opts, :fresh_worktree, false)
-    workspace_root = resolved_workspace_root(Keyword.get(opts, :workspace_root))
+    workspace_root = resolved_workspace_root(path, Keyword.get(opts, :workspace_root))
 
     case Kollywood.Tracker.PrdJson.reset_story(path, story_id, clear_notes: clear_notes?) do
       :ok ->
-        if fresh_worktree? do
-          case remove_story_worktree(path, workspace_root, story_id) do
-            :ok -> :ok
-            {:error, reason} -> Mix.raise(reason)
-          end
+        case remove_story_worktree(path, workspace_root, story_id) do
+          :ok -> :ok
+          {:error, reason} -> Mix.raise(reason)
         end
 
         Mix.shell().info("Reset #{story_id} to a fresh draft state in #{path}")
@@ -662,8 +658,17 @@ defmodule Mix.Tasks.Kollywood.Prd do
   defp resolved_path(nil), do: Path.expand(@default_path)
   defp resolved_path(path), do: Path.expand(path)
 
-  defp resolved_workspace_root(nil), do: expand_user_path(@default_workspace_root)
-  defp resolved_workspace_root(path), do: expand_user_path(path)
+  defp resolved_workspace_root(tracker_path, nil) when is_binary(tracker_path) do
+    case project_slug_from_tracker_path(tracker_path) do
+      slug when is_binary(slug) and slug != "" ->
+        Kollywood.ServiceConfig.project_workspace_root(slug)
+
+      _other ->
+        expand_user_path(@default_workspace_root)
+    end
+  end
+
+  defp resolved_workspace_root(_tracker_path, path), do: expand_user_path(path)
 
   defp expand_user_path(path) when is_binary(path) do
     trimmed = String.trim(path)
@@ -738,25 +743,9 @@ defmodule Mix.Tasks.Kollywood.Prd do
   end
 
   defp infer_source_repo_from_tracker_path(tracker_path) do
-    tracker_path = Path.expand(tracker_path)
-    projects_root = Path.join(Kollywood.ServiceConfig.kollywood_home(), "projects")
-    relative = Path.relative_to(tracker_path, projects_root)
-
-    cond do
-      relative == tracker_path or relative == "." or String.starts_with?(relative, "..") ->
-        nil
-
-      true ->
-        case String.split(relative, "/", parts: 3) do
-          [slug, "prd.json"] when slug != "" ->
-            Kollywood.ServiceConfig.project_repos_path(slug)
-
-          [slug, _rest] when slug != "" ->
-            Kollywood.ServiceConfig.project_repos_path(slug)
-
-          _other ->
-            nil
-        end
+    case project_slug_from_tracker_path(tracker_path) do
+      slug when is_binary(slug) and slug != "" -> Kollywood.ServiceConfig.project_repos_path(slug)
+      _other -> nil
     end
   end
 
@@ -788,6 +777,26 @@ defmodule Mix.Tasks.Kollywood.Prd do
   end
 
   defp valid_source_repo?(_source_repo), do: false
+
+  defp project_slug_from_tracker_path(tracker_path) when is_binary(tracker_path) do
+    tracker_path = Path.expand(tracker_path)
+    projects_root = Path.join(Kollywood.ServiceConfig.kollywood_home(), "projects")
+    relative = Path.relative_to(tracker_path, projects_root)
+
+    cond do
+      relative == tracker_path or relative == "." or String.starts_with?(relative, "..") ->
+        nil
+
+      true ->
+        case String.split(relative, "/", parts: 3) do
+          [slug, "prd.json"] when slug != "" -> slug
+          [slug, _rest] when slug != "" -> slug
+          _other -> nil
+        end
+    end
+  end
+
+  defp project_slug_from_tracker_path(_tracker_path), do: nil
 
   defp story_id(story) do
     story
@@ -855,8 +864,8 @@ defmodule Mix.Tasks.Kollywood.Prd do
         [--priority N] [--status open|in_progress|done|failed|cancelled] [--depends-on US-001,US-002]\
         [--acceptance TEXT] [--notes TEXT]
       mix kollywood.prd set-status STORY_ID STATUS [--path PATH]
-      mix kollywood.prd reset STORY_ID [--path PATH] [--clear-notes] [--fresh-worktree] [--workspace-root PATH]
-      mix kollywood.prd rerun STORY_ID [--path PATH] [--clear-notes] [--fresh-worktree] [--workspace-root PATH]
+      mix kollywood.prd reset STORY_ID [--path PATH] [--clear-notes] [--workspace-root PATH]
+      mix kollywood.prd rerun STORY_ID [--path PATH] [--clear-notes] [--workspace-root PATH]
       mix kollywood.prd validate [--path PATH]
     """)
   end

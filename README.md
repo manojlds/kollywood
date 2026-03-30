@@ -113,13 +113,11 @@ mix kollywood.prd set-status US-001 in_progress
 mix kollywood.prd set-status US-001 done
 mix kollywood.prd reset US-001
 mix kollywood.prd rerun US-001 --clear-notes
-mix kollywood.prd reset US-001 --fresh-worktree
 mix kollywood.prd validate
 mix kollywood.prd validate --path ./some/other/prd.json
 ```
 
-`reset`/`rerun` keep the existing worktree by default; pass `--fresh-worktree`
-to remove `<workspace-root>/<story-id>` before retrying.
+`reset`/`rerun` always remove `<workspace-root>/<story-id>` before retrying.
 
 `mix kollywood.prd validate` checks:
 - top-level JSON object shape

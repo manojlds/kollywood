@@ -123,7 +123,7 @@ defmodule Mix.Tasks.Kollywood.PrdTest do
     end
   end
 
-  test "reset moves story to draft and clears previous run metadata", %{root: root} do
+  test "reset moves story to draft, clears metadata, and removes workspace", %{root: root} do
     path = Path.join(root, "prd.json")
     workspace_root = Path.join(root, "workspaces")
     workspace_path = Path.join(workspace_root, "US-200")
@@ -148,7 +148,17 @@ defmodule Mix.Tasks.Kollywood.PrdTest do
       }
     ])
 
-    _output = capture_io(fn -> Prd.run(["reset", "US-200", "--path", path]) end)
+    _output =
+      capture_io(fn ->
+        Prd.run([
+          "reset",
+          "US-200",
+          "--path",
+          path,
+          "--workspace-root",
+          workspace_root
+        ])
+      end)
 
     story = find_story!(path, "US-200")
     assert story["status"] == "draft"
@@ -163,7 +173,7 @@ defmodule Mix.Tasks.Kollywood.PrdTest do
     refute Map.has_key?(story, "pr_url")
     refute Map.has_key?(story, "internalMetadata")
     assert story["notes"] == "older note"
-    assert File.exists?(workspace_path)
+    refute File.exists?(workspace_path)
   end
 
   test "rerun alias supports clearing notes", %{root: root} do
@@ -189,7 +199,7 @@ defmodule Mix.Tasks.Kollywood.PrdTest do
     assert story["notes"] == ""
   end
 
-  test "reset can remove worktree when fresh-worktree is requested", %{root: root} do
+  test "reset removes worktree without requiring a flag", %{root: root} do
     path = Path.join(root, "prd.json")
     workspace_root = Path.join(root, "workspaces")
     workspace_path = Path.join(workspace_root, "US-202")
@@ -213,7 +223,6 @@ defmodule Mix.Tasks.Kollywood.PrdTest do
           "US-202",
           "--path",
           path,
-          "--fresh-worktree",
           "--workspace-root",
           workspace_root
         ])
@@ -226,7 +235,7 @@ defmodule Mix.Tasks.Kollywood.PrdTest do
     assert story["passes"] == false
   end
 
-  test "reset --fresh-worktree prunes stale git worktree metadata", %{root: root} do
+  test "reset prunes stale git worktree metadata", %{root: root} do
     kollywood_home = Path.join(root, "kollywood-home")
     old_home = System.get_env("KOLLYWOOD_HOME")
     System.put_env("KOLLYWOOD_HOME", kollywood_home)
@@ -267,10 +276,7 @@ defmodule Mix.Tasks.Kollywood.PrdTest do
           "reset",
           "US-203",
           "--path",
-          tracker_path,
-          "--fresh-worktree",
-          "--workspace-root",
-          workspace_root
+          tracker_path
         ])
       end)
 
