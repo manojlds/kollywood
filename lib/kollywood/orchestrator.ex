@@ -681,7 +681,7 @@ defmodule Kollywood.Orchestrator do
         {:ok, true} ->
           Logger.info("orchestrator_event=merge_detected issue_id=#{issue_id} pr_url=#{pr_url}")
 
-          case tracker_mark_merged(state, issue_id, %{pr_url: pr_url}) do
+          case tracker_mark_merged(state, issue_id, issue, %{pr_url: pr_url}) do
             {:ok, state} ->
               state
 
@@ -1536,7 +1536,14 @@ defmodule Kollywood.Orchestrator do
   defp finalize_done_run(state, issue_id, run_entry, done_metadata, mark_merged?)
        when is_boolean(mark_merged?) do
     with {:ok, state} <- tracker_mark_done(state, issue_id, done_metadata, run_entry),
-         {:ok, state} <- maybe_tracker_mark_merged(state, issue_id, mark_merged?, done_metadata) do
+         {:ok, state} <-
+           maybe_tracker_mark_merged(
+             state,
+             issue_id,
+             run_entry_issue(run_entry),
+             mark_merged?,
+             done_metadata
+           ) do
       {:ok, state}
     end
   end
@@ -2093,10 +2100,29 @@ defmodule Kollywood.Orchestrator do
   defp normalize_ephemeral_kind(_kind), do: :claimed
 
   defp retry_run_entry(run_entry) when is_map(run_entry) do
-    case Map.get(run_entry, :run_log_context) do
-      nil -> %{}
-      run_log_context -> %{run_log_context: run_log_context}
-    end
+    run_log_entry =
+      case Map.get(run_entry, :run_log_context) do
+        nil -> %{}
+        run_log_context -> %{run_log_context: run_log_context}
+      end
+
+    issue_entry =
+      run_entry
+      |> run_entry_issue()
+      |> case do
+        nil ->
+          %{}
+
+        issue ->
+          %{
+            issue: %{
+              id: issue_id(issue),
+              identifier: issue_identifier(issue)
+            }
+          }
+      end
+
+    Map.merge(run_log_entry, issue_entry)
   end
 
   defp retry_run_entry(_run_entry), do: %{}
@@ -2876,20 +2902,21 @@ defmodule Kollywood.Orchestrator do
     end
   end
 
-  defp maybe_tracker_mark_merged(state, issue_id, mark_merged?, done_metadata)
+  defp maybe_tracker_mark_merged(state, issue_id, issue, mark_merged?, done_metadata)
        when is_boolean(mark_merged?) and is_map(done_metadata) do
     if mark_merged? do
-      tracker_mark_merged(state, issue_id, done_metadata)
+      tracker_mark_merged(state, issue_id, issue, done_metadata)
     else
       {:ok, state}
     end
   end
 
-  defp tracker_mark_merged(state, issue_id, done_metadata) when is_map(done_metadata) do
+  defp tracker_mark_merged(state, issue_id, issue, done_metadata) when is_map(done_metadata) do
     with {:ok, config} <- fetch_config(state.workflow_store),
          tracker <- resolve_tracker(state.tracker, config),
          :ok <- tracker_call(tracker, :mark_merged, [config, issue_id, done_metadata]) do
-      {:ok, state}
+      identifier = issue_identifier(issue)
+      {:ok, cleanup_workspace_for_terminal_issue(state, config, issue_id, identifier)}
     else
       {:error, reason} -> {:error, reason, state}
     end
@@ -4000,7 +4027,46 @@ defmodule Kollywood.Orchestrator do
 
   defp monotonic_now_ms, do: System.monotonic_time(:millisecond)
 
-  defp maybe_cleanup_terminal_workspace(state, _run_entry, _config), do: state
+  defp maybe_cleanup_terminal_workspace(state, run_entry, config) do
+    issue_id = run_entry_issue_id(run_entry)
+    identifier = run_entry_identifier(run_entry)
+    cleanup_workspace_for_terminal_issue(state, config, issue_id, identifier)
+  end
+
+  defp cleanup_workspace_for_terminal_issue(state, config, issue_id, identifier) do
+    if non_empty_string?(identifier) do
+      hooks = Map.get(config, :hooks, %{})
+
+      case Workspace.cleanup_for_issue(identifier, config, hooks) do
+        :ok ->
+          state
+
+        {:error, reason} ->
+          Logger.warning(
+            "Failed to cleanup workspace for terminal issue issue_id=#{issue_id || "-"} identifier=#{identifier}: #{reason}"
+          )
+
+          state
+      end
+    else
+      Logger.warning(
+        "Skipping workspace cleanup for terminal issue_id=#{issue_id || "-"}: identifier unavailable"
+      )
+
+      state
+    end
+  end
+
+  defp run_entry_issue(run_entry) when is_map(run_entry), do: Map.get(run_entry, :issue)
+  defp run_entry_issue(_run_entry), do: nil
+
+  defp run_entry_identifier(run_entry), do: run_entry |> run_entry_issue() |> issue_identifier()
+
+  defp run_entry_issue_id(run_entry) do
+    run_entry
+    |> run_entry_issue()
+    |> issue_id()
+  end
 
   defp now, do: DateTime.utc_now()
 end

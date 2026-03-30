@@ -94,7 +94,10 @@ defmodule Kollywood.Tracker.PrdJsonTest do
 
     story_after_failure = story(path, "US-010")
     assert story_after_failure["status"] == "in_progress"
-    assert String.contains?(story_after_failure["notes"], "attempt 2: forced failure")
+    assert story_after_failure["lastError"] == "forced failure"
+    assert story_after_failure["lastRunAttempt"] == 2
+    assert story_after_failure["internalMetadata"]["lastFailure"]["attempt"] == 2
+    assert story_after_failure["internalMetadata"]["lastFailure"]["reason"] == "forced failure"
 
     assert :ok = PrdJson.mark_done(cfg, "US-010", %{status: :ok, turn_count: 1})
 
@@ -132,10 +135,9 @@ defmodule Kollywood.Tracker.PrdJsonTest do
     assert saved_story["status"] == "in_progress"
     assert saved_story["resumable"] == true
     assert saved_story["completedAt"] == "2026-03-27T09:30:00Z"
-    assert String.contains?(saved_story["notes"], "existing note")
-
-    assert saved_story["notes"] =~
-             ~r/\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\] continuation scheduled after max turns/
+    assert saved_story["notes"] == "existing note"
+    assert saved_story["internalMetadata"]["continuation"]["status"] == "scheduled"
+    assert is_binary(saved_story["internalMetadata"]["continuation"]["scheduledAt"])
   end
 
   test "marks story failed when retries are disabled", %{root: root} do
@@ -169,12 +171,11 @@ defmodule Kollywood.Tracker.PrdJsonTest do
     story_after_pending_merge = story(path, "US-030")
     assert story_after_pending_merge["status"] == "pending_merge"
     assert story_after_pending_merge["pr_url"] == pr_url
-
-    assert story_after_pending_merge["notes"] =~
-             ~r/\[\d{4}-\d{2}-\d{2}T[^\]]+\] pending merge: https:\/\/github.com\/acme\/kollywood\/pull\/42/
+    assert story_after_pending_merge["internalMetadata"]["pendingMerge"]["prUrl"] == pr_url
+    assert is_binary(story_after_pending_merge["internalMetadata"]["pendingMerge"]["recordedAt"])
   end
 
-  test "marks story merged and appends merged note", %{root: root} do
+  test "marks story merged and keeps user notes unchanged", %{root: root} do
     path = Path.join(root, "prd.json")
 
     write_prd!(path, [
@@ -197,8 +198,8 @@ defmodule Kollywood.Tracker.PrdJsonTest do
     assert story_after_merge["resumable"] == false
     assert is_binary(story_after_merge["mergedAt"])
     assert {:ok, _datetime, 0} = DateTime.from_iso8601(story_after_merge["mergedAt"])
-    assert story_after_merge["notes"] =~ "existing note"
-    assert story_after_merge["notes"] =~ ~r/\[\d{4}-\d{2}-\d{2}T[^\]]+\] merged to main/
+    assert story_after_merge["notes"] == "existing note"
+    assert is_binary(story_after_merge["internalMetadata"]["merge"]["recordedAt"])
   end
 
   test "lists pending_merge stories with pr_url", %{root: root} do

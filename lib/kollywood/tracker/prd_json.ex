@@ -77,11 +77,18 @@ defmodule Kollywood.Tracker.PrdJson do
   @impl true
   @spec mark_in_progress(Config.t(), String.t()) :: :ok | {:error, String.t()}
   def mark_in_progress(%Config{} = config, issue_id) when is_binary(issue_id) do
+    recorded_at = now_iso8601()
+
     update_story_record(config, issue_id, fn story ->
       story
       |> set_story_status("in_progress")
-      |> Map.put_new("startedAt", now_iso8601())
+      |> Map.put_new("startedAt", recorded_at)
       |> Map.put("lastError", nil)
+      |> delete_internal_metadata_entry("lastFailure")
+      |> put_internal_metadata_entry("lastTransition", %{
+        "event" => "in_progress",
+        "recordedAt" => recorded_at
+      })
     end)
   end
 
@@ -89,14 +96,23 @@ defmodule Kollywood.Tracker.PrdJson do
   @spec mark_resumable(Config.t(), String.t(), map()) :: :ok | {:error, String.t()}
   def mark_resumable(%Config{} = config, issue_id, metadata)
       when is_binary(issue_id) and is_map(metadata) do
-    note = "[#{now_iso8601()}] continuation scheduled after max turns"
+    recorded_at = now_iso8601()
+    normalized_metadata = stringify_map(metadata)
 
     update_story_record(config, issue_id, fn story ->
       story
       |> set_story_status("in_progress")
       |> Map.put("resumable", true)
-      |> append_note(note)
-      |> Map.put("lastRun", stringify_map(metadata))
+      |> Map.put("lastRun", normalized_metadata)
+      |> put_internal_metadata_entry("continuation", %{
+        "status" => "scheduled",
+        "scheduledAt" => recorded_at,
+        "details" => normalized_metadata
+      })
+      |> put_internal_metadata_entry("lastTransition", %{
+        "event" => "resumable",
+        "recordedAt" => recorded_at
+      })
     end)
   end
 
@@ -104,13 +120,25 @@ defmodule Kollywood.Tracker.PrdJson do
   @spec mark_done(Config.t(), String.t(), map()) :: :ok | {:error, String.t()}
   def mark_done(%Config{} = config, issue_id, metadata)
       when is_binary(issue_id) and is_map(metadata) do
+    recorded_at = now_iso8601()
+    normalized_metadata = stringify_map(metadata)
+
     update_story_record(config, issue_id, fn story ->
       story
       |> set_story_status("done")
-      |> Map.put("completedAt", now_iso8601())
+      |> Map.put("completedAt", recorded_at)
       |> Map.put("lastError", nil)
       |> Map.put("resumable", false)
-      |> Map.put("lastRun", stringify_map(metadata))
+      |> Map.put("lastRun", normalized_metadata)
+      |> delete_internal_metadata_entry("lastFailure")
+      |> put_internal_metadata_entry("lastSuccess", %{
+        "recordedAt" => recorded_at,
+        "details" => normalized_metadata
+      })
+      |> put_internal_metadata_entry("lastTransition", %{
+        "event" => "done",
+        "recordedAt" => recorded_at
+      })
     end)
   end
 
@@ -119,12 +147,20 @@ defmodule Kollywood.Tracker.PrdJson do
   def mark_pending_merge(%Config{} = config, issue_id, metadata)
       when is_binary(issue_id) and is_map(metadata) do
     pr_url = metadata |> field(:pr_url) |> optional_string()
+    recorded_at = now_iso8601()
 
     update_story_record(config, issue_id, fn story ->
       story
       |> set_story_status("pending_merge")
       |> put_story_field_if_present("pr_url", pr_url)
-      |> append_note("pending merge: #{pr_url}")
+      |> put_internal_metadata_entry("pendingMerge", %{
+        "recordedAt" => recorded_at,
+        "prUrl" => pr_url
+      })
+      |> put_internal_metadata_entry("lastTransition", %{
+        "event" => "pending_merge",
+        "recordedAt" => recorded_at
+      })
     end)
   end
 
@@ -133,14 +169,22 @@ defmodule Kollywood.Tracker.PrdJson do
   def mark_merged(%Config{} = config, issue_id, metadata)
       when is_binary(issue_id) and is_map(metadata) do
     _ = metadata
+    recorded_at = now_iso8601()
 
     update_story_record(config, issue_id, fn story ->
       story
       |> set_story_status("merged")
-      |> Map.put("mergedAt", now_iso8601())
+      |> Map.put("mergedAt", recorded_at)
       |> Map.put("resumable", false)
       |> Map.put("lastError", nil)
-      |> append_note("merged to main")
+      |> delete_internal_metadata_entry("lastFailure")
+      |> put_internal_metadata_entry("merge", %{
+        "recordedAt" => recorded_at
+      })
+      |> put_internal_metadata_entry("lastTransition", %{
+        "event" => "merged",
+        "recordedAt" => recorded_at
+      })
     end)
   end
 
@@ -159,7 +203,13 @@ defmodule Kollywood.Tracker.PrdJson do
       |> Map.delete("lastRunAttempt")
       |> Map.delete("lastError")
       |> Map.delete("lastRun")
-      |> reset_notes(clear_notes?)
+      |> Map.delete("resumable")
+      |> Map.delete("mergedAt")
+      |> Map.delete("pr_url")
+      |> Map.delete("prUrl")
+      |> Map.delete("internalMetadata")
+      |> Map.delete("internal_metadata")
+      |> maybe_clear_notes(clear_notes?)
     end)
   end
 
@@ -249,6 +299,7 @@ defmodule Kollywood.Tracker.PrdJson do
   def mark_failed(%Config{} = config, issue_id, reason, attempt)
       when is_binary(issue_id) and is_binary(reason) and is_integer(attempt) and attempt > 0 do
     failed_status = if(retries_enabled?(config), do: "in_progress", else: "failed")
+    recorded_at = now_iso8601()
 
     update_story_record(config, issue_id, fn story ->
       story
@@ -256,7 +307,16 @@ defmodule Kollywood.Tracker.PrdJson do
       |> Map.put("lastError", reason)
       |> Map.put("lastRunAttempt", attempt)
       |> Map.delete("lastAttempt")
-      |> append_note("attempt #{attempt}: #{reason}")
+      |> put_internal_metadata_entry("lastFailure", %{
+        "attempt" => attempt,
+        "reason" => reason,
+        "status" => failed_status,
+        "recordedAt" => recorded_at
+      })
+      |> put_internal_metadata_entry("lastTransition", %{
+        "event" => "failed",
+        "recordedAt" => recorded_at
+      })
     end)
   end
 
@@ -801,6 +861,10 @@ defmodule Kollywood.Tracker.PrdJson do
       resumable: story.resumable,
       pr_url: story.pr_url,
       testing_notes: story.testing_notes,
+      last_error: story.last_error,
+      last_run_attempt: story.last_run_attempt,
+      last_run: story.last_run,
+      internal_metadata: story.internal_metadata,
       settings: story.settings,
       created_at: nil
     }
@@ -862,6 +926,11 @@ defmodule Kollywood.Tracker.PrdJson do
           optional_string(field(story, :testing_notes)),
       resumable: field(story, :resumable) == true,
       pr_url: optional_string(field(story, :pr_url)),
+      last_error: optional_string(field(story, :lastError)),
+      last_run_attempt: optional_integer(field(story, :lastRunAttempt)),
+      last_run: map_or_nil(field(story, :lastRun)),
+      internal_metadata:
+        map_or_empty(field(story, :internalMetadata) || field(story, :internal_metadata)),
       settings: field(story, :settings)
     }
   end
@@ -886,21 +955,67 @@ defmodule Kollywood.Tracker.PrdJson do
     |> Map.put("passes", status in ["done", "merged"])
   end
 
-  defp reset_notes(story, true), do: Map.put(story, "notes", "")
-  defp reset_notes(story, false), do: append_note(story, "reset for rerun")
+  defp maybe_clear_notes(story, true), do: Map.put(story, "notes", "")
+  defp maybe_clear_notes(story, false), do: story
 
-  defp append_note(story, line) do
-    prefix = "[#{now_iso8601()}]"
-    next_line = "#{prefix} #{line}"
+  defp put_internal_metadata_entry(story, key, value) when is_binary(key) do
+    updated_metadata =
+      story
+      |> internal_metadata_map()
+      |> Map.put(key, value |> stringify_value() |> compact_metadata_value())
+      |> compact_metadata_map()
 
-    notes =
-      case optional_string(field(story, :notes)) do
-        nil -> next_line
-        existing -> "#{existing}\n#{next_line}"
-      end
-
-    Map.put(story, "notes", notes)
+    put_internal_metadata_map(story, updated_metadata)
   end
+
+  defp delete_internal_metadata_entry(story, key) when is_binary(key) do
+    updated_metadata =
+      story
+      |> internal_metadata_map()
+      |> Map.delete(key)
+      |> compact_metadata_map()
+
+    put_internal_metadata_map(story, updated_metadata)
+  end
+
+  defp internal_metadata_map(story) do
+    case field(story, :internalMetadata) || field(story, :internal_metadata) do
+      metadata when is_map(metadata) -> stringify_map(metadata)
+      _other -> %{}
+    end
+  end
+
+  defp put_internal_metadata_map(story, metadata) when is_map(metadata) do
+    cleaned = compact_metadata_map(metadata)
+
+    story =
+      story
+      |> Map.delete("internal_metadata")
+      |> Map.delete(:internal_metadata)
+      |> Map.delete(:internalMetadata)
+
+    if map_size(cleaned) == 0 do
+      Map.delete(story, "internalMetadata")
+    else
+      Map.put(story, "internalMetadata", cleaned)
+    end
+  end
+
+  defp compact_metadata_map(map) when is_map(map) do
+    map
+    |> Enum.reject(fn {_key, value} -> metadata_empty?(value) end)
+    |> Map.new()
+  end
+
+  defp compact_metadata_value(value) when is_map(value), do: compact_metadata_map(value)
+
+  defp compact_metadata_value(value) when is_list(value),
+    do: Enum.map(value, &compact_metadata_value/1)
+
+  defp compact_metadata_value(value), do: value
+
+  defp metadata_empty?(value) when is_binary(value), do: String.trim(value) == ""
+  defp metadata_empty?(value), do: value in [nil, %{}, []]
 
   defp put_story_field_if_present(story, _field_name, nil), do: story
   defp put_story_field_if_present(story, field_name, value), do: Map.put(story, field_name, value)
@@ -965,6 +1080,23 @@ defmodule Kollywood.Tracker.PrdJson do
   end
 
   defp priority(_value), do: @default_priority
+
+  defp optional_integer(value) when is_integer(value), do: value
+
+  defp optional_integer(value) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {parsed, ""} -> parsed
+      _other -> nil
+    end
+  end
+
+  defp optional_integer(_value), do: nil
+
+  defp map_or_nil(value) when is_map(value), do: value
+  defp map_or_nil(_value), do: nil
+
+  defp map_or_empty(value) when is_map(value), do: value
+  defp map_or_empty(_value), do: %{}
 
   defp stringify_map(map) when is_map(map) do
     Map.new(map, fn {key, value} -> {to_string(key), stringify_value(value)} end)

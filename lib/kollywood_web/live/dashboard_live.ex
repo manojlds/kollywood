@@ -5526,11 +5526,15 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp cleanup_worktree(project, story_id) do
-    with {:ok, config} <- Kollywood.WorkflowStore.get_config(),
-         {:ok, workspace} <- Kollywood.Workspace.create_for_issue(story_id, config) do
-      Kollywood.Workspace.remove(workspace, config.hooks)
-    else
-      _ -> :ok
+    config =
+      case Kollywood.WorkflowStore.get_config() do
+        %{} = workflow_config -> workflow_config
+        _other -> fallback_workspace_cleanup_config(project)
+      end
+
+    if is_map(config) do
+      hooks = Map.get(config, :hooks, %{})
+      _ = Kollywood.Workspace.cleanup_for_issue(story_id, config, hooks)
     end
 
     run_logs_dirs(project)
@@ -5545,6 +5549,34 @@ defmodule KollywoodWeb.DashboardLive do
     :ok
   rescue
     _ -> :ok
+  end
+
+  defp fallback_workspace_cleanup_config(project) do
+    slug =
+      project
+      |> Map.get(:slug)
+      |> case do
+        value when is_binary(value) ->
+          value = String.trim(value)
+          if value == "", do: nil, else: value
+
+        _other ->
+          nil
+      end
+
+    if is_binary(slug) do
+      %{
+        workspace: %{
+          root: ServiceConfig.project_workspace_root(slug),
+          source: ServiceConfig.project_repos_path(slug),
+          strategy: :worktree,
+          branch_prefix: "kollywood/"
+        },
+        hooks: %{}
+      }
+    else
+      nil
+    end
   end
 
   defp stop_orchestrator_issue(issue_id) when is_binary(issue_id) do

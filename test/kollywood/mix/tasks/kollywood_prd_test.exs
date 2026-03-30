@@ -141,6 +141,9 @@ defmodule Mix.Tasks.Kollywood.PrdTest do
         "lastRunAttempt" => 4,
         "lastError" => "timeout",
         "lastRun" => %{"status" => "failed"},
+        "resumable" => true,
+        "pr_url" => "https://example.test/pulls/200",
+        "internalMetadata" => %{"lastFailure" => %{"reason" => "timeout"}},
         "notes" => "older note"
       }
     ])
@@ -156,7 +159,10 @@ defmodule Mix.Tasks.Kollywood.PrdTest do
     refute Map.has_key?(story, "lastAttempt")
     refute Map.has_key?(story, "lastError")
     refute Map.has_key?(story, "lastRun")
-    assert String.contains?(story["notes"], "reset for rerun")
+    refute Map.has_key?(story, "resumable")
+    refute Map.has_key?(story, "pr_url")
+    refute Map.has_key?(story, "internalMetadata")
+    assert story["notes"] == "older note"
     assert File.exists?(workspace_path)
   end
 
@@ -218,6 +224,74 @@ defmodule Mix.Tasks.Kollywood.PrdTest do
     story = find_story!(path, "US-202")
     assert story["status"] == "draft"
     assert story["passes"] == false
+  end
+
+  test "reset --fresh-worktree prunes stale git worktree metadata", %{root: root} do
+    kollywood_home = Path.join(root, "kollywood-home")
+    old_home = System.get_env("KOLLYWOOD_HOME")
+    System.put_env("KOLLYWOOD_HOME", kollywood_home)
+
+    on_exit(fn ->
+      if old_home do
+        System.put_env("KOLLYWOOD_HOME", old_home)
+      else
+        System.delete_env("KOLLYWOOD_HOME")
+      end
+    end)
+
+    slug = "sample"
+    tracker_path = Kollywood.ServiceConfig.project_tracker_path(slug)
+    workspace_root = Kollywood.ServiceConfig.project_workspace_root(slug)
+    source_repo = Kollywood.ServiceConfig.project_repos_path(slug)
+    workspace_path = Path.join(workspace_root, "US-203")
+
+    setup_git_repo!(source_repo)
+    run_git!(["worktree", "add", "-b", "kollywood/US-203", workspace_path], source_repo)
+    assert File.dir?(workspace_path)
+
+    File.rm_rf!(workspace_path)
+    refute File.dir?(workspace_path)
+
+    write_prd!(tracker_path, [
+      %{
+        "id" => "US-203",
+        "title" => "Stale worktree",
+        "priority" => 1,
+        "status" => "failed"
+      }
+    ])
+
+    _output =
+      capture_io(fn ->
+        Prd.run([
+          "reset",
+          "US-203",
+          "--path",
+          tracker_path,
+          "--fresh-worktree",
+          "--workspace-root",
+          workspace_root
+        ])
+      end)
+
+    refute File.exists?(workspace_path)
+
+    {branch_output, 0} =
+      System.cmd("git", ["branch", "--list", "kollywood/US-203"],
+        cd: source_repo,
+        stderr_to_stdout: true
+      )
+
+    assert String.trim(branch_output) == ""
+
+    {worktree_output, 0} =
+      System.cmd("git", ["worktree", "list", "--porcelain"],
+        cd: source_repo,
+        stderr_to_stdout: true
+      )
+
+    refute worktree_output =~ "kollywood/US-203"
+    refute worktree_output =~ "US-203"
   end
 
   test "validate succeeds for valid PRD and prints summary", %{root: root} do
@@ -353,6 +427,27 @@ defmodule Mix.Tasks.Kollywood.PrdTest do
     assert_raise Mix.Error, ~r/cannot depend on itself/, fn ->
       capture_io(fn -> Prd.run(["validate", "--path", path]) end)
     end
+  end
+
+  defp setup_git_repo!(repo) do
+    File.mkdir_p!(repo)
+    run_git!(["init", "-b", "main"], repo)
+    run_git!(["config", "user.email", "test@test.com"], repo)
+    run_git!(["config", "user.name", "Test"], repo)
+
+    File.write!(Path.join(repo, "README.md"), "# Test")
+    run_git!(["add", "."], repo)
+    run_git!(["commit", "-m", "init"], repo)
+  end
+
+  defp run_git!(args, cwd) do
+    {output, exit_code} = System.cmd("git", args, cd: cwd, stderr_to_stdout: true)
+
+    if exit_code != 0 do
+      flunk("git #{Enum.join(args, " ")} failed in #{cwd}: #{String.trim(output)}")
+    end
+
+    output
   end
 
   defp write_prd!(path, stories) do

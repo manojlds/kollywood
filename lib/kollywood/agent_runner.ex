@@ -452,7 +452,7 @@ defmodule Kollywood.AgentRunner do
   end
 
   defp build_prompt(state, config, prompt_template, 1) do
-    variables = prompt_variables(state.issue, state.attempt)
+    variables = prompt_variables(state.issue, state.attempt, include_failure_context: true)
     resume_context = build_resume_context(state.workspace, Map.get(state, :continuation))
 
     variables =
@@ -1832,7 +1832,7 @@ defmodule Kollywood.AgentRunner do
   end
 
   defp build_checks_remediation_prompt(state, checks_feedback, cycle, prompt_template) do
-    base_variables = prompt_variables(state.issue, state.attempt)
+    base_variables = prompt_variables(state.issue, state.attempt, include_failure_context: true)
 
     base_prompt =
       case PromptBuilder.render(prompt_template, base_variables) do
@@ -2382,7 +2382,7 @@ defmodule Kollywood.AgentRunner do
     template = review_prompt_template(config)
 
     variables =
-      prompt_variables(state.issue, state.attempt)
+      prompt_variables(state.issue, state.attempt, include_failure_context: false)
       |> Map.put("review_json_path", rjp)
       |> Map.put("cycle", cycle)
 
@@ -2396,7 +2396,10 @@ defmodule Kollywood.AgentRunner do
     template = testing_prompt_template(config)
 
     variables =
-      prompt_variables(state.issue, state.attempt, include_testing_notes: true)
+      prompt_variables(state.issue, state.attempt,
+        include_testing_notes: true,
+        include_failure_context: false
+      )
       |> Map.put("testing_json_path", tjp)
       |> Map.put("cycle", cycle)
       |> Map.put("runtime_base_url", testing_runtime_base_url(state.runtime))
@@ -2833,7 +2836,7 @@ defmodule Kollywood.AgentRunner do
   end
 
   defp build_review_remediation_prompt(state, review_feedback, cycle, prompt_template) do
-    base_variables = prompt_variables(state.issue, state.attempt)
+    base_variables = prompt_variables(state.issue, state.attempt, include_failure_context: true)
 
     base_prompt =
       case PromptBuilder.render(prompt_template, base_variables) do
@@ -2867,7 +2870,7 @@ defmodule Kollywood.AgentRunner do
   end
 
   defp build_testing_remediation_prompt(state, testing_feedback, cycle, prompt_template) do
-    base_variables = prompt_variables(state.issue, state.attempt)
+    base_variables = prompt_variables(state.issue, state.attempt, include_failure_context: true)
 
     base_prompt =
       case PromptBuilder.render(prompt_template, base_variables) do
@@ -3495,12 +3498,17 @@ defmodule Kollywood.AgentRunner do
   defp map_or_empty(value) when is_map(value), do: value
   defp map_or_empty(_value), do: %{}
 
-  defp prompt_variables(issue, attempt, opts \\ []) do
+  defp prompt_variables(issue, attempt, opts) do
     include_testing_notes? = Keyword.get(opts, :include_testing_notes, false)
+    include_failure_context? = Keyword.get(opts, :include_failure_context, false)
 
-    variables =
+    prompt_issue =
       issue
       |> strip_testing_notes()
+      |> maybe_attach_failure_context(include_failure_context?)
+
+    variables =
+      prompt_issue
       |> PromptBuilder.build_variables(attempt)
 
     if include_testing_notes? do
@@ -3514,6 +3522,171 @@ defmodule Kollywood.AgentRunner do
       variables
     end
   end
+
+  defp maybe_attach_failure_context(issue, false), do: issue
+
+  defp maybe_attach_failure_context(issue, true) when is_map(issue) do
+    case issue_failure_context(issue) do
+      nil ->
+        issue
+
+      context ->
+        summary = issue_failure_context_summary(context)
+
+        issue
+        |> put_prompt_issue_field("failure_context", context)
+        |> put_prompt_issue_field("failure_summary", summary)
+        |> append_failure_summary_to_description(summary)
+    end
+  end
+
+  defp maybe_attach_failure_context(issue, _include_failure_context?), do: issue
+
+  defp issue_failure_context(issue) when is_map(issue) do
+    internal_context =
+      issue
+      |> issue_internal_metadata()
+      |> internal_last_failure_context()
+
+    case internal_context do
+      nil -> fallback_failure_context(issue)
+      context -> context
+    end
+  end
+
+  defp issue_failure_context(_issue), do: nil
+
+  defp issue_internal_metadata(issue) do
+    case field(issue, :internal_metadata) do
+      metadata when is_map(metadata) ->
+        metadata
+
+      _other ->
+        case field(issue, :internalMetadata) do
+          metadata when is_map(metadata) -> metadata
+          _other -> %{}
+        end
+    end
+  end
+
+  defp internal_last_failure_context(metadata) when is_map(metadata) do
+    case field(metadata, :lastFailure) || field(metadata, :last_failure) do
+      value when is_map(value) ->
+        normalized_failure_context(
+          field(value, :reason),
+          field(value, :attempt),
+          field(value, :recordedAt) || field(value, :recorded_at),
+          field(value, :status)
+        )
+
+      _other ->
+        nil
+    end
+  end
+
+  defp internal_last_failure_context(_metadata), do: nil
+
+  defp fallback_failure_context(issue) when is_map(issue) do
+    normalized_failure_context(
+      field(issue, :last_error) || field(issue, :lastError),
+      field(issue, :last_run_attempt) || field(issue, :lastRunAttempt),
+      nil,
+      nil
+    )
+  end
+
+  defp fallback_failure_context(_issue), do: nil
+
+  defp normalized_failure_context(reason, attempt, recorded_at, status) do
+    context =
+      %{}
+      |> maybe_put_context_field("reason", normalized_string(reason))
+      |> maybe_put_context_field("attempt", normalized_integer(attempt))
+      |> maybe_put_context_field("recorded_at", normalized_string(recorded_at))
+      |> maybe_put_context_field("status", normalized_string(status))
+
+    if map_size(context) == 0, do: nil, else: context
+  end
+
+  defp issue_failure_context_summary(context) when is_map(context) do
+    reason = Map.get(context, "reason")
+    attempt = Map.get(context, "attempt")
+    status = Map.get(context, "status")
+    recorded_at = Map.get(context, "recorded_at")
+
+    attempt_fragment =
+      if is_integer(attempt), do: "attempt #{attempt}", else: "previous attempt"
+
+    status_fragment =
+      if is_binary(status), do: " (status: #{status})", else: ""
+
+    recorded_fragment =
+      if is_binary(recorded_at), do: " at #{recorded_at}", else: ""
+
+    reason_fragment =
+      if is_binary(reason), do: reason, else: "reason unavailable"
+
+    "#{attempt_fragment}#{status_fragment} failed#{recorded_fragment}: #{reason_fragment}"
+  end
+
+  defp issue_failure_context_summary(_context), do: "previous attempt failed"
+
+  defp append_failure_summary_to_description(issue, summary)
+       when is_map(issue) and is_binary(summary) and summary != "" do
+    existing_description = normalized_string(field(issue, :description)) || ""
+    failure_section = "Previous failure context:\n- #{summary}"
+
+    next_description =
+      cond do
+        existing_description == "" ->
+          failure_section
+
+        String.contains?(existing_description, failure_section) ->
+          existing_description
+
+        true ->
+          "#{existing_description}\n\n#{failure_section}"
+      end
+
+    put_prompt_issue_field(issue, "description", next_description)
+  end
+
+  defp append_failure_summary_to_description(issue, _summary), do: issue
+
+  defp put_prompt_issue_field(issue, field_name, value)
+       when is_map(issue) and is_binary(field_name) do
+    issue = Map.put(issue, field_name, value)
+
+    case field_name do
+      "description" -> Map.delete(issue, :description)
+      "failure_context" -> Map.delete(issue, :failure_context)
+      "failure_summary" -> Map.delete(issue, :failure_summary)
+      _other -> issue
+    end
+  end
+
+  defp put_prompt_issue_field(issue, _field_name, _value), do: issue
+
+  defp maybe_put_context_field(map, _key, nil), do: map
+  defp maybe_put_context_field(map, key, value), do: Map.put(map, key, value)
+
+  defp normalized_string(value) when is_binary(value) do
+    trimmed = String.trim(value)
+    if trimmed == "", do: nil, else: trimmed
+  end
+
+  defp normalized_string(_value), do: nil
+
+  defp normalized_integer(value) when is_integer(value), do: value
+
+  defp normalized_integer(value) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {parsed, ""} -> parsed
+      _other -> nil
+    end
+  end
+
+  defp normalized_integer(_value), do: nil
 
   defp strip_testing_notes(issue) when is_map(issue) do
     Map.drop(issue, [:testing_notes, :testingNotes, "testing_notes", "testingNotes"])

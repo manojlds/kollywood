@@ -26,6 +26,8 @@ defmodule Kollywood.Runtime.Host do
       profile: :full_stack,
       process_state: :pending,
       started?: false,
+      manager_mode: nil,
+      manager_pid: nil,
       command: nil,
       processes: [],
       env: %{},
@@ -84,22 +86,13 @@ defmodule Kollywood.Runtime.Host do
 
   def start(state) do
     with {:ok, state} <- ensure_isolation(state) do
-      args = start_args(state)
+      case start_runtime_processes(state) do
+        {:ok, started_state} ->
+          {:ok, %{started_state | started?: true, process_state: :running}}
 
-      case execute(state.command, args, state.workspace_path, state.env, state.start_timeout_ms) do
-        {:ok, _output, _ms} ->
-          case wait_for_runtime_ready(state) do
-            :ok ->
-              {:ok, %{state | started?: true, process_state: :running}}
-
-            {:error, reason} ->
-              {:error, "failed to start runtime processes: #{reason}",
-               %{state | process_state: :start_failed}}
-          end
-
-        {:error, reason, _output, _ms} ->
+        {:error, reason, failed_state} ->
           {:error, "failed to start runtime processes: #{reason}",
-           %{state | process_state: :start_failed}}
+           %{failed_state | process_state: :start_failed}}
       end
     else
       {:error, reason} ->
@@ -113,10 +106,20 @@ defmodule Kollywood.Runtime.Host do
     if stop_required?(state) do
       case stop_runtime_processes(state) do
         :ok ->
-          {:ok, %{state | started?: false, process_state: :stopped} |> release()}
+          {:ok,
+           %{
+             state
+             | started?: false,
+               process_state: :stopped,
+               manager_mode: nil,
+               manager_pid: nil
+           }
+           |> release()}
 
         {:error, reason} ->
-          {:error, reason, %{state | process_state: :stop_failed} |> release()}
+          {:error, reason,
+           %{state | process_state: :stop_failed, manager_mode: nil, manager_pid: nil}
+           |> release()}
       end
     else
       {:ok, release(state)}
@@ -250,9 +253,108 @@ defmodule Kollywood.Runtime.Host do
 
   # ── Process args ───────────────────────────────────────────────────
 
+  defp start_runtime_processes(state) do
+    if should_launch_devenv_manager_in_foreground?(state.command) do
+      case launch_devenv_foreground_manager(state) do
+        {:ok, manager_pid} ->
+          {:ok, %{state | manager_mode: :foreground, manager_pid: manager_pid}}
+
+        {:error, reason} ->
+          {:error, reason, state}
+      end
+    else
+      args = start_args(state)
+
+      case execute(state.command, args, state.workspace_path, state.env, state.start_timeout_ms) do
+        {:ok, _output, _ms} ->
+          case wait_for_runtime_ready(state) do
+            :ok -> {:ok, state}
+            {:error, reason} -> {:error, reason, state}
+          end
+
+        {:error, reason, _output, _ms} ->
+          {:error, reason, state}
+      end
+    end
+  end
+
   defp start_args(state) do
     base = ["processes", "up", "--detach", "--strict-ports"]
     if state.processes == [], do: base, else: base ++ state.processes
+  end
+
+  defp foreground_start_args(state) do
+    base = ["processes", "up", "--strict-ports"]
+    if state.processes == [], do: base, else: base ++ state.processes
+  end
+
+  defp should_launch_devenv_manager_in_foreground?(command) when is_binary(command) do
+    command
+    |> Path.basename()
+    |> String.downcase()
+    |> Kernel.==("devenv")
+  end
+
+  defp should_launch_devenv_manager_in_foreground?(_command), do: false
+
+  defp launch_devenv_foreground_manager(state) do
+    runtime_log = ".devenv/state/kollywood-runtime-manager.log"
+
+    run_cmd =
+      [state.command | foreground_start_args(state)]
+      |> Enum.map_join(" ", &shell_escape/1)
+
+    launch_cmd =
+      "mkdir -p .devenv/state && #{run_cmd} >#{shell_escape(runtime_log)} 2>&1 & echo $!"
+
+    case execute(
+           "bash",
+           ["-lc", launch_cmd],
+           state.workspace_path,
+           state.env,
+           state.start_timeout_ms
+         ) do
+      {:ok, output, _ms} ->
+        case parse_background_pid(output) do
+          {:ok, pid} ->
+            Process.sleep(100)
+
+            if os_pid_alive?(pid) do
+              {:ok, pid}
+            else
+              {:error, "runtime manager exited immediately (pid=#{pid})"}
+            end
+
+          :error ->
+            {:error,
+             "failed to parse runtime manager pid from output: #{inspect(String.trim(output))}"}
+        end
+
+      {:error, reason, output, _ms} ->
+        {:error, format_stop_failure(reason, output)}
+    end
+  end
+
+  defp parse_background_pid(output) when is_binary(output) do
+    case Regex.run(~r/\b(\d+)\b/, output, capture: :all_but_first) do
+      [value] ->
+        case Integer.parse(value) do
+          {pid, ""} when pid > 0 -> {:ok, pid}
+          _other -> :error
+        end
+
+      _other ->
+        :error
+    end
+  end
+
+  defp parse_background_pid(_output), do: :error
+
+  defp shell_escape(value) do
+    value
+    |> to_string()
+    |> String.replace("'", "'\"'\"'")
+    |> then(&"'#{&1}'")
   end
 
   defp wait_for_runtime_ready(state) do
@@ -265,7 +367,15 @@ defmodule Kollywood.Runtime.Host do
           :ok
 
         {:error, reason, output, _ms} ->
-          {:error, "processes wait failed: #{format_stop_failure(reason, output)}"}
+          if output_indicates_runtime_already_stopped?(output) do
+            Logger.warning(
+              "runtime readiness wait returned no running processes; deferring to runtime healthcheck"
+            )
+
+            :ok
+          else
+            {:error, "processes wait failed: #{format_stop_failure(reason, output)}"}
+          end
       end
     else
       :ok
@@ -285,6 +395,17 @@ defmodule Kollywood.Runtime.Host do
 
   defp stop_required?(state) do
     state.started? == true or state.process_state == :start_failed
+  end
+
+  defp stop_runtime_processes(%{manager_mode: :foreground, manager_pid: pid} = state)
+       when is_integer(pid) and pid > 0 do
+    case terminate_manager_pid(pid, state.stop_timeout_ms) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        {:error, "failed to stop foreground runtime manager pid=#{pid}: #{reason}"}
+    end
   end
 
   defp stop_runtime_processes(state) do
@@ -351,6 +472,77 @@ defmodule Kollywood.Runtime.Host do
            "(attempt1=#{format_stop_failure(first_reason, first_output)}; " <>
            "attempt#{@stop_retry_attempts + 1}=#{format_stop_failure(last_reason, last_output)})"}
     end
+  end
+
+  defp terminate_manager_pid(pid, timeout_ms) when is_integer(pid) and pid > 0 do
+    if os_pid_alive?(pid) do
+      case signal_pid(pid, "-TERM") do
+        :ok ->
+          deadline_ms = System.monotonic_time(:millisecond) + max(timeout_ms, 1)
+
+          if wait_for_pid_exit(pid, deadline_ms) do
+            :ok
+          else
+            case signal_pid(pid, "-KILL") do
+              :ok ->
+                if wait_for_pid_exit(pid, deadline_ms + 1_000) do
+                  :ok
+                else
+                  {:error, "pid remained alive after SIGKILL"}
+                end
+
+              {:error, reason} ->
+                {:error, reason}
+            end
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp terminate_manager_pid(_pid, _timeout_ms), do: :ok
+
+  defp wait_for_pid_exit(pid, deadline_ms) do
+    cond do
+      not os_pid_alive?(pid) ->
+        true
+
+      System.monotonic_time(:millisecond) >= deadline_ms ->
+        false
+
+      true ->
+        Process.sleep(100)
+        wait_for_pid_exit(pid, deadline_ms)
+    end
+  end
+
+  defp os_pid_alive?(pid) when is_integer(pid) and pid > 0 do
+    case System.cmd("kill", ["-0", Integer.to_string(pid)], stderr_to_stdout: true) do
+      {_output, 0} -> true
+      _other -> false
+    end
+  rescue
+    _error -> false
+  end
+
+  defp os_pid_alive?(_pid), do: false
+
+  defp signal_pid(pid, signal) when is_integer(pid) and is_binary(signal) do
+    case System.cmd("kill", [signal, Integer.to_string(pid)], stderr_to_stdout: true) do
+      {_output, 0} ->
+        :ok
+
+      {output, exit_code} ->
+        {:error,
+         "kill #{signal} failed for pid=#{pid} exit=#{exit_code} output=#{String.trim(output)}"}
+    end
+  rescue
+    error ->
+      {:error, Exception.message(error)}
   end
 
   defp output_indicates_runtime_already_stopped?(output) when is_binary(output) do
@@ -421,13 +613,13 @@ defmodule Kollywood.Runtime.Host do
       :ok
     else
       deadline_ms = System.monotonic_time(:millisecond) + max(state.start_timeout_ms, 1)
-      wait_for_ports(port_entries, deadline_ms)
+      wait_for_ports(port_entries, deadline_ms, state)
     end
   end
 
-  defp wait_for_ports([], _deadline_ms), do: :ok
+  defp wait_for_ports([], _deadline_ms, _state), do: :ok
 
-  defp wait_for_ports(port_entries, deadline_ms) do
+  defp wait_for_ports(port_entries, deadline_ms, state) do
     pending =
       Enum.reject(port_entries, fn {_name, port} ->
         runtime_port_open?(port)
@@ -437,6 +629,11 @@ defmodule Kollywood.Runtime.Host do
       pending == [] ->
         :ok
 
+      runtime_manager_exited_before_ready?(state) ->
+        {:error,
+         "runtime manager pid=#{state.manager_pid} exited before ports became reachable: " <>
+           Enum.map_join(pending, ", ", fn {name, port} -> "#{name}=#{port}" end)}
+
       System.monotonic_time(:millisecond) >= deadline_ms ->
         {:error,
          "ports not reachable before timeout: " <>
@@ -444,9 +641,16 @@ defmodule Kollywood.Runtime.Host do
 
       true ->
         Process.sleep(@healthcheck_poll_interval_ms)
-        wait_for_ports(pending, deadline_ms)
+        wait_for_ports(pending, deadline_ms, state)
     end
   end
+
+  defp runtime_manager_exited_before_ready?(%{manager_mode: :foreground, manager_pid: pid})
+       when is_integer(pid) and pid > 0 do
+    not os_pid_alive?(pid)
+  end
+
+  defp runtime_manager_exited_before_ready?(_state), do: false
 
   defp runtime_port_open?(port) when is_integer(port) and port > 0 do
     case :gen_tcp.connect(

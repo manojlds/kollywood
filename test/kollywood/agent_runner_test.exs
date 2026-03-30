@@ -282,6 +282,36 @@ defmodule Kollywood.AgentRunnerTest do
     refute prompt_history =~ "## Verification"
   end
 
+  test "injects prior failure context into implementation prompts", %{
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    prompt_log: prompt_log
+  } do
+    config = runner_config(workspace_root, cli_path, prompt_log)
+
+    issue =
+      @issue
+      |> Map.put(:internal_metadata, %{
+        "last_failure" => %{
+          "attempt" => 3,
+          "reason" => "required checks failed",
+          "recorded_at" => "2026-03-29T01:02:03Z"
+        }
+      })
+
+    assert {:ok, _result} =
+             AgentRunner.run_issue(issue,
+               config: config,
+               prompt_template: "Work on {{ issue.identifier }}\n{{ issue.failure_summary }}",
+               mode: :single_turn
+             )
+
+    prompt_history = File.read!(prompt_log)
+    assert prompt_history =~ "attempt 3 failed"
+    assert prompt_history =~ "required checks failed"
+    assert prompt_history =~ "2026-03-29T01:02:03Z"
+  end
+
   test "fails when before_run hook fails", %{
     workspace_root: workspace_root,
     cli_path: cli_path,
