@@ -71,6 +71,9 @@ defmodule Kollywood.Orchestrator.RunLogs do
     "runtime_starting",
     "runtime_started",
     "runtime_start_failed",
+    "runtime_healthcheck_started",
+    "runtime_healthcheck_passed",
+    "runtime_healthcheck_failed",
     "runtime_stopping",
     "runtime_stopped",
     "runtime_stop_failed"
