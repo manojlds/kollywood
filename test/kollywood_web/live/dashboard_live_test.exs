@@ -955,8 +955,13 @@ defmodule KollywoodWeb.DashboardLiveTest do
           metadata_overrides: %{"settings_snapshot" => settings_snapshot_fixture()}
         )
 
-      {:ok, _view, html} =
+      {:ok, view, _html} =
         live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
+
+      html =
+        view
+        |> element("button[phx-click='set_run_detail_panel_tab'][phx-value-tab='settings']")
+        |> render_click()
 
       assert html =~ "Settings used"
       assert html =~ "Attempt workflow fingerprint"
@@ -987,8 +992,13 @@ defmodule KollywoodWeb.DashboardLiveTest do
       story_id = "US-LEGACY-SNAPSHOT"
       _ = prepare_run_logs!(project.slug, story_id)
 
-      {:ok, _view, html} =
+      {:ok, view, _html} =
         live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
+
+      html =
+        view
+        |> element("button[phx-click='set_run_detail_panel_tab'][phx-value-tab='settings']")
+        |> render_click()
 
       assert html =~ "Settings used"
       assert html =~ "Settings snapshot unavailable."
@@ -1045,20 +1055,49 @@ defmodule KollywoodWeb.DashboardLiveTest do
       {:ok, view, _html} =
         live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
 
-      html =
+      _ =
         view
         |> element("button[phx-click='set_run_detail_panel_tab'][phx-value-tab='reports']")
+        |> render_click()
+
+      html =
+        view
+        |> element("button[phx-click='set_reports_tab'][phx-value-tab='testing']")
         |> render_click()
 
       assert html =~ "Testing report"
       assert html =~ "PASS"
       assert html =~ "Testing completed successfully"
       assert html =~ "acceptance flow"
-      assert html =~ "artifacts/testing-success.png"
-      assert html =~ "agent-browser.local/replays/testing-success"
+      assert html =~ "Kind"
+      assert html =~ "Preview"
+      refute html =~ "<th>Artifact</th>"
+      refute html =~ "<th>Stored</th>"
       assert html =~ "Per-cycle testing.json"
-      assert html =~ ~s(/projects/#{project.slug}/runs/#{story_id}/1/artifacts/001_smoke.png)
-      assert html =~ ~s(/projects/#{project.slug}/runs/#{story_id}/1/artifacts/002_demo.webm)
+
+      assert has_element?(
+               view,
+               "button[phx-click='open_artifact_preview'][phx-value-type='image']"
+             )
+
+      assert has_element?(
+               view,
+               "button[phx-click='open_artifact_preview'][phx-value-type='video']"
+             )
+
+      preview_url = "/projects/#{project.slug}/runs/#{story_id}/1/artifacts/001_smoke.png"
+
+      preview_html =
+        render_hook(view, "open_artifact_preview", %{
+          "url" => preview_url,
+          "type" => "image",
+          "title" => "smoke screenshot"
+        })
+
+      assert preview_html =~ "Artifact preview"
+      assert preview_html =~ preview_url
+
+      assert preview_html =~ ~s(phx-click="close_artifact_preview")
     end
 
     test "run detail reports tab shows review report json view", %{
@@ -1094,7 +1133,10 @@ defmodule KollywoodWeb.DashboardLiveTest do
         |> element("button[phx-click='set_run_detail_panel_tab'][phx-value-tab='reports']")
         |> render_click()
 
+      assert html =~ "Review"
+      assert html =~ "Testing"
       assert html =~ "Review report"
+      refute html =~ "Testing report"
       assert html =~ "FAIL"
       assert html =~ "Found blocking review issue"
       assert html =~ "Missing regression test coverage"
@@ -1592,6 +1634,38 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       html = render(view)
       assert html =~ "new content after poll"
+    end
+
+    test "log_tab query preserves selected testing log across refresh", %{
+      conn: conn,
+      project: project
+    } do
+      story_id = "US-LOG-TAB-KEEP"
+      context = prepare_run_logs!(project.slug, story_id, status: "running")
+
+      File.write!(context.files.agent_stdout, "agent content")
+      File.write!(context.files.tester_stdout, "testing content")
+
+      {:ok, view, html} =
+        live(
+          conn,
+          ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs&log_tab=testing_agent"
+        )
+
+      assert html =~ "testing content"
+      refute html =~ "agent content"
+
+      File.write!(context.files.tester_stdout, "testing content updated")
+      send(view.pid, :poll_logs)
+
+      html = render(view)
+      assert html =~ "testing content updated"
+      refute html =~ "agent content"
+
+      send(view.pid, :refresh)
+      html = render(view)
+      assert html =~ "testing content updated"
+      refute html =~ "agent content"
     end
   end
 

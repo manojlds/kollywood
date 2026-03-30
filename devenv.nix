@@ -6,6 +6,7 @@ in
   packages = [
     pkgs.elixir
     pkgs.erlang
+    pkgs.ffmpeg
   ];
 
   env = {

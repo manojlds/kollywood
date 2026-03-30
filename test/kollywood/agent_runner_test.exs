@@ -674,6 +674,53 @@ defmodule Kollywood.AgentRunnerTest do
     assert down_count == 2
   end
 
+  test "runtime stop treats 'No processes running' as already stopped", %{
+    root: root,
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    testing_cli_path: testing_cli_path,
+    prompt_log: prompt_log
+  } do
+    fake_devenv_log = Path.join(root, "fake_devenv_stop_already_stopped.log")
+    fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+
+    runtime =
+      full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log)
+      |> put_in([:env, "FAKE_DEVENV_DOWN_ALREADY_STOPPED"], "1")
+
+    config =
+      runner_config(workspace_root, cli_path, prompt_log)
+      |> Map.put(:runtime, runtime)
+      |> Map.put(:testing, %{
+        enabled: true,
+        max_cycles: 1,
+        timeout_ms: 10_000,
+        agent: %{
+          explicit: true,
+          kind: :cursor,
+          command: testing_cli_path,
+          args: [],
+          env: %{"TESTING_VERDICT" => "pass"},
+          timeout_ms: 10_000
+        }
+      })
+
+    issue_with_testing =
+      Map.put(@issue, :settings, %{"execution" => %{"testing_enabled" => true}})
+
+    assert {:ok, result} =
+             AgentRunner.run_issue(issue_with_testing,
+               config: config,
+               prompt_template: "Work on {{ issue.identifier }}",
+               mode: :single_turn
+             )
+
+    event_types = Enum.map(result.events, & &1.type)
+    assert :runtime_started in event_types
+    assert :runtime_stopped in event_types
+    refute :runtime_stop_failed in event_types
+  end
+
   test "runtime attempts shutdown after startup failure during testing", %{
     root: root,
     workspace_root: workspace_root,
@@ -2017,6 +2064,11 @@ defmodule Kollywood.AgentRunnerTest do
     fi
 
     if [ "${1:-}" = "processes" ] && [ "${2:-}" = "down" ]; then
+      if [ "${FAKE_DEVENV_DOWN_ALREADY_STOPPED:-}" = "1" ]; then
+        echo "Error:   × No processes running" >&2
+        exit 1
+      fi
+
       if [ -n "${FAKE_DEVENV_FAIL_DOWN_ONCE_FILE:-}" ]; then
         if [ ! -f "$FAKE_DEVENV_FAIL_DOWN_ONCE_FILE" ]; then
           touch "$FAKE_DEVENV_FAIL_DOWN_ONCE_FILE"
