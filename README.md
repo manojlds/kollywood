@@ -36,6 +36,26 @@ process checks, so no per-project metadata file is required.
 
 Now you can visit [`localhost:4000`](http://localhost:4000) from your browser.
 
+### Testing agent prerequisites
+
+Kollywood testing runs assume browser-evidence tooling is available:
+
+- `agent-browser` (global install, outside this repo) for browser automation
+- `ffmpeg` for `.webm` recording (provided by this repo's `devenv.nix`)
+
+Quick checks:
+
+```bash
+devenv shell -- agent-browser --version
+devenv shell -- ffmpeg -version
+```
+
+Testing runtime behavior:
+
+- runtime-managed service ports come from injected URLs (`runtime_base_url` and `runtime_urls_json`)
+- testing should not start ad-hoc servers (`mix phx.server`, custom `PORT=...`, or extra `devenv up`)
+- if injected runtime URLs are unreachable, treat that as runtime/test failure context instead of probing random localhost ports
+
 ## Runtime Modes
 
 Kollywood supports role-based startup via `KOLLYWOOD_APP_MODE`.
@@ -177,6 +197,7 @@ Quality gates are configured in `.kollywood/WORKFLOW.md`:
 - `quality.testing.enabled`: when true, enables tester-agent validation after review
 - `quality.testing.max_cycles`: maximum tester remediation cycles
 - `quality.testing.agent`: optional tester-agent overrides (kind/command/args/env/timeout)
+- testing agents are expected to validate only against runtime-injected URLs (no ad-hoc local port fallbacks)
 - `preview.enabled`: enables per-story preview policy metadata for pending-merge flows
 - `preview.ttl_minutes`: default preview time-to-live before automatic shutdown
 - `preview.reuse_testing_runtime`: whether preview should prefer reusing testing runtime state

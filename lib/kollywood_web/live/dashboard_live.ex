@@ -27,6 +27,8 @@ defmodule KollywoodWeb.DashboardLive do
   ]
   @story_status_order Enum.map(@story_status_columns, fn {status, _label} -> status end)
   @agent_kind_options StoryExecutionOverrides.valid_agent_kind_strings()
+  @log_tabs ["agent", "review_agent", "testing_agent", "worker"]
+  @reports_tabs ["review", "testing"]
 
   @impl true
   def mount(params, _session, socket) do
@@ -43,7 +45,9 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:selected_story, nil)
       |> assign(:story_detail_tab, "details")
       |> assign(:run_detail_panel_tab, "logs")
+      |> assign(:reports_tab, "review")
       |> assign(:active_log_tab, "agent")
+      |> assign(:artifact_preview, nil)
       |> assign(:log_poll_timer, nil)
       |> assign(:story_form_mode, nil)
       |> assign(:story_form_values, %{})
@@ -73,11 +77,14 @@ defmodule KollywoodWeb.DashboardLive do
     project_slug = params["project_slug"]
     current_project = find_project_by_slug(socket.assigns.projects, project_slug)
     stories_view = resolve_stories_view(params["view"], socket.assigns[:stories_view])
+    active_log_tab = resolve_active_log_tab(params["log_tab"], socket.assigns[:active_log_tab])
 
     socket =
       socket
       |> assign(:current_project, current_project)
       |> assign(:page_title, if(current_project, do: current_project.name, else: "Dashboard"))
+      |> assign(:active_log_tab, active_log_tab)
+      |> assign(:artifact_preview, nil)
       |> assign(:run_detail_story_id, params["story_id"])
       |> assign(:run_detail_attempt, params["attempt"])
       |> assign(:stories_view, stories_view)
@@ -116,19 +123,57 @@ defmodule KollywoodWeb.DashboardLive do
 
   @impl true
   def handle_event("set_log_tab", %{"tab" => tab}, socket) do
-    run_detail = load_selected_run_detail(socket, tab)
+    next_tab = resolve_active_log_tab(tab, socket.assigns[:active_log_tab])
+    run_detail = load_selected_run_detail(socket, next_tab)
 
     socket =
       socket
-      |> assign(:active_log_tab, tab)
+      |> assign(:active_log_tab, next_tab)
       |> assign(:run_detail, run_detail)
+      |> assign(:artifact_preview, nil)
+      |> maybe_patch_log_tab(next_tab)
 
     {:noreply, socket}
   end
 
   def handle_event("set_run_detail_panel_tab", %{"tab" => tab}, socket) do
-    next_tab = if tab in ["logs", "reports"], do: tab, else: "logs"
-    {:noreply, assign(socket, :run_detail_panel_tab, next_tab)}
+    next_tab = if tab in ["logs", "reports", "settings"], do: tab, else: "logs"
+
+    socket =
+      socket
+      |> assign(:run_detail_panel_tab, next_tab)
+      |> assign(:artifact_preview, nil)
+
+    {:noreply, socket}
+  end
+
+  def handle_event("set_reports_tab", %{"tab" => tab}, socket) do
+    next_tab = resolve_reports_tab(tab, socket.assigns[:reports_tab])
+
+    socket =
+      socket
+      |> assign(:reports_tab, next_tab)
+      |> assign(:artifact_preview, nil)
+
+    {:noreply, socket}
+  end
+
+  def handle_event("open_artifact_preview", %{"url" => url, "type" => type} = params, socket) do
+    if valid_artifact_preview?(url, type) do
+      preview = %{
+        "url" => String.trim(url),
+        "type" => String.downcase(type),
+        "title" => params |> Map.get("title", "") |> to_string()
+      }
+
+      {:noreply, assign(socket, :artifact_preview, preview)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("close_artifact_preview", _params, socket) do
+    {:noreply, assign(socket, :artifact_preview, nil)}
   end
 
   def handle_event("set_story_tab", %{"tab" => tab}, socket) do
@@ -606,6 +651,7 @@ defmodule KollywoodWeb.DashboardLive do
                   story_id={@run_detail_story_id}
                   run_detail={@run_detail}
                   run_detail_panel_tab={@run_detail_panel_tab}
+                  reports_tab={@reports_tab}
                   active_log_tab={@active_log_tab}
                   story_detail_tab={@story_detail_tab}
                   project={@current_project}
@@ -619,6 +665,7 @@ defmodule KollywoodWeb.DashboardLive do
                   story_id={@run_detail_story_id}
                   attempt={@run_detail_attempt}
                   run_detail_panel_tab={@run_detail_panel_tab}
+                  reports_tab={@reports_tab}
                   active_log_tab={@active_log_tab}
                   project={@current_project}
                   stories_view={@stories_view}
@@ -639,6 +686,10 @@ defmodule KollywoodWeb.DashboardLive do
                   recent_runs={@recent_runs}
                   stories_view={@stories_view}
                 />
+            <% end %>
+
+            <%= if @artifact_preview do %>
+              <.artifact_preview_modal preview={@artifact_preview} />
             <% end %>
           </div>
         </main>
@@ -2307,6 +2358,7 @@ defmodule KollywoodWeb.DashboardLive do
   attr :story_id, :string, default: nil
   attr :attempt, :string, default: nil
   attr :run_detail_panel_tab, :string, default: "logs"
+  attr :reports_tab, :string, default: "review"
   attr :active_log_tab, :string, default: "agent"
   attr :project, Project, required: true
   attr :stories_view, :string, default: @default_stories_view
@@ -2363,16 +2415,11 @@ defmodule KollywoodWeb.DashboardLive do
       <% end %>
 
       <%= if @run_detail do %>
-        <.settings_used_section
-          snapshot={@settings_snapshot}
-          current_workflow_identity={@current_workflow_identity}
-          workflow_fingerprint_status={@workflow_fingerprint_status}
-        />
-
         <div class="flex gap-0 border-b border-base-300">
           <%= for {tab, label} <- [
             {"logs", "Logs"},
-            {"reports", "Reports"}
+            {"reports", "Reports"},
+            {"settings", "Settings"}
           ] do %>
             <button
               phx-click="set_run_detail_panel_tab"
@@ -2389,53 +2436,81 @@ defmodule KollywoodWeb.DashboardLive do
           <% end %>
         </div>
 
-        <%= if @run_detail_panel_tab == "reports" do %>
-          <div class="space-y-4">
-            <.review_report_section
-              report={@run_detail["review_report"]}
-              cycles={@run_detail["review_cycles"]}
-              cycle_reports={@run_detail["review_cycle_reports"]}
-            />
-            <.testing_report_section
-              report={@run_detail["testing_report"]}
-              cycles={@run_detail["testing_cycles"]}
-              cycle_reports={@run_detail["testing_cycle_reports"]}
-              project_slug={@project.slug}
-              story_id={@story_id}
-              attempt={Map.get(@run_detail["metadata"], "attempt")}
-            />
-          </div>
+        <%= if @run_detail_panel_tab == "settings" do %>
+          <.settings_used_section
+            snapshot={@settings_snapshot}
+            current_workflow_identity={@current_workflow_identity}
+            workflow_fingerprint_status={@workflow_fingerprint_status}
+          />
         <% else %>
-          <div class="flex gap-0 border-b border-base-300">
-            <%= for {tab, label} <- [
-              {"agent", "Agent"},
-              {"review_agent", "Review Agent"},
-              {"testing_agent", "Testing Agent"},
-              {"worker", "Worker"}
-            ] do %>
-              <button
-                phx-click="set_log_tab"
-                phx-value-tab={tab}
-                class={[
-                  "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
-                  @active_log_tab == tab && "border-primary text-primary",
-                  @active_log_tab != tab &&
-                    "border-transparent text-base-content/60 hover:text-base-content"
-                ]}
-              >
-                {label}
-              </button>
-            <% end %>
-          </div>
+          <%= if @run_detail_panel_tab == "reports" do %>
+            <div class="space-y-4">
+              <div class="flex gap-0 border-b border-base-300">
+                <%= for {tab, label} <- [{"review", "Review"}, {"testing", "Testing"}] do %>
+                  <button
+                    phx-click="set_reports_tab"
+                    phx-value-tab={tab}
+                    class={[
+                      "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
+                      @reports_tab == tab && "border-primary text-primary",
+                      @reports_tab != tab &&
+                        "border-transparent text-base-content/60 hover:text-base-content"
+                    ]}
+                  >
+                    {label}
+                  </button>
+                <% end %>
+              </div>
 
-          <%= if @run_detail["active_log_content"] do %>
-            <pre
-              id="log-output"
-              phx-hook=".LogScroll"
-              class="font-mono text-xs leading-relaxed bg-base-300 p-4 rounded-lg overflow-auto max-h-[75vh] whitespace-pre-wrap"
-            ><.ansi_log content={@run_detail["active_log_content"]} /></pre>
+              <%= if @reports_tab == "testing" do %>
+                <.testing_report_section
+                  report={@run_detail["testing_report"]}
+                  cycles={@run_detail["testing_cycles"]}
+                  cycle_reports={@run_detail["testing_cycle_reports"]}
+                  project_slug={@project.slug}
+                  story_id={@story_id}
+                  attempt={Map.get(@run_detail["metadata"], "attempt")}
+                />
+              <% else %>
+                <.review_report_section
+                  report={@run_detail["review_report"]}
+                  cycles={@run_detail["review_cycles"]}
+                  cycle_reports={@run_detail["review_cycle_reports"]}
+                />
+              <% end %>
+            </div>
           <% else %>
-            <p class="text-base-content/50 text-sm italic">No output yet.</p>
+            <div class="flex gap-0 border-b border-base-300">
+              <%= for {tab, label} <- [
+                {"agent", "Agent"},
+                {"review_agent", "Review Agent"},
+                {"testing_agent", "Testing Agent"},
+                {"worker", "Worker"}
+              ] do %>
+                <button
+                  phx-click="set_log_tab"
+                  phx-value-tab={tab}
+                  class={[
+                    "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
+                    @active_log_tab == tab && "border-primary text-primary",
+                    @active_log_tab != tab &&
+                      "border-transparent text-base-content/60 hover:text-base-content"
+                  ]}
+                >
+                  {label}
+                </button>
+              <% end %>
+            </div>
+
+            <%= if @run_detail["active_log_content"] do %>
+              <pre
+                id="log-output"
+                phx-hook=".LogScroll"
+                class="font-mono text-xs leading-relaxed bg-base-300 p-4 rounded-lg overflow-auto max-h-[75vh] whitespace-pre-wrap"
+              ><.ansi_log content={@run_detail["active_log_content"]} /></pre>
+            <% else %>
+              <p class="text-base-content/50 text-sm italic">No output yet.</p>
+            <% end %>
           <% end %>
         <% end %>
       <% else %>
@@ -2839,16 +2914,11 @@ defmodule KollywoodWeb.DashboardLive do
           <tr>
             <th>Kind</th>
             <th>Preview</th>
-            <th>Artifact</th>
-            <th>Stored</th>
-            <th>Notes</th>
           </tr>
         </thead>
         <tbody>
           <%= for artifact <- @artifacts do %>
             <% kind = Map.get(artifact, "kind") || "artifact" %>
-            <% path = Map.get(artifact, "path") %>
-            <% stored_path = Map.get(artifact, "stored_path") %>
             <% stored_url = Map.get(artifact, "stored_url") %>
             <% storage_error = Map.get(artifact, "storage_error") %>
             <% description = Map.get(artifact, "description") %>
@@ -2856,66 +2926,63 @@ defmodule KollywoodWeb.DashboardLive do
             <% preview_type = Map.get(artifact, "preview_type") %>
             <tr>
               <td class="align-top">
-                <span class="badge badge-ghost text-xs">{kind}</span>
+                <span class="badge badge-outline text-xs">{kind}</span>
               </td>
               <td class="align-top min-w-[14rem]">
-                <%= if preview_type == "image" and is_binary(preview_url) do %>
-                  <img
-                    src={preview_url}
-                    alt={description || kind}
-                    class="max-h-40 rounded-lg border border-base-300 bg-base-100"
-                  />
+                <%= if preview_type in ["image", "video"] and is_binary(preview_url) do %>
+                  <button
+                    type="button"
+                    phx-click="open_artifact_preview"
+                    phx-value-url={preview_url}
+                    phx-value-type={preview_type}
+                    phx-value-title={description || kind}
+                    class="group inline-block text-left"
+                  >
+                    <%= if preview_type == "image" do %>
+                      <img
+                        src={preview_url}
+                        alt={description || kind}
+                        class="max-h-40 rounded-lg border border-base-300 bg-base-100 transition group-hover:border-primary"
+                      />
+                    <% else %>
+                      <div class="relative inline-block">
+                        <video
+                          muted
+                          playsinline
+                          preload="metadata"
+                          class="max-h-40 rounded-lg border border-base-300 bg-base-100 transition group-hover:border-primary"
+                        >
+                          <source src={preview_url} />
+                        </video>
+                        <span class="absolute inset-0 flex items-center justify-center rounded-lg bg-black/20 text-xs font-medium text-white">
+                          Click to play
+                        </span>
+                      </div>
+                    <% end %>
+                  </button>
+
+                  <%= if is_binary(description) and String.trim(description) != "" do %>
+                    <p class="mt-1 text-xs text-base-content/60 break-words">{description}</p>
+                  <% else %>
+                    <p class="mt-1 text-xs text-base-content/50">Click preview to open</p>
+                  <% end %>
                 <% else %>
-                  <%= if preview_type == "video" and is_binary(preview_url) do %>
-                    <video
-                      controls
-                      preload="metadata"
-                      class="max-h-40 rounded-lg border border-base-300 bg-base-100"
+                  <%= if is_binary(stored_url) do %>
+                    <a
+                      href={stored_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="link link-primary text-xs"
                     >
-                      <source src={preview_url} />
-                    </video>
+                      Open artifact
+                    </a>
                   <% else %>
-                    <span class="text-xs text-base-content/50">No inline preview</span>
+                    <%= if is_binary(storage_error) and String.trim(storage_error) != "" do %>
+                      <span class="text-xs text-error break-words">{storage_error}</span>
+                    <% else %>
+                      <span class="text-xs text-base-content/50">No inline preview</span>
+                    <% end %>
                   <% end %>
-                <% end %>
-              </td>
-              <td class="align-top">
-                <%= if is_binary(path) and http_url?(path) do %>
-                  <a
-                    href={path}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    class="link link-primary text-xs break-all"
-                  >
-                    {path}
-                  </a>
-                <% else %>
-                  <span class="font-mono text-xs break-all">{path || "n/a"}</span>
-                <% end %>
-              </td>
-              <td class="align-top">
-                <%= if is_binary(stored_url) do %>
-                  <a
-                    href={stored_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    class="link link-primary text-xs break-all"
-                  >
-                    {stored_path}
-                  </a>
-                <% else %>
-                  <%= if is_binary(stored_path) and String.trim(stored_path) != "" do %>
-                    <span class="font-mono text-xs break-all">{stored_path}</span>
-                  <% else %>
-                    <span class="text-xs text-base-content/50">Not stored</span>
-                  <% end %>
-                <% end %>
-              </td>
-              <td class="align-top">
-                <%= if is_binary(storage_error) and String.trim(storage_error) != "" do %>
-                  <span class="text-xs text-error break-words">{storage_error}</span>
-                <% else %>
-                  <span class="text-xs text-base-content/60 break-words">{description || "—"}</span>
                 <% end %>
               </td>
             </tr>
@@ -2926,12 +2993,89 @@ defmodule KollywoodWeb.DashboardLive do
     """
   end
 
+  attr :preview, :map, required: true
+
+  defp artifact_preview_modal(assigns) do
+    preview = if is_map(assigns.preview), do: assigns.preview, else: %{}
+    type = Map.get(preview, "type")
+    url = Map.get(preview, "url")
+    title = Map.get(preview, "title")
+
+    assigns =
+      assigns
+      |> assign(:preview_type, type)
+      |> assign(:preview_url, url)
+      |> assign(
+        :preview_title,
+        if(is_binary(title) and String.trim(title) != "", do: title, else: nil)
+      )
+
+    ~H"""
+    <div
+      class="fixed inset-0 z-50 flex items-center justify-center p-4"
+      role="dialog"
+      aria-modal="true"
+    >
+      <button
+        type="button"
+        class="absolute inset-0 bg-black/60"
+        phx-click="close_artifact_preview"
+        aria-label="Close artifact preview"
+      >
+      </button>
+
+      <div class="relative z-10 max-h-[90vh] w-full max-w-5xl overflow-auto rounded-xl border border-base-300 bg-base-100 p-4 shadow-xl">
+        <div class="mb-3 flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <p class="text-xs font-semibold uppercase tracking-wide text-base-content/60">
+              Artifact preview
+            </p>
+            <%= if @preview_title do %>
+              <p class="truncate text-sm text-base-content/80">{@preview_title}</p>
+            <% end %>
+          </div>
+          <button
+            type="button"
+            class="btn btn-ghost btn-sm"
+            phx-click="close_artifact_preview"
+            aria-label="Close preview"
+          >
+            Close
+          </button>
+        </div>
+
+        <%= if @preview_type == "image" and is_binary(@preview_url) do %>
+          <img
+            src={@preview_url}
+            alt={@preview_title || "artifact image"}
+            class="max-h-[75vh] w-auto rounded-lg border border-base-300 bg-base-200"
+          />
+        <% else %>
+          <%= if @preview_type == "video" and is_binary(@preview_url) do %>
+            <video
+              controls
+              autoplay
+              preload="metadata"
+              class="max-h-[75vh] w-full rounded-lg border border-base-300 bg-base-200"
+            >
+              <source src={@preview_url} />
+            </video>
+          <% else %>
+            <p class="text-sm text-base-content/60">Preview unavailable.</p>
+          <% end %>
+        <% end %>
+      </div>
+    </div>
+    """
+  end
+
   # -- Story Detail Section --
 
   attr :story, :map, default: nil
   attr :story_id, :string, default: nil
   attr :run_detail, :map, default: nil
   attr :run_detail_panel_tab, :string, default: "logs"
+  attr :reports_tab, :string, default: "review"
   attr :active_log_tab, :string, default: "agent"
   attr :story_detail_tab, :string, default: "details"
   attr :project, Project, required: true
@@ -2940,7 +3084,25 @@ defmodule KollywoodWeb.DashboardLive do
   attr :selected_attempt, :string, default: nil
 
   defp story_detail_section(assigns) do
-    assigns = assign(assigns, :editable, local_provider?(assigns.project))
+    snapshot =
+      if is_map(assigns.run_detail),
+        do: Map.get(assigns.run_detail, "settings_snapshot"),
+        else: nil
+
+    current_workflow_identity =
+      if is_map(assigns.run_detail),
+        do: Map.get(assigns.run_detail, "current_workflow_identity"),
+        else: %{}
+
+    assigns =
+      assigns
+      |> assign(:editable, local_provider?(assigns.project))
+      |> assign(:settings_snapshot, snapshot)
+      |> assign(:current_workflow_identity, current_workflow_identity)
+      |> assign(
+        :workflow_fingerprint_status,
+        workflow_fingerprint_status(snapshot, current_workflow_identity)
+      )
 
     ~H"""
     <div class="space-y-6">
@@ -3189,7 +3351,8 @@ defmodule KollywoodWeb.DashboardLive do
             <div class="flex gap-0 border-b border-base-300">
               <%= for {tab, label} <- [
                 {"logs", "Logs"},
-                {"reports", "Reports"}
+                {"reports", "Reports"},
+                {"settings", "Settings"}
               ] do %>
                 <button
                   phx-click="set_run_detail_panel_tab"
@@ -3206,53 +3369,81 @@ defmodule KollywoodWeb.DashboardLive do
               <% end %>
             </div>
 
-            <%= if @run_detail_panel_tab == "reports" do %>
-              <div class="space-y-4">
-                <.review_report_section
-                  report={if(@run_detail, do: @run_detail["review_report"])}
-                  cycles={if(@run_detail, do: @run_detail["review_cycles"])}
-                  cycle_reports={if(@run_detail, do: @run_detail["review_cycle_reports"])}
-                />
-                <.testing_report_section
-                  report={if(@run_detail, do: @run_detail["testing_report"])}
-                  cycles={if(@run_detail, do: @run_detail["testing_cycles"])}
-                  cycle_reports={if(@run_detail, do: @run_detail["testing_cycle_reports"])}
-                  project_slug={@project.slug}
-                  story_id={@story_id}
-                  attempt={if(@run_detail, do: get_in(@run_detail, ["metadata", "attempt"]))}
-                />
-              </div>
+            <%= if @run_detail_panel_tab == "settings" do %>
+              <.settings_used_section
+                snapshot={@settings_snapshot}
+                current_workflow_identity={@current_workflow_identity}
+                workflow_fingerprint_status={@workflow_fingerprint_status}
+              />
             <% else %>
-              <div class="flex gap-0 border-b border-base-300">
-                <%= for {tab, label} <- [
-                  {"agent", "Agent"},
-                  {"review_agent", "Review Agent"},
-                  {"testing_agent", "Testing Agent"},
-                  {"worker", "Worker"}
-                ] do %>
-                  <button
-                    phx-click="set_log_tab"
-                    phx-value-tab={tab}
-                    class={[
-                      "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
-                      @active_log_tab == tab && "border-primary text-primary",
-                      @active_log_tab != tab &&
-                        "border-transparent text-base-content/60 hover:text-base-content"
-                    ]}
-                  >
-                    {label}
-                  </button>
-                <% end %>
-              </div>
+              <%= if @run_detail_panel_tab == "reports" do %>
+                <div class="space-y-4">
+                  <div class="flex gap-0 border-b border-base-300">
+                    <%= for {tab, label} <- [{"review", "Review"}, {"testing", "Testing"}] do %>
+                      <button
+                        phx-click="set_reports_tab"
+                        phx-value-tab={tab}
+                        class={[
+                          "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
+                          @reports_tab == tab && "border-primary text-primary",
+                          @reports_tab != tab &&
+                            "border-transparent text-base-content/60 hover:text-base-content"
+                        ]}
+                      >
+                        {label}
+                      </button>
+                    <% end %>
+                  </div>
 
-              <%= if @run_detail && @run_detail["active_log_content"] do %>
-                <pre
-                  id="log-output"
-                  phx-hook=".LogScroll"
-                  class="font-mono text-xs leading-relaxed bg-base-300 p-4 rounded-lg overflow-auto max-h-[75vh] whitespace-pre-wrap"
-                ><.ansi_log content={@run_detail["active_log_content"]} /></pre>
+                  <%= if @reports_tab == "testing" do %>
+                    <.testing_report_section
+                      report={if(@run_detail, do: @run_detail["testing_report"])}
+                      cycles={if(@run_detail, do: @run_detail["testing_cycles"])}
+                      cycle_reports={if(@run_detail, do: @run_detail["testing_cycle_reports"])}
+                      project_slug={@project.slug}
+                      story_id={@story_id}
+                      attempt={if(@run_detail, do: get_in(@run_detail, ["metadata", "attempt"]))}
+                    />
+                  <% else %>
+                    <.review_report_section
+                      report={if(@run_detail, do: @run_detail["review_report"])}
+                      cycles={if(@run_detail, do: @run_detail["review_cycles"])}
+                      cycle_reports={if(@run_detail, do: @run_detail["review_cycle_reports"])}
+                    />
+                  <% end %>
+                </div>
               <% else %>
-                <p class="text-base-content/50 text-sm italic">No output yet.</p>
+                <div class="flex gap-0 border-b border-base-300">
+                  <%= for {tab, label} <- [
+                    {"agent", "Agent"},
+                    {"review_agent", "Review Agent"},
+                    {"testing_agent", "Testing Agent"},
+                    {"worker", "Worker"}
+                  ] do %>
+                    <button
+                      phx-click="set_log_tab"
+                      phx-value-tab={tab}
+                      class={[
+                        "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
+                        @active_log_tab == tab && "border-primary text-primary",
+                        @active_log_tab != tab &&
+                          "border-transparent text-base-content/60 hover:text-base-content"
+                      ]}
+                    >
+                      {label}
+                    </button>
+                  <% end %>
+                </div>
+
+                <%= if @run_detail && @run_detail["active_log_content"] do %>
+                  <pre
+                    id="log-output"
+                    phx-hook=".LogScroll"
+                    class="font-mono text-xs leading-relaxed bg-base-300 p-4 rounded-lg overflow-auto max-h-[75vh] whitespace-pre-wrap"
+                  ><.ansi_log content={@run_detail["active_log_content"]} /></pre>
+                <% else %>
+                  <p class="text-base-content/50 text-sm italic">No output yet.</p>
+                <% end %>
               <% end %>
             <% end %>
           <% else %>
@@ -5456,9 +5647,9 @@ defmodule KollywoodWeb.DashboardLive do
     ~p"/projects/#{project_slug}/stories/#{story_id}?#{query}"
   end
 
-  defp run_detail_path(project_slug, story_id, attempt, stories_view)
-       when is_binary(project_slug) and is_binary(story_id) do
-    query = stories_view_query(stories_view)
+  defp run_detail_path(project_slug, story_id, attempt, stories_view, extra_query \\ [])
+       when is_binary(project_slug) and is_binary(story_id) and is_list(extra_query) do
+    query = merge_view_query(stories_view, extra_query)
 
     if query == [] do
       ~p"/projects/#{project_slug}/runs/#{story_id}/#{attempt}"
@@ -5481,6 +5672,64 @@ defmodule KollywoodWeb.DashboardLive do
     stories_view_query(stories_view)
     |> Keyword.merge(extra_query, fn _key, _left, right -> right end)
   end
+
+  defp maybe_patch_log_tab(socket, tab) when is_binary(tab) do
+    project = socket.assigns[:current_project]
+    story_id = socket.assigns[:run_detail_story_id]
+    attempt = socket.assigns[:run_detail_attempt]
+    stories_view = socket.assigns[:stories_view]
+    log_query = log_tab_query(tab)
+
+    case {socket.assigns[:live_action], project, story_id, attempt} do
+      {:run_detail, %Project{slug: slug}, story_id, attempt}
+      when is_binary(story_id) and not is_nil(attempt) ->
+        push_patch(socket, to: run_detail_path(slug, story_id, attempt, stories_view, log_query))
+
+      {:story_detail, %Project{slug: slug}, story_id, attempt}
+      when is_binary(story_id) and not is_nil(attempt) ->
+        push_patch(
+          socket,
+          to: story_runs_tab_path(slug, story_id, stories_view, [{:attempt, attempt} | log_query])
+        )
+
+      _other ->
+        socket
+    end
+  end
+
+  defp maybe_patch_log_tab(socket, _tab), do: socket
+
+  defp log_tab_query(tab) when is_binary(tab) do
+    if tab == "agent" do
+      []
+    else
+      [log_tab: tab]
+    end
+  end
+
+  defp log_tab_query(_tab), do: []
+
+  defp resolve_active_log_tab(param, current) do
+    cond do
+      valid_log_tab?(param) -> param
+      valid_log_tab?(current) -> current
+      true -> "agent"
+    end
+  end
+
+  defp valid_log_tab?(tab) when is_binary(tab), do: tab in @log_tabs
+  defp valid_log_tab?(_tab), do: false
+
+  defp resolve_reports_tab(param, current) do
+    cond do
+      valid_reports_tab?(param) -> param
+      valid_reports_tab?(current) -> current
+      true -> "review"
+    end
+  end
+
+  defp valid_reports_tab?(tab) when is_binary(tab), do: tab in @reports_tabs
+  defp valid_reports_tab?(_tab), do: false
 
   defp maybe_patch_stories_view(socket, stories_view) do
     case socket.assigns do
@@ -5553,15 +5802,22 @@ defmodule KollywoodWeb.DashboardLive do
 
   defp maybe_navigate_to_retry_attempt(socket, project, story_id, attempt) do
     stories_view = socket.assigns[:stories_view]
+    log_query = log_tab_query(socket.assigns[:active_log_tab])
 
     case socket.assigns[:live_action] do
       :run_detail ->
-        push_patch(socket, to: run_detail_path(project.slug, story_id, attempt, stories_view))
+        push_patch(
+          socket,
+          to: run_detail_path(project.slug, story_id, attempt, stories_view, log_query)
+        )
 
       :story_detail ->
         push_patch(
           socket,
-          to: story_runs_tab_path(project.slug, story_id, stories_view, attempt: attempt)
+          to:
+            story_runs_tab_path(project.slug, story_id, stories_view, [
+              {:attempt, attempt} | log_query
+            ])
         )
 
       _other ->
@@ -6554,6 +6810,23 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp testing_artifact_route(_project_slug, _story_id, _attempt, _stored_path), do: nil
+
+  defp valid_artifact_preview?(url, type) do
+    valid_artifact_preview_type?(type) and valid_artifact_preview_url?(url)
+  end
+
+  defp valid_artifact_preview_type?(type) when is_binary(type) do
+    String.downcase(type) in ["image", "video"]
+  end
+
+  defp valid_artifact_preview_type?(_type), do: false
+
+  defp valid_artifact_preview_url?(url) when is_binary(url) do
+    trimmed = String.trim(url)
+    trimmed != "" and (String.starts_with?(trimmed, "/") or http_url?(trimmed))
+  end
+
+  defp valid_artifact_preview_url?(_url), do: false
 
   defp http_url?(value) when is_binary(value) do
     String.starts_with?(value, "http://") or String.starts_with?(value, "https://")

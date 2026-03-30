@@ -3138,11 +3138,16 @@ defmodule Kollywood.AgentRunner do
   For browser validation, use `agent-browser` when available. Capture evidence:
   - at least one screenshot
   - at least one end-to-end video (`.webm` preferred)
+  - for UI-focused issues, evidence must visibly show the issue-specific control/text/state (generic top-of-page captures are insufficient)
+  - navigate to the issue-relevant screen and ensure the target element is in view before capture; scroll as needed
+  - video must include a meaningful interaction with the target behavior and show the resulting state
   - include replay/trace/HAR artifacts when they help debugging
+  - do not start app services manually (`mix phx.server`, `devenv up`, etc.); runtime has already started managed processes
+  - use only injected runtime URLs (`runtime_base_url` / `runtime_urls_json`); do not scan arbitrary localhost ports
   - avoid interactive commands/flags (for example `snapshot -i`) in CI/agent runs
   - avoid waiting for `networkidle` on apps with long-lived traffic; prefer bounded waits
   - if a browser command appears stuck, retry once with a short timeout and continue with direct captures
-  - verify runtime URL reachability with short, bounded probes; if base URL fails, quickly try URL-map entries
+  - verify injected runtime URL reachability with short, bounded probes; if all injected URLs fail, report that as testing failure context
 
   Write your testing report to `{{ testing_json_path }}` as one JSON object:
   {
@@ -3164,6 +3169,8 @@ defmodule Kollywood.AgentRunner do
   - `verdict` must be exactly `"pass"` or `"fail"`.
   - Include at least one checkpoint.
   - Use `"fail"` if acceptance behavior fails or required coverage is missing.
+  - If screenshot/video artifacts do not visibly demonstrate the claimed acceptance behavior, use `"fail"` and explain what is missing.
+  - Artifact `description` should say what behavior is proven and which checkpoint it supports.
   - Overwrite `{{ testing_json_path }}` exactly once (do not append multiple JSON objects).
   - If behavior fails, include clear repro details in checkpoint `details`.
   """

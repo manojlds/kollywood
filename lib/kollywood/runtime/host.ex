@@ -319,6 +319,7 @@ defmodule Kollywood.Runtime.Host do
           "not running",
           "no running process",
           "no running processes",
+          "no processes running",
           "no process to stop",
           "nothing to stop"
         ],
