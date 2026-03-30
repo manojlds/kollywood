@@ -776,6 +776,113 @@ defmodule Kollywood.AgentRunnerTest do
     assert log =~ "processes down"
   end
 
+  test "runtime start fails when process readiness wait fails", %{
+    root: root,
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    testing_cli_path: testing_cli_path,
+    prompt_log: prompt_log
+  } do
+    fake_devenv_log = Path.join(root, "fake_devenv_wait_fail.log")
+    fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+
+    runtime =
+      full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log)
+      |> put_in([:env, "FAKE_DEVENV_FAIL_WAIT"], "1")
+      |> put_in([:env, "KOLLYWOOD_RUNTIME_SKIP_HEALTHCHECK"], "1")
+
+    config =
+      runner_config(workspace_root, cli_path, prompt_log)
+      |> Map.put(:runtime, runtime)
+      |> Map.put(:testing, %{
+        enabled: true,
+        max_cycles: 1,
+        timeout_ms: 10_000,
+        agent: %{
+          explicit: true,
+          kind: :cursor,
+          command: testing_cli_path,
+          args: [],
+          env: %{},
+          timeout_ms: 10_000
+        }
+      })
+
+    issue_with_testing =
+      Map.put(@issue, :settings, %{"execution" => %{"testing_enabled" => true}})
+
+    assert {:error, result} =
+             AgentRunner.run_issue(issue_with_testing,
+               config: config,
+               prompt_template: "Work on {{ issue.identifier }}",
+               mode: :single_turn
+             )
+
+    assert result.error =~ "failed to start runtime processes: processes wait failed"
+
+    event_types = Enum.map(result.events, & &1.type)
+    assert :runtime_start_failed in event_types
+    assert :runtime_stopping in event_types
+    assert :runtime_stopped in event_types
+
+    log = File.read!(fake_devenv_log)
+    assert log =~ "processes up --detach --strict-ports server"
+    assert log =~ "processes wait --timeout"
+    assert log =~ "processes down"
+  end
+
+  test "runtime healthcheck blocks testing until configured ports are reachable", %{
+    root: root,
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    testing_cli_path: testing_cli_path,
+    prompt_log: prompt_log
+  } do
+    fake_devenv_log = Path.join(root, "fake_devenv_healthcheck_fail.log")
+    fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+
+    runtime =
+      full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log)
+      |> Map.put(:start_timeout_ms, 300)
+      |> put_in([:env, "KOLLYWOOD_RUNTIME_SKIP_HEALTHCHECK"], "0")
+
+    config =
+      runner_config(workspace_root, cli_path, prompt_log)
+      |> Map.put(:runtime, runtime)
+      |> Map.put(:testing, %{
+        enabled: true,
+        max_cycles: 1,
+        timeout_ms: 10_000,
+        agent: %{
+          explicit: true,
+          kind: :cursor,
+          command: testing_cli_path,
+          args: [],
+          env: %{},
+          timeout_ms: 10_000
+        }
+      })
+
+    issue_with_testing =
+      Map.put(@issue, :settings, %{"execution" => %{"testing_enabled" => true}})
+
+    assert {:error, result} =
+             AgentRunner.run_issue(issue_with_testing,
+               config: config,
+               prompt_template: "Work on {{ issue.identifier }}",
+               mode: :single_turn
+             )
+
+    assert result.error =~ "runtime healthcheck failed"
+
+    event_types = Enum.map(result.events, & &1.type)
+    assert :runtime_started in event_types
+    assert :runtime_healthcheck_started in event_types
+    assert :runtime_healthcheck_failed in event_types
+    assert :testing_error in event_types
+    assert :runtime_stopped in event_types
+  end
+
   test "runtime identity env cannot be overridden by user env", %{
     root: root,
     workspace_root: workspace_root,
@@ -2021,7 +2128,8 @@ defmodule Kollywood.AgentRunnerTest do
       processes: processes,
       env: %{
         "FAKE_DEVENV_LOG" => log_path,
-        "RUNTIME_SENTINEL" => "ok"
+        "RUNTIME_SENTINEL" => "ok",
+        "KOLLYWOOD_RUNTIME_SKIP_HEALTHCHECK" => "1"
       },
       ports: %{"APP_PORT" => 4100},
       port_offset_mod: 1000,
@@ -2058,6 +2166,15 @@ defmodule Kollywood.AgentRunnerTest do
       if [ "${FAKE_DEVENV_FAIL_UP:-}" = "1" ]; then
         echo "forced up failure" >&2
         exit 52
+      fi
+
+      exit 0
+    fi
+
+    if [ "${1:-}" = "processes" ] && [ "${2:-}" = "wait" ]; then
+      if [ "${FAKE_DEVENV_FAIL_WAIT:-}" = "1" ]; then
+        echo "forced wait failure" >&2
+        exit 53
       fi
 
       exit 0

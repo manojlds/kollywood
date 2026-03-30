@@ -11,6 +11,9 @@ defmodule Kollywood.Runtime.Host do
   @stop_retry_attempts 1
   @stop_retry_delay_ms 500
   @stop_output_preview_chars 240
+  @healthcheck_poll_interval_ms 250
+  @healthcheck_connect_timeout_ms 250
+  @healthcheck_skip_env "KOLLYWOOD_RUNTIME_SKIP_HEALTHCHECK"
 
   # ── Callbacks ──────────────────────────────────────────────────────
 
@@ -85,7 +88,14 @@ defmodule Kollywood.Runtime.Host do
 
       case execute(state.command, args, state.workspace_path, state.env, state.start_timeout_ms) do
         {:ok, _output, _ms} ->
-          {:ok, %{state | started?: true, process_state: :running}}
+          case wait_for_runtime_ready(state) do
+            :ok ->
+              {:ok, %{state | started?: true, process_state: :running}}
+
+            {:error, reason} ->
+              {:error, "failed to start runtime processes: #{reason}",
+               %{state | process_state: :start_failed}}
+          end
 
         {:error, reason, _output, _ms} ->
           {:error, "failed to start runtime processes: #{reason}",
@@ -110,6 +120,15 @@ defmodule Kollywood.Runtime.Host do
       end
     else
       {:ok, release(state)}
+    end
+  end
+
+  @impl true
+  def healthcheck(state) do
+    if skip_healthcheck?(state) do
+      :ok
+    else
+      await_runtime_ports(state)
     end
   end
 
@@ -236,6 +255,34 @@ defmodule Kollywood.Runtime.Host do
     if state.processes == [], do: base, else: base ++ state.processes
   end
 
+  defp wait_for_runtime_ready(state) do
+    if supports_process_wait?(state.command) do
+      timeout_seconds = max(div(state.start_timeout_ms + 999, 1000), 1)
+      args = ["processes", "wait", "--timeout", Integer.to_string(timeout_seconds)]
+
+      case execute(state.command, args, state.workspace_path, state.env, state.start_timeout_ms) do
+        {:ok, _output, _ms} ->
+          :ok
+
+        {:error, reason, output, _ms} ->
+          {:error, "processes wait failed: #{format_stop_failure(reason, output)}"}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp supports_process_wait?(command) when is_binary(command) do
+    basename =
+      command
+      |> Path.basename()
+      |> String.downcase()
+
+    basename == "devenv" or String.contains?(basename, "devenv")
+  end
+
+  defp supports_process_wait?(_command), do: false
+
   defp stop_required?(state) do
     state.started? == true or state.process_state == :start_failed
   end
@@ -357,6 +404,85 @@ defmodule Kollywood.Runtime.Host do
       reason_text
     end
   end
+
+  defp await_runtime_ports(state) do
+    port_entries =
+      state
+      |> Map.get(:resolved_ports, %{})
+      |> Enum.reduce([], fn {name, value}, acc ->
+        case pos_int(value, nil) do
+          port when is_integer(port) and port > 0 -> [{to_string(name), port} | acc]
+          _other -> acc
+        end
+      end)
+      |> Enum.sort_by(fn {name, _port} -> name end)
+
+    if port_entries == [] do
+      :ok
+    else
+      deadline_ms = System.monotonic_time(:millisecond) + max(state.start_timeout_ms, 1)
+      wait_for_ports(port_entries, deadline_ms)
+    end
+  end
+
+  defp wait_for_ports([], _deadline_ms), do: :ok
+
+  defp wait_for_ports(port_entries, deadline_ms) do
+    pending =
+      Enum.reject(port_entries, fn {_name, port} ->
+        runtime_port_open?(port)
+      end)
+
+    cond do
+      pending == [] ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline_ms ->
+        {:error,
+         "ports not reachable before timeout: " <>
+           Enum.map_join(pending, ", ", fn {name, port} -> "#{name}=#{port}" end)}
+
+      true ->
+        Process.sleep(@healthcheck_poll_interval_ms)
+        wait_for_ports(pending, deadline_ms)
+    end
+  end
+
+  defp runtime_port_open?(port) when is_integer(port) and port > 0 do
+    case :gen_tcp.connect(
+           ~c"127.0.0.1",
+           port,
+           [:binary, active: false],
+           @healthcheck_connect_timeout_ms
+         ) do
+      {:ok, socket} ->
+        :gen_tcp.close(socket)
+        true
+
+      {:error, _reason} ->
+        false
+    end
+  end
+
+  defp runtime_port_open?(_port), do: false
+
+  defp skip_healthcheck?(state) do
+    state
+    |> Map.get(:env, %{})
+    |> Map.get(@healthcheck_skip_env)
+    |> truthy_env?()
+  end
+
+  defp truthy_env?(value) when is_binary(value) do
+    normalized =
+      value
+      |> String.trim()
+      |> String.downcase()
+
+    normalized in ["1", "true", "yes", "on"]
+  end
+
+  defp truthy_env?(_value), do: false
 
   # ── Env / ports helpers ────────────────────────────────────────────
 

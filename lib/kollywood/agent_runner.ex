@@ -1882,6 +1882,13 @@ defmodule Kollywood.AgentRunner do
   defp ensure_runtime_for_testing(state) do
     runtime = state.runtime
 
+    with {:ok, state} <- ensure_runtime_started_for_testing(state, runtime),
+         {:ok, state} <- ensure_runtime_healthcheck(state) do
+      {:ok, state}
+    end
+  end
+
+  defp ensure_runtime_started_for_testing(state, runtime) do
     cond do
       runtime.started? ->
         {:ok, state}
@@ -1891,6 +1898,40 @@ defmodule Kollywood.AgentRunner do
 
       true ->
         start_runtime(state)
+    end
+  end
+
+  defp ensure_runtime_healthcheck(state) do
+    runtime = state.runtime
+
+    state =
+      emit(state, :runtime_healthcheck_started, %{
+        runtime_profile: runtime.profile,
+        workspace_path: runtime.workspace_path,
+        command: runtime.command,
+        timeout_ms: runtime.start_timeout_ms,
+        resolved_ports: runtime.resolved_ports
+      })
+
+    case Runtime.healthcheck(runtime) do
+      :ok ->
+        {:ok,
+         emit(state, :runtime_healthcheck_passed, %{
+           runtime_profile: runtime.profile,
+           workspace_path: runtime.workspace_path,
+           command: runtime.command,
+           resolved_ports: runtime.resolved_ports
+         })}
+
+      {:error, reason} ->
+        {:error, "runtime healthcheck failed: #{reason}",
+         emit(state, :runtime_healthcheck_failed, %{
+           runtime_profile: runtime.profile,
+           workspace_path: runtime.workspace_path,
+           command: runtime.command,
+           reason: reason,
+           resolved_ports: runtime.resolved_ports
+         })}
     end
   end
 
@@ -3147,7 +3188,6 @@ defmodule Kollywood.AgentRunner do
   - avoid interactive commands/flags (for example `snapshot -i`) in CI/agent runs
   - avoid waiting for `networkidle` on apps with long-lived traffic; prefer bounded waits
   - if a browser command appears stuck, retry once with a short timeout and continue with direct captures
-  - verify injected runtime URL reachability with short, bounded probes; if all injected URLs fail, report that as testing failure context
 
   Write your testing report to `{{ testing_json_path }}` as one JSON object:
   {
