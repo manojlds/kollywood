@@ -2369,6 +2369,11 @@ defmodule KollywoodWeb.DashboardLive do
         do: Map.get(assigns.run_detail, "settings_snapshot"),
         else: nil
 
+    run_settings =
+      if is_map(assigns.run_detail),
+        do: get_in(assigns.run_detail, ["metadata", "run_settings"]) || %{},
+        else: %{}
+
     current_workflow_identity =
       if is_map(assigns.run_detail),
         do: Map.get(assigns.run_detail, "current_workflow_identity"),
@@ -2377,6 +2382,7 @@ defmodule KollywoodWeb.DashboardLive do
     assigns =
       assigns
       |> assign(:settings_snapshot, snapshot)
+      |> assign(:run_settings, run_settings)
       |> assign(:current_workflow_identity, current_workflow_identity)
       |> assign(
         :workflow_fingerprint_status,
@@ -2439,6 +2445,7 @@ defmodule KollywoodWeb.DashboardLive do
         <%= if @run_detail_panel_tab == "settings" do %>
           <.settings_used_section
             snapshot={@settings_snapshot}
+            run_settings={@run_settings}
             current_workflow_identity={@current_workflow_identity}
             workflow_fingerprint_status={@workflow_fingerprint_status}
           />
@@ -2528,10 +2535,14 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   attr :snapshot, :map, default: nil
+  attr :run_settings, :map, default: %{}
   attr :current_workflow_identity, :map, default: %{}
   attr :workflow_fingerprint_status, :atom, default: :unknown
 
   defp settings_used_section(assigns) do
+    story_overrides = Map.get(assigns.run_settings || %{}, "story_overrides", %{})
+    assigns = assign(assigns, :story_overrides, story_overrides)
+
     ~H"""
     <div class="card bg-base-200 border border-base-300">
       <div class="card-body gap-4">
@@ -2563,6 +2574,21 @@ defmodule KollywoodWeb.DashboardLive do
           <%= if @workflow_fingerprint_status == :mismatch do %>
             <div class="alert alert-warning text-sm">
               Current WORKFLOW.md fingerprint differs from this run attempt.
+            </div>
+          <% end %>
+
+          <%= if @story_overrides != %{} do %>
+            <div class="rounded-lg border border-info/30 bg-info/5 p-3">
+              <p class="text-xs font-semibold text-info uppercase tracking-wide mb-2">
+                Story Overrides Applied
+              </p>
+              <div class="flex flex-wrap gap-2">
+                <%= for {key, value} <- @story_overrides do %>
+                  <span class="badge badge-info badge-sm gap-1">
+                    {humanize_override_key(key)}: {to_string(value)}
+                  </span>
+                <% end %>
+              </div>
             </div>
           <% end %>
 
@@ -3089,6 +3115,11 @@ defmodule KollywoodWeb.DashboardLive do
         do: Map.get(assigns.run_detail, "settings_snapshot"),
         else: nil
 
+    run_settings =
+      if is_map(assigns.run_detail),
+        do: get_in(assigns.run_detail, ["metadata", "run_settings"]) || %{},
+        else: %{}
+
     current_workflow_identity =
       if is_map(assigns.run_detail),
         do: Map.get(assigns.run_detail, "current_workflow_identity"),
@@ -3098,6 +3129,7 @@ defmodule KollywoodWeb.DashboardLive do
       assigns
       |> assign(:editable, local_provider?(assigns.project))
       |> assign(:settings_snapshot, snapshot)
+      |> assign(:run_settings, run_settings)
       |> assign(:current_workflow_identity, current_workflow_identity)
       |> assign(
         :workflow_fingerprint_status,
@@ -3384,6 +3416,7 @@ defmodule KollywoodWeb.DashboardLive do
             <%= if @run_detail_panel_tab == "settings" do %>
               <.settings_used_section
                 snapshot={@settings_snapshot}
+                run_settings={@run_settings}
                 current_workflow_identity={@current_workflow_identity}
                 workflow_fingerprint_status={@workflow_fingerprint_status}
               />
@@ -3516,46 +3549,52 @@ defmodule KollywoodWeb.DashboardLive do
           <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide">
             Execution Overrides
           </h3>
-          <%= if execution = get_in(@story, ["settings", "execution"]) do %>
-            <%= if execution != %{} do %>
-              <div class="grid gap-3">
-                <%= if Map.has_key?(execution, "testing_enabled") do %>
-                  <div class="flex items-center justify-between p-3 bg-base-200/50 rounded-lg">
-                    <span class="text-sm font-medium">Testing Enabled</span>
-                    <%= if execution["testing_enabled"] do %>
+          <% execution = get_in(@story, ["settings", "execution"]) || %{} %>
+          <% override_fields = [
+            {"agent_kind", "Agent Kind", :string},
+            {"review_agent_kind", "Review Agent Kind", :string},
+            {"review_max_cycles", "Review Max Cycles", :integer},
+            {"testing_enabled", "Testing Enabled", :boolean},
+            {"testing_agent_kind", "Testing Agent Kind", :string},
+            {"testing_max_cycles", "Testing Max Cycles", :integer},
+            {"preview_enabled", "Preview Enabled", :boolean}
+          ] %>
+          <div class="grid gap-2">
+            <%= for {key, label, type} <- override_fields do %>
+              <% has_override = Map.has_key?(execution, key) %>
+              <% value = Map.get(execution, key) %>
+              <div class={[
+                "flex items-center justify-between p-3 rounded-lg",
+                has_override && "bg-base-200/50 border border-base-300",
+                !has_override && "bg-base-200/20"
+              ]}>
+                <div class="flex items-center gap-2">
+                  <span class={[
+                    "text-sm",
+                    has_override && "font-medium",
+                    !has_override && "text-base-content/50"
+                  ]}>
+                    {label}
+                  </span>
+                  <%= if has_override do %>
+                    <span class="badge badge-xs badge-primary">overridden</span>
+                  <% end %>
+                </div>
+                <div>
+                  <%= cond do %>
+                    <% !has_override -> %>
+                      <span class="text-xs text-base-content/40">workflow default</span>
+                    <% type == :boolean and value -> %>
                       <span class="badge badge-success badge-sm">enabled</span>
-                    <% else %>
+                    <% type == :boolean -> %>
                       <span class="badge badge-ghost badge-sm">disabled</span>
-                    <% end %>
-                  </div>
-                <% end %>
-                <%= if Map.has_key?(execution, "testing_agent_kind") do %>
-                  <div class="flex items-center justify-between p-3 bg-base-200/50 rounded-lg">
-                    <span class="text-sm font-medium">Testing Agent Kind</span>
-                    <span class="text-sm text-base-content/80">
-                      {execution["testing_agent_kind"]}
-                    </span>
-                  </div>
-                <% end %>
-                <%= if Map.has_key?(execution, "testing_max_cycles") do %>
-                  <div class="flex items-center justify-between p-3 bg-base-200/50 rounded-lg">
-                    <span class="text-sm font-medium">Testing Max Cycles</span>
-                    <span class="text-sm text-base-content/80">
-                      {execution["testing_max_cycles"]}
-                    </span>
-                  </div>
-                <% end %>
+                    <% true -> %>
+                      <span class="text-sm text-base-content/80">{value}</span>
+                  <% end %>
+                </div>
               </div>
-            <% else %>
-              <p class="text-base-content/50 text-sm italic">
-                No execution overrides configured for this story.
-              </p>
             <% end %>
-          <% else %>
-            <p class="text-base-content/50 text-sm italic">
-              No execution overrides configured for this story.
-            </p>
-          <% end %>
+          </div>
         </div>
       <% end %>
     </div>
@@ -6601,6 +6640,15 @@ defmodule KollywoodWeb.DashboardLive do
         "Unavailable"
     end
   end
+
+  defp humanize_override_key(key) when is_binary(key) do
+    key
+    |> String.replace("_", " ")
+    |> String.split()
+    |> Enum.map_join(" ", &String.capitalize/1)
+  end
+
+  defp humanize_override_key(key), do: to_string(key)
 
   defp snapshot_preview_toggle(snapshot) do
     enabled = snapshot_value(snapshot, ["resolved", "preview", "enabled"])
