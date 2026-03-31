@@ -109,6 +109,7 @@ defmodule Kollywood.Runtime.Docker do
     else
       {:error, reason, failed_state} ->
         cleanup_container(failed_state)
+
         {:error, "failed to start docker runtime: #{reason}",
          %{failed_state | process_state: :start_failed}}
 
@@ -160,8 +161,18 @@ defmodule Kollywood.Runtime.Docker do
     container = state.container_id || state.container_name
 
     if container do
-      {"docker", ["exec", "-u", @container_user, "-w", @container_workspace, container,
-       "bash", "-lc", Enum.join([command | args], " ")], %{}}
+      {"docker",
+       [
+         "exec",
+         "-u",
+         @container_user,
+         "-w",
+         @container_workspace,
+         container,
+         "bash",
+         "-lc",
+         Enum.join([command | args], " ")
+       ], %{}}
     else
       {command, args, %{}}
     end
@@ -191,17 +202,26 @@ defmodule Kollywood.Runtime.Docker do
       |> Enum.flat_map(fn {k, v} -> ["-e", "#{k}=#{v}"] end)
 
     args =
-      ["create",
-       "--name", name,
-       "--network", "host",
-       "--tmpfs", "/tmp",
-       "--tmpfs", "/run",
-       "--tmpfs", "/run/lock",
-       "--cgroupns=host",
-       "-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
-       "-v", "#{state.workspace_path}:#{@container_workspace}:rw"] ++
-      env_args ++
-      [state.image]
+      [
+        "create",
+        "--name",
+        name,
+        "--network",
+        "host",
+        "--tmpfs",
+        "/tmp",
+        "--tmpfs",
+        "/run",
+        "--tmpfs",
+        "/run/lock",
+        "--cgroupns=host",
+        "-v",
+        "/sys/fs/cgroup:/sys/fs/cgroup:rw",
+        "-v",
+        "#{state.workspace_path}:#{@container_workspace}:rw"
+      ] ++
+        env_args ++
+        [state.image]
 
     case System.cmd("docker", args, stderr_to_stdout: true) do
       {container_id, 0} ->
@@ -229,10 +249,13 @@ defmodule Kollywood.Runtime.Docker do
 
   defp poll_systemd_ready(state, deadline) do
     if System.monotonic_time(:millisecond) >= deadline do
-      {:error, "systemd inside container did not become ready within #{@systemd_ready_timeout_ms}ms", state}
+      {:error,
+       "systemd inside container did not become ready within #{@systemd_ready_timeout_ms}ms",
+       state}
     else
-      case System.cmd("docker", ["exec", state.container_id,
-             "systemctl", "is-system-running"], stderr_to_stdout: true) do
+      case System.cmd("docker", ["exec", state.container_id, "systemctl", "is-system-running"],
+             stderr_to_stdout: true
+           ) do
         {output, _} ->
           status = String.trim(output)
 
@@ -256,29 +279,39 @@ defmodule Kollywood.Runtime.Docker do
     devenv_args = ["processes", "up", "--strict-ports"] ++ state.processes
 
     exec_args =
-      ["exec", "-d",
-       "-u", @container_user,
-       "-w", @container_workspace,
-       state.container_id,
-       "bash", "-lc",
-       "systemd-run --user --scope --unit=#{unit} -- devenv " <>
-         Enum.join(devenv_args, " ")]
+      [
+        "exec",
+        "-d",
+        "-u",
+        @container_user,
+        "-w",
+        @container_workspace,
+        state.container_id,
+        "bash",
+        "-lc",
+        "systemd-run --user --scope --unit=#{unit} -- devenv " <>
+          Enum.join(devenv_args, " ")
+      ]
 
     case System.cmd("docker", exec_args, stderr_to_stdout: true) do
       {_output, 0} ->
         {:ok, %{state | systemd_unit: unit}}
 
       {output, code} ->
-        {:error, "devenv start inside container failed (exit #{code}): #{String.trim(output)}", state}
+        {:error, "devenv start inside container failed (exit #{code}): #{String.trim(output)}",
+         state}
     end
   end
 
   defp stop_devenv_in_container(%{container_id: nil}), do: :ok
 
   defp stop_devenv_in_container(%{container_id: cid, systemd_unit: unit}) when is_binary(unit) do
-    System.cmd("docker", ["exec", "-u", @container_user, cid,
-      "systemctl", "--user", "stop", "#{unit}.scope"],
-      stderr_to_stdout: true)
+    System.cmd(
+      "docker",
+      ["exec", "-u", @container_user, cid, "systemctl", "--user", "stop", "#{unit}.scope"],
+      stderr_to_stdout: true
+    )
+
     :ok
   rescue
     _ -> :ok
@@ -298,7 +331,8 @@ defmodule Kollywood.Runtime.Docker do
 
   defp cleanup_stale_container(name) do
     case System.cmd("docker", ["inspect", "--format", "{{.State.Status}}", name],
-           stderr_to_stdout: true) do
+           stderr_to_stdout: true
+         ) do
       {output, 0} ->
         status = String.trim(output)
         Logger.warning("cleaning up stale container #{name} (status: #{status})")
@@ -339,8 +373,17 @@ defmodule Kollywood.Runtime.Docker do
   defp docker_exec(container_id, command, timeout_ms) do
     started_at = System.monotonic_time(:millisecond)
 
-    args = ["exec", "-u", @container_user, "-w", @container_workspace,
-            container_id, "bash", "-lc", command]
+    args = [
+      "exec",
+      "-u",
+      @container_user,
+      "-w",
+      @container_workspace,
+      container_id,
+      "bash",
+      "-lc",
+      command
+    ]
 
     try do
       task = Task.async(fn -> System.cmd("docker", args, stderr_to_stdout: true) end)

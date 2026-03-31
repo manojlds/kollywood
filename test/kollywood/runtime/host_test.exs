@@ -305,9 +305,7 @@ defmodule Kollywood.Runtime.HostTest do
   end
 
   defp systemd_scope_active?(unit) do
-    case System.cmd("systemctl", ["--user", "is-active", "#{unit}.scope"],
-           stderr_to_stdout: true
-         ) do
+    case System.cmd("systemctl", ["--user", "is-active", "#{unit}.scope"], stderr_to_stdout: true) do
       {output, _} -> String.trim(output) == "active"
     end
   rescue
@@ -317,13 +315,17 @@ defmodule Kollywood.Runtime.HostTest do
   defp cleanup_stale_processes(root) do
     System.cmd("devenv", ["processes", "down"], cd: root, stderr_to_stdout: true)
 
-    case System.cmd("systemctl", ["--user", "list-units", "--type=scope", "--no-legend",
-           "--plain", "kollywood-rt-*"], stderr_to_stdout: true) do
+    case System.cmd(
+           "systemctl",
+           ["--user", "list-units", "--type=scope", "--no-legend", "--plain", "kollywood-rt-*"],
+           stderr_to_stdout: true
+         ) do
       {output, 0} ->
         output
         |> String.split("\n", trim: true)
         |> Enum.each(fn line ->
           unit = line |> String.split() |> List.first()
+
           if unit && String.starts_with?(unit, "kollywood-rt-") do
             System.cmd("systemctl", ["--user", "stop", unit], stderr_to_stdout: true)
           end
