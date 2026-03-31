@@ -24,6 +24,9 @@ defmodule Kollywood.Runtime do
 
   @callback healthcheck(state()) :: :ok | {:error, String.t()}
 
+  @callback ensure_exec_ready(state()) ::
+              {:ok, state()} | {:error, String.t(), state()}
+
   @callback exec(state(), command :: String.t(), timeout_ms :: pos_integer()) ::
               {:ok, String.t(), non_neg_integer()}
               | {:error, String.t(), String.t(), non_neg_integer()}
@@ -65,6 +68,10 @@ defmodule Kollywood.Runtime do
   @doc "Performs runtime readiness checks before testing."
   @spec healthcheck(state()) :: :ok | {:error, String.t()}
   def healthcheck(%{module: mod} = state), do: mod.healthcheck(state)
+
+  @doc "Ensures the runtime can execute commands (e.g. starts container for Docker)."
+  @spec ensure_exec_ready(state()) :: {:ok, state()} | {:error, String.t(), state()}
+  def ensure_exec_ready(%{module: mod} = state), do: mod.ensure_exec_ready(state)
 
   @doc "Executes a shell command in the runtime environment."
   @spec exec(state(), String.t(), pos_integer()) ::

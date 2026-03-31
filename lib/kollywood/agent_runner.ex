@@ -1876,7 +1876,10 @@ defmodule Kollywood.AgentRunner do
   end
 
   defp ensure_runtime_for_checks(state) do
-    {:ok, state}
+    case Runtime.ensure_exec_ready(state.runtime) do
+      {:ok, runtime} -> {:ok, %{state | runtime: runtime}}
+      {:error, reason, _runtime} -> {:error, reason, state}
+    end
   end
 
   defp ensure_runtime_for_testing(state) do

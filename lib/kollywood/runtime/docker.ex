@@ -100,9 +100,7 @@ defmodule Kollywood.Runtime.Docker do
   def start(%{started?: true} = state), do: {:ok, state}
 
   def start(state) do
-    with {:ok, state} <- ensure_isolation(state),
-         {:ok, state} <- create_container(state),
-         {:ok, state} <- start_container(state),
+    with {:ok, state} <- ensure_exec_ready(state),
          {:ok, state} <- await_systemd_ready(state),
          {:ok, state} <- start_devenv_in_container(state) do
       {:ok, %{state | started?: true, process_state: :running}}
@@ -148,6 +146,24 @@ defmodule Kollywood.Runtime.Docker do
       :ok
     else
       await_runtime_ports(state)
+    end
+  end
+
+  @impl true
+  def ensure_exec_ready(%{container_id: cid} = state) when is_binary(cid), do: {:ok, state}
+
+  def ensure_exec_ready(state) do
+    with {:ok, state} <- ensure_isolation(state),
+         {:ok, state} <- create_container(state),
+         {:ok, state} <- start_container(state) do
+      {:ok, state}
+    else
+      {:error, reason, failed_state} ->
+        cleanup_container(failed_state)
+        {:error, "failed to prepare docker container: #{reason}", failed_state}
+
+      {:error, reason} ->
+        {:error, "failed to prepare docker container: #{reason}", state}
     end
   end
 
