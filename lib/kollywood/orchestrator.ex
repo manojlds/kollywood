@@ -1138,10 +1138,13 @@ defmodule Kollywood.Orchestrator do
       orchestrator_pid = self()
       {user_on_event, runner_opts} = Keyword.pop(state.runner_opts, :on_event)
 
+      effective_config = resolved_story_execution.config
+
       metadata_overrides = %{
         "settings_snapshot" =>
-          RunSettingsSnapshot.build(config,
-            workflow_identity: RunSettingsSnapshot.workflow_identity(state.workflow_store, config)
+          RunSettingsSnapshot.build(effective_config,
+            workflow_identity:
+              RunSettingsSnapshot.workflow_identity(state.workflow_store, effective_config)
           ),
         "run_settings" =>
           if(is_map(resolved_story_execution.settings_snapshot),

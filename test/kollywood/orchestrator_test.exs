@@ -1159,13 +1159,11 @@ defmodule Kollywood.OrchestratorTest do
     assert settings_snapshot["schema_version"] == 1
     assert get_in(settings_snapshot, ["workflow", "path"]) == workflow_path
     assert is_binary(get_in(settings_snapshot, ["workflow", "sha256"]))
-    assert get_in(settings_snapshot, ["resolved", "agent", "kind"]) == "amp"
-    assert get_in(settings_snapshot, ["resolved", "testing", "enabled"]) == "false"
-    assert get_in(settings_snapshot, ["resolved", "testing", "agent", "kind"]) == "amp"
-    assert get_in(settings_snapshot, ["resolved", "preview", "enabled"]) == "false"
+    assert get_in(settings_snapshot, ["resolved", "agent", "kind"]) == "cursor"
+    assert get_in(settings_snapshot, ["resolved", "testing", "enabled"]) == "true"
+    assert get_in(settings_snapshot, ["resolved", "testing", "agent", "kind"]) == "opencode"
+    assert get_in(settings_snapshot, ["resolved", "preview", "enabled"]) == "true"
     assert get_in(settings_snapshot, ["resolved", "runtime", "processes"]) == []
-    assert get_in(settings_snapshot, ["sources", "testing", "enabled"]) == "default"
-    assert get_in(settings_snapshot, ["sources", "preview", "enabled"]) == "default"
     assert get_in(settings_snapshot, ["sources", "publish", "mode"]) == "provider_default"
   end
 

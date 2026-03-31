@@ -82,7 +82,7 @@ defmodule Kollywood.StepRetry do
          {:ok, workspace} <- build_workspace(config, issue.identifier, source.metadata),
          {:ok, run_log_context} <-
            prepare_retry_logs(
-             config,
+             resolved_story_execution.config,
              project,
              issue,
              source,
