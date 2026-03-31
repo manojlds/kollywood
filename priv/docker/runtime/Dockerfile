@@ -31,6 +31,10 @@ RUN mkdir -m 0755 /nix && chown runtime /nix
 USER runtime
 RUN curl -L https://nixos.org/nix/install | sh -s -- --no-daemon
 
+# Enable flakes and nix-command for devenv
+RUN mkdir -p /home/runtime/.config/nix && \
+    echo "experimental-features = nix-command flakes" > /home/runtime/.config/nix/nix.conf
+
 # Install devenv via nix profile
 ENV PATH="/home/runtime/.nix-profile/bin:/nix/var/nix/profiles/default/bin:${PATH}"
 RUN . /home/runtime/.nix-profile/etc/profile.d/nix.sh && \

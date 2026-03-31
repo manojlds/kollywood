@@ -34,7 +34,7 @@ quality:
     enabled: true
     max_cycles: 3
 runtime:
-  kind: host
+  kind: docker
   ports:
     PORT: 4000
   processes:
