@@ -3181,10 +3181,11 @@ defmodule Kollywood.AgentRunner do
 
   For browser validation, use `agent-browser` when available. Capture evidence:
   - at least one screenshot
-  - at least one end-to-end video (`.webm` preferred)
+  - at least one short, focused video (`.webm` preferred, aim for 10-30 seconds max)
   - for UI-focused issues, evidence must visibly show the issue-specific control/text/state (generic top-of-page captures are insufficient)
   - navigate to the issue-relevant screen and ensure the target element is in view before capture; scroll as needed
-  - video must include a meaningful interaction with the target behavior and show the resulting state
+  - video must demonstrate ONLY the key behavior being tested: navigate directly to the relevant page, perform the specific interaction, and stop recording once the result is visible — do not record setup, unrelated navigation, or idle time
+  - if multiple behaviors need demonstration, prefer separate short clips over one long recording
   - include replay/trace/HAR artifacts when they help debugging
   - do not start app services manually (`mix phx.server`, `devenv up`, etc.); runtime has already started managed processes
   - use only injected runtime URLs (`runtime_base_url` / `runtime_urls_json`); do not scan arbitrary localhost ports
