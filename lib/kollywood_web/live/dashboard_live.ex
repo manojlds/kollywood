@@ -44,6 +44,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:current_scope, nil)
       |> assign(:selected_story, nil)
       |> assign(:story_detail_tab, "details")
+      |> assign(:settings_edit_mode, false)
       |> assign(:run_detail_panel_tab, "logs")
       |> assign(:reports_tab, "review")
       |> assign(:active_log_tab, "agent")
@@ -85,6 +86,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:page_title, if(current_project, do: current_project.name, else: "Dashboard"))
       |> assign(:active_log_tab, active_log_tab)
       |> assign(:artifact_preview, nil)
+      |> assign(:settings_edit_mode, false)
       |> assign(:run_detail_story_id, params["story_id"])
       |> assign(:run_detail_attempt, params["attempt"])
       |> assign(:stories_view, stories_view)
@@ -178,6 +180,38 @@ defmodule KollywoodWeb.DashboardLive do
 
   def handle_event("set_story_tab", %{"tab" => tab}, socket) do
     {:noreply, assign(socket, :story_detail_tab, tab)}
+  end
+
+  def handle_event("toggle_settings_edit", _params, socket) do
+    {:noreply, assign(socket, :settings_edit_mode, !socket.assigns.settings_edit_mode)}
+  end
+
+  def handle_event("save_story_overrides", %{"overrides" => params}, socket) do
+    project = socket.assigns.current_project
+    story_id = socket.assigns.run_detail_story_id
+
+    socket =
+      case local_tracker_path(project) do
+        {:ok, tracker_path} ->
+          settings = build_override_settings(params)
+
+          case PrdJson.update_story(tracker_path, story_id, %{"settings" => settings}) do
+            {:ok, _story} ->
+              socket
+              |> load_project_data(project)
+              |> sync_story_detail_selection()
+              |> assign(:settings_edit_mode, false)
+              |> put_flash(:info, "Execution overrides saved.")
+
+            {:error, reason} ->
+              put_flash(socket, :error, reason)
+          end
+
+        {:error, reason} ->
+          put_flash(socket, :error, reason)
+      end
+
+    {:noreply, socket}
   end
 
   def handle_event("set_stories_view", %{"view" => view}, socket) do
@@ -654,6 +688,7 @@ defmodule KollywoodWeb.DashboardLive do
                   reports_tab={@reports_tab}
                   active_log_tab={@active_log_tab}
                   story_detail_tab={@story_detail_tab}
+                  settings_edit_mode={@settings_edit_mode}
                   project={@current_project}
                   stories_view={@stories_view}
                   story_attempts={Enum.filter(@run_attempts, &(&1.story_id == @run_detail_story_id))}
@@ -3104,6 +3139,7 @@ defmodule KollywoodWeb.DashboardLive do
   attr :reports_tab, :string, default: "review"
   attr :active_log_tab, :string, default: "agent"
   attr :story_detail_tab, :string, default: "details"
+  attr :settings_edit_mode, :boolean, default: false
   attr :project, Project, required: true
   attr :stories_view, :string, default: @default_stories_view
   attr :story_attempts, :list, default: []
@@ -3131,6 +3167,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:settings_snapshot, snapshot)
       |> assign(:run_settings, run_settings)
       |> assign(:current_workflow_identity, current_workflow_identity)
+      |> assign(:agent_kind_options, @agent_kind_options)
       |> assign(
         :workflow_fingerprint_status,
         workflow_fingerprint_status(snapshot, current_workflow_identity)
@@ -3546,9 +3583,6 @@ defmodule KollywoodWeb.DashboardLive do
 
       <%= if @story_detail_tab == "settings" do %>
         <div class="space-y-4">
-          <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide">
-            Execution Overrides
-          </h3>
           <% execution = get_in(@story, ["settings", "execution"]) || %{} %>
           <% override_fields = [
             {"agent_kind", "Agent Kind", :string},
@@ -3559,42 +3593,124 @@ defmodule KollywoodWeb.DashboardLive do
             {"testing_max_cycles", "Testing Max Cycles", :integer},
             {"preview_enabled", "Preview Enabled", :boolean}
           ] %>
-          <div class="grid gap-2">
-            <%= for {key, label, type} <- override_fields do %>
-              <% has_override = Map.has_key?(execution, key) %>
-              <% value = Map.get(execution, key) %>
-              <div class={[
-                "flex items-center justify-between p-3 rounded-lg",
-                has_override && "bg-base-200/50 border border-base-300",
-                !has_override && "bg-base-200/20"
-              ]}>
-                <div class="flex items-center gap-2">
-                  <span class={[
-                    "text-sm",
-                    has_override && "font-medium",
-                    !has_override && "text-base-content/50"
-                  ]}>
-                    {label}
-                  </span>
-                  <%= if has_override do %>
-                    <span class="badge badge-xs badge-primary">overridden</span>
-                  <% end %>
-                </div>
-                <div>
-                  <%= cond do %>
-                    <% !has_override -> %>
-                      <span class="text-xs text-base-content/40">workflow default</span>
-                    <% type == :boolean and value -> %>
-                      <span class="badge badge-success badge-sm">enabled</span>
-                    <% type == :boolean -> %>
-                      <span class="badge badge-ghost badge-sm">disabled</span>
-                    <% true -> %>
-                      <span class="text-sm text-base-content/80">{value}</span>
-                  <% end %>
-                </div>
-              </div>
+
+          <div class="flex items-center justify-between">
+            <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide">
+              Execution Overrides
+            </h3>
+            <%= if @editable && !@settings_edit_mode do %>
+              <button
+                phx-click="toggle_settings_edit"
+                class="btn btn-ghost btn-xs gap-1"
+              >
+                <.icon name="hero-pencil-square" class="size-3.5" /> Edit Overrides
+              </button>
             <% end %>
           </div>
+
+          <%= if @settings_edit_mode do %>
+            <form phx-submit="save_story_overrides">
+              <div class="grid gap-3">
+                <%= for {key, label, type} <- override_fields do %>
+                  <% value = override_form_value(execution, key) %>
+                  <div class="flex items-center justify-between gap-4 p-3 rounded-lg bg-base-200/30 border border-base-300">
+                    <label class="text-sm font-medium shrink-0">{label}</label>
+                    <div class="w-48">
+                      <%= cond do %>
+                        <% type == :boolean -> %>
+                          <select
+                            name={"overrides[#{key}]"}
+                            class="select select-bordered select-sm w-full"
+                          >
+                            <option value="" selected={value == ""}>
+                              Use workflow default
+                            </option>
+                            <option value="true" selected={value == "true"}>
+                              Enabled
+                            </option>
+                            <option value="false" selected={value == "false"}>
+                              Disabled
+                            </option>
+                          </select>
+                        <% type == :string -> %>
+                          <select
+                            name={"overrides[#{key}]"}
+                            class="select select-bordered select-sm w-full"
+                          >
+                            <option value="" selected={value == ""}>
+                              Use workflow default
+                            </option>
+                            <%= for kind <- @agent_kind_options do %>
+                              <option value={kind} selected={value == kind}>
+                                {kind}
+                              </option>
+                            <% end %>
+                          </select>
+                        <% type == :integer -> %>
+                          <input
+                            type="number"
+                            min="1"
+                            name={"overrides[#{key}]"}
+                            value={value}
+                            class="input input-bordered input-sm w-full"
+                            placeholder="Use workflow default"
+                          />
+                      <% end %>
+                    </div>
+                  </div>
+                <% end %>
+              </div>
+              <div class="flex justify-end gap-2 mt-4">
+                <button
+                  type="button"
+                  phx-click="toggle_settings_edit"
+                  class="btn btn-ghost btn-sm"
+                >
+                  Cancel
+                </button>
+                <button type="submit" class="btn btn-primary btn-sm">
+                  Save
+                </button>
+              </div>
+            </form>
+          <% else %>
+            <div class="grid gap-2">
+              <%= for {key, label, type} <- override_fields do %>
+                <% has_override = Map.has_key?(execution, key) %>
+                <% value = Map.get(execution, key) %>
+                <div class={[
+                  "flex items-center justify-between p-3 rounded-lg",
+                  has_override && "bg-base-200/50 border border-base-300",
+                  !has_override && "bg-base-200/20"
+                ]}>
+                  <div class="flex items-center gap-2">
+                    <span class={[
+                      "text-sm",
+                      has_override && "font-medium",
+                      !has_override && "text-base-content/50"
+                    ]}>
+                      {label}
+                    </span>
+                    <%= if has_override do %>
+                      <span class="badge badge-xs badge-primary">overridden</span>
+                    <% end %>
+                  </div>
+                  <div>
+                    <%= cond do %>
+                      <% !has_override -> %>
+                        <span class="text-xs text-base-content/40">workflow default</span>
+                      <% type == :boolean and value -> %>
+                        <span class="badge badge-success badge-sm">enabled</span>
+                      <% type == :boolean -> %>
+                        <span class="badge badge-ghost badge-sm">disabled</span>
+                      <% true -> %>
+                        <span class="text-sm text-base-content/80">{value}</span>
+                    <% end %>
+                  </div>
+                </div>
+              <% end %>
+            </div>
+          <% end %>
         </div>
       <% end %>
     </div>
@@ -4566,6 +4682,30 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp story_execution_override_value(_story, _key), do: ""
+
+  defp override_form_value(execution, key) when is_map(execution) do
+    value = Map.get(execution, key)
+
+    cond do
+      is_binary(value) -> value
+      is_integer(value) -> Integer.to_string(value)
+      is_boolean(value) -> if(value, do: "true", else: "false")
+      true -> ""
+    end
+  end
+
+  defp override_form_value(_execution, _key), do: ""
+
+  defp build_override_settings(params) when is_map(params) do
+    execution =
+      params
+      |> Enum.reject(fn {_k, v} -> v == "" end)
+      |> Map.new()
+
+    %{"execution" => execution}
+  end
+
+  defp build_override_settings(_params), do: %{"execution" => %{}}
 
   defp normalize_story_form_params(params) when is_map(params) do
     %{
