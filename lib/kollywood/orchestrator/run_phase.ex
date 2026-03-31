@@ -164,6 +164,15 @@ defmodule Kollywood.Orchestrator.RunPhase do
         "runtime_started" ->
           %{kind: "runtime", label: "Runtime running", event_type: event_type}
 
+        "runtime_healthcheck_started" ->
+          %{kind: "runtime", label: "Runtime healthcheck", event_type: event_type}
+
+        "runtime_healthcheck_passed" ->
+          %{kind: "runtime", label: "Runtime healthcheck passed", event_type: event_type}
+
+        "runtime_healthcheck_failed" ->
+          failed_phase("Runtime healthcheck failed", event_type)
+
         "runtime_stopping" ->
           %{kind: "runtime", label: "Runtime stopping", event_type: event_type}
 
@@ -183,8 +192,15 @@ defmodule Kollywood.Orchestrator.RunPhase do
           status = map_get(event, :status)
 
           case normalize_status(status) do
-            "failed" -> failed_phase("Run failed", event_type)
-            _other -> %{kind: "finished", label: "Run finished", event_type: event_type}
+            "failed" ->
+              if is_map(last_phase) and last_phase[:kind] == "failed" do
+                nil
+              else
+                failed_phase("Run failed", event_type)
+              end
+
+            _other ->
+              %{kind: "finished", label: "Run finished", event_type: event_type}
           end
 
         _other ->
@@ -218,8 +234,10 @@ defmodule Kollywood.Orchestrator.RunPhase do
     case normalize_status(status) do
       "finished" -> %{kind: "finished", label: "Run finished"}
       "ok" -> %{kind: "finished", label: "Run finished"}
-      "failed" -> %{kind: "failed", label: "Run failed"}
-      "error" -> %{kind: "failed", label: "Run failed"}
+      s when s in ["failed", "error"] ->
+        if is_map(last_phase) and last_phase[:kind] == "failed",
+          do: last_phase,
+          else: %{kind: "failed", label: "Run failed"}
       "stopped" -> %{kind: "failed", label: "Run stopped"}
       "running" -> last_phase || %{kind: "unknown", label: "Run in progress"}
       _other -> last_phase || unknown()
