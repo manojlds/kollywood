@@ -8,7 +8,7 @@ defmodule Kollywood.Runtime do
   implementing the same callbacks.
   """
 
-  alias Kollywood.Runtime.Host
+  alias Kollywood.Runtime.{Docker, Host}
 
   @type kind :: :host | :docker
 
@@ -36,7 +36,7 @@ defmodule Kollywood.Runtime do
   @doc "Returns the implementation module for a runtime kind."
   @spec module_for(kind()) :: module()
   def module_for(:host), do: Host
-  def module_for(:docker), do: raise("Docker runtime not yet implemented")
+  def module_for(:docker), do: Docker
 
   @doc "Builds initial runtime state from parsed config + workspace."
   @spec init(kind(), map(), map()) :: state()

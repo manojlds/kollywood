@@ -1,14 +1,16 @@
 defmodule Kollywood.Runtime.Host do
   @moduledoc """
-  Host runtime — runs processes via devenv with port-offset isolation.
+  Host runtime — runs processes via devenv with per-issue isolation.
+
+  Uses systemd-run on Linux for cgroup-based process tree management
+  (guaranteed cleanup, no orphans). Falls back to setsid + direct
+  process group kill on other platforms (macOS).
   """
 
   @behaviour Kollywood.Runtime
 
   require Logger
-  @stop_retry_attempts 1
-  @stop_retry_delay_ms 500
-  @stop_output_preview_chars 240
+
   @healthcheck_poll_interval_ms 250
   @healthcheck_connect_timeout_ms 250
   @healthcheck_skip_env "KOLLYWOOD_RUNTIME_SKIP_HEALTHCHECK"
@@ -24,6 +26,8 @@ defmodule Kollywood.Runtime.Host do
       profile: :full_stack,
       process_state: :pending,
       started?: false,
+      process_wrapper: detect_wrapper(),
+      systemd_unit: nil,
       command: "devenv",
       manager_port: nil,
       manager_os_pid: nil,
@@ -109,7 +113,8 @@ defmodule Kollywood.Runtime.Host do
              | started?: false,
                process_state: :stopped,
                manager_port: nil,
-               manager_os_pid: nil
+               manager_os_pid: nil,
+               systemd_unit: nil
            }
            |> release()}
 
@@ -252,10 +257,34 @@ defmodule Kollywood.Runtime.Host do
 
   defp elapsed(started_at_ms), do: max(System.monotonic_time(:millisecond) - started_at_ms, 0)
 
-  # ── Devenv lifecycle ───────────────────────────────────────────────
+  # ── Devenv lifecycle — dispatch ───────────────────────────────────
 
   defp start_devenv(state) do
-    args = ["processes", "up", "--strict-ports"] ++ state.processes
+    case state.process_wrapper do
+      :systemd -> start_devenv_systemd(state)
+      :direct -> start_devenv_direct(state)
+    end
+  end
+
+  defp stop_devenv(state) do
+    case state.process_wrapper do
+      :systemd -> stop_devenv_systemd(state)
+      :direct -> stop_devenv_direct(state)
+    end
+  end
+
+  defp stop_required?(state) do
+    state.started? == true or state.process_state == :start_failed
+  end
+
+  # ── Systemd lifecycle ─────────────────────────────────────────────
+
+  defp start_devenv_systemd(state) do
+    unit = systemd_unit_name(state.workspace_key)
+    cleanup_stale_systemd_unit(unit)
+
+    devenv_args = ["processes", "up", "--strict-ports"] ++ state.processes
+    args = ["--user", "--scope", "--unit=#{unit}", "--", "devenv"] ++ devenv_args
 
     env_list =
       state.env
@@ -263,7 +292,7 @@ defmodule Kollywood.Runtime.Host do
 
     port =
       Port.open(
-        {:spawn_executable, System.find_executable("devenv")},
+        {:spawn_executable, System.find_executable("systemd-run")},
         [
           :binary,
           :exit_status,
@@ -276,7 +305,109 @@ defmodule Kollywood.Runtime.Host do
 
     os_pid = port_os_pid(port)
 
-    # Wait briefly for the port to not crash immediately
+    Process.sleep(500)
+
+    case check_port_alive(port) do
+      :alive ->
+        {:ok, %{state | manager_port: port, manager_os_pid: os_pid, systemd_unit: unit}}
+
+      {:exited, exit_status} ->
+        {:error, "systemd-run exited immediately with status #{exit_status}", state}
+    end
+  end
+
+  defp stop_devenv_systemd(state) do
+    unit = state.systemd_unit
+
+    if unit do
+      scope = "#{unit}.scope"
+
+      case System.cmd("systemctl", ["--user", "stop", scope], stderr_to_stdout: true) do
+        {_output, 0} ->
+          close_manager_port(state)
+          :ok
+
+        {_output, _code} ->
+          close_manager_port(state)
+
+          if systemd_unit_inactive?(unit) do
+            :ok
+          else
+            {:error, "failed to stop systemd scope #{scope}"}
+          end
+      end
+    else
+      close_manager_port(state)
+      :ok
+    end
+  end
+
+  defp systemd_unit_inactive?(unit) do
+    case System.cmd("systemctl", ["--user", "is-active", "#{unit}.scope"],
+           stderr_to_stdout: true
+         ) do
+      {output, _} -> String.trim(output) in ["inactive", "failed", "not-found"]
+    end
+  rescue
+    _ -> false
+  end
+
+  defp cleanup_stale_systemd_unit(unit) do
+    scope = "#{unit}.scope"
+
+    case System.cmd("systemctl", ["--user", "is-active", scope], stderr_to_stdout: true) do
+      {output, _} ->
+        if String.trim(output) in ["active", "activating"] do
+          Logger.warning("cleaning up stale systemd unit #{scope}")
+          System.cmd("systemctl", ["--user", "stop", scope], stderr_to_stdout: true)
+          Process.sleep(200)
+        end
+    end
+  rescue
+    _ -> :ok
+  end
+
+  defp systemd_unit_name(workspace_key) do
+    sanitized =
+      workspace_key
+      |> to_string()
+      |> String.replace(~r/[^a-zA-Z0-9_-]/, "-")
+      |> String.trim("-")
+      |> String.slice(0, 64)
+
+    "kollywood-rt-#{sanitized}"
+  end
+
+  # ── Direct lifecycle (fallback for macOS / no systemd) ────────────
+
+  defp start_devenv_direct(state) do
+    devenv_args = ["processes", "up", "--strict-ports"] ++ state.processes
+
+    {executable, args} =
+      case System.find_executable("setsid") do
+        nil -> {System.find_executable("devenv"), devenv_args}
+        setsid_path -> {setsid_path, ["devenv"] ++ devenv_args}
+      end
+
+    env_list =
+      state.env
+      |> Enum.map(fn {k, v} -> {String.to_charlist(k), String.to_charlist(v)} end)
+
+    port =
+      Port.open(
+        {:spawn_executable, executable},
+        [
+          :binary,
+          :exit_status,
+          :stderr_to_stdout,
+          args: args,
+          cd: state.workspace_path,
+          env: env_list
+        ]
+      )
+
+    os_pid = port_os_pid(port)
+
     Process.sleep(500)
 
     case check_port_alive(port) do
@@ -287,6 +418,15 @@ defmodule Kollywood.Runtime.Host do
         {:error, "devenv processes up exited immediately with status #{exit_status}", state}
     end
   end
+
+  defp stop_devenv_direct(state) do
+    devenv(["processes", "down"], state.workspace_path, state.env, state.stop_timeout_ms)
+    close_manager_port(state)
+    kill_process_group(state.manager_os_pid)
+    :ok
+  end
+
+  # ── Shared process helpers ────────────────────────────────────────
 
   defp port_os_pid(port) do
     case Port.info(port, :os_pid) do
@@ -303,38 +443,6 @@ defmodule Kollywood.Runtime.Host do
     end
   end
 
-  defp stop_required?(state) do
-    state.started? == true or state.process_state == :start_failed
-  end
-
-  defp stop_devenv(state) do
-    # First try graceful devenv processes down
-    case stop_once(state) do
-      :ok ->
-        close_manager_port(state)
-        :ok
-
-      {:error, reason, output} ->
-        if output_indicates_runtime_already_stopped?(output) do
-          Logger.warning("runtime stop returned non-zero but appears already stopped: #{reason}")
-          close_manager_port(state)
-          :ok
-        else
-          retry_stop(state, reason, output)
-        end
-    end
-  end
-
-  defp stop_once(state) do
-    case devenv(["processes", "down"], state.workspace_path, state.env, state.stop_timeout_ms) do
-      {:ok, _output, _ms} ->
-        :ok
-
-      {:error, reason, output, _ms} ->
-        {:error, reason, output}
-    end
-  end
-
   defp close_manager_port(%{manager_port: port}) when is_port(port) do
     try do
       Port.close(port)
@@ -347,96 +455,40 @@ defmodule Kollywood.Runtime.Host do
 
   defp close_manager_port(_state), do: :ok
 
-  defp retry_stop(state, first_reason, first_output) do
-    Logger.warning("runtime stop failed (attempt 1); retrying once: #{first_reason}")
+  defp kill_process_group(os_pid) when is_integer(os_pid) and os_pid > 0 do
+    try do
+      System.cmd("kill", ["-TERM", "-#{os_pid}"], stderr_to_stdout: true)
+    rescue
+      _ -> :ok
+    end
 
-    1..@stop_retry_attempts
-    |> Enum.reduce_while({:error, first_reason, first_output}, fn _attempt, _acc ->
-      Process.sleep(@stop_retry_delay_ms)
+    :ok
+  end
 
-      case stop_once(state) do
-        :ok ->
-          {:halt, :ok}
+  defp kill_process_group(_), do: :ok
 
-        {:error, retry_reason, retry_output} ->
-          if output_indicates_runtime_already_stopped?(retry_output) do
-            Logger.warning(
-              "runtime stop retry returned non-zero but appears already stopped: #{retry_reason}"
-            )
+  # ── Wrapper detection ─────────────────────────────────────────────
 
-            {:halt, :ok}
-          else
-            {:cont, {:error, retry_reason, retry_output}}
-          end
-      end
-    end)
-    |> case do
-      :ok ->
-        close_manager_port(state)
-        :ok
+  defp detect_wrapper do
+    case :os.type() do
+      {:unix, :linux} ->
+        if System.find_executable("systemd-run") && systemd_user_available?() do
+          :systemd
+        else
+          :direct
+        end
 
-      {:error, last_reason, last_output} ->
-        close_manager_port(state)
-
-        {:error,
-         "failed to stop runtime processes after #{@stop_retry_attempts + 1} attempts " <>
-           "(attempt1=#{format_stop_failure(first_reason, first_output)}; " <>
-           "attempt#{@stop_retry_attempts + 1}=#{format_stop_failure(last_reason, last_output)})"}
+      _ ->
+        :direct
     end
   end
 
-  # ── Output helpers ─────────────────────────────────────────────────
-
-  defp output_indicates_runtime_already_stopped?(output) when is_binary(output) do
-    normalized =
-      output
-      |> String.downcase()
-      |> String.trim()
-
-    normalized != "" and
-      Enum.any?(
-        [
-          "already stopped",
-          "not running",
-          "no running process",
-          "no running processes",
-          "no processes running",
-          "no process to stop",
-          "nothing to stop"
-        ],
-        &String.contains?(normalized, &1)
-      )
-  end
-
-  defp output_indicates_runtime_already_stopped?(_output), do: false
-
-  defp format_stop_failure(reason, output) do
-    reason_text = optional_string(reason) || "unknown"
-
-    output_text =
-      output
-      |> optional_string()
-      |> case do
-        nil ->
-          nil
-
-        value ->
-          trimmed = String.trim(value)
-
-          if trimmed == "" do
-            nil
-          else
-            trimmed
-            |> String.slice(0, @stop_output_preview_chars)
-            |> String.replace("\n", "\\n")
-          end
-      end
-
-    if output_text do
-      "#{reason_text}; output=#{output_text}"
-    else
-      reason_text
+  defp systemd_user_available? do
+    case System.cmd("systemctl", ["--user", "is-system-running"], stderr_to_stdout: true) do
+      {output, _} -> String.trim(output) in ["running", "degraded"]
     end
+  rescue
+    _ -> false
   end
 
   # ── Healthcheck ────────────────────────────────────────────────────
