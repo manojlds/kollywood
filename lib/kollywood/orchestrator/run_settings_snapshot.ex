@@ -260,7 +260,6 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshot do
 
     %{
       kind: kind,
-      command: optional_string(Map.get(runtime, :command)) || "devenv",
       processes: string_list(Map.get(runtime, :processes, [])),
       env: string_map(Map.get(runtime, :env, %{})),
       ports: ports_map(Map.get(runtime, :ports, %{})),
@@ -437,7 +436,6 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshot do
 
     %{
       "kind" => source_marker(raw, ["runtime", "kind"]),
-      "command" => source_marker(raw, ["runtime", "command"]),
       "processes" => source_marker(raw, ["runtime", "processes"]),
       "env" => source_marker(raw, ["runtime", "env"]),
       "ports" => source_marker(raw, ["runtime", "ports"]),

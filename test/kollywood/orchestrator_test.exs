@@ -1163,7 +1163,6 @@ defmodule Kollywood.OrchestratorTest do
     assert get_in(settings_snapshot, ["resolved", "testing", "enabled"]) == "false"
     assert get_in(settings_snapshot, ["resolved", "testing", "agent", "kind"]) == "amp"
     assert get_in(settings_snapshot, ["resolved", "preview", "enabled"]) == "false"
-    assert get_in(settings_snapshot, ["resolved", "runtime", "command"]) == "devenv"
     assert get_in(settings_snapshot, ["resolved", "runtime", "processes"]) == []
     assert get_in(settings_snapshot, ["sources", "testing", "enabled"]) == "default"
     assert get_in(settings_snapshot, ["sources", "preview", "enabled"]) == "default"

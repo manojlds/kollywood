@@ -466,8 +466,7 @@ defmodule Kollywood.Config do
   defp reject_legacy_runtime_keys(runtime) when is_map(runtime) do
     cond do
       Map.has_key?(runtime, "profile") or Map.has_key?(runtime, :profile) ->
-        {:error,
-         "runtime.profile is no longer supported; use runtime.command/runtime.processes instead"}
+        {:error, "runtime.profile is no longer supported; use runtime.processes instead"}
 
       Map.has_key?(runtime, "full_stack") or Map.has_key?(runtime, :full_stack) ->
         {:error,
@@ -544,7 +543,6 @@ defmodule Kollywood.Config do
     with {:ok, ports} <- parse_runtime_ports(Map.get(runtime, "ports", %{})) do
       {:ok,
        %{
-         command: optional_string(Map.get(runtime, "command")) || "devenv",
          processes: command_list(Map.get(runtime, "processes", [])),
          env: string_map(Map.get(runtime, "env", %{})),
          ports: ports,

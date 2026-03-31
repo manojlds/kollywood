@@ -1797,7 +1797,6 @@ defmodule KollywoodWeb.DashboardLiveTest do
           "mode" => "pr"
         },
         "runtime" => %{
-          "command" => "devenv",
           "processes" => ["server"]
         }
       },

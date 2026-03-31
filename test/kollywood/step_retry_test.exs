@@ -366,7 +366,7 @@ defmodule Kollywood.StepRetryTest do
     ])
 
     testing_cli_path = write_testing_cli!(root, "pass")
-    write_clone_testing_workflow!(project, testing_cli_path)
+    write_clone_testing_workflow!(root, project, testing_cli_path)
 
     workspace_path = Path.join(root, "testing-workspace-success")
     File.mkdir_p!(workspace_path)
@@ -572,7 +572,9 @@ defmodule Kollywood.StepRetryTest do
     )
   end
 
-  defp write_clone_testing_workflow!(project, testing_cli_path) do
+  defp write_clone_testing_workflow!(root, project, testing_cli_path) do
+    write_noop_devenv!(root)
+
     write_workflow!(
       project,
       """
@@ -606,7 +608,6 @@ defmodule Kollywood.StepRetryTest do
             env: {}
             timeout_ms: 10000
       runtime:
-        command: /bin/true
         processes:
           - server
         env: {}
@@ -624,6 +625,26 @@ defmodule Kollywood.StepRetryTest do
       Work on {{ issue.identifier }}.
       """
     )
+  end
+
+  defp write_noop_devenv!(root) do
+    bin_dir = Path.join(root, "fake_bin")
+    File.mkdir_p!(bin_dir)
+    path = Path.join(bin_dir, "devenv")
+
+    File.write!(path, """
+    #!/usr/bin/env bash
+    if [ "${1:-}" = "processes" ] && [ "${2:-}" = "up" ]; then
+      trap 'exit 0' TERM INT
+      while true; do sleep 60; done &
+      wait
+      exit 0
+    fi
+    exit 0
+    """)
+
+    File.chmod!(path, 0o755)
+    System.put_env("PATH", bin_dir <> ":" <> System.get_env("PATH", ""))
   end
 
   defp write_worktree_publish_workflow!(project, source_repo, workspaces_root) do

@@ -1,8 +1,6 @@
 defmodule Kollywood.Runtime.Host do
   @moduledoc """
-  Host runtime — executes commands directly on the machine.
-
-  Uses devenv process lifecycle with port-offset isolation.
+  Host runtime — runs processes via devenv with port-offset isolation.
   """
 
   @behaviour Kollywood.Runtime
@@ -26,9 +24,9 @@ defmodule Kollywood.Runtime.Host do
       profile: :full_stack,
       process_state: :pending,
       started?: false,
-      manager_mode: nil,
-      manager_pid: nil,
-      command: nil,
+      command: "devenv",
+      manager_port: nil,
+      manager_os_pid: nil,
       processes: [],
       env: %{},
       user_env: %{},
@@ -62,8 +60,7 @@ defmodule Kollywood.Runtime.Host do
 
         %{
           base
-          | command: optional_string(field(runtime_config, :command)) || "devenv",
-            processes: process_list(field(runtime_config, :processes)),
+          | processes: process_list(field(runtime_config, :processes)),
             env:
               build_env(workspace_key, workspace_path, user_env, port_offset_seed, resolved_ports),
             user_env: user_env,
@@ -86,7 +83,7 @@ defmodule Kollywood.Runtime.Host do
 
   def start(state) do
     with {:ok, state} <- ensure_isolation(state) do
-      case start_runtime_processes(state) do
+      case start_devenv(state) do
         {:ok, started_state} ->
           {:ok, %{started_state | started?: true, process_state: :running}}
 
@@ -104,21 +101,21 @@ defmodule Kollywood.Runtime.Host do
   @impl true
   def stop(state) do
     if stop_required?(state) do
-      case stop_runtime_processes(state) do
+      case stop_devenv(state) do
         :ok ->
           {:ok,
            %{
              state
              | started?: false,
                process_state: :stopped,
-               manager_mode: nil,
-               manager_pid: nil
+               manager_port: nil,
+               manager_os_pid: nil
            }
            |> release()}
 
         {:error, reason} ->
           {:error, reason,
-           %{state | process_state: :stop_failed, manager_mode: nil, manager_pid: nil}
+           %{state | process_state: :stop_failed, manager_port: nil, manager_os_pid: nil}
            |> release()}
       end
     else
@@ -220,6 +217,10 @@ defmodule Kollywood.Runtime.Host do
 
   # ── Command execution ─────────────────────────────────────────────
 
+  defp devenv(args, workspace_path, env, timeout_ms) do
+    execute("devenv", args, workspace_path, env, timeout_ms)
+  end
+
   defp execute(command, args, workspace_path, env, timeout_ms) do
     started_at_ms = System.monotonic_time(:millisecond)
 
@@ -251,186 +252,81 @@ defmodule Kollywood.Runtime.Host do
 
   defp elapsed(started_at_ms), do: max(System.monotonic_time(:millisecond) - started_at_ms, 0)
 
-  # ── Process args ───────────────────────────────────────────────────
+  # ── Devenv lifecycle ───────────────────────────────────────────────
 
-  defp start_runtime_processes(state) do
-    if should_launch_devenv_manager_in_foreground?(state.command) do
-      case launch_devenv_foreground_manager(state) do
-        {:ok, manager_pid} ->
-          {:ok, %{state | manager_mode: :foreground, manager_pid: manager_pid}}
+  defp start_devenv(state) do
+    args = ["processes", "up", "--strict-ports"] ++ state.processes
 
-        {:error, reason} ->
-          {:error, reason, state}
-      end
-    else
-      args = start_args(state)
+    env_list =
+      state.env
+      |> Enum.map(fn {k, v} -> {String.to_charlist(k), String.to_charlist(v)} end)
 
-      case execute(state.command, args, state.workspace_path, state.env, state.start_timeout_ms) do
-        {:ok, _output, _ms} ->
-          case wait_for_runtime_ready(state) do
-            :ok -> {:ok, state}
-            {:error, reason} -> {:error, reason, state}
-          end
+    port =
+      Port.open(
+        {:spawn_executable, System.find_executable("devenv")},
+        [
+          :binary,
+          :exit_status,
+          :stderr_to_stdout,
+          args: args,
+          cd: state.workspace_path,
+          env: env_list
+        ]
+      )
 
-        {:error, reason, _output, _ms} ->
-          {:error, reason, state}
-      end
+    os_pid = port_os_pid(port)
+
+    # Wait briefly for the port to not crash immediately
+    Process.sleep(500)
+
+    case check_port_alive(port) do
+      :alive ->
+        {:ok, %{state | manager_port: port, manager_os_pid: os_pid}}
+
+      {:exited, exit_status} ->
+        {:error, "devenv processes up exited immediately with status #{exit_status}", state}
     end
   end
 
-  defp start_args(state) do
-    base = ["processes", "up", "--detach", "--strict-ports"]
-    if state.processes == [], do: base, else: base ++ state.processes
-  end
-
-  defp foreground_start_args(state) do
-    base = ["processes", "up", "--strict-ports"]
-    if state.processes == [], do: base, else: base ++ state.processes
-  end
-
-  defp should_launch_devenv_manager_in_foreground?(command) when is_binary(command) do
-    command
-    |> Path.basename()
-    |> String.downcase()
-    |> Kernel.==("devenv")
-  end
-
-  defp should_launch_devenv_manager_in_foreground?(_command), do: false
-
-  defp launch_devenv_foreground_manager(state) do
-    runtime_log = ".devenv/state/kollywood-runtime-manager.log"
-
-    run_cmd =
-      [state.command | foreground_start_args(state)]
-      |> Enum.map_join(" ", &shell_escape/1)
-
-    launch_cmd =
-      "mkdir -p .devenv/state && #{run_cmd} >#{shell_escape(runtime_log)} 2>&1 & echo $!"
-
-    case execute(
-           "bash",
-           ["-lc", launch_cmd],
-           state.workspace_path,
-           state.env,
-           state.start_timeout_ms
-         ) do
-      {:ok, output, _ms} ->
-        case parse_background_pid(output) do
-          {:ok, pid} ->
-            Process.sleep(100)
-
-            if os_pid_alive?(pid) do
-              {:ok, pid}
-            else
-              {:error, "runtime manager exited immediately (pid=#{pid})"}
-            end
-
-          :error ->
-            {:error,
-             "failed to parse runtime manager pid from output: #{inspect(String.trim(output))}"}
-        end
-
-      {:error, reason, output, _ms} ->
-        {:error, format_stop_failure(reason, output)}
+  defp port_os_pid(port) do
+    case Port.info(port, :os_pid) do
+      {:os_pid, pid} -> pid
+      _ -> nil
     end
   end
 
-  defp parse_background_pid(output) when is_binary(output) do
-    case Regex.run(~r/\b(\d+)\b/, output, capture: :all_but_first) do
-      [value] ->
-        case Integer.parse(value) do
-          {pid, ""} when pid > 0 -> {:ok, pid}
-          _other -> :error
-        end
-
-      _other ->
-        :error
+  defp check_port_alive(port) do
+    receive do
+      {^port, {:exit_status, status}} -> {:exited, status}
+    after
+      0 -> :alive
     end
   end
-
-  defp parse_background_pid(_output), do: :error
-
-  defp shell_escape(value) do
-    value
-    |> to_string()
-    |> String.replace("'", "'\"'\"'")
-    |> then(&"'#{&1}'")
-  end
-
-  defp wait_for_runtime_ready(state) do
-    if supports_process_wait?(state.command) do
-      timeout_seconds = max(div(state.start_timeout_ms + 999, 1000), 1)
-      args = ["processes", "wait", "--timeout", Integer.to_string(timeout_seconds)]
-
-      case execute(state.command, args, state.workspace_path, state.env, state.start_timeout_ms) do
-        {:ok, _output, _ms} ->
-          :ok
-
-        {:error, reason, output, _ms} ->
-          if output_indicates_runtime_already_stopped?(output) do
-            Logger.warning(
-              "runtime readiness wait returned no running processes; deferring to runtime healthcheck"
-            )
-
-            :ok
-          else
-            {:error, "processes wait failed: #{format_stop_failure(reason, output)}"}
-          end
-      end
-    else
-      :ok
-    end
-  end
-
-  defp supports_process_wait?(command) when is_binary(command) do
-    basename =
-      command
-      |> Path.basename()
-      |> String.downcase()
-
-    basename == "devenv" or String.contains?(basename, "devenv")
-  end
-
-  defp supports_process_wait?(_command), do: false
 
   defp stop_required?(state) do
     state.started? == true or state.process_state == :start_failed
   end
 
-  defp stop_runtime_processes(%{manager_mode: :foreground, manager_pid: pid} = state)
-       when is_integer(pid) and pid > 0 do
-    case terminate_manager_pid(pid, state.stop_timeout_ms) do
+  defp stop_devenv(state) do
+    # First try graceful devenv processes down
+    case stop_once(state) do
       :ok ->
-        :ok
-
-      {:error, reason} ->
-        {:error, "failed to stop foreground runtime manager pid=#{pid}: #{reason}"}
-    end
-  end
-
-  defp stop_runtime_processes(state) do
-    case stop_processes_once(state) do
-      :ok ->
+        close_manager_port(state)
         :ok
 
       {:error, reason, output} ->
         if output_indicates_runtime_already_stopped?(output) do
           Logger.warning("runtime stop returned non-zero but appears already stopped: #{reason}")
+          close_manager_port(state)
           :ok
         else
-          retry_stop_runtime_processes(state, reason, output)
+          retry_stop(state, reason, output)
         end
     end
   end
 
-  defp stop_processes_once(state) do
-    case execute(
-           state.command,
-           ["processes", "down"],
-           state.workspace_path,
-           state.env,
-           state.stop_timeout_ms
-         ) do
+  defp stop_once(state) do
+    case devenv(["processes", "down"], state.workspace_path, state.env, state.stop_timeout_ms) do
       {:ok, _output, _ms} ->
         :ok
 
@@ -439,14 +335,26 @@ defmodule Kollywood.Runtime.Host do
     end
   end
 
-  defp retry_stop_runtime_processes(state, first_reason, first_output) do
+  defp close_manager_port(%{manager_port: port}) when is_port(port) do
+    try do
+      Port.close(port)
+    rescue
+      _error -> :ok
+    catch
+      _kind, _reason -> :ok
+    end
+  end
+
+  defp close_manager_port(_state), do: :ok
+
+  defp retry_stop(state, first_reason, first_output) do
     Logger.warning("runtime stop failed (attempt 1); retrying once: #{first_reason}")
 
     1..@stop_retry_attempts
     |> Enum.reduce_while({:error, first_reason, first_output}, fn _attempt, _acc ->
       Process.sleep(@stop_retry_delay_ms)
 
-      case stop_processes_once(state) do
+      case stop_once(state) do
         :ok ->
           {:halt, :ok}
 
@@ -464,9 +372,12 @@ defmodule Kollywood.Runtime.Host do
     end)
     |> case do
       :ok ->
+        close_manager_port(state)
         :ok
 
       {:error, last_reason, last_output} ->
+        close_manager_port(state)
+
         {:error,
          "failed to stop runtime processes after #{@stop_retry_attempts + 1} attempts " <>
            "(attempt1=#{format_stop_failure(first_reason, first_output)}; " <>
@@ -474,76 +385,7 @@ defmodule Kollywood.Runtime.Host do
     end
   end
 
-  defp terminate_manager_pid(pid, timeout_ms) when is_integer(pid) and pid > 0 do
-    if os_pid_alive?(pid) do
-      case signal_pid(pid, "-TERM") do
-        :ok ->
-          deadline_ms = System.monotonic_time(:millisecond) + max(timeout_ms, 1)
-
-          if wait_for_pid_exit(pid, deadline_ms) do
-            :ok
-          else
-            case signal_pid(pid, "-KILL") do
-              :ok ->
-                if wait_for_pid_exit(pid, deadline_ms + 1_000) do
-                  :ok
-                else
-                  {:error, "pid remained alive after SIGKILL"}
-                end
-
-              {:error, reason} ->
-                {:error, reason}
-            end
-          end
-
-        {:error, reason} ->
-          {:error, reason}
-      end
-    else
-      :ok
-    end
-  end
-
-  defp terminate_manager_pid(_pid, _timeout_ms), do: :ok
-
-  defp wait_for_pid_exit(pid, deadline_ms) do
-    cond do
-      not os_pid_alive?(pid) ->
-        true
-
-      System.monotonic_time(:millisecond) >= deadline_ms ->
-        false
-
-      true ->
-        Process.sleep(100)
-        wait_for_pid_exit(pid, deadline_ms)
-    end
-  end
-
-  defp os_pid_alive?(pid) when is_integer(pid) and pid > 0 do
-    case System.cmd("kill", ["-0", Integer.to_string(pid)], stderr_to_stdout: true) do
-      {_output, 0} -> true
-      _other -> false
-    end
-  rescue
-    _error -> false
-  end
-
-  defp os_pid_alive?(_pid), do: false
-
-  defp signal_pid(pid, signal) when is_integer(pid) and is_binary(signal) do
-    case System.cmd("kill", [signal, Integer.to_string(pid)], stderr_to_stdout: true) do
-      {_output, 0} ->
-        :ok
-
-      {output, exit_code} ->
-        {:error,
-         "kill #{signal} failed for pid=#{pid} exit=#{exit_code} output=#{String.trim(output)}"}
-    end
-  rescue
-    error ->
-      {:error, Exception.message(error)}
-  end
+  # ── Output helpers ─────────────────────────────────────────────────
 
   defp output_indicates_runtime_already_stopped?(output) when is_binary(output) do
     normalized =
@@ -597,6 +439,8 @@ defmodule Kollywood.Runtime.Host do
     end
   end
 
+  # ── Healthcheck ────────────────────────────────────────────────────
+
   defp await_runtime_ports(state) do
     port_entries =
       state
@@ -613,13 +457,13 @@ defmodule Kollywood.Runtime.Host do
       :ok
     else
       deadline_ms = System.monotonic_time(:millisecond) + max(state.start_timeout_ms, 1)
-      wait_for_ports(port_entries, deadline_ms, state)
+      wait_for_ports(port_entries, deadline_ms)
     end
   end
 
-  defp wait_for_ports([], _deadline_ms, _state), do: :ok
+  defp wait_for_ports([], _deadline_ms), do: :ok
 
-  defp wait_for_ports(port_entries, deadline_ms, state) do
+  defp wait_for_ports(port_entries, deadline_ms) do
     pending =
       Enum.reject(port_entries, fn {_name, port} ->
         runtime_port_open?(port)
@@ -629,11 +473,6 @@ defmodule Kollywood.Runtime.Host do
       pending == [] ->
         :ok
 
-      runtime_manager_exited_before_ready?(state) ->
-        {:error,
-         "runtime manager pid=#{state.manager_pid} exited before ports became reachable: " <>
-           Enum.map_join(pending, ", ", fn {name, port} -> "#{name}=#{port}" end)}
-
       System.monotonic_time(:millisecond) >= deadline_ms ->
         {:error,
          "ports not reachable before timeout: " <>
@@ -641,16 +480,9 @@ defmodule Kollywood.Runtime.Host do
 
       true ->
         Process.sleep(@healthcheck_poll_interval_ms)
-        wait_for_ports(pending, deadline_ms, state)
+        wait_for_ports(pending, deadline_ms)
     end
   end
-
-  defp runtime_manager_exited_before_ready?(%{manager_mode: :foreground, manager_pid: pid})
-       when is_integer(pid) and pid > 0 do
-    not os_pid_alive?(pid)
-  end
-
-  defp runtime_manager_exited_before_ready?(_state), do: false
 
   defp runtime_port_open?(port) when is_integer(port) and port > 0 do
     case :gen_tcp.connect(
