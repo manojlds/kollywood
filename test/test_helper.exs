@@ -1,4 +1,4 @@
-ExUnit.start()
+ExUnit.start(exclude: [:docker_integration])
 
 # Run migrations directly (Bootstrap is disabled in test to avoid pool conflicts).
 migrations_path = Application.app_dir(:kollywood, "priv/repo/migrations")
