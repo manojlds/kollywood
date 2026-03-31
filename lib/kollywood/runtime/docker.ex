@@ -41,6 +41,7 @@ defmodule Kollywood.Runtime.Docker do
       profile: :full_stack,
       process_state: :pending,
       started?: false,
+      command: "docker",
       image: Map.get(runtime_config, :image) || @default_image,
       container_id: nil,
       container_name: nil,
