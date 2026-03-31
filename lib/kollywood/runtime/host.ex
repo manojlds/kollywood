@@ -138,6 +138,9 @@ defmodule Kollywood.Runtime.Host do
   end
 
   @impl true
+  def ensure_exec_ready(state), do: {:ok, state}
+
+  @impl true
   def exec(state, command, timeout_ms) do
     execute("bash", ["-lc", command], state.workspace_path, %{}, timeout_ms)
   end
