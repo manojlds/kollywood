@@ -413,6 +413,18 @@ defmodule KollywoodWeb.DashboardLive do
         not is_binary(story_id) ->
           put_flash(socket, :error, "No story selected for retry.")
 
+        retry_step == "full_rerun" ->
+          case trigger_full_rerun(project, story_id) do
+            :ok ->
+              socket
+              |> load_project_data(project)
+              |> sync_story_detail_selection()
+              |> put_flash(:info, "Story reset to open. The orchestrator will pick it up.")
+
+            {:error, reason} ->
+              put_flash(socket, :error, "Full rerun failed: #{reason}")
+          end
+
         true ->
           case StepRetry.retry(project, story_id, source_attempt, retry_step) do
             {:ok, result} ->
@@ -4587,6 +4599,15 @@ defmodule KollywoodWeb.DashboardLive do
     do: {:error, "Story editing is only available for local tracker projects."}
 
   defp local_tracker_path(_project), do: {:error, "No project selected."}
+
+  defp trigger_full_rerun(project, story_id) do
+    with {:ok, tracker_path} <- local_tracker_path(project) do
+      case PrdJson.update_story(tracker_path, story_id, %{"status" => "open"}) do
+        :ok -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
 
   defp default_story_form_values(stories) when is_list(stories) do
     %{

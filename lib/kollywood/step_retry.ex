@@ -58,7 +58,31 @@ defmodule Kollywood.StepRetry do
         "reason" => reason
       }
     else
-      _ -> nil
+      {:error, _} ->
+        with {:ok, parsed_attempt} <- parse_attempt(source_attempt),
+             {:ok, source} <- load_source_attempt(project, story_id, parsed_attempt) do
+          status =
+            source.metadata
+            |> Map.get("status")
+            |> to_string()
+
+          if status in ["failed", "error"] do
+            %{
+              "step" => "full_rerun",
+              "label" => "Full rerun",
+              "attempt" => source.attempt,
+              "enabled" => true,
+              "reason" => nil
+            }
+          else
+            nil
+          end
+        else
+          _ -> nil
+        end
+
+      _ ->
+        nil
     end
   end
 
