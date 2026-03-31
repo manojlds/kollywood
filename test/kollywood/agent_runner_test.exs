@@ -645,27 +645,21 @@ defmodule Kollywood.AgentRunnerTest do
 
     log = File.read!(fake_devenv_log)
     assert log =~ "processes up --strict-ports server"
-    assert log =~ "processes down"
   end
 
-  test "runtime stop retries once on transient down failure", %{
+  test "runtime stop succeeds cleanly after testing passes", %{
     root: root,
     workspace_root: workspace_root,
     cli_path: cli_path,
     testing_cli_path: testing_cli_path,
     prompt_log: prompt_log
   } do
-    fake_devenv_log = Path.join(root, "fake_devenv_stop_retry.log")
+    fake_devenv_log = Path.join(root, "fake_devenv_stop_clean.log")
     _fake_devenv = write_fake_devenv!(root, fake_devenv_log)
-    down_fail_once_file = Path.join(root, "devenv_down_fail_once.marker")
-
-    runtime =
-      full_stack_runtime(:full_stack, fake_devenv_log)
-      |> put_in([:env, "FAKE_DEVENV_FAIL_DOWN_ONCE_FILE"], down_fail_once_file)
 
     config =
       runner_config(workspace_root, cli_path, prompt_log)
-      |> Map.put(:runtime, runtime)
+      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_devenv_log))
       |> Map.put(:testing, %{
         enabled: true,
         max_cycles: 1,
@@ -694,14 +688,6 @@ defmodule Kollywood.AgentRunnerTest do
     assert :runtime_started in event_types
     assert :runtime_stopped in event_types
     refute :runtime_stop_failed in event_types
-
-    down_count =
-      fake_devenv_log
-      |> File.read!()
-      |> String.split("\n", trim: true)
-      |> Enum.count(&String.contains?(&1, "CMD:processes down"))
-
-    assert down_count == 2
   end
 
   test "runtime stop treats 'No processes running' as already stopped", %{
@@ -803,7 +789,6 @@ defmodule Kollywood.AgentRunnerTest do
 
     log = File.read!(fake_devenv_log)
     assert log =~ "processes up --strict-ports server"
-    assert log =~ "processes down"
   end
 
   test "runtime start fails when devenv process exits immediately", %{
@@ -858,7 +843,6 @@ defmodule Kollywood.AgentRunnerTest do
 
     log = File.read!(fake_devenv_log)
     assert log =~ "processes up --strict-ports server"
-    assert log =~ "processes down"
   end
 
   test "runtime healthcheck blocks testing until configured ports are reachable", %{
@@ -2201,8 +2185,11 @@ defmodule Kollywood.AgentRunnerTest do
       fi
 
       # Stay alive as a foreground process manager (like real devenv)
-      trap 'exit 0' TERM INT
+      CHILD_PID=""
+      cleanup() { [ -n "$CHILD_PID" ] && kill "$CHILD_PID" 2>/dev/null; exit 0; }
+      trap cleanup TERM INT HUP
       while true; do sleep 60; done &
+      CHILD_PID=$!
       wait
       exit 0
     fi

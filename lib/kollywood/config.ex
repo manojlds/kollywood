@@ -549,7 +549,8 @@ defmodule Kollywood.Config do
          port_offset_mod: positive_integer(Map.get(runtime, "port_offset_mod", 1000), 1000),
          start_timeout_ms:
            positive_integer(Map.get(runtime, "start_timeout_ms", 120_000), 120_000),
-         stop_timeout_ms: positive_integer(Map.get(runtime, "stop_timeout_ms", 60_000), 60_000)
+         stop_timeout_ms: positive_integer(Map.get(runtime, "stop_timeout_ms", 60_000), 60_000),
+         image: optional_string(Map.get(runtime, "image"))
        }}
     end
   end

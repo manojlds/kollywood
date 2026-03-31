@@ -4,7 +4,8 @@ defmodule Kollywood.Runtime.HostTest do
 
   These tests launch real devenv processes (a lightweight python HTTP server)
   to verify that the runtime properly starts, healthchecks, and stops processes
-  with per-issue port isolation.
+  with per-issue port isolation. On Linux, the runtime uses systemd-run scopes
+  for cgroup-based process tree management.
   """
   use ExUnit.Case, async: false
 
@@ -44,15 +45,25 @@ defmodule Kollywood.Runtime.HostTest do
     File.write!(Path.join(root, "devenv.nix"), @devenv_nix)
 
     on_exit(fn ->
-      System.cmd("devenv", ["processes", "down"],
-        cd: root,
-        stderr_to_stdout: true
-      )
-
+      cleanup_stale_processes(root)
       File.rm_rf!(root)
     end)
 
     %{workspace_path: root}
+  end
+
+  describe "wrapper detection" do
+    test "init sets the process_wrapper field", %{workspace_path: ws} do
+      state = init_runtime(ws, "wrapper-detect", 48500)
+
+      case :os.type() do
+        {:unix, :linux} ->
+          assert state.process_wrapper in [:systemd, :direct]
+
+        _ ->
+          assert state.process_wrapper == :direct
+      end
+    end
   end
 
   describe "start/stop lifecycle" do
@@ -79,15 +90,25 @@ defmodule Kollywood.Runtime.HostTest do
       assert started.process_state == :running
       assert is_port(started.manager_port)
 
+      if started.process_wrapper == :systemd do
+        assert started.systemd_unit != nil
+        assert systemd_scope_active?(started.systemd_unit)
+      end
+
       assert :ok = Runtime.healthcheck(started)
       assert_port_open(port)
 
       assert {:ok, stopped} = Runtime.stop(started)
       assert stopped.started? == false
       assert stopped.process_state == :stopped
+      assert stopped.systemd_unit == nil
 
       Process.sleep(1_000)
       assert_port_closed(port)
+
+      if started.process_wrapper == :systemd do
+        refute systemd_scope_active?(started.systemd_unit)
+      end
     end
 
     test "start is idempotent — second call is a no-op", %{workspace_path: ws} do
@@ -162,7 +183,6 @@ defmodule Kollywood.Runtime.HostTest do
       config = runtime_config([], %{}, 1)
       test_pid = self()
 
-      # Acquire lease in process A
       pid_a =
         spawn_link(fn ->
           state = Runtime.init(:host, config, %{path: ws, key: "release-lease"})
@@ -178,11 +198,9 @@ defmodule Kollywood.Runtime.HostTest do
       assert_receive {:acquired, lease_name, _offset}, 10_000
       assert lease_name != nil
 
-      # Tell A to release, then wait for confirmation
       send(pid_a, :release_and_exit)
       assert_receive :released, 10_000
 
-      # Process B should now be able to acquire the same slot
       _pid_b =
         spawn_link(fn ->
           state = Runtime.init(:host, config, %{path: ws, key: "release-lease"})
@@ -284,5 +302,37 @@ defmodule Kollywood.Runtime.HostTest do
       {:error, _reason} ->
         :ok
     end
+  end
+
+  defp systemd_scope_active?(unit) do
+    case System.cmd("systemctl", ["--user", "is-active", "#{unit}.scope"],
+           stderr_to_stdout: true
+         ) do
+      {output, _} -> String.trim(output) == "active"
+    end
+  rescue
+    _ -> false
+  end
+
+  defp cleanup_stale_processes(root) do
+    System.cmd("devenv", ["processes", "down"], cd: root, stderr_to_stdout: true)
+
+    case System.cmd("systemctl", ["--user", "list-units", "--type=scope", "--no-legend",
+           "--plain", "kollywood-rt-*"], stderr_to_stdout: true) do
+      {output, 0} ->
+        output
+        |> String.split("\n", trim: true)
+        |> Enum.each(fn line ->
+          unit = line |> String.split() |> List.first()
+          if unit && String.starts_with?(unit, "kollywood-rt-") do
+            System.cmd("systemctl", ["--user", "stop", unit], stderr_to_stdout: true)
+          end
+        end)
+
+      _ ->
+        :ok
+    end
+  rescue
+    _ -> :ok
   end
 end
