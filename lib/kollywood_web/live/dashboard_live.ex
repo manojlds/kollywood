@@ -2420,6 +2420,13 @@ defmodule KollywoodWeb.DashboardLive do
         <p class="break-words text-xs text-base-content/60">{@run_detail["retry_summary"]}</p>
       <% end %>
 
+      <%= if @run_detail && run_detail_error(@run_detail) do %>
+        <div class="alert alert-error text-sm gap-2">
+          <.icon name="hero-exclamation-triangle" class="size-4 shrink-0" />
+          <p class="break-words min-w-0">{run_detail_error(@run_detail)}</p>
+        </div>
+      <% end %>
+
       <%= if @run_detail do %>
         <div class="flex gap-0 border-b border-base-300">
           <%= for {tab, label} <- [
@@ -3392,6 +3399,13 @@ defmodule KollywoodWeb.DashboardLive do
               <p class="break-words text-xs text-base-content/60">{@run_detail["retry_summary"]}</p>
             <% end %>
 
+            <%= if @run_detail && run_detail_error(@run_detail) do %>
+              <div class="alert alert-error text-sm gap-2">
+                <.icon name="hero-exclamation-triangle" class="size-4 shrink-0" />
+                <p class="break-words min-w-0">{run_detail_error(@run_detail)}</p>
+              </div>
+            <% end %>
+
             <div class="flex gap-0 border-b border-base-300">
               <%= for {tab, label} <- [
                 {"logs", "Logs"},
@@ -4331,6 +4345,22 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp show_run_detail_phase_label?(_phase_label), do: false
+
+  defp run_detail_error(run_detail) when is_map(run_detail) do
+    error =
+      get_in(run_detail, ["metadata", "error"]) ||
+        get_in(run_detail, ["error"])
+
+    case error do
+      nil -> nil
+      "nil" -> nil
+      "" -> nil
+      msg when is_binary(msg) -> msg
+      _ -> nil
+    end
+  end
+
+  defp run_detail_error(_run_detail), do: nil
 
   defp show_recent_activity_phase_label?(run) when is_map(run) do
     phase_label = Map.get(run, :phase_label) || Map.get(run, "phase_label")

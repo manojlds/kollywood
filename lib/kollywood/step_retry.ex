@@ -663,20 +663,51 @@ defmodule Kollywood.StepRetry do
     do: {:error, "source attempt did not fail in checks, review, testing, or publish"}
 
   defp last_failed_step(events) when is_list(events) do
-    Enum.reduce(events, nil, fn event, acc ->
-      case event_type(event) do
-        "checks_failed" -> :checks
-        "review_failed" -> :review
-        "review_error" -> :review
-        "testing_failed" -> :testing
-        "testing_error" -> :testing
-        "publish_failed" -> :publish
-        _other -> acc
-      end
-    end)
+    explicit =
+      Enum.reduce(events, nil, fn event, acc ->
+        case event_type(event) do
+          "checks_failed" -> :checks
+          "review_failed" -> :review
+          "review_error" -> :review
+          "testing_failed" -> :testing
+          "testing_error" -> :testing
+          "publish_failed" -> :publish
+          _other -> acc
+        end
+      end)
+
+    explicit || infer_failed_step_from_started_events(events)
   end
 
   defp last_failed_step(_events), do: nil
+
+  defp infer_failed_step_from_started_events(events) when is_list(events) do
+    last_phase =
+      Enum.reduce(events, nil, fn event, acc ->
+        case event_type(event) do
+          "checks_started" -> :checks
+          "check_started" -> :checks
+          "review_started" -> :review
+          "testing_started" -> :testing
+          "publish_started" -> :publish
+          _other -> acc
+        end
+      end)
+
+    has_passed =
+      Enum.any?(events, fn event ->
+        event_type(event) in [
+          "checks_passed",
+          "review_passed",
+          "testing_passed",
+          "publish_succeeded"
+        ]
+      end)
+
+    if last_phase && !has_passed, do: last_phase, else: nil
+  end
+
+  defp infer_failed_step_from_started_events(_events), do: nil
 
   defp event_present?(events, expected_type) when is_list(events) do
     Enum.any?(events, &(event_type(&1) == expected_type))
