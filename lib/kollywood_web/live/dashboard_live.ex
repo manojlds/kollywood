@@ -3227,6 +3227,18 @@ defmodule KollywoodWeb.DashboardLive do
         >
           Runs
         </button>
+        <button
+          phx-click="set_story_tab"
+          phx-value-tab="settings"
+          class={[
+            "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
+            @story_detail_tab == "settings" && "border-primary text-primary",
+            @story_detail_tab != "settings" &&
+              "border-transparent text-base-content/60 hover:text-base-content"
+          ]}
+        >
+          Settings
+        </button>
       </div>
 
       <%= if @story_detail_tab == "details" do %>
@@ -3495,6 +3507,54 @@ defmodule KollywoodWeb.DashboardLive do
                 </div>
               </div>
             <% end %>
+          <% end %>
+        </div>
+      <% end %>
+
+      <%= if @story_detail_tab == "settings" do %>
+        <div class="space-y-4">
+          <h3 class="text-xs font-semibold text-base-content/60 uppercase tracking-wide">
+            Execution Overrides
+          </h3>
+          <%= if execution = get_in(@story, ["settings", "execution"]) do %>
+            <%= if execution != %{} do %>
+              <div class="grid gap-3">
+                <%= if Map.has_key?(execution, "testing_enabled") do %>
+                  <div class="flex items-center justify-between p-3 bg-base-200/50 rounded-lg">
+                    <span class="text-sm font-medium">Testing Enabled</span>
+                    <%= if execution["testing_enabled"] do %>
+                      <span class="badge badge-success badge-sm">enabled</span>
+                    <% else %>
+                      <span class="badge badge-ghost badge-sm">disabled</span>
+                    <% end %>
+                  </div>
+                <% end %>
+                <%= if Map.has_key?(execution, "testing_agent_kind") do %>
+                  <div class="flex items-center justify-between p-3 bg-base-200/50 rounded-lg">
+                    <span class="text-sm font-medium">Testing Agent Kind</span>
+                    <span class="text-sm text-base-content/80">
+                      {execution["testing_agent_kind"]}
+                    </span>
+                  </div>
+                <% end %>
+                <%= if Map.has_key?(execution, "testing_max_cycles") do %>
+                  <div class="flex items-center justify-between p-3 bg-base-200/50 rounded-lg">
+                    <span class="text-sm font-medium">Testing Max Cycles</span>
+                    <span class="text-sm text-base-content/80">
+                      {execution["testing_max_cycles"]}
+                    </span>
+                  </div>
+                <% end %>
+              </div>
+            <% else %>
+              <p class="text-base-content/50 text-sm italic">
+                No execution overrides configured for this story.
+              </p>
+            <% end %>
+          <% else %>
+            <p class="text-base-content/50 text-sm italic">
+              No execution overrides configured for this story.
+            </p>
           <% end %>
         </div>
       <% end %>
