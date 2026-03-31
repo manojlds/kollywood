@@ -744,7 +744,8 @@ defmodule Kollywood.Orchestrator.RunLogs do
         "args",
         "output",
         "raw_output",
-        "output_preview"
+        "output_preview",
+        "prompt"
       ])
       |> Enum.sort_by(fn {key, _value} -> key end)
       |> Enum.map_join(" ", fn {key, value} -> "#{key}=#{format_detail_value(value)}" end)

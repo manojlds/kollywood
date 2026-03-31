@@ -46,6 +46,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:story_detail_tab, "details")
       |> assign(:run_detail_panel_tab, "logs")
       |> assign(:reports_tab, "review")
+      |> assign(:active_prompt_tab, "agent")
       |> assign(:active_log_tab, "agent")
       |> assign(:artifact_preview, nil)
       |> assign(:log_poll_timer, nil)
@@ -137,7 +138,7 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   def handle_event("set_run_detail_panel_tab", %{"tab" => tab}, socket) do
-    next_tab = if tab in ["logs", "reports", "settings"], do: tab, else: "logs"
+    next_tab = if tab in ["logs", "reports", "prompts", "settings"], do: tab, else: "logs"
 
     socket =
       socket
@@ -156,6 +157,11 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:artifact_preview, nil)
 
     {:noreply, socket}
+  end
+
+  def handle_event("set_prompt_tab", %{"tab" => tab}, socket) do
+    next_tab = if tab in ["agent", "review", "testing"], do: tab, else: "agent"
+    {:noreply, assign(socket, :active_prompt_tab, next_tab)}
   end
 
   def handle_event("open_artifact_preview", %{"url" => url, "type" => type} = params, socket) do
@@ -652,6 +658,7 @@ defmodule KollywoodWeb.DashboardLive do
                   run_detail={@run_detail}
                   run_detail_panel_tab={@run_detail_panel_tab}
                   reports_tab={@reports_tab}
+                  active_prompt_tab={@active_prompt_tab}
                   active_log_tab={@active_log_tab}
                   story_detail_tab={@story_detail_tab}
                   project={@current_project}
@@ -666,6 +673,7 @@ defmodule KollywoodWeb.DashboardLive do
                   attempt={@run_detail_attempt}
                   run_detail_panel_tab={@run_detail_panel_tab}
                   reports_tab={@reports_tab}
+                  active_prompt_tab={@active_prompt_tab}
                   active_log_tab={@active_log_tab}
                   project={@current_project}
                   stories_view={@stories_view}
@@ -2359,6 +2367,7 @@ defmodule KollywoodWeb.DashboardLive do
   attr :attempt, :string, default: nil
   attr :run_detail_panel_tab, :string, default: "logs"
   attr :reports_tab, :string, default: "review"
+  attr :active_prompt_tab, :string, default: "agent"
   attr :active_log_tab, :string, default: "agent"
   attr :project, Project, required: true
   attr :stories_view, :string, default: @default_stories_view
@@ -2432,6 +2441,7 @@ defmodule KollywoodWeb.DashboardLive do
           <%= for {tab, label} <- [
             {"logs", "Logs"},
             {"reports", "Reports"},
+            {"prompts", "Prompts"},
             {"settings", "Settings"}
           ] do %>
             <button
@@ -2457,6 +2467,9 @@ defmodule KollywoodWeb.DashboardLive do
             workflow_fingerprint_status={@workflow_fingerprint_status}
           />
         <% else %>
+          <%= if @run_detail_panel_tab == "prompts" do %>
+            <.prompts_section prompts={@run_detail["prompts"] || %{}} active_prompt_tab={@active_prompt_tab} />
+          <% else %>
           <%= if @run_detail_panel_tab == "reports" do %>
             <div class="space-y-4">
               <div class="flex gap-0 border-b border-base-300">
@@ -2527,6 +2540,7 @@ defmodule KollywoodWeb.DashboardLive do
             <% end %>
           <% end %>
         <% end %>
+        <% end %>
       <% else %>
         <p class="text-base-content/50 text-sm italic">No run logs found for this story.</p>
       <% end %>
@@ -2538,6 +2552,52 @@ defmodule KollywoodWeb.DashboardLive do
         }
       }
     </script>
+    """
+  end
+
+  attr :prompts, :map, default: %{}
+  attr :active_prompt_tab, :string, default: "agent"
+
+  defp prompts_section(assigns) do
+    prompt_tabs = [
+      {"agent", "Agent"},
+      {"review", "Review"},
+      {"testing", "Test"}
+    ]
+
+    assigns = assign(assigns, :prompt_tabs, prompt_tabs)
+
+    ~H"""
+    <div class="space-y-3">
+      <div class="flex gap-0 border-b border-base-300">
+        <%= for {tab, label} <- @prompt_tabs do %>
+          <button
+            phx-click="set_prompt_tab"
+            phx-value-tab={tab}
+            class={[
+              "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
+              @active_prompt_tab == tab && "border-primary text-primary",
+              @active_prompt_tab != tab &&
+                "border-transparent text-base-content/60 hover:text-base-content"
+            ]}
+          >
+            {label}
+            <%= if Map.has_key?(@prompts, tab) do %>
+              <span class="ml-1 badge badge-xs badge-primary"></span>
+            <% end %>
+          </button>
+        <% end %>
+      </div>
+
+      <% prompt_text = Map.get(@prompts, @active_prompt_tab) %>
+      <%= if prompt_text do %>
+        <pre class="font-mono text-xs leading-relaxed bg-base-300 p-4 rounded-lg overflow-auto max-h-[75vh] whitespace-pre-wrap">{prompt_text}</pre>
+      <% else %>
+        <p class="text-base-content/50 text-sm italic">
+          No {@active_prompt_tab} prompt captured for this run.
+        </p>
+      <% end %>
+    </div>
     """
   end
 
@@ -3109,6 +3169,7 @@ defmodule KollywoodWeb.DashboardLive do
   attr :run_detail, :map, default: nil
   attr :run_detail_panel_tab, :string, default: "logs"
   attr :reports_tab, :string, default: "review"
+  attr :active_prompt_tab, :string, default: "agent"
   attr :active_log_tab, :string, default: "agent"
   attr :story_detail_tab, :string, default: "details"
   attr :project, Project, required: true
@@ -3410,6 +3471,7 @@ defmodule KollywoodWeb.DashboardLive do
               <%= for {tab, label} <- [
                 {"logs", "Logs"},
                 {"reports", "Reports"},
+                {"prompts", "Prompts"},
                 {"settings", "Settings"}
               ] do %>
                 <button
@@ -3435,6 +3497,9 @@ defmodule KollywoodWeb.DashboardLive do
                 workflow_fingerprint_status={@workflow_fingerprint_status}
               />
             <% else %>
+              <%= if @run_detail_panel_tab == "prompts" do %>
+                <.prompts_section prompts={if(@run_detail, do: @run_detail["prompts"] || %{}, else: %{})} active_prompt_tab={@active_prompt_tab} />
+              <% else %>
               <%= if @run_detail_panel_tab == "reports" do %>
                 <div class="space-y-4">
                   <div class="flex gap-0 border-b border-base-300">
@@ -3503,6 +3568,7 @@ defmodule KollywoodWeb.DashboardLive do
                 <% else %>
                   <p class="text-base-content/50 text-sm italic">No output yet.</p>
                 <% end %>
+              <% end %>
               <% end %>
             <% end %>
           <% else %>
@@ -6204,6 +6270,7 @@ defmodule KollywoodWeb.DashboardLive do
     testing_cycle_reports = load_testing_cycle_reports(files)
     review_cycles = review_cycle_summaries(events)
     testing_cycles = testing_cycle_summaries(events)
+    prompts = extract_captured_prompts(events)
 
     %{
       "metadata" => metadata,
@@ -6222,6 +6289,7 @@ defmodule KollywoodWeb.DashboardLive do
       "testing_report" => testing_report,
       "testing_cycles" => testing_cycles,
       "testing_cycle_reports" => testing_cycle_reports,
+      "prompts" => prompts,
       "active_log_content" => content
     }
   end
@@ -6383,6 +6451,20 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp testing_cycle_summaries(_events), do: []
+
+  defp extract_captured_prompts(events) when is_list(events) do
+    events
+    |> Enum.filter(fn event ->
+      (Map.get(event, "type") || to_string(Map.get(event, :type))) == "prompt_captured"
+    end)
+    |> Enum.reduce(%{}, fn event, acc ->
+      phase = to_string(Map.get(event, "phase") || Map.get(event, :phase))
+      prompt = Map.get(event, "prompt") || Map.get(event, :prompt) || ""
+      Map.put_new(acc, phase, prompt)
+    end)
+  end
+
+  defp extract_captured_prompts(_events), do: %{}
 
   defp load_testing_report(metadata, files) when is_map(metadata) and is_map(files) do
     metadata_report =

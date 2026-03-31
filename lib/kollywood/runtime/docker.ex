@@ -17,6 +17,8 @@ defmodule Kollywood.Runtime.Docker do
 
   @behaviour Kollywood.Runtime
 
+  alias Kollywood.Runtime.Host
+
   require Logger
 
   @default_image "kollywood-runtime:latest"
@@ -169,29 +171,12 @@ defmodule Kollywood.Runtime.Docker do
 
   @impl true
   def exec(state, command, timeout_ms) do
-    docker_exec(state.container_id, command, timeout_ms)
+    Host.exec(state, command, timeout_ms)
   end
 
   @impl true
   def wrap_agent_command(state, command, args) do
-    container = state.container_id || state.container_name
-
-    if container do
-      {"docker",
-       [
-         "exec",
-         "-u",
-         @container_user,
-         "-w",
-         @container_workspace,
-         container,
-         "bash",
-         "-lc",
-         Enum.join([command | args], " ")
-       ], %{}}
-    else
-      {command, args, %{}}
-    end
+    Host.wrap_agent_command(state, command, args)
   end
 
   @impl true
@@ -383,44 +368,6 @@ defmodule Kollywood.Runtime.Docker do
 
     "kollywood-rt-#{sanitized}"
   end
-
-  # ── Docker exec helper ─────────────────────────────────────────────
-
-  defp docker_exec(container_id, command, timeout_ms) do
-    started_at = System.monotonic_time(:millisecond)
-
-    args = [
-      "exec",
-      "-u",
-      @container_user,
-      "-w",
-      @container_workspace,
-      container_id,
-      "bash",
-      "-lc",
-      command
-    ]
-
-    try do
-      task = Task.async(fn -> System.cmd("docker", args, stderr_to_stdout: true) end)
-
-      case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
-        {:ok, {output, 0}} ->
-          {:ok, output, elapsed(started_at)}
-
-        {:ok, {output, exit_code}} ->
-          {:error, "exit code #{exit_code}", output, elapsed(started_at)}
-
-        nil ->
-          {:error, "timed out after #{timeout_ms}ms", "", elapsed(started_at)}
-      end
-    rescue
-      error ->
-        {:error, Exception.message(error), "", elapsed(started_at)}
-    end
-  end
-
-  defp elapsed(started_at), do: max(System.monotonic_time(:millisecond) - started_at, 0)
 
   defp stop_required?(state) do
     state.started? == true or state.process_state == :start_failed

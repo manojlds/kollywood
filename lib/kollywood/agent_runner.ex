@@ -399,6 +399,7 @@ defmodule Kollywood.AgentRunner do
       state =
         state
         |> Map.put(:turn_count, turn_number)
+        |> maybe_emit_prompt(turn_number, :agent, prompt)
         |> emit(:turn_started, %{turn: turn_number})
 
       turn_result =
@@ -570,6 +571,12 @@ defmodule Kollywood.AgentRunner do
   end
 
   defp maybe_emit_continuation_context(state), do: state
+
+  defp maybe_emit_prompt(state, 1, phase, prompt) when is_binary(prompt) do
+    emit(state, :prompt_captured, %{phase: phase, prompt: prompt})
+  end
+
+  defp maybe_emit_prompt(state, _cycle_or_turn, _phase, _prompt), do: state
 
   defp continuation_retry_mode(nil), do: :full_rerun
   defp continuation_retry_mode(%{}), do: :agent_continuation
@@ -1361,6 +1368,7 @@ defmodule Kollywood.AgentRunner do
 
       with :ok <- reset_review_json(workspace_rjp),
            {:ok, prompt} <- build_review_prompt(state, config, cycle, workspace_rjp),
+           state = maybe_emit_prompt(state, cycle, :review, prompt),
            {:ok, _output} <- run_review_turn(state, config, prompt, state.log_files) do
         persist_review_json(workspace_rjp, state.log_files)
         persist_review_cycle_json(workspace_rjp, state.log_files, cycle)
@@ -1423,6 +1431,7 @@ defmodule Kollywood.AgentRunner do
       with {:ok, state} <- ensure_runtime_for_testing(state),
            :ok <- reset_testing_json(workspace_tjp),
            {:ok, prompt} <- build_testing_prompt(state, config, cycle, workspace_tjp),
+           state = maybe_emit_prompt(state, cycle, :testing, prompt),
            {:ok, testing_run} <- run_testing_turn(state, config, prompt, state.log_files) do
         persist_testing_json(workspace_tjp, state.log_files)
         persist_testing_cycle_json(workspace_tjp, state.log_files, cycle)
@@ -1875,12 +1884,7 @@ defmodule Kollywood.AgentRunner do
     end
   end
 
-  defp ensure_runtime_for_checks(state) do
-    case Runtime.ensure_exec_ready(state.runtime) do
-      {:ok, runtime} -> {:ok, %{state | runtime: runtime}}
-      {:error, reason, _runtime} -> {:error, reason, state}
-    end
-  end
+  defp ensure_runtime_for_checks(state), do: {:ok, state}
 
   defp ensure_runtime_for_testing(state) do
     runtime = state.runtime

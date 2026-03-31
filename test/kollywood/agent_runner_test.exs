@@ -224,6 +224,7 @@ defmodule Kollywood.AgentRunnerTest do
              :run_started,
              :workspace_ready,
              :session_started,
+             :prompt_captured,
              :turn_started,
              :turn_succeeded,
              :session_stopped,
