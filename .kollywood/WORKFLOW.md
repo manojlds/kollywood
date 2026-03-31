@@ -35,8 +35,6 @@ quality:
     max_cycles: 3
 runtime:
   kind: host
-  command: devenv
-  env: {}
   ports:
     PORT: 4000
   processes:

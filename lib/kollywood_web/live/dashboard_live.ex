@@ -6574,28 +6574,17 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp snapshot_runtime_toggle(snapshot) do
-    command = snapshot |> snapshot_value(["resolved", "runtime", "command"]) |> maybe_string()
-
     process_count =
       case snapshot_value(snapshot, ["resolved", "runtime", "processes"]) do
         processes when is_list(processes) -> length(processes)
         _other -> 0
       end
 
-    cond do
-      process_count > 0 and command ->
-        suffix = if(process_count == 1, do: "", else: "es")
-        "Enabled (#{command}, #{process_count} process#{suffix})"
-
-      process_count > 0 ->
-        suffix = if(process_count == 1, do: "", else: "es")
-        "Enabled (#{process_count} process#{suffix})"
-
-      command ->
-        "Configured (no processes)"
-
-      true ->
-        "Unavailable"
+    if process_count > 0 do
+      suffix = if(process_count == 1, do: "", else: "es")
+      "Enabled (devenv, #{process_count} process#{suffix})"
+    else
+      "Unavailable"
     end
   end
 

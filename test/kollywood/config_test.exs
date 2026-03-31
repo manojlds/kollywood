@@ -265,7 +265,6 @@ defmodule Kollywood.ConfigTest do
     assert config.checks.max_cycles == 1
 
     assert config.runtime.kind == :host
-    assert config.runtime.command == "devenv"
     assert config.runtime.processes == []
     assert config.runtime.env == %{}
     assert config.runtime.ports == %{}
@@ -685,7 +684,6 @@ defmodule Kollywood.ConfigTest do
     content = """
     ---
     runtime:
-      command: /usr/local/bin/devenv
       processes:
         - server
         - worker
@@ -706,7 +704,6 @@ defmodule Kollywood.ConfigTest do
     """
 
     assert {:ok, config, _} = Config.parse(content)
-    assert config.runtime.command == "/usr/local/bin/devenv"
     assert config.runtime.processes == ["server", "worker"]
     assert config.runtime.env == %{"MIX_ENV" => "test"}
     assert config.runtime.ports == %{"PORT" => 4000, "LIVEBOOK_PORT" => 8080}

@@ -538,12 +538,12 @@ defmodule Kollywood.AgentRunnerTest do
     prompt_log: prompt_log
   } do
     fake_devenv_log = Path.join(root, "fake_devenv_checks_only.log")
-    fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    _fake_devenv = write_fake_devenv!(root, fake_devenv_log)
 
     config =
       runner_config(workspace_root, cli_path, prompt_log)
       |> Map.put(:checks, %{required: ["test -d ."], timeout_ms: 10_000, fail_fast: true})
-      |> Map.put(:runtime, full_stack_runtime(:checks_only, fake_devenv, fake_devenv_log))
+      |> Map.put(:runtime, full_stack_runtime(:checks_only, fake_devenv_log))
 
     template = "Work on {{ issue.identifier }}"
 
@@ -566,7 +566,7 @@ defmodule Kollywood.AgentRunnerTest do
     prompt_log: prompt_log
   } do
     fake_devenv_log = Path.join(root, "fake_devenv_full_stack.log")
-    fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    _fake_devenv = write_fake_devenv!(root, fake_devenv_log)
 
     config =
       runner_config(workspace_root, cli_path, prompt_log)
@@ -577,7 +577,7 @@ defmodule Kollywood.AgentRunnerTest do
         timeout_ms: 10_000,
         fail_fast: true
       })
-      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log))
+      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_devenv_log))
 
     template = "Work on {{ issue.identifier }}"
 
@@ -605,11 +605,11 @@ defmodule Kollywood.AgentRunnerTest do
     prompt_log: prompt_log
   } do
     fake_devenv_log = Path.join(root, "fake_devenv_fail.log")
-    fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    _fake_devenv = write_fake_devenv!(root, fake_devenv_log)
 
     config =
       runner_config(workspace_root, cli_path, prompt_log)
-      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log))
+      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_devenv_log))
       |> Map.put(:testing, %{
         enabled: true,
         max_cycles: 1,
@@ -644,7 +644,7 @@ defmodule Kollywood.AgentRunnerTest do
     assert :testing_failed in event_types
 
     log = File.read!(fake_devenv_log)
-    assert log =~ "processes up --detach --strict-ports server"
+    assert log =~ "processes up --strict-ports server"
     assert log =~ "processes down"
   end
 
@@ -656,11 +656,11 @@ defmodule Kollywood.AgentRunnerTest do
     prompt_log: prompt_log
   } do
     fake_devenv_log = Path.join(root, "fake_devenv_stop_retry.log")
-    fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    _fake_devenv = write_fake_devenv!(root, fake_devenv_log)
     down_fail_once_file = Path.join(root, "devenv_down_fail_once.marker")
 
     runtime =
-      full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log)
+      full_stack_runtime(:full_stack, fake_devenv_log)
       |> put_in([:env, "FAKE_DEVENV_FAIL_DOWN_ONCE_FILE"], down_fail_once_file)
 
     config =
@@ -712,10 +712,10 @@ defmodule Kollywood.AgentRunnerTest do
     prompt_log: prompt_log
   } do
     fake_devenv_log = Path.join(root, "fake_devenv_stop_already_stopped.log")
-    fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    _fake_devenv = write_fake_devenv!(root, fake_devenv_log)
 
     runtime =
-      full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log)
+      full_stack_runtime(:full_stack, fake_devenv_log)
       |> put_in([:env, "FAKE_DEVENV_DOWN_ALREADY_STOPPED"], "1")
 
     config =
@@ -759,10 +759,10 @@ defmodule Kollywood.AgentRunnerTest do
     prompt_log: prompt_log
   } do
     fake_devenv_log = Path.join(root, "fake_devenv_start_fail.log")
-    fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    _fake_devenv = write_fake_devenv!(root, fake_devenv_log)
 
     runtime =
-      full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log)
+      full_stack_runtime(:full_stack, fake_devenv_log)
       |> put_in([:env, "FAKE_DEVENV_FAIL_UP"], "1")
 
     config =
@@ -802,11 +802,11 @@ defmodule Kollywood.AgentRunnerTest do
     assert :runtime_stopped in event_types
 
     log = File.read!(fake_devenv_log)
-    assert log =~ "processes up --detach --strict-ports server"
+    assert log =~ "processes up --strict-ports server"
     assert log =~ "processes down"
   end
 
-  test "runtime start fails when process readiness wait fails", %{
+  test "runtime start fails when devenv process exits immediately", %{
     root: root,
     workspace_root: workspace_root,
     cli_path: cli_path,
@@ -814,11 +814,11 @@ defmodule Kollywood.AgentRunnerTest do
     prompt_log: prompt_log
   } do
     fake_devenv_log = Path.join(root, "fake_devenv_wait_fail.log")
-    fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    _fake_devenv = write_fake_devenv!(root, fake_devenv_log)
 
     runtime =
-      full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log)
-      |> put_in([:env, "FAKE_DEVENV_FAIL_WAIT"], "1")
+      full_stack_runtime(:full_stack, fake_devenv_log)
+      |> put_in([:env, "FAKE_DEVENV_FAIL_UP"], "1")
       |> put_in([:env, "KOLLYWOOD_RUNTIME_SKIP_HEALTHCHECK"], "1")
 
     config =
@@ -848,7 +848,8 @@ defmodule Kollywood.AgentRunnerTest do
                mode: :single_turn
              )
 
-    assert result.error =~ "failed to start runtime processes: processes wait failed"
+    assert result.error =~ "failed to start runtime processes"
+    assert result.error =~ "exited immediately"
 
     event_types = Enum.map(result.events, & &1.type)
     assert :runtime_start_failed in event_types
@@ -856,8 +857,7 @@ defmodule Kollywood.AgentRunnerTest do
     assert :runtime_stopped in event_types
 
     log = File.read!(fake_devenv_log)
-    assert log =~ "processes up --detach --strict-ports server"
-    assert log =~ "processes wait --timeout"
+    assert log =~ "processes up --strict-ports server"
     assert log =~ "processes down"
   end
 
@@ -869,10 +869,10 @@ defmodule Kollywood.AgentRunnerTest do
     prompt_log: prompt_log
   } do
     fake_devenv_log = Path.join(root, "fake_devenv_healthcheck_fail.log")
-    fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    _fake_devenv = write_fake_devenv!(root, fake_devenv_log)
 
     runtime =
-      full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log)
+      full_stack_runtime(:full_stack, fake_devenv_log)
       |> Map.put(:start_timeout_ms, 300)
       |> put_in([:env, "KOLLYWOOD_RUNTIME_SKIP_HEALTHCHECK"], "0")
 
@@ -921,11 +921,11 @@ defmodule Kollywood.AgentRunnerTest do
     prompt_log: prompt_log
   } do
     fake_devenv_log = Path.join(root, "fake_devenv_identity.log")
-    fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    _fake_devenv = write_fake_devenv!(root, fake_devenv_log)
     expected_workspace_path = Path.join(workspace_root, @issue.identifier)
 
     runtime =
-      full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log)
+      full_stack_runtime(:full_stack, fake_devenv_log)
       |> put_in([:env, "KOLLYWOOD_RUNTIME_WORKTREE_KEY"], "tampered-key")
       |> put_in([:env, "KOLLYWOOD_RUNTIME_WORKTREE_PATH"], "/tmp/tampered-path")
 
@@ -974,10 +974,10 @@ defmodule Kollywood.AgentRunnerTest do
     prompt_log: prompt_log
   } do
     fake_devenv_log = Path.join(root, "fake_devenv_offset_exhausted.log")
-    fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    _fake_devenv = write_fake_devenv!(root, fake_devenv_log)
 
     runtime =
-      full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log)
+      full_stack_runtime(:full_stack, fake_devenv_log)
       |> put_in([:port_offset_mod], 1)
 
     config =
@@ -1330,12 +1330,12 @@ defmodule Kollywood.AgentRunnerTest do
     prompt_log: prompt_log
   } do
     fake_devenv_log = Path.join(root, "fake_devenv_testing.log")
-    fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    _fake_devenv = write_fake_devenv!(root, fake_devenv_log)
 
     config =
       runner_config(workspace_root, cli_path, prompt_log)
       |> Map.put(:quality, %{max_cycles: 2})
-      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log))
+      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_devenv_log))
       |> Map.put(:testing, %{
         enabled: true,
         max_cycles: 1,
@@ -1393,7 +1393,7 @@ defmodule Kollywood.AgentRunnerTest do
     prompt_log: prompt_log
   } do
     fake_devenv_log = Path.join(root, "fake_devenv_testing_notes.log")
-    fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    _fake_devenv = write_fake_devenv!(root, fake_devenv_log)
     review_prompt_log = Path.join(root, "review-prompts.log")
     testing_prompt_log = Path.join(root, "testing-prompts.log")
     attempt_dir = Path.join(root, "attempt-testing-notes")
@@ -1408,7 +1408,7 @@ defmodule Kollywood.AgentRunnerTest do
     config =
       runner_config(workspace_root, cli_path, prompt_log)
       |> Map.put(:quality, %{max_cycles: 2})
-      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log))
+      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_devenv_log))
       |> Map.put(:review, %{
         enabled: true,
         max_cycles: 1,
@@ -1473,7 +1473,7 @@ defmodule Kollywood.AgentRunnerTest do
     prompt_log: prompt_log
   } do
     fake_devenv_log = Path.join(root, "fake_devenv_testing_artifacts.log")
-    fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    _fake_devenv = write_fake_devenv!(root, fake_devenv_log)
 
     attempt_dir = Path.join(root, "attempt-testing-artifacts")
     File.mkdir_p!(attempt_dir)
@@ -1488,7 +1488,7 @@ defmodule Kollywood.AgentRunnerTest do
     config =
       runner_config(workspace_root, cli_path, prompt_log)
       |> Map.put(:quality, %{max_cycles: 2})
-      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log))
+      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_devenv_log))
       |> Map.put(:testing, %{
         enabled: true,
         max_cycles: 1,
@@ -1541,13 +1541,13 @@ defmodule Kollywood.AgentRunnerTest do
     prompt_log: prompt_log
   } do
     fake_devenv_log = Path.join(root, "fake_devenv_testing_retry.log")
-    fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    _fake_devenv = write_fake_devenv!(root, fake_devenv_log)
     fail_once_file = Path.join(root, "testing_fail_once.marker")
 
     config =
       runner_config(workspace_root, cli_path, prompt_log)
       |> Map.put(:quality, %{max_cycles: 2})
-      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_devenv, fake_devenv_log))
+      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_devenv_log))
       |> Map.put(:testing, %{
         enabled: true,
         max_cycles: 2,
@@ -2144,7 +2144,7 @@ defmodule Kollywood.AgentRunnerTest do
     }
   end
 
-  defp full_stack_runtime(profile, command, log_path) do
+  defp full_stack_runtime(profile, log_path) do
     processes =
       if profile == :checks_only do
         []
@@ -2154,7 +2154,6 @@ defmodule Kollywood.AgentRunnerTest do
 
     %{
       kind: :host,
-      command: command,
       processes: processes,
       env: %{
         "FAKE_DEVENV_LOG" => log_path,
@@ -2169,7 +2168,10 @@ defmodule Kollywood.AgentRunnerTest do
   end
 
   defp write_fake_devenv!(root, log_path) do
-    path = Path.join(root, "fake_devenv.sh")
+    bin_dir = Path.join(root, "fake_bin")
+    File.mkdir_p!(bin_dir)
+    path = Path.join(bin_dir, "devenv")
+    System.put_env("PATH", bin_dir <> ":" <> System.get_env("PATH", ""))
 
     File.write!(path, """
     #!/usr/bin/env bash
@@ -2198,6 +2200,10 @@ defmodule Kollywood.AgentRunnerTest do
         exit 52
       fi
 
+      # Stay alive as a foreground process manager (like real devenv)
+      trap 'exit 0' TERM INT
+      while true; do sleep 60; done &
+      wait
       exit 0
     fi
 
@@ -2233,6 +2239,6 @@ defmodule Kollywood.AgentRunnerTest do
 
     File.chmod!(path, 0o755)
     File.rm(log_path)
-    path
+    bin_dir
   end
 end
