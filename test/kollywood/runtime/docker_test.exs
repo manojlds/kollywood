@@ -96,8 +96,9 @@ defmodule Kollywood.Runtime.DockerTest do
     end
   end
 
-  @tag :docker_integration
   describe "lifecycle (requires Docker)" do
+    @describetag :docker_integration
+
     setup do
       skip_unless_docker!()
 

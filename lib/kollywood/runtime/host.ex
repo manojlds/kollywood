@@ -343,9 +343,7 @@ defmodule Kollywood.Runtime.Host do
   end
 
   defp systemd_unit_inactive?(unit) do
-    case System.cmd("systemctl", ["--user", "is-active", "#{unit}.scope"],
-           stderr_to_stdout: true
-         ) do
+    case System.cmd("systemctl", ["--user", "is-active", "#{unit}.scope"], stderr_to_stdout: true) do
       {output, _} -> String.trim(output) in ["inactive", "failed", "not-found"]
     end
   rescue
