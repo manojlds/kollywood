@@ -1804,6 +1804,244 @@ defmodule KollywoodWeb.DashboardLiveTest do
     }
   end
 
+  describe "story detail settings tab inline edit" do
+    test "settings tab shows execution overrides read-only by default", %{
+      conn: conn,
+      project: project
+    } do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories/US-001")
+
+      html =
+        view
+        |> element("button[phx-click='set_story_tab'][phx-value-tab='settings']")
+        |> render_click()
+
+      assert html =~ "Execution Overrides"
+      assert html =~ "Edit Overrides"
+      assert html =~ "Agent Kind"
+      assert html =~ "Testing Enabled"
+      assert html =~ "workflow default"
+      refute html =~ ~s(name="overrides[testing_enabled]")
+    end
+
+    test "clicking Edit Overrides enters edit mode with form controls", %{
+      conn: conn,
+      project: project
+    } do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories/US-001")
+
+      view
+      |> element("button[phx-click='set_story_tab'][phx-value-tab='settings']")
+      |> render_click()
+
+      html =
+        view
+        |> element("button[phx-click='toggle_settings_edit']")
+        |> render_click()
+
+      assert html =~ ~s(name="overrides[testing_enabled]")
+      assert html =~ ~s(name="overrides[agent_kind]")
+      assert html =~ ~s(name="overrides[review_max_cycles]")
+      assert html =~ "Save"
+      assert html =~ "Cancel"
+      assert html =~ "Use workflow default"
+      refute html =~ "Edit Overrides"
+    end
+
+    test "cancel exits edit mode back to read-only", %{conn: conn, project: project} do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories/US-001")
+
+      view
+      |> element("button[phx-click='set_story_tab'][phx-value-tab='settings']")
+      |> render_click()
+
+      view
+      |> element("button[phx-click='toggle_settings_edit']")
+      |> render_click()
+
+      assert has_element?(view, "button", "Cancel")
+
+      html =
+        view
+        |> element("button[phx-click='toggle_settings_edit']", "Cancel")
+        |> render_click()
+
+      assert html =~ "Edit Overrides"
+      refute html =~ ~s(name="overrides[testing_enabled]")
+    end
+
+    test "switching tabs resets edit mode", %{conn: conn, project: project} do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories/US-001")
+
+      view
+      |> element("button[phx-click='set_story_tab'][phx-value-tab='settings']")
+      |> render_click()
+
+      view
+      |> element("button[phx-click='toggle_settings_edit']")
+      |> render_click()
+
+      assert has_element?(view, "form[phx-submit='save_story_overrides']")
+
+      view
+      |> element("button[phx-click='set_story_tab'][phx-value-tab='details']")
+      |> render_click()
+
+      html =
+        view
+        |> element("button[phx-click='set_story_tab'][phx-value-tab='settings']")
+        |> render_click()
+
+      assert html =~ "Edit Overrides"
+      refute html =~ ~s(name="overrides[testing_enabled]")
+    end
+
+    test "saving overrides persists settings.execution and shows in read-only view", %{
+      conn: conn,
+      project: project
+    } do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories/US-001")
+
+      settings_html =
+        view
+        |> element("button[phx-click='set_story_tab'][phx-value-tab='settings']")
+        |> render_click()
+
+      assert settings_html =~ "Execution Overrides"
+
+      edit_html =
+        view
+        |> element("button[phx-click='toggle_settings_edit']")
+        |> render_click()
+
+      assert edit_html =~ ~s(name="overrides[testing_enabled]")
+
+      html =
+        view
+        |> element("form[phx-submit='save_story_overrides']")
+        |> render_submit(%{
+          overrides: %{
+            "testing_enabled" => "true",
+            "agent_kind" => "claude",
+            "review_max_cycles" => "3",
+            "review_agent_kind" => "",
+            "testing_agent_kind" => "",
+            "testing_max_cycles" => "",
+            "preview_enabled" => ""
+          }
+        })
+
+      assert html =~ "overridden"
+      assert html =~ "Edit Overrides"
+
+      {:ok, content} = File.read(Projects.tracker_path(project))
+      {:ok, data} = Jason.decode(content)
+      story = Enum.find(data["userStories"], &(&1["id"] == "US-001"))
+      assert story["settings"]["execution"]["testing_enabled"] == true
+      assert story["settings"]["execution"]["agent_kind"] == "claude"
+      assert story["settings"]["execution"]["review_max_cycles"] == 3
+      refute Map.has_key?(story["settings"]["execution"], "review_agent_kind")
+      refute Map.has_key?(story["settings"]["execution"], "preview_enabled")
+    end
+
+    test "edit form is prefilled with existing override values", %{
+      conn: conn,
+      project: project
+    } do
+      stories = [
+        %{
+          "id" => "US-PREFILL",
+          "title" => "Prefill Test",
+          "status" => "open",
+          "settings" => %{
+            "execution" => %{
+              "testing_enabled" => true,
+              "agent_kind" => "claude",
+              "review_max_cycles" => 5
+            }
+          }
+        }
+      ]
+
+      File.write!(
+        Projects.tracker_path(project),
+        Jason.encode!(%{"userStories" => stories}, pretty: true)
+      )
+
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories/US-PREFILL")
+
+      view
+      |> element("button[phx-click='set_story_tab'][phx-value-tab='settings']")
+      |> render_click()
+
+      html =
+        view
+        |> element("button[phx-click='toggle_settings_edit']")
+        |> render_click()
+
+      assert html =~ ~s(value="true" selected)
+      assert html =~ ~s(value="claude" selected)
+      assert html =~ ~s(value="5")
+    end
+
+    test "clearing overrides removes settings.execution keys", %{
+      conn: conn,
+      project: project
+    } do
+      stories = [
+        %{
+          "id" => "US-CLEAR",
+          "title" => "Clear Test",
+          "status" => "open",
+          "settings" => %{
+            "execution" => %{
+              "testing_enabled" => true,
+              "agent_kind" => "claude"
+            }
+          }
+        }
+      ]
+
+      File.write!(
+        Projects.tracker_path(project),
+        Jason.encode!(%{"userStories" => stories}, pretty: true)
+      )
+
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories/US-CLEAR")
+
+      view
+      |> element("button[phx-click='set_story_tab'][phx-value-tab='settings']")
+      |> render_click()
+
+      view
+      |> element("button[phx-click='toggle_settings_edit']")
+      |> render_click()
+
+      html =
+        view
+        |> element("form[phx-submit='save_story_overrides']")
+        |> render_submit(%{
+          overrides: %{
+            "testing_enabled" => "",
+            "agent_kind" => "",
+            "review_agent_kind" => "",
+            "review_max_cycles" => "",
+            "testing_agent_kind" => "",
+            "testing_max_cycles" => "",
+            "preview_enabled" => ""
+          }
+        })
+
+      assert html =~ "Edit Overrides"
+
+      {:ok, content} = File.read(Projects.tracker_path(project))
+      {:ok, data} = Jason.decode(content)
+      story = Enum.find(data["userStories"], &(&1["id"] == "US-CLEAR"))
+      execution = get_in(story, ["settings", "execution"]) || %{}
+      assert execution == %{}
+    end
+  end
+
   defp append_story!(project, story) do
     tracker_path = Projects.tracker_path(project)
     {:ok, content} = File.read(tracker_path)
