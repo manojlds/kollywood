@@ -50,6 +50,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:active_prompt_tab, "agent")
       |> assign(:active_log_tab, "agent")
       |> assign(:artifact_preview, nil)
+      |> assign(:preview_session, nil)
       |> assign(:log_poll_timer, nil)
       |> assign(:story_form_mode, nil)
       |> assign(:story_form_values, %{})
@@ -164,6 +165,65 @@ defmodule KollywoodWeb.DashboardLive do
   def handle_event("set_prompt_tab", %{"tab" => tab}, socket) do
     next_tab = if tab in ["agent", "review", "testing"], do: tab, else: "agent"
     {:noreply, assign(socket, :active_prompt_tab, next_tab)}
+  end
+
+  def handle_event("start_preview", %{"story_id" => story_id}, socket) do
+    project = socket.assigns.current_project
+
+    socket =
+      case start_preview_for_story(project, story_id) do
+        {:ok, session} ->
+          socket
+          |> assign(:preview_session, session)
+          |> put_flash(:info, "Preview started.")
+
+        {:error, reason} ->
+          put_flash(socket, :error, "Preview failed: #{reason}")
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("stop_preview", %{"story_id" => story_id}, socket) do
+    project = socket.assigns.current_project
+
+    socket =
+      if project do
+        case Kollywood.PreviewSessionManager.stop_preview(project.slug, story_id) do
+          :ok ->
+            socket
+            |> assign(:preview_session, nil)
+            |> put_flash(:info, "Preview stopped.")
+
+          {:error, reason} ->
+            put_flash(socket, :error, "Stop preview failed: #{reason}")
+        end
+      else
+        put_flash(socket, :error, "No project selected.")
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("merge_story", %{"story_id" => story_id}, socket) do
+    project = socket.assigns.current_project
+
+    socket =
+      case merge_pending_story(project, story_id) do
+        :ok ->
+          Kollywood.PreviewSessionManager.stop_if_active(project.slug, story_id)
+
+          socket
+          |> assign(:preview_session, nil)
+          |> load_project_data(project)
+          |> sync_story_detail_selection()
+          |> put_flash(:info, "Story merged successfully.")
+
+        {:error, reason} ->
+          put_flash(socket, :error, "Merge failed: #{reason}")
+      end
+
+    {:noreply, socket}
   end
 
   def handle_event("open_artifact_preview", %{"url" => url, "type" => type} = params, socket) do
@@ -287,6 +347,7 @@ defmodule KollywoodWeb.DashboardLive do
     project = socket.assigns.current_project
 
     stop_orchestrator_issue(id)
+    if project, do: Kollywood.PreviewSessionManager.stop_if_active(project.slug, id)
 
     socket =
       case local_tracker_path(project) do
@@ -296,6 +357,7 @@ defmodule KollywoodWeb.DashboardLive do
               cleanup_worktree(project, id)
 
               socket
+              |> assign(:preview_session, nil)
               |> load_project_data(project)
               |> sync_story_detail_selection()
               |> put_flash(:info, "Work stopped and story moved to Draft.")
@@ -401,6 +463,7 @@ defmodule KollywoodWeb.DashboardLive do
 
   def handle_event("delete_story", %{"id" => story_id}, socket) do
     project = socket.assigns.current_project
+    if project, do: Kollywood.PreviewSessionManager.stop_if_active(project.slug, story_id)
 
     socket =
       case local_tracker_path(project) do
@@ -410,6 +473,7 @@ defmodule KollywoodWeb.DashboardLive do
               cleanup_worktree(project, story_id)
 
               socket
+              |> assign(:preview_session, nil)
               |> clear_story_form_if_editing(story_id)
               |> load_project_data(project)
               |> sync_story_detail_selection()
@@ -712,6 +776,7 @@ defmodule KollywoodWeb.DashboardLive do
                   stories_view={@stories_view}
                   story_attempts={Enum.filter(@run_attempts, &(&1.story_id == @run_detail_story_id))}
                   selected_attempt={@run_detail_attempt}
+                  preview_session={@preview_session}
                 />
               <% :run_detail -> %>
                 <.run_detail_section
@@ -2605,6 +2670,112 @@ defmodule KollywoodWeb.DashboardLive do
     """
   end
 
+  attr :story_id, :string, required: true
+  attr :project, :map, required: true
+  attr :preview_session, :map, default: nil
+
+  defp preview_controls_panel(assigns) do
+    session = assigns.preview_session
+    has_session = is_map(session) and session.status in [:running, :starting]
+
+    assigns =
+      assigns
+      |> assign(:has_session, has_session)
+      |> assign(:session_status, if(has_session, do: session.status, else: nil))
+      |> assign(:preview_url, if(has_session, do: session.preview_url, else: nil))
+      |> assign(:expires_at, if(has_session, do: session.expires_at, else: nil))
+      |> assign(:resolved_ports, if(has_session, do: session.resolved_ports, else: %{}))
+
+    ~H"""
+    <div class="rounded-xl border border-primary/30 bg-primary/5 p-4 space-y-3">
+      <div class="flex items-center justify-between">
+        <h3 class="text-sm font-semibold text-primary flex items-center gap-2">
+          <.icon name="hero-eye" class="size-4" /> Preview Environment
+        </h3>
+        <span class="badge badge-sm badge-warning">Pending Merge</span>
+      </div>
+
+      <%= if @has_session do %>
+        <div class="space-y-2">
+          <div class="flex items-center gap-2">
+            <span class="relative flex h-2 w-2">
+              <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75">
+              </span>
+              <span class="relative inline-flex rounded-full h-2 w-2 bg-success"></span>
+            </span>
+            <span class="text-sm font-medium text-success">Preview running</span>
+          </div>
+
+          <%= if @preview_url do %>
+            <a
+              href={@preview_url}
+              target="_blank"
+              rel="noopener"
+              class="btn btn-primary btn-sm gap-2"
+            >
+              <.icon name="hero-arrow-top-right-on-square" class="size-4" /> Open Preview
+            </a>
+          <% end %>
+
+          <%= if map_size(@resolved_ports) > 0 do %>
+            <div class="text-xs text-base-content/60">
+              Ports:
+              <%= for {name, port} <- @resolved_ports do %>
+                <span class="badge badge-ghost badge-xs mx-0.5">{name}={port}</span>
+              <% end %>
+            </div>
+          <% end %>
+
+          <%= if @expires_at do %>
+            <p class="text-xs text-base-content/50">
+              Expires: {Calendar.strftime(@expires_at, "%Y-%m-%d %H:%M UTC")}
+            </p>
+          <% end %>
+
+          <div class="flex gap-2 pt-1">
+            <button
+              phx-click="stop_preview"
+              phx-value-story_id={@story_id}
+              class="btn btn-outline btn-warning btn-xs"
+            >
+              Stop Preview
+            </button>
+            <button
+              phx-click="merge_story"
+              phx-value-story_id={@story_id}
+              onclick={"return confirm('Merge #{@story_id}? This will stop the preview and merge the branch.')"}
+              class="btn btn-success btn-xs"
+            >
+              Approve & Merge
+            </button>
+          </div>
+        </div>
+      <% else %>
+        <p class="text-sm text-base-content/70">
+          Start a preview to validate changes before merging.
+        </p>
+        <div class="flex gap-2">
+          <button
+            phx-click="start_preview"
+            phx-value-story_id={@story_id}
+            class="btn btn-primary btn-sm gap-2"
+          >
+            <.icon name="hero-play" class="size-4" /> Start Preview
+          </button>
+          <button
+            phx-click="merge_story"
+            phx-value-story_id={@story_id}
+            onclick={"return confirm('Merge #{@story_id} without previewing?')"}
+            class="btn btn-outline btn-success btn-sm"
+          >
+            Merge Without Preview
+          </button>
+        </div>
+      <% end %>
+    </div>
+    """
+  end
+
   attr :prompts, :map, default: %{}
   attr :active_prompt_tab, :string, default: "agent"
 
@@ -3227,6 +3398,7 @@ defmodule KollywoodWeb.DashboardLive do
   attr :stories_view, :string, default: @default_stories_view
   attr :story_attempts, :list, default: []
   attr :selected_attempt, :string, default: nil
+  attr :preview_session, :map, default: nil
 
   defp story_detail_section(assigns) do
     snapshot =
@@ -3484,6 +3656,14 @@ defmodule KollywoodWeb.DashboardLive do
                   {@story["lastError"]}
                 </p>
               </div>
+            <% end %>
+
+            <%= if normalize_status(@story["status"]) == "pending_merge" do %>
+              <.preview_controls_panel
+                story_id={@story["id"] || @story_id}
+                project={@project}
+                preview_session={@preview_session}
+              />
             <% end %>
           </div>
         <% else %>
@@ -4731,6 +4911,110 @@ defmodule KollywoodWeb.DashboardLive do
     end
   end
 
+  defp start_preview_for_story(project, story_id) do
+    alias Kollywood.PreviewSessionManager
+
+    with true <- is_map(project) or {:error, "no project selected"},
+         {:ok, config, _prompt_template} <- load_project_config(project),
+         {:ok, workspace_path} <- find_story_workspace_path(project, story_id) do
+      workspace_key =
+        story_id
+        |> to_string()
+        |> String.replace(~r/[^a-zA-Z0-9_-]/, "-")
+        |> String.trim("-")
+
+      PreviewSessionManager.start_preview(project.slug, story_id,
+        config: config,
+        workspace_path: workspace_path,
+        workspace_key: workspace_key
+      )
+    else
+      {:error, reason} -> {:error, reason}
+      false -> {:error, "no project selected"}
+    end
+  end
+
+  defp merge_pending_story(project, story_id) do
+    alias Kollywood.AgentRunner
+
+    with true <- is_map(project) or {:error, "no project selected"},
+         {:ok, config, _prompt_template} <- load_project_config(project),
+         {:ok, workspace_path} <- find_story_workspace_path(project, story_id),
+         {:ok, tracker_path} <- local_tracker_path(project),
+         {:ok, stories} <- PrdJson.list_stories(tracker_path),
+         story when is_map(story) <- Enum.find(stories, &(&1["id"] == story_id)) do
+      issue = %{id: story_id, identifier: story_id, title: story["title"] || story_id}
+
+      branch_prefix =
+        get_in(config, [Access.key(:workspace, %{}), Access.key(:branch_prefix, "kollywood/")])
+
+      workspace = %Kollywood.Workspace{
+        path: workspace_path,
+        key: story_id,
+        root: Path.dirname(workspace_path),
+        strategy: :worktree,
+        branch: "#{branch_prefix}#{story_id}"
+      }
+
+      AgentRunner.merge_pending_story(config, issue, workspace)
+    else
+      nil -> {:error, "story not found"}
+      {:error, reason} -> {:error, reason}
+      false -> {:error, "no project selected"}
+    end
+  end
+
+  defp load_project_config(project) do
+    path = Projects.workflow_path(project)
+
+    cond do
+      not is_binary(path) ->
+        {:error, "workflow path unavailable"}
+
+      not File.exists?(path) ->
+        {:error, "workflow file not found"}
+
+      true ->
+        case File.read(path) do
+          {:ok, content} ->
+            case Kollywood.Config.parse(content) do
+              {:ok, config, prompt_template} ->
+                config = %{config | project_provider: normalize_provider(project)}
+                {:ok, config, prompt_template}
+
+              {:error, reason} ->
+                {:error, reason}
+            end
+
+          {:error, reason} ->
+            {:error, "failed to read workflow: #{inspect(reason)}"}
+        end
+    end
+  end
+
+  defp find_story_workspace_path(project, story_id) do
+    workspace_root = Kollywood.ServiceConfig.project_workspace_root(project.slug)
+
+    workspace_key =
+      story_id |> to_string() |> String.replace(~r/[^a-zA-Z0-9_-]/, "-") |> String.trim("-")
+
+    path = Path.join(workspace_root, workspace_key)
+
+    if File.dir?(path) do
+      {:ok, path}
+    else
+      {:error, "workspace not found at #{path}"}
+    end
+  end
+
+  defp normalize_provider(%{provider: provider}) when provider in [:github, :gitlab, :local],
+    do: provider
+
+  defp normalize_provider(%{provider: "github"}), do: :github
+  defp normalize_provider(%{provider: "gitlab"}), do: :gitlab
+  defp normalize_provider(%{provider: "local"}), do: :local
+  defp normalize_provider(_project), do: :local
+
   defp default_story_form_values(stories) when is_list(stories) do
     %{
       "id" => suggested_story_id(stories),
@@ -4922,8 +5206,19 @@ defmodule KollywoodWeb.DashboardLive do
   defp sync_story_detail_selection(socket) do
     if socket.assigns[:live_action] == :story_detail do
       story_id = socket.assigns[:run_detail_story_id]
+      project = socket.assigns[:current_project]
       story = Enum.find(socket.assigns.stories, &(&1["id"] == story_id))
-      assign(socket, :selected_story, story)
+
+      preview_session =
+        if project && story_id do
+          Kollywood.PreviewSessionManager.get_session(project.slug, story_id)
+        else
+          nil
+        end
+
+      socket
+      |> assign(:selected_story, story)
+      |> assign(:preview_session, preview_session)
     else
       socket
     end
@@ -4944,6 +5239,10 @@ defmodule KollywoodWeb.DashboardLive do
 
   defp update_story_status(socket, id, status, success_message \\ "Story status updated.") do
     project = socket.assigns.current_project
+
+    if project && status in ["cancelled", "draft", "open", "done", "failed"] do
+      Kollywood.PreviewSessionManager.stop_if_active(project.slug, id)
+    end
 
     case local_tracker_path(project) do
       {:ok, tracker_path} ->

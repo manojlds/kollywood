@@ -4030,6 +4030,20 @@ defmodule Kollywood.Orchestrator do
 
   defp monotonic_now_ms, do: System.monotonic_time(:millisecond)
 
+  defp cleanup_preview_for_issue(config, issue_id) when is_binary(issue_id) do
+    project_slug =
+      config
+      |> get_in([Access.key(:tracker, %{}), Access.key(:project_slug)])
+      |> optional_trimmed_string()
+      |> Kernel.||("default")
+
+    Kollywood.PreviewSessionManager.stop_if_active(project_slug, issue_id)
+  rescue
+    _ -> :ok
+  end
+
+  defp cleanup_preview_for_issue(_config, _issue_id), do: :ok
+
   defp maybe_cleanup_terminal_workspace(state, run_entry, config) do
     issue_id = run_entry_issue_id(run_entry)
     identifier = run_entry_identifier(run_entry)
@@ -4037,6 +4051,8 @@ defmodule Kollywood.Orchestrator do
   end
 
   defp cleanup_workspace_for_terminal_issue(state, config, issue_id, identifier) do
+    cleanup_preview_for_issue(config, issue_id)
+
     if non_empty_string?(identifier) do
       hooks = Map.get(config, :hooks, %{})
 

@@ -212,7 +212,7 @@ defmodule Kollywood.AgentRunner do
             {:error, reason, pipeline_state}
         end
 
-      finalize_run_with_runtime(outcome)
+      finalize_run_with_runtime(outcome, config)
     else
       {:error, reason} ->
         result = %Result{
@@ -313,6 +313,34 @@ defmodule Kollywood.AgentRunner do
     end
   end
 
+  @doc """
+  Merges a pending_merge story's branch into base and marks it merged.
+
+  Used for local provider stories that paused at pending_merge (because
+  preview is enabled) and the operator now approves the merge.
+  """
+  @spec merge_pending_story(Config.t(), map(), Workspace.t()) :: :ok | {:error, String.t()}
+  def merge_pending_story(config, issue, workspace) do
+    base_branch = get_in(config, [Access.key(:git, %{}), Access.key(:base_branch)]) || "main"
+    issue_id = Map.get(issue, :id) || Map.get(issue, "id")
+
+    case Workspace.merge_branch_to_main(workspace, base_branch) do
+      :ok ->
+        tracker = tracker_module(config)
+
+        case tracker.mark_merged(config, issue_id, %{
+               branch: workspace.branch,
+               base_branch: base_branch
+             }) do
+          :ok -> :ok
+          {:error, reason} -> {:error, "merged but failed to update tracker: #{reason}"}
+        end
+
+      {:error, reason} ->
+        {:error, "merge failed: #{reason}"}
+    end
+  end
+
   defp resolve_retry_workspace(%Workspace{} = workspace), do: {:ok, workspace}
   defp resolve_retry_workspace(_workspace), do: {:error, "workspace is required for step retries"}
 
@@ -364,24 +392,37 @@ defmodule Kollywood.AgentRunner do
               {:error, combined_reason, stopped_state}
           end
 
-        finalize_run_with_runtime(outcome)
+        finalize_run_with_runtime(outcome, config)
 
       {:error, reason} ->
         fail(state, "Failed to start agent session: #{reason}")
     end
   end
 
-  defp finalize_run_with_runtime({:ok, status, state}) do
-    case maybe_stop_runtime(state) do
-      {:ok, stopped_state} ->
-        succeed(stopped_state, status)
+  defp finalize_run_with_runtime({:ok, status, state}, config) do
+    if should_handoff_to_preview?(state, config) do
+      case handoff_runtime_to_preview(state, config) do
+        {:ok, handoff_state} ->
+          succeed(handoff_state, status)
 
-      {:error, reason, stopped_state} ->
-        fail(stopped_state, reason)
+        {:error, _reason} ->
+          case maybe_stop_runtime(state) do
+            {:ok, stopped_state} -> succeed(stopped_state, status)
+            {:error, reason, stopped_state} -> fail(stopped_state, reason)
+          end
+      end
+    else
+      case maybe_stop_runtime(state) do
+        {:ok, stopped_state} ->
+          succeed(stopped_state, status)
+
+        {:error, reason, stopped_state} ->
+          fail(stopped_state, reason)
+      end
     end
   end
 
-  defp finalize_run_with_runtime({:error, reason, state}) do
+  defp finalize_run_with_runtime({:error, reason, state}, _config) do
     case maybe_stop_runtime(state) do
       {:ok, stopped_state} ->
         fail(stopped_state, reason)
@@ -765,6 +806,40 @@ defmodule Kollywood.AgentRunner do
   end
 
   defp run_publish_auto_merge_local(state, config, workspace) do
+    if preview_enabled?(config) do
+      run_publish_local_pending_merge(state, config, workspace)
+    else
+      run_publish_local_immediate_merge(state, config, workspace)
+    end
+  end
+
+  defp run_publish_local_pending_merge(state, config, workspace) do
+    with {:ok, pushed_state} <- push_branch(state, workspace) do
+      case tracker_mark_pending_merge(config, pushed_state.issue_id, nil) do
+        :ok ->
+          state =
+            pushed_state
+            |> emit(:publish_pending_merge, %{
+              branch: workspace.branch,
+              reason: "preview enabled — awaiting manual merge"
+            })
+            |> emit(:publish_pr_created, %{branch: workspace.branch, pr_url: nil})
+            |> emit(:publish_succeeded, %{branch: workspace.branch, pr_url: nil})
+
+          {:ok, state}
+
+        {:error, reason} ->
+          {:error, reason,
+           emit(pushed_state, :publish_failed, %{branch: workspace.branch, reason: reason})}
+      end
+    else
+      {:error, reason} ->
+        {:error, reason,
+         emit(state, :publish_failed, %{branch: workspace.branch, reason: reason})}
+    end
+  end
+
+  defp run_publish_local_immediate_merge(state, config, workspace) do
     base_branch = get_in(config, [Access.key(:git, %{}), Access.key(:base_branch)]) || "main"
 
     with {:ok, pushed_state} <- push_branch(state, workspace) do
@@ -2050,6 +2125,75 @@ defmodule Kollywood.AgentRunner do
     config
     |> Map.get(:runtime, %{})
     |> Map.get(:kind, :host)
+  end
+
+  defp preview_enabled?(config) do
+    get_in(config, [Access.key(:preview, %{}), Access.key(:enabled, false)]) == true
+  end
+
+  defp preview_reuse_testing_runtime?(config) do
+    preview_enabled?(config) and
+      get_in(config, [Access.key(:preview, %{}), Access.key(:reuse_testing_runtime, true)]) ==
+        true
+  end
+
+  defp should_handoff_to_preview?(state, config) do
+    preview_reuse_testing_runtime?(config) and
+      runtime_needs_stop?(state.runtime) and
+      run_entered_pending_merge?(state)
+  end
+
+  defp run_entered_pending_merge?(state) do
+    state.events_rev
+    |> Enum.any?(fn event ->
+      type = Map.get(event, :type) || Map.get(event, "type")
+
+      type in [
+        :publish_pr_created,
+        "publish_pr_created",
+        :publish_pending_merge,
+        "publish_pending_merge"
+      ]
+    end)
+  end
+
+  defp handoff_runtime_to_preview(state, config) do
+    alias Kollywood.PreviewSessionManager
+
+    project_slug = tracker_project_slug(config)
+    story_id = state.issue_id
+
+    ttl_minutes =
+      get_in(config, [Access.key(:preview, %{}), Access.key(:ttl_minutes, 120)]) || 120
+
+    state_with_event =
+      emit(state, :preview_runtime_handoff, %{
+        story_id: story_id,
+        project: project_slug,
+        runtime_kind: state.runtime.kind
+      })
+
+    case PreviewSessionManager.handoff_runtime(project_slug, story_id, state.runtime,
+           ttl_minutes: ttl_minutes
+         ) do
+      {:ok, _session} ->
+        runtime = %{
+          state.runtime
+          | offset_lease_name: nil,
+            started?: false,
+            process_state: :handed_off
+        }
+
+        {:ok, Map.put(state_with_event, :runtime, runtime)}
+
+      {:error, reason} ->
+        Logger.warning("Preview handoff failed for #{story_id}: #{reason}")
+        {:error, reason}
+    end
+  end
+
+  defp tracker_project_slug(config) do
+    get_in(config, [Access.key(:tracker, %{}), Access.key(:project_slug)]) || "default"
   end
 
   defp run_review_turn(state, config, prompt, log_files) do
