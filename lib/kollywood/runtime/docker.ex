@@ -560,7 +560,8 @@ defmodule Kollywood.Runtime.Docker do
     builtins = %{
       "KOLLYWOOD_RUNTIME_WORKTREE_KEY" => to_string(workspace_key),
       "KOLLYWOOD_RUNTIME_WORKTREE_PATH" => to_string(workspace_path),
-      "KOLLYWOOD_RUNTIME_PORT_OFFSET" => Integer.to_string(port_offset)
+      "KOLLYWOOD_RUNTIME_PORT_OFFSET" => Integer.to_string(port_offset),
+      "MISE_TRUSTED_CONFIG_PATHS" => @container_workspace
     }
 
     port_env = Map.new(resolved_ports, fn {k, v} -> {k, Integer.to_string(v)} end)
