@@ -13,6 +13,14 @@ defmodule Kollywood.Runtime.Docker do
     3. docker exec    — systemd-run --user --scope devenv processes up
     4. healthcheck    — TCP poll on host ports (same as Host runtime)
     5. stop           — systemctl --user stop <scope> inside container, then docker stop + rm
+
+  ## Smoke / integration tests
+
+  Container lifecycle smoke coverage lives in `test/kollywood/runtime/docker_test.exs`
+  under the `:docker_integration` tag. Those tests need a running Docker daemon and
+  the `kollywood-runtime` image from `priv/docker/runtime/Dockerfile`. Run them with
+  `mix test --include docker_integration` (the tag is excluded by default in
+  `test/test_helper.exs`).
   """
 
   @behaviour Kollywood.Runtime
