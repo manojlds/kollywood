@@ -2515,19 +2515,62 @@ defmodule KollywoodWeb.DashboardLive do
           />
         <% else %>
           <%= if @run_detail_panel_tab == "prompts" do %>
-            <.prompts_section prompts={@run_detail["prompts"] || %{}} active_prompt_tab={@active_prompt_tab} />
+            <.prompts_section
+              prompts={@run_detail["prompts"] || %{}}
+              active_prompt_tab={@active_prompt_tab}
+            />
           <% else %>
-          <%= if @run_detail_panel_tab == "reports" do %>
-            <div class="space-y-4">
+            <%= if @run_detail_panel_tab == "reports" do %>
+              <div class="space-y-4">
+                <div class="flex gap-0 border-b border-base-300">
+                  <%= for {tab, label} <- [{"review", "Review"}, {"testing", "Testing"}] do %>
+                    <button
+                      phx-click="set_reports_tab"
+                      phx-value-tab={tab}
+                      class={[
+                        "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
+                        @reports_tab == tab && "border-primary text-primary",
+                        @reports_tab != tab &&
+                          "border-transparent text-base-content/60 hover:text-base-content"
+                      ]}
+                    >
+                      {label}
+                    </button>
+                  <% end %>
+                </div>
+
+                <%= if @reports_tab == "testing" do %>
+                  <.testing_report_section
+                    report={@run_detail["testing_report"]}
+                    cycles={@run_detail["testing_cycles"]}
+                    cycle_reports={@run_detail["testing_cycle_reports"]}
+                    project_slug={@project.slug}
+                    story_id={@story_id}
+                    attempt={Map.get(@run_detail["metadata"], "attempt")}
+                  />
+                <% else %>
+                  <.review_report_section
+                    report={@run_detail["review_report"]}
+                    cycles={@run_detail["review_cycles"]}
+                    cycle_reports={@run_detail["review_cycle_reports"]}
+                  />
+                <% end %>
+              </div>
+            <% else %>
               <div class="flex gap-0 border-b border-base-300">
-                <%= for {tab, label} <- [{"review", "Review"}, {"testing", "Testing"}] do %>
+                <%= for {tab, label} <- [
+                {"agent", "Agent"},
+                {"review_agent", "Review Agent"},
+                {"testing_agent", "Testing Agent"},
+                {"worker", "Worker"}
+              ] do %>
                   <button
-                    phx-click="set_reports_tab"
+                    phx-click="set_log_tab"
                     phx-value-tab={tab}
                     class={[
                       "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
-                      @reports_tab == tab && "border-primary text-primary",
-                      @reports_tab != tab &&
+                      @active_log_tab == tab && "border-primary text-primary",
+                      @active_log_tab != tab &&
                         "border-transparent text-base-content/60 hover:text-base-content"
                     ]}
                   >
@@ -2536,57 +2579,17 @@ defmodule KollywoodWeb.DashboardLive do
                 <% end %>
               </div>
 
-              <%= if @reports_tab == "testing" do %>
-                <.testing_report_section
-                  report={@run_detail["testing_report"]}
-                  cycles={@run_detail["testing_cycles"]}
-                  cycle_reports={@run_detail["testing_cycle_reports"]}
-                  project_slug={@project.slug}
-                  story_id={@story_id}
-                  attempt={Map.get(@run_detail["metadata"], "attempt")}
-                />
+              <%= if @run_detail["active_log_content"] do %>
+                <pre
+                  id="log-output"
+                  phx-hook=".LogScroll"
+                  class="font-mono text-xs leading-relaxed bg-base-300 p-4 rounded-lg overflow-auto max-h-[75vh] whitespace-pre-wrap"
+                ><.ansi_log content={@run_detail["active_log_content"]} /></pre>
               <% else %>
-                <.review_report_section
-                  report={@run_detail["review_report"]}
-                  cycles={@run_detail["review_cycles"]}
-                  cycle_reports={@run_detail["review_cycle_reports"]}
-                />
+                <p class="text-base-content/50 text-sm italic">No output yet.</p>
               <% end %>
-            </div>
-          <% else %>
-            <div class="flex gap-0 border-b border-base-300">
-              <%= for {tab, label} <- [
-                {"agent", "Agent"},
-                {"review_agent", "Review Agent"},
-                {"testing_agent", "Testing Agent"},
-                {"worker", "Worker"}
-              ] do %>
-                <button
-                  phx-click="set_log_tab"
-                  phx-value-tab={tab}
-                  class={[
-                    "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
-                    @active_log_tab == tab && "border-primary text-primary",
-                    @active_log_tab != tab &&
-                      "border-transparent text-base-content/60 hover:text-base-content"
-                  ]}
-                >
-                  {label}
-                </button>
-              <% end %>
-            </div>
-
-            <%= if @run_detail["active_log_content"] do %>
-              <pre
-                id="log-output"
-                phx-hook=".LogScroll"
-                class="font-mono text-xs leading-relaxed bg-base-300 p-4 rounded-lg overflow-auto max-h-[75vh] whitespace-pre-wrap"
-              ><.ansi_log content={@run_detail["active_log_content"]} /></pre>
-            <% else %>
-              <p class="text-base-content/50 text-sm italic">No output yet.</p>
             <% end %>
           <% end %>
-        <% end %>
         <% end %>
       <% else %>
         <p class="text-base-content/50 text-sm italic">No run logs found for this story.</p>
@@ -3547,19 +3550,62 @@ defmodule KollywoodWeb.DashboardLive do
               />
             <% else %>
               <%= if @run_detail_panel_tab == "prompts" do %>
-                <.prompts_section prompts={if(@run_detail, do: @run_detail["prompts"] || %{}, else: %{})} active_prompt_tab={@active_prompt_tab} />
+                <.prompts_section
+                  prompts={if(@run_detail, do: @run_detail["prompts"] || %{}, else: %{})}
+                  active_prompt_tab={@active_prompt_tab}
+                />
               <% else %>
-              <%= if @run_detail_panel_tab == "reports" do %>
-                <div class="space-y-4">
+                <%= if @run_detail_panel_tab == "reports" do %>
+                  <div class="space-y-4">
+                    <div class="flex gap-0 border-b border-base-300">
+                      <%= for {tab, label} <- [{"review", "Review"}, {"testing", "Testing"}] do %>
+                        <button
+                          phx-click="set_reports_tab"
+                          phx-value-tab={tab}
+                          class={[
+                            "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
+                            @reports_tab == tab && "border-primary text-primary",
+                            @reports_tab != tab &&
+                              "border-transparent text-base-content/60 hover:text-base-content"
+                          ]}
+                        >
+                          {label}
+                        </button>
+                      <% end %>
+                    </div>
+
+                    <%= if @reports_tab == "testing" do %>
+                      <.testing_report_section
+                        report={if(@run_detail, do: @run_detail["testing_report"])}
+                        cycles={if(@run_detail, do: @run_detail["testing_cycles"])}
+                        cycle_reports={if(@run_detail, do: @run_detail["testing_cycle_reports"])}
+                        project_slug={@project.slug}
+                        story_id={@story_id}
+                        attempt={if(@run_detail, do: get_in(@run_detail, ["metadata", "attempt"]))}
+                      />
+                    <% else %>
+                      <.review_report_section
+                        report={if(@run_detail, do: @run_detail["review_report"])}
+                        cycles={if(@run_detail, do: @run_detail["review_cycles"])}
+                        cycle_reports={if(@run_detail, do: @run_detail["review_cycle_reports"])}
+                      />
+                    <% end %>
+                  </div>
+                <% else %>
                   <div class="flex gap-0 border-b border-base-300">
-                    <%= for {tab, label} <- [{"review", "Review"}, {"testing", "Testing"}] do %>
+                    <%= for {tab, label} <- [
+                    {"agent", "Agent"},
+                    {"review_agent", "Review Agent"},
+                    {"testing_agent", "Testing Agent"},
+                    {"worker", "Worker"}
+                  ] do %>
                       <button
-                        phx-click="set_reports_tab"
+                        phx-click="set_log_tab"
                         phx-value-tab={tab}
                         class={[
                           "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
-                          @reports_tab == tab && "border-primary text-primary",
-                          @reports_tab != tab &&
+                          @active_log_tab == tab && "border-primary text-primary",
+                          @active_log_tab != tab &&
                             "border-transparent text-base-content/60 hover:text-base-content"
                         ]}
                       >
@@ -3568,56 +3614,16 @@ defmodule KollywoodWeb.DashboardLive do
                     <% end %>
                   </div>
 
-                  <%= if @reports_tab == "testing" do %>
-                    <.testing_report_section
-                      report={if(@run_detail, do: @run_detail["testing_report"])}
-                      cycles={if(@run_detail, do: @run_detail["testing_cycles"])}
-                      cycle_reports={if(@run_detail, do: @run_detail["testing_cycle_reports"])}
-                      project_slug={@project.slug}
-                      story_id={@story_id}
-                      attempt={if(@run_detail, do: get_in(@run_detail, ["metadata", "attempt"]))}
-                    />
+                  <%= if @run_detail && @run_detail["active_log_content"] do %>
+                    <pre
+                      id="log-output"
+                      phx-hook=".LogScroll"
+                      class="font-mono text-xs leading-relaxed bg-base-300 p-4 rounded-lg overflow-auto max-h-[75vh] whitespace-pre-wrap"
+                    ><.ansi_log content={@run_detail["active_log_content"]} /></pre>
                   <% else %>
-                    <.review_report_section
-                      report={if(@run_detail, do: @run_detail["review_report"])}
-                      cycles={if(@run_detail, do: @run_detail["review_cycles"])}
-                      cycle_reports={if(@run_detail, do: @run_detail["review_cycle_reports"])}
-                    />
+                    <p class="text-base-content/50 text-sm italic">No output yet.</p>
                   <% end %>
-                </div>
-              <% else %>
-                <div class="flex gap-0 border-b border-base-300">
-                  <%= for {tab, label} <- [
-                    {"agent", "Agent"},
-                    {"review_agent", "Review Agent"},
-                    {"testing_agent", "Testing Agent"},
-                    {"worker", "Worker"}
-                  ] do %>
-                    <button
-                      phx-click="set_log_tab"
-                      phx-value-tab={tab}
-                      class={[
-                        "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
-                        @active_log_tab == tab && "border-primary text-primary",
-                        @active_log_tab != tab &&
-                          "border-transparent text-base-content/60 hover:text-base-content"
-                      ]}
-                    >
-                      {label}
-                    </button>
-                  <% end %>
-                </div>
-
-                <%= if @run_detail && @run_detail["active_log_content"] do %>
-                  <pre
-                    id="log-output"
-                    phx-hook=".LogScroll"
-                    class="font-mono text-xs leading-relaxed bg-base-300 p-4 rounded-lg overflow-auto max-h-[75vh] whitespace-pre-wrap"
-                  ><.ansi_log content={@run_detail["active_log_content"]} /></pre>
-                <% else %>
-                  <p class="text-base-content/50 text-sm italic">No output yet.</p>
                 <% end %>
-              <% end %>
               <% end %>
             <% end %>
           <% else %>

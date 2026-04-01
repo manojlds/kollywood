@@ -232,15 +232,25 @@ defmodule Kollywood.Orchestrator.RunPhase do
   @spec from_status(String.t() | atom() | nil, t() | nil) :: t()
   def from_status(status, last_phase \\ nil) do
     case normalize_status(status) do
-      "finished" -> %{kind: "finished", label: "Run finished"}
-      "ok" -> %{kind: "finished", label: "Run finished"}
+      "finished" ->
+        %{kind: "finished", label: "Run finished"}
+
+      "ok" ->
+        %{kind: "finished", label: "Run finished"}
+
       s when s in ["failed", "error"] ->
         if is_map(last_phase) and last_phase[:kind] == "failed",
           do: last_phase,
           else: %{kind: "failed", label: "Run failed"}
-      "stopped" -> %{kind: "failed", label: "Run stopped"}
-      "running" -> last_phase || %{kind: "unknown", label: "Run in progress"}
-      _other -> last_phase || unknown()
+
+      "stopped" ->
+        %{kind: "failed", label: "Run stopped"}
+
+      "running" ->
+        last_phase || %{kind: "unknown", label: "Run in progress"}
+
+      _other ->
+        last_phase || unknown()
     end
   end
 
