@@ -1,18 +1,17 @@
 defmodule Kollywood.Runtime.Docker do
   @moduledoc """
-  Docker runtime — runs processes inside a container with systemd + devenv.
+  Docker runtime — runs processes inside a container with mise + pitchfork.
 
-  The container uses the kollywood-runtime image (Ubuntu + systemd + Nix + devenv)
+  The container uses the kollywood-runtime image (Ubuntu + mise + pitchfork)
   with `--network host` so the port offset mechanism works identically to the
-  Host runtime. Inside the container, `systemd-run --user --scope` wraps devenv
-  for cgroup-based process tree management.
+  Host runtime. Inside the container, pitchfork manages daemon lifecycles.
 
   Lifecycle:
     1. docker create  — container with workspace bind-mount, host networking, env
-    2. docker start   — systemd boots as PID 1
-    3. docker exec    — systemd-run --user --scope devenv processes up
+    2. docker start   — tini boots as PID 1
+    3. docker exec    — pitchfork start <daemons>
     4. healthcheck    — TCP poll on host ports (same as Host runtime)
-    5. stop           — systemctl --user stop <scope> inside container, then docker stop + rm
+    5. stop           — pitchfork stop inside container, then docker stop + rm
 
   ## Smoke / integration tests
 
@@ -31,8 +30,8 @@ defmodule Kollywood.Runtime.Docker do
 
   @default_image "kollywood-runtime:latest"
   @container_workspace "/workspace"
-  @systemd_ready_poll_ms 500
-  @systemd_ready_timeout_ms 30_000
+  @container_ready_poll_ms 500
+  @container_ready_timeout_ms 30_000
   @healthcheck_poll_interval_ms 250
   @healthcheck_connect_timeout_ms 250
   @healthcheck_skip_env "KOLLYWOOD_RUNTIME_SKIP_HEALTHCHECK"
@@ -53,8 +52,6 @@ defmodule Kollywood.Runtime.Docker do
       image: Map.get(runtime_config, :image) || @default_image,
       container_id: nil,
       container_name: nil,
-      systemd_unit: nil,
-      devenv_exec_pid: nil,
       processes: [],
       env: %{},
       user_env: %{},
@@ -112,8 +109,8 @@ defmodule Kollywood.Runtime.Docker do
 
   def start(state) do
     with {:ok, state} <- ensure_exec_ready(state),
-         {:ok, state} <- await_systemd_ready(state),
-         {:ok, state} <- start_devenv_in_container(state) do
+         {:ok, state} <- await_container_ready(state),
+         {:ok, state} <- start_pitchfork_in_container(state) do
       {:ok, %{state | started?: true, process_state: :running}}
     else
       {:error, reason, failed_state} ->
@@ -131,7 +128,7 @@ defmodule Kollywood.Runtime.Docker do
   @impl true
   def stop(state) do
     if stop_required?(state) do
-      stop_devenv_in_container(state)
+      stop_pitchfork_in_container(state)
       cleanup_container(state)
 
       {:ok,
@@ -140,9 +137,7 @@ defmodule Kollywood.Runtime.Docker do
          | started?: false,
            process_state: :stopped,
            container_id: nil,
-           container_name: nil,
-           systemd_unit: nil,
-           devenv_exec_pid: nil
+           container_name: nil
        }
        |> release()}
     else
@@ -219,15 +214,9 @@ defmodule Kollywood.Runtime.Docker do
         name,
         "--network",
         "host",
+        "--init",
         "--tmpfs",
         "/tmp",
-        "--tmpfs",
-        "/run",
-        "--tmpfs",
-        "/run/lock",
-        "--cgroupns=host",
-        "-v",
-        "/sys/fs/cgroup:/sys/fs/cgroup:rw",
         "-v",
         "#{state.workspace_path}:#{@container_workspace}:rw"
       ] ++
@@ -253,41 +242,39 @@ defmodule Kollywood.Runtime.Docker do
     end
   end
 
-  defp await_systemd_ready(state) do
-    deadline = System.monotonic_time(:millisecond) + @systemd_ready_timeout_ms
-    poll_systemd_ready(state, deadline)
+  defp await_container_ready(state) do
+    deadline = System.monotonic_time(:millisecond) + @container_ready_timeout_ms
+    poll_container_ready(state, deadline)
   end
 
-  defp poll_systemd_ready(state, deadline) do
+  defp poll_container_ready(state, deadline) do
     if System.monotonic_time(:millisecond) >= deadline do
       {:error,
-       "systemd inside container did not become ready within #{@systemd_ready_timeout_ms}ms",
-       state}
+       "container did not become ready within #{@container_ready_timeout_ms}ms", state}
     else
-      case System.cmd("docker", ["exec", state.container_id, "systemctl", "is-system-running"],
+      case System.cmd(
+             "docker",
+             ["exec", "-u", @container_user, state.container_id, "pitchfork", "--version"],
              stderr_to_stdout: true
            ) do
-        {output, _} ->
-          status = String.trim(output)
+        {_output, 0} ->
+          {:ok, state}
 
-          if status in ["running", "degraded"] do
-            {:ok, state}
-          else
-            Process.sleep(@systemd_ready_poll_ms)
-            poll_systemd_ready(state, deadline)
-          end
+        _ ->
+          Process.sleep(@container_ready_poll_ms)
+          poll_container_ready(state, deadline)
       end
     end
   rescue
     _ ->
-      Process.sleep(@systemd_ready_poll_ms)
-      poll_systemd_ready(state, deadline)
+      Process.sleep(@container_ready_poll_ms)
+      poll_container_ready(state, deadline)
   end
 
-  defp start_devenv_in_container(state) do
-    unit = systemd_unit_name(state.workspace_key)
+  defp start_pitchfork_in_container(state) do
+    write_pitchfork_local_toml_in_container!(state)
 
-    devenv_args = ["processes", "up", "--strict-ports"] ++ state.processes
+    daemon_list = Enum.join(state.processes, " ")
 
     exec_args =
       [
@@ -300,26 +287,75 @@ defmodule Kollywood.Runtime.Docker do
         state.container_id,
         "bash",
         "-lc",
-        "systemd-run --user --scope --unit=#{unit} -- devenv " <>
-          Enum.join(devenv_args, " ")
+        "pitchfork start #{daemon_list}"
       ]
 
     case System.cmd("docker", exec_args, stderr_to_stdout: true) do
       {_output, 0} ->
-        {:ok, %{state | systemd_unit: unit}}
+        {:ok, state}
 
       {output, code} ->
-        {:error, "devenv start inside container failed (exit #{code}): #{String.trim(output)}",
+        {:error,
+         "pitchfork start inside container failed (exit #{code}): #{String.trim(output)}",
          state}
     end
   end
 
-  defp stop_devenv_in_container(%{container_id: nil}), do: :ok
+  defp write_pitchfork_local_toml_in_container!(state) do
+    env_entries =
+      state.env
+      |> Enum.sort()
+      |> Enum.map_join("\\n", fn {k, v} ->
+        escaped = String.replace(v, "\"", "\\\"")
+        "#{k} = \\\"#{escaped}\\\""
+      end)
 
-  defp stop_devenv_in_container(%{container_id: cid, systemd_unit: unit}) when is_binary(unit) do
+    content =
+      state.processes
+      |> Enum.map_join("\\n\\n", fn daemon ->
+        "[daemons.#{daemon}.env]\\n#{env_entries}"
+      end)
+
     System.cmd(
       "docker",
-      ["exec", "-u", @container_user, cid, "systemctl", "--user", "stop", "#{unit}.scope"],
+      [
+        "exec",
+        "-u",
+        @container_user,
+        "-w",
+        @container_workspace,
+        state.container_id,
+        "bash",
+        "-c",
+        "printf '#{content}\\n' > pitchfork.local.toml"
+      ],
+      stderr_to_stdout: true
+    )
+  rescue
+    error ->
+      Logger.warning(
+        "failed to write pitchfork.local.toml in container: #{Exception.message(error)}"
+      )
+  end
+
+  defp stop_pitchfork_in_container(%{container_id: nil}), do: :ok
+
+  defp stop_pitchfork_in_container(%{container_id: cid} = state) do
+    daemon_list = Enum.join(state.processes, " ")
+
+    System.cmd(
+      "docker",
+      [
+        "exec",
+        "-u",
+        @container_user,
+        "-w",
+        @container_workspace,
+        cid,
+        "bash",
+        "-lc",
+        "pitchfork stop #{daemon_list}"
+      ],
       stderr_to_stdout: true
     )
 
@@ -327,8 +363,6 @@ defmodule Kollywood.Runtime.Docker do
   rescue
     _ -> :ok
   end
-
-  defp stop_devenv_in_container(_state), do: :ok
 
   defp cleanup_container(%{container_id: nil}), do: :ok
 
@@ -362,17 +396,6 @@ defmodule Kollywood.Runtime.Docker do
       workspace_key
       |> to_string()
       |> String.replace(~r/[^a-zA-Z0-9_.-]/, "-")
-      |> String.trim("-")
-      |> String.slice(0, 64)
-
-    "kollywood-rt-#{sanitized}"
-  end
-
-  defp systemd_unit_name(workspace_key) do
-    sanitized =
-      workspace_key
-      |> to_string()
-      |> String.replace(~r/[^a-zA-Z0-9_-]/, "-")
       |> String.trim("-")
       |> String.slice(0, 64)
 

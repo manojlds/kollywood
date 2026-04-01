@@ -3,9 +3,12 @@ defmodule Kollywood.Runtime do
   Behaviour and dispatch for runtime environments.
 
   A runtime controls *how* commands (agent turns, quality checks, service
-  processes) are executed.  Today the only implementation is `Host` (run
-  directly on the machine); future implementations (e.g. Docker) plug in by
-  implementing the same callbacks.
+  processes) are executed. Implementations use pitchfork for process
+  management and mise for tool/environment activation.
+
+  Available runtimes:
+  - `Host` — runs pitchfork directly on the machine
+  - `Docker` — runs pitchfork inside a container (Ubuntu + mise + pitchfork)
   """
 
   alias Kollywood.Runtime.{Docker, Host}
@@ -57,7 +60,7 @@ defmodule Kollywood.Runtime do
     Map.put(state, :module, mod)
   end
 
-  @doc "Starts runtime processes (e.g. devenv processes up)."
+  @doc "Starts runtime processes (e.g. pitchfork start)."
   @spec start(state()) :: {:ok, state()} | {:error, String.t(), state()}
   def start(%{module: mod} = state), do: mod.start(state)
 

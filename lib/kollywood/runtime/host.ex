@@ -1,10 +1,13 @@
 defmodule Kollywood.Runtime.Host do
   @moduledoc """
-  Host runtime — runs processes via devenv with per-issue isolation.
+  Host runtime — runs processes via pitchfork with per-issue isolation.
 
-  Uses systemd-run on Linux for cgroup-based process tree management
-  (guaranteed cleanup, no orphans). Falls back to setsid + direct
-  process group kill on other platforms (macOS).
+  Pitchfork manages daemon lifecycles (start, stop, ready checks, retries)
+  as a background supervisor. Each workspace directory is a separate
+  pitchfork namespace, providing natural isolation between concurrent runs.
+
+  A `pitchfork.local.toml` is generated in each workspace with resolved
+  environment variables (port offsets, workspace identity) before starting.
   """
 
   @behaviour Kollywood.Runtime
@@ -26,11 +29,7 @@ defmodule Kollywood.Runtime.Host do
       profile: :full_stack,
       process_state: :pending,
       started?: false,
-      process_wrapper: detect_wrapper(),
-      systemd_unit: nil,
-      command: "devenv",
-      manager_port: nil,
-      manager_os_pid: nil,
+      command: "pitchfork",
       processes: [],
       env: %{},
       user_env: %{},
@@ -87,7 +86,7 @@ defmodule Kollywood.Runtime.Host do
 
   def start(state) do
     with {:ok, state} <- ensure_isolation(state) do
-      case start_devenv(state) do
+      case start_pitchfork(state) do
         {:ok, started_state} ->
           {:ok, %{started_state | started?: true, process_state: :running}}
 
@@ -105,22 +104,15 @@ defmodule Kollywood.Runtime.Host do
   @impl true
   def stop(state) do
     if stop_required?(state) do
-      case stop_devenv(state) do
+      case stop_pitchfork(state) do
         :ok ->
           {:ok,
-           %{
-             state
-             | started?: false,
-               process_state: :stopped,
-               manager_port: nil,
-               manager_os_pid: nil,
-               systemd_unit: nil
-           }
+           %{state | started?: false, process_state: :stopped}
            |> release()}
 
         {:error, reason} ->
           {:error, reason,
-           %{state | process_state: :stop_failed, manager_port: nil, manager_os_pid: nil}
+           %{state | process_state: :stop_failed}
            |> release()}
       end
     else
@@ -225,11 +217,8 @@ defmodule Kollywood.Runtime.Host do
 
   # ── Command execution ─────────────────────────────────────────────
 
-  defp devenv(args, workspace_path, env, timeout_ms) do
-    execute("devenv", args, workspace_path, env, timeout_ms)
-  end
-
-  defp execute(command, args, workspace_path, env, timeout_ms) do
+  @doc false
+  def execute(command, args, workspace_path, env, timeout_ms) do
     started_at_ms = System.monotonic_time(:millisecond)
 
     opts =
@@ -260,236 +249,98 @@ defmodule Kollywood.Runtime.Host do
 
   defp elapsed(started_at_ms), do: max(System.monotonic_time(:millisecond) - started_at_ms, 0)
 
-  # ── Devenv lifecycle — dispatch ───────────────────────────────────
+  # ── Pitchfork lifecycle ──────────────────────────────────────────
 
-  defp start_devenv(state) do
-    case state.process_wrapper do
-      :systemd -> start_devenv_systemd(state)
-      :direct -> start_devenv_direct(state)
+  defp start_pitchfork(%{processes: []} = state), do: {:ok, state}
+
+  defp start_pitchfork(state) do
+    write_pitchfork_local_toml!(state)
+    cleanup_stale_daemons(state)
+
+    args = ["start"] ++ state.processes
+
+    case System.cmd("pitchfork", args,
+           cd: state.workspace_path,
+           env: string_env(state.env),
+           stderr_to_stdout: true
+         ) do
+      {_output, 0} ->
+        {:ok, state}
+
+      {output, code} ->
+        {:error, "pitchfork start failed (exit #{code}): #{String.trim(output)}", state}
     end
+  rescue
+    error ->
+      {:error, "pitchfork start error: #{Exception.message(error)}", state}
   end
 
-  defp stop_devenv(state) do
-    case state.process_wrapper do
-      :systemd -> stop_devenv_systemd(state)
-      :direct -> stop_devenv_direct(state)
+  defp stop_pitchfork(%{processes: []}), do: :ok
+
+  defp stop_pitchfork(state) do
+    args = ["stop"] ++ state.processes
+
+    case System.cmd("pitchfork", args,
+           cd: state.workspace_path,
+           stderr_to_stdout: true
+         ) do
+      {_output, code} when code in [0, 1] ->
+        :ok
+
+      {output, code} ->
+        {:error, "pitchfork stop failed (exit #{code}): #{String.trim(output)}"}
     end
+  rescue
+    _ -> :ok
   end
 
   defp stop_required?(state) do
     state.started? == true or state.process_state == :start_failed
   end
 
-  # ── Systemd lifecycle ─────────────────────────────────────────────
+  defp write_pitchfork_local_toml!(state) do
+    path = Path.join(state.workspace_path, "pitchfork.local.toml")
 
-  defp start_devenv_systemd(state) do
-    unit = systemd_unit_name(state.workspace_key)
-    cleanup_stale_systemd_unit(unit)
-
-    devenv_args = ["processes", "up", "--strict-ports"] ++ state.processes
-    args = ["--user", "--scope", "--unit=#{unit}", "--", "devenv"] ++ devenv_args
-
-    env_list =
+    env_entries =
       state.env
-      |> Enum.map(fn {k, v} -> {String.to_charlist(k), String.to_charlist(v)} end)
+      |> Enum.sort()
+      |> Enum.map_join("\n", fn {k, v} -> "#{k} = #{inspect(v)}" end)
 
-    port =
-      Port.open(
-        {:spawn_executable, System.find_executable("systemd-run")},
-        [
-          :binary,
-          :exit_status,
-          :stderr_to_stdout,
-          args: args,
-          cd: state.workspace_path,
-          env: env_list
-        ]
-      )
+    content =
+      state.processes
+      |> Enum.map_join("\n\n", fn daemon ->
+        """
+        [daemons.#{daemon}.env]
+        #{env_entries}\
+        """
+      end)
 
-    os_pid = port_os_pid(port)
-
-    Process.sleep(500)
-
-    case check_port_alive(port) do
-      :alive ->
-        {:ok, %{state | manager_port: port, manager_os_pid: os_pid, systemd_unit: unit}}
-
-      {:exited, exit_status} ->
-        {:error, "systemd-run exited immediately with status #{exit_status}", state}
-    end
-  end
-
-  defp stop_devenv_systemd(state) do
-    unit = state.systemd_unit
-
-    if unit do
-      scope = "#{unit}.scope"
-
-      case System.cmd("systemctl", ["--user", "stop", scope], stderr_to_stdout: true) do
-        {_output, 0} ->
-          close_manager_port(state)
-          :ok
-
-        {_output, _code} ->
-          close_manager_port(state)
-
-          if systemd_unit_inactive?(unit) do
-            :ok
-          else
-            {:error, "failed to stop systemd scope #{scope}"}
-          end
-      end
-    else
-      close_manager_port(state)
-      :ok
-    end
-  end
-
-  defp systemd_unit_inactive?(unit) do
-    case System.cmd("systemctl", ["--user", "is-active", "#{unit}.scope"], stderr_to_stdout: true) do
-      {output, _} -> String.trim(output) in ["inactive", "failed", "not-found"]
-    end
+    File.write!(path, content <> "\n")
   rescue
-    _ -> false
+    error ->
+      Logger.warning("failed to write pitchfork.local.toml: #{Exception.message(error)}")
   end
 
-  defp cleanup_stale_systemd_unit(unit) do
-    scope = "#{unit}.scope"
+  defp cleanup_stale_daemons(state) do
+    case System.cmd("pitchfork", ["status", "--json"],
+           cd: state.workspace_path,
+           stderr_to_stdout: true
+         ) do
+      {_output, 0} ->
+        System.cmd("pitchfork", ["stop"] ++ state.processes,
+          cd: state.workspace_path,
+          stderr_to_stdout: true
+        )
 
-    case System.cmd("systemctl", ["--user", "is-active", scope], stderr_to_stdout: true) do
-      {output, _} ->
-        if String.trim(output) in ["active", "activating"] do
-          Logger.warning("cleaning up stale systemd unit #{scope}")
-          System.cmd("systemctl", ["--user", "stop", scope], stderr_to_stdout: true)
-          Process.sleep(200)
-        end
+      _ ->
+        :ok
     end
   rescue
     _ -> :ok
   end
 
-  defp systemd_unit_name(workspace_key) do
-    sanitized =
-      workspace_key
-      |> to_string()
-      |> String.replace(~r/[^a-zA-Z0-9_-]/, "-")
-      |> String.trim("-")
-      |> String.slice(0, 64)
-
-    "kollywood-rt-#{sanitized}"
-  end
-
-  # ── Direct lifecycle (fallback for macOS / no systemd) ────────────
-
-  defp start_devenv_direct(state) do
-    devenv_args = ["processes", "up", "--strict-ports"] ++ state.processes
-
-    {executable, args} =
-      case System.find_executable("setsid") do
-        nil -> {System.find_executable("devenv"), devenv_args}
-        setsid_path -> {setsid_path, ["devenv"] ++ devenv_args}
-      end
-
-    env_list =
-      state.env
-      |> Enum.map(fn {k, v} -> {String.to_charlist(k), String.to_charlist(v)} end)
-
-    port =
-      Port.open(
-        {:spawn_executable, executable},
-        [
-          :binary,
-          :exit_status,
-          :stderr_to_stdout,
-          args: args,
-          cd: state.workspace_path,
-          env: env_list
-        ]
-      )
-
-    os_pid = port_os_pid(port)
-
-    Process.sleep(500)
-
-    case check_port_alive(port) do
-      :alive ->
-        {:ok, %{state | manager_port: port, manager_os_pid: os_pid}}
-
-      {:exited, exit_status} ->
-        {:error, "devenv processes up exited immediately with status #{exit_status}", state}
-    end
-  end
-
-  defp stop_devenv_direct(state) do
-    devenv(["processes", "down"], state.workspace_path, state.env, state.stop_timeout_ms)
-    close_manager_port(state)
-    kill_process_group(state.manager_os_pid)
-    :ok
-  end
-
-  # ── Shared process helpers ────────────────────────────────────────
-
-  defp port_os_pid(port) do
-    case Port.info(port, :os_pid) do
-      {:os_pid, pid} -> pid
-      _ -> nil
-    end
-  end
-
-  defp check_port_alive(port) do
-    receive do
-      {^port, {:exit_status, status}} -> {:exited, status}
-    after
-      0 -> :alive
-    end
-  end
-
-  defp close_manager_port(%{manager_port: port}) when is_port(port) do
-    try do
-      Port.close(port)
-    rescue
-      _error -> :ok
-    catch
-      _kind, _reason -> :ok
-    end
-  end
-
-  defp close_manager_port(_state), do: :ok
-
-  defp kill_process_group(os_pid) when is_integer(os_pid) and os_pid > 0 do
-    try do
-      System.cmd("kill", ["-TERM", "-#{os_pid}"], stderr_to_stdout: true)
-    rescue
-      _ -> :ok
-    end
-
-    :ok
-  end
-
-  defp kill_process_group(_), do: :ok
-
-  # ── Wrapper detection ─────────────────────────────────────────────
-
-  defp detect_wrapper do
-    case :os.type() do
-      {:unix, :linux} ->
-        if System.find_executable("systemd-run") && systemd_user_available?() do
-          :systemd
-        else
-          :direct
-        end
-
-      _ ->
-        :direct
-    end
-  end
-
-  defp systemd_user_available? do
-    case System.cmd("systemctl", ["--user", "is-system-running"], stderr_to_stdout: true) do
-      {output, _} -> String.trim(output) in ["running", "degraded"]
-    end
-  rescue
-    _ -> false
+  defp string_env(env) do
+    Enum.map(env, fn {k, v} -> {to_string(k), to_string(v)} end)
   end
 
   # ── Healthcheck ────────────────────────────────────────────────────

@@ -3338,7 +3338,7 @@ defmodule Kollywood.AgentRunner do
   - video must demonstrate ONLY the key behavior being tested: navigate directly to the relevant page, perform the specific interaction, and stop recording once the result is visible — do not record setup, unrelated navigation, or idle time
   - if multiple behaviors need demonstration, prefer separate short clips over one long recording
   - include replay/trace/HAR artifacts when they help debugging
-  - do not start app services manually (`mix phx.server`, `devenv up`, etc.); runtime has already started managed processes
+  - do not start app services manually (`mix phx.server`, `pitchfork start`, etc.); runtime has already started managed processes
   - use only injected runtime URLs (`runtime_base_url` / `runtime_urls_json`); do not scan arbitrary localhost ports
   - avoid interactive commands/flags (for example `snapshot -i`) in CI/agent runs
   - avoid waiting for `networkidle` on apps with long-lived traffic; prefer bounded waits

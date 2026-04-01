@@ -5,33 +5,25 @@ To start your Phoenix server:
 * Run `mix setup` to install and setup dependencies
 * Start Phoenix endpoint with `mix phx.server` or inside IEx with `iex -S mix phx.server`
 
-### devenv flow
+### mise + pitchfork flow
 
-This project includes a `devenv.nix` with a `server` process.
-
-```bash
-devenv processes up server
-```
-
-For background mode:
+This project uses `mise.toml` for tool management (Elixir, Erlang) and
+`pitchfork.toml` for process management (Phoenix server).
 
 ```bash
-devenv processes up --detach server
+pitchfork start server
 ```
 
-On first start (or when `mix.lock` changes), the devenv server process
-automatically runs:
+To stop:
 
 ```bash
-mix local.hex --force
-mix local.rebar --force
-mix setup
+pitchfork stop server
 ```
 
-So `vaibhav dev start kollywood server` can bootstrap and run without a
-separate manual setup step.
+On first start, pitchfork runs the setup task via mise which bootstraps
+deps and the database.
 
-`vaibhav` auto-discovers process ports from devenv task scripts and live
+`vaibhav` auto-discovers process ports from pitchfork and live
 process checks, so no per-project metadata file is required.
 
 Now you can visit [`localhost:4000`](http://localhost:4000) from your browser.
@@ -41,19 +33,19 @@ Now you can visit [`localhost:4000`](http://localhost:4000) from your browser.
 Kollywood testing runs assume browser-evidence tooling is available:
 
 - `agent-browser` (global install, outside this repo) for browser automation
-- `ffmpeg` for `.webm` recording (provided by this repo's `devenv.nix`)
+- `ffmpeg` for `.webm` recording (install via system package manager)
 
 Quick checks:
 
 ```bash
-devenv shell -- agent-browser --version
-devenv shell -- ffmpeg -version
+mise x -- agent-browser --version
+mise x -- ffmpeg -version
 ```
 
 Testing runtime behavior:
 
 - runtime-managed service ports come from injected URLs (`runtime_base_url` and `runtime_urls_json`)
-- testing should not start ad-hoc servers (`mix phx.server`, custom `PORT=...`, or extra `devenv up`)
+- testing should not start ad-hoc servers (`mix phx.server`, custom `PORT=...`, or extra `pitchfork start`)
 - if injected runtime URLs are unreachable, treat that as runtime/test failure context instead of probing random localhost ports
 
 ## Runtime Modes
@@ -186,8 +178,8 @@ Quality gates are configured in `.kollywood/WORKFLOW.md`:
 - `quality.checks.required`: shell commands that must pass before a story can be marked done
 - `quality.checks.fail_fast`: when true, stop checks at first failure; when false, run all checks and report every failure
 - `quality.checks.max_cycles`: maximum cycles allowed for checks remediation
-- `runtime.command`: runtime command used for process orchestration (defaults to `devenv`)
-- `runtime.processes`: named devenv processes started for testing/preview runtime
+- `runtime.command`: runtime command used for process orchestration (defaults to `pitchfork`)
+- `runtime.processes`: named pitchfork daemons started for testing/preview runtime
 - `runtime.port_offset_mod`: offset pool size for concurrent runtime sessions (offsets are leased strictly; exhaustion fails fast)
 - `quality.review.enabled`: when true, runs a reviewer agent round and requires a `review.json` verdict (`"pass"`/`"fail"`)
 - `quality.review.max_cycles`: maximum cycles allowed for review remediation

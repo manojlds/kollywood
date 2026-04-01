@@ -23,8 +23,8 @@ quality:
     fail_fast: true
     max_cycles: 3
     required:
-      - "devenv shell -- mix format --check-formatted"
-      - "devenv shell -- bash -c \"PHX_SERVER= MIX_ENV=test mix test\""
+      - "mise x -- mix format --check-formatted"
+      - "mise x -- bash -c \"PHX_SERVER= MIX_ENV=test mix test\""
     timeout_ms: 1800000
   max_cycles: 6
   review:
@@ -40,7 +40,7 @@ runtime:
   processes:
     - server
 hooks:
-  before_run: "bash -lc 'if [ -f .kollywood/AGENTS.md ]; then cp .kollywood/AGENTS.md AGENTS.md; fi; devenv shell -- sh -c \"mix deps.get && MIX_ENV=test mix deps.compile\"'"
+  before_run: "bash -lc 'if [ -f .kollywood/AGENTS.md ]; then cp .kollywood/AGENTS.md AGENTS.md; fi; mise x -- sh -c \"mix deps.get && MIX_ENV=test mix deps.compile\"'"
 preview:
   enabled: true
   ttl_minutes: 120

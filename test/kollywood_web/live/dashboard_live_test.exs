@@ -981,7 +981,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "Publish"
       assert html =~ "Enabled (pr, github)"
       assert html =~ "Runtime"
-      assert html =~ "Enabled (devenv, 1 process)"
+      assert html =~ "Enabled (pitchfork, 1 process)"
       assert html =~ "Current WORKFLOW.md fingerprint differs from this run attempt."
     end
 

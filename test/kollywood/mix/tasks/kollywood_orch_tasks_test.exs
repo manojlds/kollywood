@@ -346,7 +346,7 @@ defmodule Mix.Tasks.Kollywood.OrchTasksTest do
       checks: %{required: [], timeout_ms: 10_000, fail_fast: true},
       runtime: %{
         kind: :host,
-        command: "devenv",
+        command: "pitchfork",
         processes: [],
         env: %{},
         ports: %{},

@@ -573,7 +573,7 @@ defmodule Kollywood.StepRetryTest do
   end
 
   defp write_clone_testing_workflow!(root, project, testing_cli_path) do
-    write_noop_devenv!(root)
+    write_noop_pitchfork!(root)
 
     write_workflow!(
       project,
@@ -627,18 +627,21 @@ defmodule Kollywood.StepRetryTest do
     )
   end
 
-  defp write_noop_devenv!(root) do
+  defp write_noop_pitchfork!(root) do
     bin_dir = Path.join(root, "fake_bin")
     File.mkdir_p!(bin_dir)
-    path = Path.join(bin_dir, "devenv")
+    path = Path.join(bin_dir, "pitchfork")
 
     File.write!(path, """
     #!/usr/bin/env bash
-    if [ "${1:-}" = "processes" ] && [ "${2:-}" = "up" ]; then
-      trap 'exit 0' TERM INT
-      while true; do sleep 60; done &
-      wait
+    if [ "${1:-}" = "start" ]; then
       exit 0
+    fi
+    if [ "${1:-}" = "stop" ]; then
+      exit 0
+    fi
+    if [ "${1:-}" = "status" ]; then
+      exit 1
     fi
     exit 0
     """)

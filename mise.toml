@@ -1,0 +1,23 @@
+[tools]
+erlang = "27.3.4.9"
+elixir = "1.18.4-otp-27"
+
+[env]
+MIX_ENV = "dev"
+
+[tasks.setup]
+run = "mix local.hex --force && mix local.rebar --force && mix setup"
+description = "Bootstrap deps and database"
+
+[tasks.server]
+run = "mix phx.server"
+description = "Start Phoenix dev server"
+depends = ["setup"]
+
+[tasks."test"]
+run = "PHX_SERVER= MIX_ENV=test mix test"
+description = "Run test suite in isolation"
+
+[tasks."format.check"]
+run = "mix format --check-formatted"
+description = "Check code formatting"

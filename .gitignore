@@ -36,8 +36,8 @@ npm-debug.log
 /assets/node_modules/
 
 erl_crash.dump
-.process-compose.log
-.devenv/
+.pitchfork/
+pitchfork.local.toml
 .kollywood/*
 !.kollywood/AGENTS.md
 !.kollywood/WORKFLOW.md
