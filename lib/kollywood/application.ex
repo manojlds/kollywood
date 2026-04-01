@@ -56,7 +56,12 @@ defmodule Kollywood.Application do
         children
       end
 
-    if AppMode.web_enabled?(mode), do: children ++ [KollywoodWeb.Endpoint], else: children
+    children =
+      if AppMode.web_enabled?(mode),
+        do: children ++ [Kollywood.PreviewSessionManager, KollywoodWeb.Endpoint],
+        else: children ++ [Kollywood.PreviewSessionManager]
+
+    children
   end
 
   defp maybe_add_orchestrator(children, mode) do

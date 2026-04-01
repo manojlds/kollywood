@@ -41,6 +41,11 @@ runtime:
     - server
 hooks:
   before_run: "bash -lc 'if [ -f .kollywood/AGENTS.md ]; then cp .kollywood/AGENTS.md AGENTS.md; fi; devenv shell -- sh -c \"mix deps.get && MIX_ENV=test mix deps.compile\"'"
+preview:
+  enabled: true
+  ttl_minutes: 120
+  reuse_testing_runtime: true
+  allow_on_demand_from_pending_merge: true
 publish:
   mode: auto_merge
 git:
