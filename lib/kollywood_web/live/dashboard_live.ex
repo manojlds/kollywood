@@ -179,7 +179,7 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   def handle_event("set_story_tab", %{"tab" => tab}, socket) do
-    {:noreply, assign(socket, :story_detail_tab, tab)}
+    {:noreply, socket |> assign(:story_detail_tab, tab) |> assign(:settings_edit_mode, false)}
   end
 
   def handle_event("toggle_settings_edit", _params, socket) do

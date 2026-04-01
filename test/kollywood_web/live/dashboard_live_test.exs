@@ -1870,6 +1870,32 @@ defmodule KollywoodWeb.DashboardLiveTest do
       refute html =~ ~s(name="overrides[testing_enabled]")
     end
 
+    test "switching tabs resets edit mode", %{conn: conn, project: project} do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories/US-001")
+
+      view
+      |> element("button[phx-click='set_story_tab'][phx-value-tab='settings']")
+      |> render_click()
+
+      view
+      |> element("button[phx-click='toggle_settings_edit']")
+      |> render_click()
+
+      assert has_element?(view, "form[phx-submit='save_story_overrides']")
+
+      view
+      |> element("button[phx-click='set_story_tab'][phx-value-tab='details']")
+      |> render_click()
+
+      html =
+        view
+        |> element("button[phx-click='set_story_tab'][phx-value-tab='settings']")
+        |> render_click()
+
+      assert html =~ "Edit Overrides"
+      refute html =~ ~s(name="overrides[testing_enabled]")
+    end
+
     test "saving overrides persists settings.execution and shows in read-only view", %{
       conn: conn,
       project: project
