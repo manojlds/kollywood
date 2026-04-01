@@ -158,7 +158,8 @@ defmodule Kollywood.Runtime.Docker do
   def ensure_exec_ready(state) do
     with {:ok, state} <- ensure_isolation(state),
          {:ok, state} <- create_container(state),
-         {:ok, state} <- start_container(state) do
+         {:ok, state} <- start_container(state),
+         :ok <- fix_workspace_ownership(state) do
       {:ok, state}
     else
       {:error, reason, failed_state} ->
@@ -368,6 +369,17 @@ defmodule Kollywood.Runtime.Docker do
       |> String.slice(0, 64)
 
     "kollywood-rt-#{sanitized}"
+  end
+
+  defp fix_workspace_ownership(%{container_id: cid}) do
+    case System.cmd(
+           "docker",
+           ["exec", "-u", "root", cid, "chown", "-R", "runtime:runtime", @container_workspace],
+           stderr_to_stdout: true
+         ) do
+      {_output, 0} -> :ok
+      {output, code} -> {:error, "chown workspace failed (exit #{code}): #{String.trim(output)}"}
+    end
   end
 
   defp stop_required?(state) do
