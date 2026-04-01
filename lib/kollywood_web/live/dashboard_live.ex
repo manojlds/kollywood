@@ -7268,7 +7268,7 @@ defmodule KollywoodWeb.DashboardLive do
 
     if process_count > 0 do
       suffix = if(process_count == 1, do: "", else: "es")
-      "Enabled (devenv, #{process_count} process#{suffix})"
+      "Enabled (pitchfork, #{process_count} process#{suffix})"
     else
       "Unavailable"
     end

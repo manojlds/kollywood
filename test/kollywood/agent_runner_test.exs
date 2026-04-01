@@ -538,13 +538,13 @@ defmodule Kollywood.AgentRunnerTest do
     cli_path: cli_path,
     prompt_log: prompt_log
   } do
-    fake_devenv_log = Path.join(root, "fake_devenv_checks_only.log")
-    _fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    fake_pitchfork_log = Path.join(root, "fake_pitchfork_checks_only.log")
+    _fake_pitchfork = write_fake_pitchfork!(root, fake_pitchfork_log)
 
     config =
       runner_config(workspace_root, cli_path, prompt_log)
       |> Map.put(:checks, %{required: ["test -d ."], timeout_ms: 10_000, fail_fast: true})
-      |> Map.put(:runtime, full_stack_runtime(:checks_only, fake_devenv_log))
+      |> Map.put(:runtime, full_stack_runtime(:checks_only, fake_pitchfork_log))
 
     template = "Work on {{ issue.identifier }}"
 
@@ -557,7 +557,7 @@ defmodule Kollywood.AgentRunnerTest do
 
     assert result.status == :ok
     refute :runtime_started in Enum.map(result.events, & &1.type)
-    refute File.exists?(fake_devenv_log)
+    refute File.exists?(fake_pitchfork_log)
   end
 
   test "checks do not run inside runtime shell even when runtime is configured", %{
@@ -566,8 +566,8 @@ defmodule Kollywood.AgentRunnerTest do
     cli_path: cli_path,
     prompt_log: prompt_log
   } do
-    fake_devenv_log = Path.join(root, "fake_devenv_full_stack.log")
-    _fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    fake_pitchfork_log = Path.join(root, "fake_pitchfork_full_stack.log")
+    _fake_pitchfork = write_fake_pitchfork!(root, fake_pitchfork_log)
 
     config =
       runner_config(workspace_root, cli_path, prompt_log)
@@ -578,7 +578,7 @@ defmodule Kollywood.AgentRunnerTest do
         timeout_ms: 10_000,
         fail_fast: true
       })
-      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_devenv_log))
+      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_pitchfork_log))
 
     template = "Work on {{ issue.identifier }}"
 
@@ -595,7 +595,7 @@ defmodule Kollywood.AgentRunnerTest do
     refute :runtime_started in event_types
     refute :runtime_stopping in event_types
     refute :runtime_stopped in event_types
-    refute File.exists?(fake_devenv_log)
+    refute File.exists?(fake_pitchfork_log)
   end
 
   test "runtime is stopped when testing fails", %{
@@ -605,12 +605,12 @@ defmodule Kollywood.AgentRunnerTest do
     testing_cli_path: testing_cli_path,
     prompt_log: prompt_log
   } do
-    fake_devenv_log = Path.join(root, "fake_devenv_fail.log")
-    _fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    fake_pitchfork_log = Path.join(root, "fake_pitchfork_fail.log")
+    _fake_pitchfork = write_fake_pitchfork!(root, fake_pitchfork_log)
 
     config =
       runner_config(workspace_root, cli_path, prompt_log)
-      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_devenv_log))
+      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_pitchfork_log))
       |> Map.put(:testing, %{
         enabled: true,
         max_cycles: 1,
@@ -644,8 +644,8 @@ defmodule Kollywood.AgentRunnerTest do
     assert :runtime_stopped in event_types
     assert :testing_failed in event_types
 
-    log = File.read!(fake_devenv_log)
-    assert log =~ "processes up --strict-ports server"
+    log = File.read!(fake_pitchfork_log)
+    assert log =~ "start server"
   end
 
   test "runtime stop succeeds cleanly after testing passes", %{
@@ -655,12 +655,12 @@ defmodule Kollywood.AgentRunnerTest do
     testing_cli_path: testing_cli_path,
     prompt_log: prompt_log
   } do
-    fake_devenv_log = Path.join(root, "fake_devenv_stop_clean.log")
-    _fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    fake_pitchfork_log = Path.join(root, "fake_pitchfork_stop_clean.log")
+    _fake_pitchfork = write_fake_pitchfork!(root, fake_pitchfork_log)
 
     config =
       runner_config(workspace_root, cli_path, prompt_log)
-      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_devenv_log))
+      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_pitchfork_log))
       |> Map.put(:testing, %{
         enabled: true,
         max_cycles: 1,
@@ -698,12 +698,12 @@ defmodule Kollywood.AgentRunnerTest do
     testing_cli_path: testing_cli_path,
     prompt_log: prompt_log
   } do
-    fake_devenv_log = Path.join(root, "fake_devenv_stop_already_stopped.log")
-    _fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    fake_pitchfork_log = Path.join(root, "fake_pitchfork_stop_already_stopped.log")
+    _fake_pitchfork = write_fake_pitchfork!(root, fake_pitchfork_log)
 
     runtime =
-      full_stack_runtime(:full_stack, fake_devenv_log)
-      |> put_in([:env, "FAKE_DEVENV_DOWN_ALREADY_STOPPED"], "1")
+      full_stack_runtime(:full_stack, fake_pitchfork_log)
+      |> put_in([:env, "FAKE_PITCHFORK_STOP_ALREADY_STOPPED"], "1")
 
     config =
       runner_config(workspace_root, cli_path, prompt_log)
@@ -745,12 +745,12 @@ defmodule Kollywood.AgentRunnerTest do
     testing_cli_path: testing_cli_path,
     prompt_log: prompt_log
   } do
-    fake_devenv_log = Path.join(root, "fake_devenv_start_fail.log")
-    _fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    fake_pitchfork_log = Path.join(root, "fake_pitchfork_start_fail.log")
+    _fake_pitchfork = write_fake_pitchfork!(root, fake_pitchfork_log)
 
     runtime =
-      full_stack_runtime(:full_stack, fake_devenv_log)
-      |> put_in([:env, "FAKE_DEVENV_FAIL_UP"], "1")
+      full_stack_runtime(:full_stack, fake_pitchfork_log)
+      |> put_in([:env, "FAKE_PITCHFORK_FAIL_START"], "1")
 
     config =
       runner_config(workspace_root, cli_path, prompt_log)
@@ -788,23 +788,23 @@ defmodule Kollywood.AgentRunnerTest do
     assert :runtime_stopping in event_types
     assert :runtime_stopped in event_types
 
-    log = File.read!(fake_devenv_log)
-    assert log =~ "processes up --strict-ports server"
+    log = File.read!(fake_pitchfork_log)
+    assert log =~ "start server"
   end
 
-  test "runtime start fails when devenv process exits immediately", %{
+  test "runtime start fails when pitchfork process exits immediately", %{
     root: root,
     workspace_root: workspace_root,
     cli_path: cli_path,
     testing_cli_path: testing_cli_path,
     prompt_log: prompt_log
   } do
-    fake_devenv_log = Path.join(root, "fake_devenv_wait_fail.log")
-    _fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    fake_pitchfork_log = Path.join(root, "fake_pitchfork_wait_fail.log")
+    _fake_pitchfork = write_fake_pitchfork!(root, fake_pitchfork_log)
 
     runtime =
-      full_stack_runtime(:full_stack, fake_devenv_log)
-      |> put_in([:env, "FAKE_DEVENV_FAIL_UP"], "1")
+      full_stack_runtime(:full_stack, fake_pitchfork_log)
+      |> put_in([:env, "FAKE_PITCHFORK_FAIL_START"], "1")
       |> put_in([:env, "KOLLYWOOD_RUNTIME_SKIP_HEALTHCHECK"], "1")
 
     config =
@@ -835,15 +835,15 @@ defmodule Kollywood.AgentRunnerTest do
              )
 
     assert result.error =~ "failed to start runtime processes"
-    assert result.error =~ "exited immediately"
+    assert result.error =~ "pitchfork start failed"
 
     event_types = Enum.map(result.events, & &1.type)
     assert :runtime_start_failed in event_types
     assert :runtime_stopping in event_types
     assert :runtime_stopped in event_types
 
-    log = File.read!(fake_devenv_log)
-    assert log =~ "processes up --strict-ports server"
+    log = File.read!(fake_pitchfork_log)
+    assert log =~ "start server"
   end
 
   test "runtime healthcheck blocks testing until configured ports are reachable", %{
@@ -853,11 +853,11 @@ defmodule Kollywood.AgentRunnerTest do
     testing_cli_path: testing_cli_path,
     prompt_log: prompt_log
   } do
-    fake_devenv_log = Path.join(root, "fake_devenv_healthcheck_fail.log")
-    _fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    fake_pitchfork_log = Path.join(root, "fake_pitchfork_healthcheck_fail.log")
+    _fake_pitchfork = write_fake_pitchfork!(root, fake_pitchfork_log)
 
     runtime =
-      full_stack_runtime(:full_stack, fake_devenv_log)
+      full_stack_runtime(:full_stack, fake_pitchfork_log)
       |> Map.put(:start_timeout_ms, 300)
       |> put_in([:env, "KOLLYWOOD_RUNTIME_SKIP_HEALTHCHECK"], "0")
 
@@ -905,12 +905,12 @@ defmodule Kollywood.AgentRunnerTest do
     testing_cli_path: testing_cli_path,
     prompt_log: prompt_log
   } do
-    fake_devenv_log = Path.join(root, "fake_devenv_identity.log")
-    _fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    fake_pitchfork_log = Path.join(root, "fake_pitchfork_identity.log")
+    _fake_pitchfork = write_fake_pitchfork!(root, fake_pitchfork_log)
     expected_workspace_path = Path.join(workspace_root, @issue.identifier)
 
     runtime =
-      full_stack_runtime(:full_stack, fake_devenv_log)
+      full_stack_runtime(:full_stack, fake_pitchfork_log)
       |> put_in([:env, "KOLLYWOOD_RUNTIME_WORKTREE_KEY"], "tampered-key")
       |> put_in([:env, "KOLLYWOOD_RUNTIME_WORKTREE_PATH"], "/tmp/tampered-path")
 
@@ -945,7 +945,7 @@ defmodule Kollywood.AgentRunnerTest do
 
     assert result.status == :ok
 
-    log = File.read!(fake_devenv_log)
+    log = File.read!(fake_pitchfork_log)
     assert log =~ "ENV:KEY=#{@issue.identifier} PATH=#{expected_workspace_path}"
     refute log =~ "ENV:KEY=tampered-key"
     refute log =~ "PATH=/tmp/tampered-path"
@@ -958,11 +958,11 @@ defmodule Kollywood.AgentRunnerTest do
     testing_cli_path: testing_cli_path,
     prompt_log: prompt_log
   } do
-    fake_devenv_log = Path.join(root, "fake_devenv_offset_exhausted.log")
-    _fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    fake_pitchfork_log = Path.join(root, "fake_pitchfork_offset_exhausted.log")
+    _fake_pitchfork = write_fake_pitchfork!(root, fake_pitchfork_log)
 
     runtime =
-      full_stack_runtime(:full_stack, fake_devenv_log)
+      full_stack_runtime(:full_stack, fake_pitchfork_log)
       |> put_in([:port_offset_mod], 1)
 
     config =
@@ -1314,13 +1314,13 @@ defmodule Kollywood.AgentRunnerTest do
     testing_cli_path: testing_cli_path,
     prompt_log: prompt_log
   } do
-    fake_devenv_log = Path.join(root, "fake_devenv_testing.log")
-    _fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    fake_pitchfork_log = Path.join(root, "fake_pitchfork_testing.log")
+    _fake_pitchfork = write_fake_pitchfork!(root, fake_pitchfork_log)
 
     config =
       runner_config(workspace_root, cli_path, prompt_log)
       |> Map.put(:quality, %{max_cycles: 2})
-      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_devenv_log))
+      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_pitchfork_log))
       |> Map.put(:testing, %{
         enabled: true,
         max_cycles: 1,
@@ -1377,8 +1377,8 @@ defmodule Kollywood.AgentRunnerTest do
     testing_cli_path: testing_cli_path,
     prompt_log: prompt_log
   } do
-    fake_devenv_log = Path.join(root, "fake_devenv_testing_notes.log")
-    _fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    fake_pitchfork_log = Path.join(root, "fake_pitchfork_testing_notes.log")
+    _fake_pitchfork = write_fake_pitchfork!(root, fake_pitchfork_log)
     review_prompt_log = Path.join(root, "review-prompts.log")
     testing_prompt_log = Path.join(root, "testing-prompts.log")
     attempt_dir = Path.join(root, "attempt-testing-notes")
@@ -1393,7 +1393,7 @@ defmodule Kollywood.AgentRunnerTest do
     config =
       runner_config(workspace_root, cli_path, prompt_log)
       |> Map.put(:quality, %{max_cycles: 2})
-      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_devenv_log))
+      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_pitchfork_log))
       |> Map.put(:review, %{
         enabled: true,
         max_cycles: 1,
@@ -1457,8 +1457,8 @@ defmodule Kollywood.AgentRunnerTest do
     testing_cli_path: testing_cli_path,
     prompt_log: prompt_log
   } do
-    fake_devenv_log = Path.join(root, "fake_devenv_testing_artifacts.log")
-    _fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    fake_pitchfork_log = Path.join(root, "fake_pitchfork_testing_artifacts.log")
+    _fake_pitchfork = write_fake_pitchfork!(root, fake_pitchfork_log)
 
     attempt_dir = Path.join(root, "attempt-testing-artifacts")
     File.mkdir_p!(attempt_dir)
@@ -1473,7 +1473,7 @@ defmodule Kollywood.AgentRunnerTest do
     config =
       runner_config(workspace_root, cli_path, prompt_log)
       |> Map.put(:quality, %{max_cycles: 2})
-      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_devenv_log))
+      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_pitchfork_log))
       |> Map.put(:testing, %{
         enabled: true,
         max_cycles: 1,
@@ -1525,14 +1525,14 @@ defmodule Kollywood.AgentRunnerTest do
     testing_cli_path: testing_cli_path,
     prompt_log: prompt_log
   } do
-    fake_devenv_log = Path.join(root, "fake_devenv_testing_retry.log")
-    _fake_devenv = write_fake_devenv!(root, fake_devenv_log)
+    fake_pitchfork_log = Path.join(root, "fake_pitchfork_testing_retry.log")
+    _fake_pitchfork = write_fake_pitchfork!(root, fake_pitchfork_log)
     fail_once_file = Path.join(root, "testing_fail_once.marker")
 
     config =
       runner_config(workspace_root, cli_path, prompt_log)
       |> Map.put(:quality, %{max_cycles: 2})
-      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_devenv_log))
+      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_pitchfork_log))
       |> Map.put(:testing, %{
         enabled: true,
         max_cycles: 2,
@@ -1875,7 +1875,7 @@ defmodule Kollywood.AgentRunnerTest do
       checks: %{required: [], timeout_ms: 10_000, fail_fast: true},
       runtime: %{
         kind: :host,
-        command: "devenv",
+        command: "pitchfork",
         processes: [],
         env: %{},
         ports: %{},
@@ -2115,7 +2115,7 @@ defmodule Kollywood.AgentRunnerTest do
       checks: %{required: [], timeout_ms: 10_000, fail_fast: true},
       runtime: %{
         kind: :host,
-        command: "devenv",
+        command: "pitchfork",
         processes: [],
         env: %{},
         ports: %{},
@@ -2141,7 +2141,7 @@ defmodule Kollywood.AgentRunnerTest do
       kind: :host,
       processes: processes,
       env: %{
-        "FAKE_DEVENV_LOG" => log_path,
+        "FAKE_PITCHFORK_LOG" => log_path,
         "RUNTIME_SENTINEL" => "ok",
         "KOLLYWOOD_RUNTIME_SKIP_HEALTHCHECK" => "1"
       },
@@ -2152,67 +2152,44 @@ defmodule Kollywood.AgentRunnerTest do
     }
   end
 
-  defp write_fake_devenv!(root, log_path) do
+  defp write_fake_pitchfork!(root, log_path) do
     bin_dir = Path.join(root, "fake_bin")
     File.mkdir_p!(bin_dir)
-    path = Path.join(bin_dir, "devenv")
+    path = Path.join(bin_dir, "pitchfork")
     System.put_env("PATH", bin_dir <> ":" <> System.get_env("PATH", ""))
 
     File.write!(path, """
     #!/usr/bin/env bash
     set -eu
 
-    if [ -n "${FAKE_DEVENV_LOG:-}" ]; then
-      printf "PWD:%s\\n" "$PWD" >> "$FAKE_DEVENV_LOG"
-      printf "ENV:KEY=%s PATH=%s OFFSET=%s APP_PORT=%s\\n" "${KOLLYWOOD_RUNTIME_WORKTREE_KEY:-}" "${KOLLYWOOD_RUNTIME_WORKTREE_PATH:-}" "${KOLLYWOOD_RUNTIME_PORT_OFFSET:-}" "${APP_PORT:-}" >> "$FAKE_DEVENV_LOG"
-      printf "CMD:%s\\n" "$*" >> "$FAKE_DEVENV_LOG"
+    if [ -n "${FAKE_PITCHFORK_LOG:-}" ]; then
+      printf "PWD:%s\\n" "$PWD" >> "$FAKE_PITCHFORK_LOG"
+      printf "ENV:KEY=%s PATH=%s OFFSET=%s APP_PORT=%s\\n" "${KOLLYWOOD_RUNTIME_WORKTREE_KEY:-}" "${KOLLYWOOD_RUNTIME_WORKTREE_PATH:-}" "${KOLLYWOOD_RUNTIME_PORT_OFFSET:-}" "${APP_PORT:-}" >> "$FAKE_PITCHFORK_LOG"
+      printf "CMD:%s\\n" "$*" >> "$FAKE_PITCHFORK_LOG"
     fi
 
-    if [ "${1:-}" = "shell" ]; then
-      shift
-
-      if [ "${1:-}" = "--" ]; then
-        shift
-      fi
-
-      "$@"
-      exit $?
+    if [ "${1:-}" = "status" ]; then
+      exit 1
     fi
 
-    if [ "${1:-}" = "processes" ] && [ "${2:-}" = "up" ]; then
-      if [ "${FAKE_DEVENV_FAIL_UP:-}" = "1" ]; then
-        echo "forced up failure" >&2
+    if [ "${1:-}" = "start" ]; then
+      if [ "${FAKE_PITCHFORK_FAIL_START:-}" = "1" ]; then
+        echo "forced start failure" >&2
         exit 52
       fi
 
-      # Stay alive as a foreground process manager (like real devenv)
-      CHILD_PID=""
-      cleanup() { [ -n "$CHILD_PID" ] && kill "$CHILD_PID" 2>/dev/null; exit 0; }
-      trap cleanup TERM INT HUP
-      while true; do sleep 60; done &
-      CHILD_PID=$!
-      wait
       exit 0
     fi
 
-    if [ "${1:-}" = "processes" ] && [ "${2:-}" = "wait" ]; then
-      if [ "${FAKE_DEVENV_FAIL_WAIT:-}" = "1" ]; then
-        echo "forced wait failure" >&2
-        exit 53
-      fi
-
-      exit 0
-    fi
-
-    if [ "${1:-}" = "processes" ] && [ "${2:-}" = "down" ]; then
-      if [ "${FAKE_DEVENV_DOWN_ALREADY_STOPPED:-}" = "1" ]; then
+    if [ "${1:-}" = "stop" ]; then
+      if [ "${FAKE_PITCHFORK_STOP_ALREADY_STOPPED:-}" = "1" ]; then
         echo "Error:   × No processes running" >&2
         exit 1
       fi
 
-      if [ -n "${FAKE_DEVENV_FAIL_DOWN_ONCE_FILE:-}" ]; then
-        if [ ! -f "$FAKE_DEVENV_FAIL_DOWN_ONCE_FILE" ]; then
-          touch "$FAKE_DEVENV_FAIL_DOWN_ONCE_FILE"
+      if [ -n "${FAKE_PITCHFORK_FAIL_STOP_ONCE_FILE:-}" ]; then
+        if [ ! -f "$FAKE_PITCHFORK_FAIL_STOP_ONCE_FILE" ]; then
+          touch "$FAKE_PITCHFORK_FAIL_STOP_ONCE_FILE"
           echo "forced down failure" >&2
           exit 61
         fi
@@ -2221,7 +2198,7 @@ defmodule Kollywood.AgentRunnerTest do
       exit 0
     fi
 
-    echo "unexpected fake devenv invocation: $*" >&2
+    echo "unexpected fake pitchfork invocation: $*" >&2
     exit 41
     """)
 

@@ -3203,7 +3203,7 @@ defmodule Kollywood.OrchestratorTest do
     polling:
       interval_ms: #{Map.get(opts, :poll_interval_ms, 1000)}#{stale_threshold_multiplier_line}#{watchdog_check_interval_line}
     runtime:
-      command: devenv
+      command: pitchfork
       processes:
     #{runtime_processes_line}
     workspace:

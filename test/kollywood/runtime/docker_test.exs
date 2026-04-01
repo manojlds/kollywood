@@ -109,7 +109,7 @@ defmodule Kollywood.Runtime.DockerTest do
         )
 
       File.mkdir_p!(root)
-      File.write!(Path.join(root, "devenv.nix"), devenv_nix())
+      File.write!(Path.join(root, "pitchfork.toml"), pitchfork_toml())
 
       on_exit(fn ->
         System.cmd("docker", ["rm", "-f", "kollywood-rt-docker-lifecycle"],
@@ -137,7 +137,6 @@ defmodule Kollywood.Runtime.DockerTest do
       assert {:ok, started} = Runtime.start(state)
       assert started.started? == true
       assert started.container_id != nil
-      assert started.systemd_unit != nil
 
       assert :ok = Runtime.healthcheck(started)
 
@@ -173,25 +172,10 @@ defmodule Kollywood.Runtime.DockerTest do
     _ -> ExUnit.Assertions.flunk("Docker not installed — skipping")
   end
 
-  defp devenv_nix do
+  defp pitchfork_toml do
     ~S"""
-    { pkgs, ... }:
-    {
-      packages = [ pkgs.python3 ];
-
-      processes.test_server = {
-        exec = ''
-          exec ${pkgs.python3}/bin/python3 -u -c "
-    import http.server, os, signal, sys
-    signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))
-    port = int(os.environ.get('TEST_HTTP_PORT', '48800'))
-    s = http.server.HTTPServer(('127.0.0.1', port), http.server.BaseHTTPRequestHandler)
-    print(f'test_server listening on {port}', flush=True)
-    s.serve_forever()
-    "
-        '';
-      };
-    }
+    [daemons.test_server]
+    run = "python3 -u -c \"import http.server, os, signal, sys; signal.signal(signal.SIGTERM, lambda *a: sys.exit(0)); port = int(os.environ.get('TEST_HTTP_PORT', '48800')); s = http.server.HTTPServer(('127.0.0.1', port), http.server.BaseHTTPRequestHandler); print(f'test_server listening on {port}', flush=True); s.serve_forever()\""
     """
   end
 end

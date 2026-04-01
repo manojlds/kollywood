@@ -751,7 +751,7 @@ defmodule Kollywood.ConfigTest do
     ---
     runtime:
       full_stack:
-        command: devenv
+        command: pitchfork
     workspace:
       root: /tmp
     agent:
@@ -785,7 +785,7 @@ defmodule Kollywood.ConfigTest do
   test "rejects non-map runtime section" do
     content = """
     ---
-    runtime: devenv
+    runtime: pitchfork
     workspace:
       root: /tmp
     agent:

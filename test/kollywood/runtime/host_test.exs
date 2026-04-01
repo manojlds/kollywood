@@ -2,10 +2,9 @@ defmodule Kollywood.Runtime.HostTest do
   @moduledoc """
   Integration tests for `Kollywood.Runtime.Host`.
 
-  These tests launch real devenv processes (a lightweight python HTTP server)
+  These tests launch real pitchfork daemons (a lightweight python HTTP server)
   to verify that the runtime properly starts, healthchecks, and stops processes
-  with per-issue port isolation. On Linux, the runtime uses systemd-run scopes
-  for cgroup-based process tree management.
+  with per-issue port isolation.
   """
   use ExUnit.Case, async: false
 
@@ -14,24 +13,9 @@ defmodule Kollywood.Runtime.HostTest do
   @moduletag :runtime_integration
   @moduletag timeout: 120_000
 
-  @devenv_nix ~S"""
-  { pkgs, ... }:
-  {
-    packages = [ pkgs.python3 ];
-
-    processes.test_server = {
-      exec = ''
-        exec ${pkgs.python3}/bin/python3 -u -c "
-  import http.server, os, signal, sys
-  signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))
-  port = int(os.environ.get('TEST_HTTP_PORT', '48500'))
-  s = http.server.HTTPServer(('127.0.0.1', port), http.server.BaseHTTPRequestHandler)
-  print(f'test_server listening on {port}', flush=True)
-  s.serve_forever()
-  "
-      '';
-    };
-  }
+  @pitchfork_toml ~S"""
+  [daemons.test_server]
+  run = "python3 -u -c \"import http.server, os, signal, sys; signal.signal(signal.SIGTERM, lambda *a: sys.exit(0)); port = int(os.environ.get('TEST_HTTP_PORT', '48500')); s = http.server.HTTPServer(('127.0.0.1', port), http.server.BaseHTTPRequestHandler); print(f'test_server listening on {port}', flush=True); s.serve_forever()\""
   """
 
   setup do
@@ -42,7 +26,7 @@ defmodule Kollywood.Runtime.HostTest do
       )
 
     File.mkdir_p!(root)
-    File.write!(Path.join(root, "devenv.nix"), @devenv_nix)
+    File.write!(Path.join(root, "pitchfork.toml"), @pitchfork_toml)
 
     on_exit(fn ->
       cleanup_stale_processes(root)
@@ -50,20 +34,6 @@ defmodule Kollywood.Runtime.HostTest do
     end)
 
     %{workspace_path: root}
-  end
-
-  describe "wrapper detection" do
-    test "init sets the process_wrapper field", %{workspace_path: ws} do
-      state = init_runtime(ws, "wrapper-detect", 48500)
-
-      case :os.type() do
-        {:unix, :linux} ->
-          assert state.process_wrapper in [:systemd, :direct]
-
-        _ ->
-          assert state.process_wrapper == :direct
-      end
-    end
   end
 
   describe "start/stop lifecycle" do
@@ -88,12 +58,6 @@ defmodule Kollywood.Runtime.HostTest do
       assert {:ok, started} = Runtime.start(state)
       assert started.started? == true
       assert started.process_state == :running
-      assert is_port(started.manager_port)
-
-      if started.process_wrapper == :systemd do
-        assert started.systemd_unit != nil
-        assert systemd_scope_active?(started.systemd_unit)
-      end
 
       assert :ok = Runtime.healthcheck(started)
       assert_port_open(port)
@@ -101,14 +65,9 @@ defmodule Kollywood.Runtime.HostTest do
       assert {:ok, stopped} = Runtime.stop(started)
       assert stopped.started? == false
       assert stopped.process_state == :stopped
-      assert stopped.systemd_unit == nil
 
       Process.sleep(1_000)
       assert_port_closed(port)
-
-      if started.process_wrapper == :systemd do
-        refute systemd_scope_active?(started.systemd_unit)
-      end
     end
 
     test "start is idempotent — second call is a no-op", %{workspace_path: ws} do
@@ -116,11 +75,10 @@ defmodule Kollywood.Runtime.HostTest do
       state = init_runtime(ws, "idempotent", port)
 
       assert {:ok, started} = Runtime.start(state)
-      original_port = started.manager_port
 
       assert {:ok, started2} = Runtime.start(started)
       assert started2.started? == true
-      assert started2.manager_port == original_port
+      assert started2 === started
 
       assert {:ok, _stopped} = Runtime.stop(started2)
     end
@@ -143,7 +101,7 @@ defmodule Kollywood.Runtime.HostTest do
 
       for dir <- [ws_a, ws_b] do
         File.mkdir_p!(dir)
-        File.write!(Path.join(dir, "devenv.nix"), @devenv_nix)
+        File.write!(Path.join(dir, "pitchfork.toml"), @pitchfork_toml)
       end
 
       config = runtime_config([], %{"TEST_HTTP_PORT" => 48600}, 100)
@@ -304,36 +262,8 @@ defmodule Kollywood.Runtime.HostTest do
     end
   end
 
-  defp systemd_scope_active?(unit) do
-    case System.cmd("systemctl", ["--user", "is-active", "#{unit}.scope"], stderr_to_stdout: true) do
-      {output, _} -> String.trim(output) == "active"
-    end
-  rescue
-    _ -> false
-  end
-
   defp cleanup_stale_processes(root) do
-    System.cmd("devenv", ["processes", "down"], cd: root, stderr_to_stdout: true)
-
-    case System.cmd(
-           "systemctl",
-           ["--user", "list-units", "--type=scope", "--no-legend", "--plain", "kollywood-rt-*"],
-           stderr_to_stdout: true
-         ) do
-      {output, 0} ->
-        output
-        |> String.split("\n", trim: true)
-        |> Enum.each(fn line ->
-          unit = line |> String.split() |> List.first()
-
-          if unit && String.starts_with?(unit, "kollywood-rt-") do
-            System.cmd("systemctl", ["--user", "stop", unit], stderr_to_stdout: true)
-          end
-        end)
-
-      _ ->
-        :ok
-    end
+    System.cmd("pitchfork", ["stop"], cd: root, stderr_to_stdout: true)
   rescue
     _ -> :ok
   end
