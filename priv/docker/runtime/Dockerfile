@@ -10,7 +10,8 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 RUN useradd -m -s /bin/bash runtime && \
-    echo "runtime ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/runtime
+    echo "runtime ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/runtime && \
+    chmod 755 /home/runtime
 
 USER runtime
 
