@@ -16,7 +16,7 @@ USER runtime
 
 # Install mise
 RUN curl https://mise.run | sh
-ENV PATH="/home/runtime/.local/bin:${PATH}"
+ENV PATH="/home/runtime/.local/share/mise/shims:/home/runtime/.local/bin:${PATH}"
 
 # Install pitchfork via mise
 RUN /home/runtime/.local/bin/mise use -g pitchfork
