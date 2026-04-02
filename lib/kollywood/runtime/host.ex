@@ -154,6 +154,9 @@ defmodule Kollywood.Runtime.Host do
     end
   end
 
+  @impl true
+  def reclaim_workspace(_state), do: :ok
+
   # ── Port offset isolation ──────────────────────────────────────────
 
   defp ensure_isolation(%{offset_lease_name: name} = state) when not is_nil(name),

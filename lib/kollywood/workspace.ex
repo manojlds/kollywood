@@ -100,9 +100,11 @@ defmodule Kollywood.Workspace do
 
   @doc """
   Runs the `before_run` hook in the workspace directory.
+  Optionally accepts a runtime state to reclaim workspace ownership first (for Docker runtimes).
   """
-  @spec before_run(t(), map()) :: :ok | {:error, String.t()}
-  def before_run(%__MODULE__{} = workspace, hooks) do
+  @spec before_run(t(), map(), map() | nil) :: :ok | {:error, String.t()}
+  def before_run(%__MODULE__{} = workspace, hooks, runtime \\ nil) do
+    if runtime, do: Kollywood.Runtime.reclaim_workspace(runtime)
     run_hook(hooks.before_run, workspace.path, "before_run")
   end
 

@@ -39,6 +39,8 @@ defmodule Kollywood.Runtime do
 
   @callback release(state()) :: state()
 
+  @callback reclaim_workspace(state()) :: :ok | {:error, String.t()}
+
   @doc "Returns the implementation module for a runtime kind."
   @spec module_for(kind()) :: module()
   def module_for(:host), do: Host
@@ -91,4 +93,8 @@ defmodule Kollywood.Runtime do
   @doc "Releases any resources (port offset leases, etc.)."
   @spec release(state()) :: state()
   def release(%{module: mod} = state), do: mod.release(state)
+
+  @doc "Reclaims workspace file ownership to the host user (relevant for Docker runtimes)."
+  @spec reclaim_workspace(state()) :: :ok | {:error, String.t()}
+  def reclaim_workspace(%{module: mod} = state), do: mod.reclaim_workspace(state)
 end

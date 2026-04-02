@@ -436,7 +436,7 @@ defmodule Kollywood.AgentRunner do
     turn_number = state.turn_count + 1
 
     with {:ok, prompt} <- build_prompt(state, config, prompt_template, turn_number),
-         :ok <- Workspace.before_run(state.workspace, config.hooks) do
+         :ok <- Workspace.before_run(state.workspace, config.hooks, state.runtime) do
       state =
         state
         |> Map.put(:turn_count, turn_number)
@@ -989,7 +989,7 @@ defmodule Kollywood.AgentRunner do
       turn_number = state.turn_count + 1
 
       run_result =
-        with :ok <- Workspace.before_run(state.workspace, config.hooks) do
+        with :ok <- Workspace.before_run(state.workspace, config.hooks, state.runtime) do
           state =
             state
             |> Map.put(:turn_count, turn_number)
@@ -1631,7 +1631,7 @@ defmodule Kollywood.AgentRunner do
       turn_number = state.turn_count + 1
 
       run_result =
-        with :ok <- Workspace.before_run(state.workspace, config.hooks) do
+        with :ok <- Workspace.before_run(state.workspace, config.hooks, state.runtime) do
           state =
             state
             |> Map.put(:turn_count, turn_number)
@@ -1734,7 +1734,7 @@ defmodule Kollywood.AgentRunner do
       turn_number = state.turn_count + 1
 
       run_result =
-        with :ok <- Workspace.before_run(state.workspace, config.hooks) do
+        with :ok <- Workspace.before_run(state.workspace, config.hooks, state.runtime) do
           state =
             state
             |> Map.put(:turn_count, turn_number)
@@ -1837,7 +1837,7 @@ defmodule Kollywood.AgentRunner do
       turn_number = state.turn_count + 1
 
       run_result =
-        with :ok <- Workspace.before_run(state.workspace, config.hooks) do
+        with :ok <- Workspace.before_run(state.workspace, config.hooks, state.runtime) do
           state =
             state
             |> Map.put(:turn_count, turn_number)
