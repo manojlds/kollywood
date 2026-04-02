@@ -16,6 +16,7 @@ defmodule Kollywood.WorkerConsumer do
   alias Kollywood.AgentPool
   alias Kollywood.AgentRunner
   alias Kollywood.Config
+  alias Kollywood.Orchestrator.RunLogs
   alias Kollywood.RunQueue
 
   @default_poll_interval_ms 2_000
@@ -177,6 +178,7 @@ defmodule Kollywood.WorkerConsumer do
     run_fun = fn ->
       run_opts = decode_run_opts(entry)
       issue = decode_issue_from_entry(entry)
+      run_opts = inject_on_event(run_opts, issue_id, entry.attempt)
 
       RunQueue.mark_running(entry_id)
 
@@ -305,6 +307,45 @@ defmodule Kollywood.WorkerConsumer do
           _ -> base
         end
     end
+  end
+
+  defp inject_on_event(run_opts, issue_id, attempt) do
+    log_files = Keyword.get(run_opts, :log_files)
+
+    run_log_context =
+      if is_map(log_files) do
+        attempt_int =
+          case attempt do
+            n when is_integer(n) -> n
+            s when is_binary(s) -> String.to_integer(s)
+            _ -> 0
+          end
+
+        attempt_dir =
+          case Map.get(log_files, :events) || Map.get(log_files, "events") do
+            path when is_binary(path) -> Path.dirname(path)
+            _ -> nil
+          end
+
+        files =
+          Map.new(log_files, fn {k, v} ->
+            {if(is_atom(k), do: k, else: String.to_atom(k)), v}
+          end)
+
+        %{issue_id: issue_id, attempt: attempt_int, attempt_dir: attempt_dir, files: files}
+      end
+
+    on_event = fn event ->
+      if run_log_context, do: RunLogs.append_event(run_log_context, event)
+
+      Phoenix.PubSub.broadcast(
+        Kollywood.PubSub,
+        "orchestrator:events",
+        {:runner_event, issue_id, event}
+      )
+    end
+
+    Keyword.put(run_opts, :on_event, on_event)
   end
 
   defp invoke_runner(issue, run_opts) do
