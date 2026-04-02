@@ -403,9 +403,11 @@ defmodule Kollywood.Runtime.Docker do
   end
 
   defp fix_workspace_ownership(%{container_id: cid}) do
+    host_uid_gid = "#{:os.cmd(~c"id -u") |> to_string() |> String.trim()}:#{:os.cmd(~c"id -g") |> to_string() |> String.trim()}"
+
     case System.cmd(
            "docker",
-           ["exec", "-u", "root", cid, "chown", "-R", "runtime:runtime", @container_workspace],
+           ["exec", "-u", "root", cid, "chown", "-R", host_uid_gid, @container_workspace],
            stderr_to_stdout: true
          ) do
       {_output, 0} -> :ok
