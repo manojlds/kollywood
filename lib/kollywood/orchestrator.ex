@@ -27,6 +27,7 @@ defmodule Kollywood.Orchestrator do
   alias Kollywood.Publisher
   alias Kollywood.RepoSync
   alias Kollywood.StoryExecutionOverrides
+  alias Kollywood.RunQueue
   alias Kollywood.Tracker
   alias Kollywood.Workspace
   alias Kollywood.WorkflowStore
@@ -91,6 +92,8 @@ defmodule Kollywood.Orchestrator do
           retry_attempts: %{optional(String.t()) => map()},
           completed: MapSet.t(String.t()),
           completed_until: %{optional(String.t()) => integer()},
+          dispatch_mode: :local | :queue,
+          queue_poll_timer_ref: reference() | nil,
           last_error: String.t() | nil,
           last_poll_at: DateTime.t() | nil,
           last_poll_monotonic_ms: integer() | nil,
@@ -147,6 +150,8 @@ defmodule Kollywood.Orchestrator do
     :poll_stale_detected_at,
     :poll_stale_recovery_attempted,
     :last_recovery_attempt,
+    dispatch_mode: :local,
+    queue_poll_timer_ref: nil,
     dispatch_rotation: 0,
     running: %{},
     running_by_ref: %{},
@@ -282,6 +287,8 @@ defmodule Kollywood.Orchestrator do
         run_timeout_ms: positive_integer(Keyword.get(opts, :run_timeout_ms), nil),
         project_limit_fetcher:
           Keyword.get(opts, :project_limit_fetcher, &default_project_limit_fetcher/0),
+        dispatch_mode: resolve_dispatch_mode(Keyword.get(opts, :dispatch_mode, :local)),
+        queue_poll_timer_ref: nil,
         project_max_concurrent_agents: %{},
         dispatch_rotation: 0,
         last_poll_monotonic_ms: monotonic_now_ms(),
@@ -303,6 +310,14 @@ defmodule Kollywood.Orchestrator do
           state
           |> schedule_poll(0)
           |> schedule_watchdog_tick(0)
+        else
+          state
+        end
+
+      state =
+        if state.dispatch_mode == :queue do
+          RunQueue.subscribe()
+          state
         else
           state
         end
@@ -471,6 +486,56 @@ defmodule Kollywood.Orchestrator do
     {:noreply, state |> track_runner_event(issue_id, event) |> persist_control_status()}
   end
 
+  def handle_info({:run_queue, {:completed, _entry_id, issue_id, result_payload}}, state)
+      when state.dispatch_mode == :queue do
+    case Map.get(state.running, issue_id) do
+      %{queue_entry_id: _entry_id} ->
+        case pop_running_by_issue(state, issue_id) do
+          {:ok, run_entry, state} ->
+            cancel_run_timeout_timer(run_entry)
+            result = reconstruct_result_from_payload(result_payload)
+
+            {:noreply,
+             state
+             |> handle_runner_result(issue_id, run_entry, result)
+             |> persist_control_status()}
+
+          :error ->
+            {:noreply, persist_control_status(state)}
+        end
+
+      _other ->
+        {:noreply, persist_control_status(state)}
+    end
+  end
+
+  def handle_info({:run_queue, {:failed, _entry_id, issue_id, error_msg}}, state)
+      when state.dispatch_mode == :queue do
+    case Map.get(state.running, issue_id) do
+      %{queue_entry_id: _entry_id} ->
+        case pop_running_by_issue(state, issue_id) do
+          {:ok, run_entry, state} ->
+            cancel_run_timeout_timer(run_entry)
+            error_result = {:error, %Result{status: :failed, error: error_msg}}
+
+            {:noreply,
+             state
+             |> handle_runner_result(issue_id, run_entry, error_result)
+             |> persist_control_status()}
+
+          :error ->
+            {:noreply, persist_control_status(state)}
+        end
+
+      _other ->
+        {:noreply, persist_control_status(state)}
+    end
+  end
+
+  def handle_info({:run_queue, _event}, state) do
+    {:noreply, state}
+  end
+
   def handle_info({:run_worker_result, issue_id, worker_pid, result}, state)
       when is_binary(issue_id) and is_pid(worker_pid) do
     case Map.get(state.running, issue_id) do
@@ -484,6 +549,32 @@ defmodule Kollywood.Orchestrator do
              state
              |> handle_runner_result(issue_id, run_entry, result)
              |> persist_control_status()}
+
+          :error ->
+            {:noreply, persist_control_status(state)}
+        end
+
+      _other ->
+        {:noreply, persist_control_status(state)}
+    end
+  end
+
+  def handle_info({:queue_run_timeout, issue_id}, state) when is_binary(issue_id) do
+    case Map.get(state.running, issue_id) do
+      %{queue_entry_id: entry_id} when not is_nil(entry_id) ->
+        case pop_running_by_issue(state, issue_id) do
+          {:ok, run_entry, state} ->
+            cancel_run_timeout_timer(run_entry)
+            reason = "queued run timed out after #{state.run_timeout_ms || "configured"}ms"
+            maybe_complete_run_logs(run_entry, %{status: :failed, error: reason})
+            RunQueue.cancel(entry_id)
+            next_attempt = next_retry_attempt(run_entry.attempt)
+
+            state
+            |> tracker_mark_failed(issue_id, reason, next_attempt)
+            |> schedule_retry_for_failed_run(issue_id, run_entry, next_attempt, reason)
+            |> persist_control_status()
+            |> then(&{:noreply, &1})
 
           :error ->
             {:noreply, persist_control_status(state)}
@@ -1185,54 +1276,18 @@ defmodule Kollywood.Orchestrator do
 
       run_opts = maybe_put_prompt_template(run_opts, state.workflow_store)
 
-      run_fun = fn -> invoke_runner(state.runner, issue, run_opts) end
-
-      with {:ok, run_pid} <-
-             start_run_worker(state.agent_pool, orchestrator_pid, issue_id, run_fun) do
-        run_ref = Process.monitor(run_pid)
-        run_timeout_timer_ref = schedule_run_timeout_timer(issue_id, run_pid, run_ref, state)
-        runtime_profile = runtime_profile(config)
-
-        run_entry = %{
-          issue: issue,
-          attempt: attempt,
-          run_ref: run_ref,
-          run_pid: run_pid,
-          run_timeout_timer_ref: run_timeout_timer_ref,
-          started_at: DateTime.utc_now(),
-          runtime_profile: runtime_profile,
-          runtime_process_state: initial_runtime_process_state(runtime_profile),
-          runtime_last_event: nil,
-          run_phase: RunPhase.from_status(:running),
-          run_log_context: run_log_context,
-          retry_mode: retry_mode,
-          retry_provenance: retry_provenance
-        }
-
-        Logger.info(
-          "Dispatching issue_id=#{issue_id} identifier=#{identifier} attempt=#{inspect(attempt)}"
-        )
-
-        state
-        |> cancel_retry(issue_id)
-        |> put_running(issue_id, run_entry)
-        |> claim(issue_id)
-      else
-        {:error, reason} ->
-          retry_attempt = retry_attempt_from_run_attempt(attempt)
-          failure_reason = "run worker failed to start: #{reason}"
-
-          state
-          |> tracker_mark_failed(issue_id, failure_reason, retry_attempt)
-          |> schedule_retry(
-            issue_id,
-            issue,
-            retry_attempt,
-            failure_reason,
-            retry_backoff_delay_ms(state, retry_attempt),
-            retry_schedule_opts
+      case state.dispatch_mode do
+        :queue ->
+          dispatch_to_queue(
+            state, issue, issue_id, identifier, attempt, config,
+            run_opts, run_log_context, retry_mode, retry_provenance, retry_schedule_opts
           )
-          |> release_claim(issue_id)
+
+        :local ->
+          dispatch_locally(
+            state, issue, issue_id, identifier, attempt, config, run_opts,
+            run_log_context, retry_mode, retry_provenance, retry_schedule_opts, orchestrator_pid
+          )
       end
     else
       {:error, {:story_overrides_invalid, reason}} ->
@@ -1266,6 +1321,242 @@ defmodule Kollywood.Orchestrator do
         |> release_claim(issue_id)
     end
   end
+
+  defp dispatch_locally(
+         state, issue, issue_id, identifier, attempt, config, run_opts,
+         run_log_context, retry_mode, retry_provenance, retry_schedule_opts, orchestrator_pid
+       ) do
+    run_fun = fn -> invoke_runner(state.runner, issue, run_opts) end
+
+    case start_run_worker(state.agent_pool, orchestrator_pid, issue_id, run_fun) do
+      {:ok, run_pid} ->
+        run_ref = Process.monitor(run_pid)
+        run_timeout_timer_ref = schedule_run_timeout_timer(issue_id, run_pid, run_ref, state)
+        runtime_profile = runtime_profile(config)
+
+        run_entry = %{
+          issue: issue,
+          attempt: attempt,
+          run_ref: run_ref,
+          run_pid: run_pid,
+          run_timeout_timer_ref: run_timeout_timer_ref,
+          started_at: DateTime.utc_now(),
+          runtime_profile: runtime_profile,
+          runtime_process_state: initial_runtime_process_state(runtime_profile),
+          runtime_last_event: nil,
+          run_phase: RunPhase.from_status(:running),
+          run_log_context: run_log_context,
+          retry_mode: retry_mode,
+          retry_provenance: retry_provenance
+        }
+
+        Logger.info(
+          "Dispatching locally issue_id=#{issue_id} identifier=#{identifier} attempt=#{inspect(attempt)}"
+        )
+
+        state
+        |> cancel_retry(issue_id)
+        |> put_running(issue_id, run_entry)
+        |> claim(issue_id)
+
+      {:error, reason} ->
+        retry_attempt = retry_attempt_from_run_attempt(attempt)
+        failure_reason = "run worker failed to start: #{reason}"
+
+        state
+        |> tracker_mark_failed(issue_id, failure_reason, retry_attempt)
+        |> schedule_retry(
+          issue_id,
+          issue,
+          retry_attempt,
+          failure_reason,
+          retry_backoff_delay_ms(state, retry_attempt),
+          retry_schedule_opts
+        )
+        |> release_claim(issue_id)
+    end
+  end
+
+  defp dispatch_to_queue(
+         state, issue, issue_id, identifier, attempt, config,
+         run_opts, run_log_context, retry_mode, retry_provenance, retry_schedule_opts
+       ) do
+    serializable_run_opts = serialize_run_opts_for_queue(run_opts)
+    issue_snapshot = serialize_issue_for_queue(issue)
+    runtime_profile = runtime_profile(config)
+
+    queue_attrs = %{
+      issue_id: issue_id,
+      identifier: identifier,
+      priority: issue_priority(issue),
+      attempt: attempt,
+      config_snapshot: safe_json_encode(%{"issue" => issue_snapshot}),
+      run_opts_snapshot: safe_json_encode(serializable_run_opts)
+    }
+
+    case RunQueue.enqueue(queue_attrs) do
+      {:ok, entry} ->
+        run_entry = %{
+          issue: issue,
+          attempt: attempt,
+          run_ref: nil,
+          run_pid: nil,
+          run_timeout_timer_ref: schedule_queue_run_timeout_timer(issue_id, state),
+          started_at: DateTime.utc_now(),
+          runtime_profile: runtime_profile,
+          runtime_process_state: initial_runtime_process_state(runtime_profile),
+          runtime_last_event: nil,
+          run_phase: RunPhase.from_status(:running),
+          run_log_context: run_log_context,
+          retry_mode: retry_mode,
+          retry_provenance: retry_provenance,
+          queue_entry_id: entry.id
+        }
+
+        Logger.info(
+          "Dispatching to queue issue_id=#{issue_id} identifier=#{identifier} queue_entry=#{entry.id} attempt=#{inspect(attempt)}"
+        )
+
+        state
+        |> cancel_retry(issue_id)
+        |> put_running(issue_id, run_entry)
+        |> claim(issue_id)
+
+      {:error, changeset} ->
+        retry_attempt = retry_attempt_from_run_attempt(attempt)
+        failure_reason = "failed to enqueue run: #{inspect(changeset)}"
+
+        state
+        |> tracker_mark_failed(issue_id, failure_reason, retry_attempt)
+        |> schedule_retry(
+          issue_id,
+          issue,
+          retry_attempt,
+          failure_reason,
+          retry_backoff_delay_ms(state, retry_attempt),
+          retry_schedule_opts
+        )
+        |> release_claim(issue_id)
+    end
+  end
+
+  defp serialize_run_opts_for_queue(run_opts) do
+    run_opts
+    |> Enum.reject(fn {key, _} -> key in [:workflow_store, :on_event] end)
+    |> Enum.map(fn
+      {key, value} when is_function(value) -> {Atom.to_string(key), nil}
+      {key, value} -> {Atom.to_string(key), make_json_safe(value)}
+    end)
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
+  end
+
+  defp safe_json_encode(value) do
+    safe = make_json_safe(value)
+
+    case Jason.encode(safe) do
+      {:ok, json} -> json
+      {:error, _} -> inspect(value)
+    end
+  end
+
+  defp make_json_safe(value) when is_struct(value) do
+    value
+    |> Map.from_struct()
+    |> Map.drop([:__struct__])
+    |> make_json_safe()
+  end
+
+  defp make_json_safe(value) when is_map(value) do
+    Map.new(value, fn
+      {k, v} when is_atom(k) -> {Atom.to_string(k), make_json_safe(v)}
+      {k, v} -> {to_string(k), make_json_safe(v)}
+    end)
+  end
+
+  defp make_json_safe(value) when is_list(value), do: Enum.map(value, &make_json_safe/1)
+  defp make_json_safe(value) when is_atom(value) and not is_nil(value) and not is_boolean(value), do: Atom.to_string(value)
+  defp make_json_safe(value) when is_pid(value), do: inspect(value)
+  defp make_json_safe(value) when is_reference(value), do: inspect(value)
+  defp make_json_safe(value) when is_function(value), do: nil
+  defp make_json_safe(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
+  defp make_json_safe(value), do: value
+
+  defp serialize_issue_for_queue(issue) when is_map(issue) do
+    issue
+    |> Enum.into(%{}, fn
+      {k, v} when is_atom(k) -> {Atom.to_string(k), v}
+      {k, v} -> {to_string(k), v}
+    end)
+  rescue
+    _ -> %{"id" => issue_id(issue)}
+  end
+
+  defp issue_priority(issue) do
+    case field(issue, :priority) do
+      p when is_integer(p) -> p
+      _ -> 0
+    end
+  end
+
+  defp schedule_queue_run_timeout_timer(issue_id, state) do
+    timeout_ms = state.run_timeout_ms
+
+    if is_integer(timeout_ms) and timeout_ms > 0 do
+      Process.send_after(self(), {:queue_run_timeout, issue_id}, timeout_ms)
+    else
+      nil
+    end
+  end
+
+  defp reconstruct_result_from_payload(nil) do
+    now = DateTime.utc_now()
+    {:error, %Result{status: :failed, error: "no result payload", started_at: now, ended_at: now}}
+  end
+
+  defp reconstruct_result_from_payload(payload) when is_map(payload) do
+    now = DateTime.utc_now()
+
+    status =
+      case Map.get(payload, "status") do
+        "ok" -> :ok
+        "max_turns_reached" -> :max_turns_reached
+        _ -> :failed
+      end
+
+    result = %Result{
+      status: status,
+      error: Map.get(payload, "error"),
+      issue_id: Map.get(payload, "issue_id"),
+      identifier: Map.get(payload, "identifier"),
+      workspace_path: Map.get(payload, "workspace_path"),
+      turn_count: Map.get(payload, "turn_count", 0),
+      last_output: Map.get(payload, "last_output"),
+      started_at: parse_datetime(Map.get(payload, "started_at")) || now,
+      ended_at: parse_datetime(Map.get(payload, "ended_at")) || now
+    }
+
+    if status == :ok, do: {:ok, result}, else: {:error, result}
+  end
+
+  defp reconstruct_result_from_payload(_) do
+    now = DateTime.utc_now()
+    {:error, %Result{status: :failed, error: "invalid result", started_at: now, ended_at: now}}
+  end
+
+  defp parse_datetime(nil), do: nil
+  defp parse_datetime(%DateTime{} = dt), do: dt
+  defp parse_datetime(str) when is_binary(str) do
+    case DateTime.from_iso8601(str) do
+      {:ok, dt, _} -> dt
+      _ -> nil
+    end
+  end
+  defp parse_datetime(_), do: nil
+
+  defp resolve_dispatch_mode(:queue), do: :queue
+  defp resolve_dispatch_mode("queue"), do: :queue
+  defp resolve_dispatch_mode(_), do: :local
 
   defp resolve_story_execution(config, issue) do
     case StoryExecutionOverrides.resolve(config, issue) do
@@ -2384,12 +2675,20 @@ defmodule Kollywood.Orchestrator do
 
   # --- Running workers ---
 
+  defp put_running(state, issue_id, %{run_ref: nil} = run_entry) do
+    %{state | running: Map.put(state.running, issue_id, run_entry)}
+  end
+
   defp put_running(state, issue_id, run_entry) do
     %{
       state
       | running: Map.put(state.running, issue_id, run_entry),
         running_by_ref: Map.put(state.running_by_ref, run_entry.run_ref, issue_id)
     }
+  end
+
+  defp drop_running(state, issue_id, nil) do
+    %{state | running: Map.delete(state.running, issue_id)}
   end
 
   defp drop_running(state, issue_id, run_ref) do
@@ -2457,7 +2756,18 @@ defmodule Kollywood.Orchestrator do
 
   defp stop_run_task(state, run_entry) do
     cancel_run_timeout_timer(run_entry)
-    _ = AgentPool.stop_run(state.agent_pool, run_entry.run_pid)
+
+    case Map.get(run_entry, :run_pid) do
+      pid when is_pid(pid) ->
+        _ = AgentPool.stop_run(state.agent_pool, pid)
+
+      nil ->
+        case Map.get(run_entry, :queue_entry_id) do
+          entry_id when not is_nil(entry_id) -> RunQueue.cancel(entry_id)
+          _ -> :ok
+        end
+    end
+
     state
   rescue
     _ -> state

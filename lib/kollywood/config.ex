@@ -59,6 +59,55 @@ defmodule Kollywood.Config do
   ]
 
   @doc """
+  Reconstructs a Config struct from a JSON-decoded string-keyed map.
+
+  Used by WorkerConsumer to restore configs that were serialized into the run queue.
+  """
+  @spec from_serialized_map(map()) :: t()
+  def from_serialized_map(map) when is_map(map) do
+    %__MODULE__{
+      tracker: atomize_keys(Map.get(map, "tracker", %{})),
+      polling: atomize_keys(Map.get(map, "polling", %{})),
+      workspace: atomize_keys(Map.get(map, "workspace", %{})),
+      hooks: atomize_keys(Map.get(map, "hooks", %{})),
+      quality: atomize_keys(Map.get(map, "quality", %{})),
+      checks: atomize_keys(Map.get(map, "checks", %{})),
+      runtime: atomize_keys(Map.get(map, "runtime", %{})),
+      review: atomize_keys(Map.get(map, "review", %{})),
+      testing: atomize_keys(Map.get(map, "testing", %{})),
+      preview: atomize_keys(Map.get(map, "preview", %{})),
+      agent: atomize_keys(Map.get(map, "agent", %{})),
+      publish: atomize_keys(Map.get(map, "publish", %{})),
+      git: atomize_keys(Map.get(map, "git", %{})),
+      raw: Map.get(map, "raw", %{}),
+      project_provider: safe_atom(Map.get(map, "project_provider"))
+    }
+  end
+
+  defp atomize_keys(map) when is_map(map) do
+    Map.new(map, fn
+      {k, v} when is_binary(k) -> {safe_existing_atom(k), atomize_keys(v)}
+      {k, v} -> {k, atomize_keys(v)}
+    end)
+  end
+
+  defp atomize_keys(list) when is_list(list), do: Enum.map(list, &atomize_keys/1)
+  defp atomize_keys(value), do: value
+
+  defp safe_existing_atom(str) do
+    String.to_existing_atom(str)
+  rescue
+    ArgumentError -> String.to_atom(str)
+  end
+
+  defp safe_atom(nil), do: nil
+  defp safe_atom(str) when is_binary(str) and str != "" do
+    safe_existing_atom(str)
+  end
+  defp safe_atom(atom) when is_atom(atom), do: atom
+  defp safe_atom(_), do: nil
+
+  @doc """
   Returns the effective publish provider — `publish.provider` from WORKFLOW.md if explicitly set,
   otherwise the project-level provider injected at runtime.
   """

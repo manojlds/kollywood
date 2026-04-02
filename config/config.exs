@@ -19,9 +19,12 @@ config :kollywood,
   generators: [timestamp_type: :utc_datetime],
   app_mode: :all,
   orchestrator_enabled: true,
+  orchestrator_dispatch_mode: :queue,
   orchestrator_ephemeral_store: Kollywood.Orchestrator.EphemeralStore,
   orchestrator_retry_store: Kollywood.Orchestrator.RetryStore,
-  orchestrator: [global_max_concurrent_agents: 5]
+  orchestrator: [global_max_concurrent_agents: 5],
+  worker_consumer_count: 2,
+  worker_consumer_concurrency: 1
 
 config :kollywood,
   ecto_repos: [Kollywood.Repo]

@@ -42,4 +42,7 @@ defmodule Kollywood.AppMode do
 
   @spec agent_pool_enabled?(t()) :: boolean()
   def agent_pool_enabled?(mode), do: normalize(mode) in [:all, :orchestrator, :worker]
+
+  @spec worker_consumer_enabled?(t()) :: boolean()
+  def worker_consumer_enabled?(mode), do: normalize(mode) in [:all, :orchestrator, :worker]
 end
