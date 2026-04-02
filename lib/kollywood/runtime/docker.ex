@@ -196,6 +196,13 @@ defmodule Kollywood.Runtime.Docker do
     end
   end
 
+  @impl true
+  def reclaim_workspace(%{container_id: cid}) when is_binary(cid) do
+    fix_workspace_ownership(%{container_id: cid})
+  end
+
+  def reclaim_workspace(_state), do: :ok
+
   # ── Container lifecycle ────────────────────────────────────────────
 
   defp create_container(state) do
