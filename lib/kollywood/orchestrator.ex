@@ -700,7 +700,7 @@ defmodule Kollywood.Orchestrator do
                 config,
                 issue_id,
                 "orphaned in_progress: no active queue entry on startup",
-                0
+                1
               ])
 
               acc
