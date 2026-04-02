@@ -680,9 +680,38 @@ defmodule Kollywood.Orchestrator do
         |> Enum.reject(&is_nil/1)
         |> MapSet.new()
 
-      Enum.reduce(in_progress_ids, state, fn issue_id, acc ->
-        claim(acc, issue_id)
-      end)
+      case state.dispatch_mode do
+        :queue ->
+          Enum.reduce(in_progress_ids, state, fn issue_id, acc ->
+            has_active_queue_entry =
+              case RunQueue.get_by_issue(issue_id) do
+                nil -> false
+                entry -> entry.status in ["pending", "claimed", "running"]
+              end
+
+            if has_active_queue_entry do
+              claim(acc, issue_id)
+            else
+              Logger.info(
+                "Resetting orphaned in_progress story issue_id=#{issue_id} to open for re-dispatch"
+              )
+
+              tracker_call(tracker, :mark_failed, [
+                config,
+                issue_id,
+                "orphaned in_progress: no active queue entry on startup",
+                0
+              ])
+
+              acc
+            end
+          end)
+
+        :local ->
+          Enum.reduce(in_progress_ids, state, fn issue_id, acc ->
+            claim(acc, issue_id)
+          end)
+      end
     else
       {:error, reason} ->
         Logger.warning("Orchestrator startup reconciliation failed: #{reason}")
