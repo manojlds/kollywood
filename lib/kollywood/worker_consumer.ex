@@ -56,6 +56,11 @@ defmodule Kollywood.WorkerConsumer do
     GenServer.call(server, :status)
   end
 
+  @doc false
+  def inject_on_event_for_test(run_opts, issue_id, attempt, identifier \\ nil) do
+    inject_on_event(run_opts, issue_id, attempt, identifier || issue_id)
+  end
+
   # --- Callbacks ---
 
   @impl true
@@ -175,10 +180,12 @@ defmodule Kollywood.WorkerConsumer do
     issue_id = entry.issue_id
     consumer_pid = self()
 
+    identifier = entry.identifier || issue_id
+
     run_fun = fn ->
       run_opts = decode_run_opts(entry)
       issue = decode_issue_from_entry(entry)
-      run_opts = inject_on_event(run_opts, issue_id, entry.attempt)
+      run_opts = inject_on_event(run_opts, issue_id, entry.attempt, identifier)
 
       RunQueue.mark_running(entry_id)
 
@@ -309,7 +316,7 @@ defmodule Kollywood.WorkerConsumer do
     end
   end
 
-  defp inject_on_event(run_opts, issue_id, attempt) do
+  defp inject_on_event(run_opts, issue_id, attempt, identifier) do
     log_files = Keyword.get(run_opts, :log_files)
 
     run_log_context =
@@ -332,17 +339,30 @@ defmodule Kollywood.WorkerConsumer do
             {if(is_atom(k), do: k, else: String.to_atom(k)), v}
           end)
 
-        %{issue_id: issue_id, attempt: attempt_int, attempt_dir: attempt_dir, files: files}
+        %{
+          issue_id: issue_id,
+          identifier: identifier || issue_id,
+          story_id: issue_id,
+          attempt: attempt_int,
+          attempt_dir: attempt_dir,
+          files: files
+        }
       end
 
     on_event = fn event ->
-      if run_log_context, do: RunLogs.append_event(run_log_context, event)
+      if run_log_context do
+        RunLogs.append_event(run_log_context, event)
+      end
 
-      Phoenix.PubSub.broadcast(
-        Kollywood.PubSub,
-        "orchestrator:events",
-        {:runner_event, issue_id, event}
-      )
+      try do
+        Phoenix.PubSub.broadcast(
+          Kollywood.PubSub,
+          "orchestrator:events",
+          {:runner_event, issue_id, event}
+        )
+      rescue
+        _ -> :ok
+      end
     end
 
     Keyword.put(run_opts, :on_event, on_event)
