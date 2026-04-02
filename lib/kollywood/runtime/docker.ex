@@ -30,12 +30,12 @@ defmodule Kollywood.Runtime.Docker do
 
   @default_image "kollywood-runtime:latest"
   @container_workspace "/workspace"
+  @container_home "/home/runtime"
   @container_ready_poll_ms 500
   @container_ready_timeout_ms 30_000
   @healthcheck_poll_interval_ms 250
   @healthcheck_connect_timeout_ms 250
   @healthcheck_skip_env "KOLLYWOOD_RUNTIME_SKIP_HEALTHCHECK"
-  @container_user "runtime"
 
   # ── Callbacks ──────────────────────────────────────────────────────
 
@@ -162,7 +162,7 @@ defmodule Kollywood.Runtime.Docker do
     with {:ok, state} <- ensure_isolation(state),
          {:ok, state} <- create_container(state),
          {:ok, state} <- start_container(state),
-         :ok <- fix_workspace_ownership(state) do
+         :ok <- chown_runtime_home(state) do
       {:ok, state}
     else
       {:error, reason, failed_state} ->
@@ -197,10 +197,6 @@ defmodule Kollywood.Runtime.Docker do
   end
 
   @impl true
-  def reclaim_workspace(%{container_id: cid}) when is_binary(cid) do
-    fix_workspace_ownership(%{container_id: cid})
-  end
-
   def reclaim_workspace(_state), do: :ok
 
   # ── Container lifecycle ────────────────────────────────────────────
@@ -212,6 +208,7 @@ defmodule Kollywood.Runtime.Docker do
 
     env_args =
       state.env
+      |> Map.put("HOME", @container_home)
       |> Enum.flat_map(fn {k, v} -> ["-e", "#{k}=#{v}"] end)
 
     args =
@@ -222,6 +219,8 @@ defmodule Kollywood.Runtime.Docker do
         "--network",
         "host",
         "--init",
+        "--user",
+        host_uid_gid(),
         "--tmpfs",
         "/tmp",
         "-v",
@@ -261,7 +260,7 @@ defmodule Kollywood.Runtime.Docker do
     else
       case System.cmd(
              "docker",
-             ["exec", "-u", @container_user, state.container_id, "pitchfork", "--version"],
+             ["exec", state.container_id, "pitchfork", "--version"],
              stderr_to_stdout: true
            ) do
         {_output, 0} ->
@@ -287,8 +286,6 @@ defmodule Kollywood.Runtime.Docker do
       [
         "exec",
         "-d",
-        "-u",
-        @container_user,
         "-w",
         @container_workspace,
         state.container_id,
@@ -327,8 +324,6 @@ defmodule Kollywood.Runtime.Docker do
       "docker",
       [
         "exec",
-        "-u",
-        @container_user,
         "-w",
         @container_workspace,
         state.container_id,
@@ -354,8 +349,6 @@ defmodule Kollywood.Runtime.Docker do
       "docker",
       [
         "exec",
-        "-u",
-        @container_user,
         "-w",
         @container_workspace,
         cid,
@@ -409,17 +402,21 @@ defmodule Kollywood.Runtime.Docker do
     "kollywood-rt-#{sanitized}"
   end
 
-  defp fix_workspace_ownership(%{container_id: cid}) do
-    host_uid_gid = "#{:os.cmd(~c"id -u") |> to_string() |> String.trim()}:#{:os.cmd(~c"id -g") |> to_string() |> String.trim()}"
-
+  defp chown_runtime_home(%{container_id: cid}) do
     case System.cmd(
            "docker",
-           ["exec", "-u", "root", cid, "chown", "-R", host_uid_gid, @container_workspace],
+           ["exec", "-u", "root", cid, "chown", "-R", host_uid_gid(), @container_home],
            stderr_to_stdout: true
          ) do
       {_output, 0} -> :ok
-      {output, code} -> {:error, "chown workspace failed (exit #{code}): #{String.trim(output)}"}
+      {output, code} -> {:error, "chown home failed (exit #{code}): #{String.trim(output)}"}
     end
+  end
+
+  defp host_uid_gid do
+    uid = :os.cmd(~c"id -u") |> to_string() |> String.trim()
+    gid = :os.cmd(~c"id -g") |> to_string() |> String.trim()
+    "#{uid}:#{gid}"
   end
 
   defp stop_required?(state) do
