@@ -51,7 +51,8 @@ defmodule Kollywood.Application do
 
     children =
       if AppMode.data_enabled?(mode) do
-        children ++ [{Kollywood.WorkflowStore, workflow_store_opts}]
+        children ++
+          [{Kollywood.WorkflowStore, workflow_store_opts}, {Kollywood.PrdJsonArchiver, []}]
       else
         children
       end

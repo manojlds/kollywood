@@ -26,6 +26,10 @@ config :kollywood, orchestrator_ephemeral_store: nil
 config :kollywood, orchestrator_retry_store: nil
 config :kollywood, store_bootstrap_enabled: false
 
+config :kollywood, Kollywood.PrdJsonArchiver, enabled: false
+
 config :kollywood, Kollywood.Repo,
   database: Path.join(System.tmp_dir!(), "kollywood_test.db"),
-  pool: Ecto.Adapters.SQL.Sandbox
+  pool: Ecto.Adapters.SQL.Sandbox,
+  journal_mode: :wal,
+  busy_timeout: 15_000

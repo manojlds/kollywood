@@ -1,5 +1,5 @@
 defmodule KollywoodWeb.RunArtifactsControllerTest do
-  use KollywoodWeb.ConnCase, async: true
+  use KollywoodWeb.ConnCase, async: false
 
   alias Kollywood.Config
   alias Kollywood.Orchestrator.RunLogs

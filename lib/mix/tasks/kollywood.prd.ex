@@ -18,6 +18,10 @@ defmodule Mix.Tasks.Kollywood.Prd do
       mix kollywood.prd rerun STORY_ID [--path PATH] [--clear-notes]
       mix kollywood.prd validate [--path PATH]
 
+      mix kollywood.prd archive list [--path PATH]
+      mix kollywood.prd archive run [--path PATH]
+      mix kollywood.prd archive restore STORY_ID [--path PATH]
+
   ## Status values
 
   Supported statuses are `draft`, `open`, `in_progress`, `done`, `failed`,
@@ -50,6 +54,9 @@ defmodule Mix.Tasks.Kollywood.Prd do
       ["reset", story_id | rest] -> reset_command(story_id, rest)
       ["rerun", story_id | rest] -> reset_command(story_id, rest)
       ["validate" | rest] -> validate_command(rest)
+      ["archive", "list" | rest] -> archive_list_command(rest)
+      ["archive", "run" | rest] -> archive_run_command(rest)
+      ["archive", "restore", story_id | rest] -> archive_restore_command(story_id, rest)
       _other -> raise_usage_error()
     end
   end
@@ -188,6 +195,87 @@ defmodule Mix.Tasks.Kollywood.Prd do
       end
     else
       {:error, reason} -> Mix.raise(reason)
+    end
+  end
+
+  defp archive_list_command(args) do
+    {opts, positional, invalid} =
+      OptionParser.parse(args,
+        strict: [path: :string],
+        aliases: [p: :path]
+      )
+
+    ensure_no_invalid_options!(invalid)
+    ensure_no_positional_args!(positional)
+
+    path = resolved_path(Keyword.get(opts, :path))
+    archive_path = Kollywood.Tracker.PrdJsonArchive.archive_path(path)
+
+    case Kollywood.Tracker.PrdJsonArchive.list_archived(path) do
+      {:ok, stories} ->
+        Mix.shell().info("Archived stories (#{archive_path})")
+
+        if stories == [] do
+          Mix.shell().info("- none")
+        else
+          Enum.each(stories, fn story ->
+            sid = story_id(story) || "?"
+            status = story_status(story)
+            title = optional_string(field(story, :title)) || "Untitled story"
+            Mix.shell().info("- #{sid} | #{status} | #{title}")
+          end)
+        end
+
+      {:error, reason} ->
+        Mix.raise(reason)
+    end
+  end
+
+  defp archive_run_command(args) do
+    {opts, positional, invalid} =
+      OptionParser.parse(args,
+        strict: [path: :string],
+        aliases: [p: :path]
+      )
+
+    ensure_no_invalid_options!(invalid)
+    ensure_no_positional_args!(positional)
+
+    path = resolved_path(Keyword.get(opts, :path))
+
+    case Kollywood.Tracker.PrdJsonArchive.archive_stale_merged(path) do
+      {:ok, n} ->
+        Mix.shell().info("Archived #{n} merged stor(ies) from #{path}")
+
+      {:error, reason} ->
+        Mix.raise(reason)
+    end
+  end
+
+  defp archive_restore_command(story_id, args) do
+    {opts, positional, invalid} =
+      OptionParser.parse(args,
+        strict: [path: :string],
+        aliases: [p: :path]
+      )
+
+    ensure_no_invalid_options!(invalid)
+    ensure_no_positional_args!(positional)
+
+    story_id = String.trim(story_id)
+
+    if story_id == "" do
+      Mix.raise("Story ID cannot be empty")
+    end
+
+    path = resolved_path(Keyword.get(opts, :path))
+
+    case Kollywood.Tracker.PrdJsonArchive.restore_story(path, story_id) do
+      :ok ->
+        Mix.shell().info("Restored #{story_id} from archive into #{path}")
+
+      {:error, reason} ->
+        Mix.raise(reason)
     end
   end
 
@@ -867,6 +955,9 @@ defmodule Mix.Tasks.Kollywood.Prd do
       mix kollywood.prd reset STORY_ID [--path PATH] [--clear-notes] [--workspace-root PATH]
       mix kollywood.prd rerun STORY_ID [--path PATH] [--clear-notes] [--workspace-root PATH]
       mix kollywood.prd validate [--path PATH]
+      mix kollywood.prd archive list [--path PATH]
+      mix kollywood.prd archive run [--path PATH]
+      mix kollywood.prd archive restore STORY_ID [--path PATH]
     """)
   end
 end

@@ -1,5 +1,5 @@
 defmodule KollywoodWeb.ProjectControllerTest do
-  use KollywoodWeb.ConnCase, async: true
+  use KollywoodWeb.ConnCase, async: false
 
   alias Kollywood.Projects
 
