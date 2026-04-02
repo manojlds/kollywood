@@ -148,6 +148,50 @@ defmodule Kollywood.QueueDispatchPipelineTest do
     end
   end
 
+  describe "log_files key atomization" do
+    test "log_files string keys are converted to atoms for pattern matching in agent_runner" do
+      run_opts_snapshot =
+        Jason.encode!(%{
+          "log_files" => %{
+            "agent_stdout" => "/tmp/agent_stdout.log",
+            "reviewer_stdout" => "/tmp/reviewer_stdout.log",
+            "events" => "/tmp/events.jsonl"
+          },
+          "attempt" => 1
+        })
+
+      {:ok, entry} =
+        RunQueue.enqueue(%{
+          issue_id: "test-atomize-#{System.unique_integer([:positive])}",
+          identifier: "US-ATOM-1",
+          run_opts_snapshot: run_opts_snapshot,
+          config_snapshot: Jason.encode!(%{"issue" => %{"id" => "test", "state" => "open"}})
+        })
+
+      fetched = RunQueue.get(entry.id)
+      {:ok, decoded_map} = Jason.decode(fetched.run_opts_snapshot)
+
+      opts =
+        Enum.reduce(decoded_map, [], fn {key, value}, acc ->
+          if key in ~w(log_files attempt) do
+            atom_key = String.to_existing_atom(key)
+            resolved = WorkerConsumer.resolve_opt_value_for_test(atom_key, value)
+            [{atom_key, resolved} | acc]
+          else
+            acc
+          end
+        end)
+
+      log_files = Keyword.get(opts, :log_files)
+
+      assert is_map(log_files)
+      assert Map.has_key?(log_files, :agent_stdout),
+             "Expected atom key :agent_stdout but got string keys: #{inspect(Map.keys(log_files))}"
+      assert Map.has_key?(log_files, :reviewer_stdout)
+      assert log_files[:agent_stdout] == "/tmp/agent_stdout.log"
+    end
+  end
+
   describe "full queue dispatch pipeline" do
     test "worker consumer writes events to log files from queue entry" do
       test_dir = Path.join(@tmp_dir, "kollywood_test_pipeline_#{System.unique_integer([:positive])}")

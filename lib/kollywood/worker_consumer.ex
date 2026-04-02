@@ -61,6 +61,9 @@ defmodule Kollywood.WorkerConsumer do
     inject_on_event(run_opts, issue_id, attempt, identifier || issue_id)
   end
 
+  @doc false
+  def resolve_opt_value_for_test(key, value), do: resolve_opt_value(key, value)
+
   # --- Callbacks ---
 
   @impl true
@@ -292,6 +295,13 @@ defmodule Kollywood.WorkerConsumer do
 
   defp resolve_opt_value(:story_overrides_resolved, value) do
     value == true or value == "true"
+  end
+
+  defp resolve_opt_value(:log_files, value) when is_map(value) do
+    Map.new(value, fn
+      {k, v} when is_atom(k) -> {k, v}
+      {k, v} when is_binary(k) -> {String.to_atom(k), v}
+    end)
   end
 
   defp resolve_opt_value(_key, value), do: value
