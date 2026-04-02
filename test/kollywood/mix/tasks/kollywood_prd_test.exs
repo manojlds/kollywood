@@ -435,6 +435,39 @@ defmodule Mix.Tasks.Kollywood.PrdTest do
     end
   end
 
+  test "archive list, run, and restore", %{root: root} do
+    path = Path.join(root, "prd.json")
+    merged_at = "2026-03-30T12:00:00Z"
+    now = ~U[2026-04-01T12:00:00Z]
+
+    write_prd!(path, [
+      %{
+        "id" => "US-050",
+        "title" => "Old merged",
+        "status" => "merged",
+        "priority" => 1,
+        "passes" => true,
+        "mergedAt" => merged_at
+      }
+    ])
+
+    assert {:ok, 1} =
+             Kollywood.Tracker.PrdJsonArchive.archive_stale_merged(path,
+               now: now,
+               min_age_seconds: 24 * 3600
+             )
+
+    output = capture_io(fn -> Prd.run(["archive", "list", "--path", path]) end)
+    assert output =~ "US-050"
+
+    out_run = capture_io(fn -> Prd.run(["archive", "run", "--path", path]) end)
+    assert out_run =~ "0 merged"
+
+    _output = capture_io(fn -> Prd.run(["archive", "restore", "US-050", "--path", path]) end)
+
+    assert find_story!(path, "US-050")["status"] == "merged"
+  end
+
   defp setup_git_repo!(repo) do
     File.mkdir_p!(repo)
     run_git!(["init", "-b", "main"], repo)

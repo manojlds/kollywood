@@ -26,6 +26,8 @@ config :kollywood,
 config :kollywood,
   ecto_repos: [Kollywood.Repo]
 
+config :kollywood, Kollywood.PrdJsonArchiver, enabled: true, interval_ms: 15 * 60 * 1000
+
 config :kollywood, Kollywood.Repo,
   adapter: Ecto.Adapters.SQLite3,
   database: default_db_path,
