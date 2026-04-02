@@ -58,6 +58,30 @@ defmodule Kollywood.Application do
       end
 
     children =
+      if AppMode.worker_consumer_enabled?(mode) and
+           Application.get_env(:kollywood, :worker_consumer_enabled, true) do
+        worker_count =
+          Application.get_env(:kollywood, :worker_consumer_count, 1)
+
+        worker_concurrency =
+          Application.get_env(:kollywood, :worker_consumer_concurrency, 1)
+
+        worker_children =
+          for i <- 1..worker_count do
+            name = :"Kollywood.WorkerConsumer.#{i}"
+
+            {Kollywood.WorkerConsumer,
+             name: name,
+             max_local_workers: worker_concurrency,
+             worker_id: i}
+          end
+
+        children ++ worker_children
+      else
+        children
+      end
+
+    children =
       if AppMode.web_enabled?(mode),
         do: children ++ [Kollywood.PreviewSessionManager, KollywoodWeb.Endpoint],
         else: children ++ [Kollywood.PreviewSessionManager]
@@ -74,11 +98,15 @@ defmodule Kollywood.Application do
           _other -> []
         end
 
+      dispatch_mode =
+        Application.get_env(:kollywood, :orchestrator_dispatch_mode, :local)
+
       child_opts =
         orchestrator_opts
         |> Keyword.put_new(:workflow_store, Kollywood.WorkflowStore)
         |> Keyword.put_new(:agent_pool, Kollywood.AgentPool)
         |> Keyword.put_new(:repo_syncer, Kollywood.ProjectRepoSync)
+        |> Keyword.put_new(:dispatch_mode, dispatch_mode)
 
       children ++ [{Kollywood.Orchestrator, child_opts}]
     else
