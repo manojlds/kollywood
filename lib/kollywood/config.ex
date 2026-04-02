@@ -84,15 +84,27 @@ defmodule Kollywood.Config do
     }
   end
 
+  @atom_value_keys ~w(kind strategy provider mode auto_push auto_create_pr command)a
+
   defp atomize_keys(map) when is_map(map) do
     Map.new(map, fn
-      {k, v} when is_binary(k) -> {safe_existing_atom(k), atomize_keys(v)}
-      {k, v} -> {k, atomize_keys(v)}
+      {k, v} when is_binary(k) ->
+        atom_key = safe_existing_atom(k)
+        {atom_key, maybe_atomize_value(atom_key, atomize_keys(v))}
+
+      {k, v} ->
+        {k, maybe_atomize_value(k, atomize_keys(v))}
     end)
   end
 
   defp atomize_keys(list) when is_list(list), do: Enum.map(list, &atomize_keys/1)
   defp atomize_keys(value), do: value
+
+  defp maybe_atomize_value(key, value) when key in @atom_value_keys and is_binary(value) do
+    safe_existing_atom(value)
+  end
+
+  defp maybe_atomize_value(_key, value), do: value
 
   defp safe_existing_atom(str) do
     String.to_existing_atom(str)
