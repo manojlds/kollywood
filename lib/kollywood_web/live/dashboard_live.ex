@@ -51,6 +51,8 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:active_log_tab, "agent")
       |> assign(:artifact_preview, nil)
       |> assign(:preview_session, nil)
+      |> assign(:step_idx, nil)
+      |> assign(:current_step, nil)
       |> assign(:log_poll_timer, nil)
       |> assign(:story_form_mode, nil)
       |> assign(:story_form_values, %{})
@@ -722,7 +724,7 @@ defmodule KollywoodWeb.DashboardLive do
             <.nav_tab
               label="Runs"
               icon="hero-play"
-              active={@live_action in [:runs, :run_detail]}
+              active={@live_action in [:runs, :run_detail, :step_detail]}
               patch={project_runs_path(@current_project.slug, @stories_view)}
             />
             <.nav_tab
@@ -779,14 +781,20 @@ defmodule KollywoodWeb.DashboardLive do
                   preview_session={@preview_session}
                 />
               <% :run_detail -> %>
-                <.run_detail_section
+                <.run_steps_section
                   run_detail={@run_detail}
                   story_id={@run_detail_story_id}
                   attempt={@run_detail_attempt}
-                  run_detail_panel_tab={@run_detail_panel_tab}
-                  reports_tab={@reports_tab}
-                  active_prompt_tab={@active_prompt_tab}
-                  active_log_tab={@active_log_tab}
+                  project={@current_project}
+                  stories_view={@stories_view}
+                />
+              <% :step_detail -> %>
+                <.step_detail_section
+                  run_detail={@run_detail}
+                  story_id={@run_detail_story_id}
+                  attempt={@run_detail_attempt}
+                  step_idx={@step_idx}
+                  step={@current_step}
                   project={@current_project}
                   stories_view={@stories_view}
                 />
@@ -3382,6 +3390,352 @@ defmodule KollywoodWeb.DashboardLive do
     </div>
     """
   end
+
+  # -- Run Steps Section (replaces run_detail for step timeline) --
+
+  attr :run_detail, :map, default: nil
+  attr :story_id, :string, default: nil
+  attr :attempt, :string, default: nil
+  attr :project, Project, required: true
+  attr :stories_view, :string, default: @default_stories_view
+
+  defp run_steps_section(assigns) do
+    steps =
+      if is_map(assigns.run_detail) do
+        events = run_detail_events(assigns.run_detail)
+        Kollywood.Orchestrator.RunSteps.from_events(events)
+      else
+        []
+      end
+
+    visible_steps =
+      Enum.filter(steps, fn s ->
+        s.kind not in ["run_started", "workspace_ready", "quality_cycle", "quality_retry", "quality_passed", "run_finished", "prompt_captured"]
+      end)
+
+    run_status =
+      if is_map(assigns.run_detail),
+        do: get_in(assigns.run_detail, ["metadata", "status"]) || "unknown",
+        else: "unknown"
+
+    run_error =
+      if is_map(assigns.run_detail),
+        do: get_in(assigns.run_detail, ["metadata", "error"]),
+        else: nil
+
+    assigns =
+      assigns
+      |> assign(:steps, visible_steps)
+      |> assign(:run_status, run_status)
+      |> assign(:run_error, run_error)
+
+    ~H"""
+    <div class="flex flex-col gap-4 h-full">
+      <div class="flex flex-wrap items-center justify-between gap-2 sm:gap-3">
+        <div class="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3">
+          <.link
+            navigate={story_runs_tab_path(@project.slug, @story_id, @stories_view)}
+            class="btn btn-ghost btn-sm gap-2"
+          >
+            <.icon name="hero-arrow-left" class="size-4" /> Back to Runs
+          </.link>
+          <span class="badge badge-outline font-mono text-sm">{@story_id}</span>
+          <span class="text-sm text-base-content/60">Run {run_number(@attempt)}</span>
+          <.run_status_badge status={@run_status} />
+        </div>
+      </div>
+
+      <%= if @run_error do %>
+        <div class="alert alert-error text-sm gap-2">
+          <.icon name="hero-exclamation-triangle" class="size-4 shrink-0" />
+          <p class="break-words min-w-0">{@run_error}</p>
+        </div>
+      <% end %>
+
+      <div class="card bg-base-200 border border-base-300">
+        <div class="card-body p-0">
+          <h3 class="card-title text-lg px-5 pt-4 pb-2">Pipeline Steps</h3>
+          <%= if @steps == [] do %>
+            <p class="text-base-content/60 py-4 px-5">No steps recorded yet.</p>
+          <% else %>
+            <div class="space-y-1 px-3 pb-3">
+              <%= for step <- @steps do %>
+                <.link
+                  navigate={step_detail_path(@project.slug, @story_id, @attempt, step.idx, @stories_view)}
+                  class="flex items-center gap-3 p-3 bg-base-100 rounded-lg hover:bg-base-300 transition-colors"
+                >
+                  <.step_status_icon kind={step.kind} status={step.status} />
+                  <span class="text-sm font-medium flex-1 truncate">{step.label}</span>
+                  <%= if step.error do %>
+                    <span class="text-xs text-error truncate max-w-[200px]">{step.error}</span>
+                  <% end %>
+                  <span class="text-xs text-base-content/50 shrink-0">
+                    {format_step_duration(step.duration_ms)}
+                  </span>
+                </.link>
+              <% end %>
+            </div>
+          <% end %>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  # -- Step Detail Section --
+
+  attr :run_detail, :map, default: nil
+  attr :story_id, :string, default: nil
+  attr :attempt, :string, default: nil
+  attr :step_idx, :string, default: nil
+  attr :step, :map, default: nil
+  attr :project, Project, required: true
+  attr :stories_view, :string, default: @default_stories_view
+
+  defp step_detail_section(assigns) do
+    step_log_content = step_log_content(assigns.step, assigns.run_detail)
+
+    assigns = assign(assigns, :step_log_content, step_log_content)
+
+    ~H"""
+    <div class="flex flex-col gap-4 h-full">
+      <div class="flex flex-wrap items-center justify-between gap-2 sm:gap-3">
+        <div class="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3">
+          <.link
+            navigate={run_detail_path(@project.slug, @story_id, @attempt, @stories_view)}
+            class="btn btn-ghost btn-sm gap-2"
+          >
+            <.icon name="hero-arrow-left" class="size-4" /> Back to Steps
+          </.link>
+          <span class="badge badge-outline font-mono text-sm">{@story_id}</span>
+          <span class="text-sm text-base-content/60">Run {run_number(@attempt)}</span>
+        </div>
+      </div>
+
+      <%= if @step do %>
+        <div class="flex items-center gap-3">
+          <.step_status_icon kind={@step.kind} status={@step.status} />
+          <h2 class="text-lg font-semibold">{@step.label}</h2>
+          <span class="text-xs text-base-content/50">{format_step_duration(@step.duration_ms)}</span>
+          <%= if @step.started_at && @step.started_at != "" do %>
+            <span class="text-xs text-base-content/50">{time_ago(@step.started_at)}</span>
+          <% end %>
+        </div>
+
+        <%= if @step.error do %>
+          <div class="alert alert-error text-sm gap-2">
+            <.icon name="hero-exclamation-triangle" class="size-4 shrink-0" />
+            <p class="break-words min-w-0">{@step.error}</p>
+          </div>
+        <% end %>
+
+        <%!-- Prompt section for agent/remediation/review/testing --%>
+        <%= if @step.prompt do %>
+          <div class="collapse collapse-arrow bg-base-200 border border-base-300">
+            <input type="checkbox" />
+            <div class="collapse-title font-medium text-sm">Prompt</div>
+            <div class="collapse-content">
+              <pre class="text-xs whitespace-pre-wrap break-words max-h-[400px] overflow-y-auto bg-base-300 p-3 rounded-lg">{@step.prompt}</pre>
+            </div>
+          </div>
+        <% end %>
+
+        <%!-- Checks detail --%>
+        <%= if @step.kind == "checks" && @step.detail[:checks] do %>
+          <div class="card bg-base-200 border border-base-300">
+            <div class="card-body p-4 space-y-2">
+              <h3 class="font-medium text-sm">Check Commands</h3>
+              <%= for check <- @step.detail[:checks] do %>
+                <div class="flex items-center gap-3 p-2 bg-base-100 rounded-lg">
+                  <.step_status_icon kind="check" status={check.status} />
+                  <code class="text-xs flex-1 truncate">{check.command}</code>
+                  <span class="text-xs text-base-content/50">{format_step_duration(check.duration_ms)}</span>
+                </div>
+              <% end %>
+            </div>
+          </div>
+        <% end %>
+
+        <%!-- Runtime events for testing/runtime steps --%>
+        <%= if @step.kind in ["testing", "runtime"] do %>
+          <div class="card bg-base-200 border border-base-300">
+            <div class="card-body p-4 space-y-2">
+              <h3 class="font-medium text-sm">Runtime Events</h3>
+              <%= for event <- @step.events do %>
+                <% event_type = Map.get(event, "type") || to_string(Map.get(event, :type, "")) %>
+                <%= if String.starts_with?(event_type, "runtime_") do %>
+                  <div class="flex items-center gap-3 p-2 bg-base-100 rounded-lg">
+                    <.runtime_event_icon type={event_type} />
+                    <span class="text-xs font-mono flex-1">{event_type}</span>
+                    <%= if event["resolved_ports"] do %>
+                      <span class="text-xs text-base-content/50">{inspect(event["resolved_ports"])}</span>
+                    <% end %>
+                    <%= if event["reason"] do %>
+                      <span class="text-xs text-error truncate max-w-[250px]">{event["reason"]}</span>
+                    <% end %>
+                    <span class="text-xs text-base-content/50">{format_event_time(event)}</span>
+                  </div>
+                <% end %>
+              <% end %>
+            </div>
+          </div>
+        <% end %>
+
+        <%!-- Log content --%>
+        <%= if @step_log_content && @step_log_content != "" do %>
+          <div class="card bg-base-200 border border-base-300">
+            <div class="card-body p-4">
+              <h3 class="font-medium text-sm mb-2">Logs</h3>
+              <pre class="text-xs whitespace-pre-wrap break-words max-h-[500px] overflow-y-auto bg-neutral text-neutral-content p-3 rounded-lg font-mono">{@step_log_content}</pre>
+            </div>
+          </div>
+        <% end %>
+
+        <%!-- Raw events --%>
+        <div class="collapse collapse-arrow bg-base-200 border border-base-300">
+          <input type="checkbox" />
+          <div class="collapse-title font-medium text-sm">Raw Events ({length(@step.events)})</div>
+          <div class="collapse-content">
+            <pre class="text-xs whitespace-pre-wrap break-words max-h-[300px] overflow-y-auto bg-base-300 p-3 rounded-lg">{Jason.encode!(@step.events, pretty: true)}</pre>
+          </div>
+        </div>
+      <% else %>
+        <div class="alert alert-warning">Step not found.</div>
+      <% end %>
+    </div>
+    """
+  end
+
+  # -- Step helpers --
+
+  attr :kind, :string, required: true
+  attr :status, :string, required: true
+
+  defp step_status_icon(assigns) do
+    {icon, color} = step_icon_and_color(assigns.kind, assigns.status)
+    assigns = assigns |> assign(:icon, icon) |> assign(:color, color)
+
+    ~H"""
+    <div class={["size-6 shrink-0 flex items-center justify-center rounded-full", @color]}>
+      <.icon name={@icon} class="size-3.5" />
+    </div>
+    """
+  end
+
+  defp step_icon_and_color(kind, status) do
+    case {kind, status} do
+      {_, "passed"} -> {"hero-check-mini", "bg-success/20 text-success"}
+      {_, "ok"} -> {"hero-check-mini", "bg-success/20 text-success"}
+      {_, "failed"} -> {"hero-x-mark-mini", "bg-error/20 text-error"}
+      {_, "error"} -> {"hero-exclamation-triangle-mini", "bg-error/20 text-error"}
+      {_, "running"} -> {"hero-arrow-path-mini", "bg-warning/20 text-warning"}
+      {_, "interrupted"} -> {"hero-pause-mini", "bg-base-content/20 text-base-content/60"}
+      {_, "skipped"} -> {"hero-minus-mini", "bg-base-content/20 text-base-content/60"}
+      {"agent_turn", _} -> {"hero-cpu-chip-mini", "bg-primary/20 text-primary"}
+      {"remediation", _} -> {"hero-wrench-mini", "bg-warning/20 text-warning"}
+      {"checks", _} -> {"hero-clipboard-document-check-mini", "bg-info/20 text-info"}
+      {"review", _} -> {"hero-eye-mini", "bg-secondary/20 text-secondary"}
+      {"testing", _} -> {"hero-beaker-mini", "bg-accent/20 text-accent"}
+      {"runtime", _} -> {"hero-server-mini", "bg-base-content/20 text-base-content/60"}
+      {"publish", _} -> {"hero-arrow-up-tray-mini", "bg-primary/20 text-primary"}
+      _ -> {"hero-ellipsis-horizontal-mini", "bg-base-content/20 text-base-content/60"}
+    end
+  end
+
+  attr :type, :string, required: true
+
+  defp runtime_event_icon(assigns) do
+    {icon, color} =
+      case assigns.type do
+        "runtime_starting" -> {"hero-play-mini", "text-info"}
+        "runtime_started" -> {"hero-check-mini", "text-success"}
+        "runtime_healthcheck_started" -> {"hero-heart-mini", "text-info"}
+        "runtime_healthcheck_passed" -> {"hero-heart-mini", "text-success"}
+        "runtime_healthcheck_failed" -> {"hero-heart-mini", "text-error"}
+        "runtime_start_failed" -> {"hero-x-mark-mini", "text-error"}
+        "runtime_stopping" -> {"hero-stop-mini", "text-warning"}
+        "runtime_stopped" -> {"hero-stop-mini", "text-base-content/60"}
+        _ -> {"hero-ellipsis-horizontal-mini", "text-base-content/60"}
+      end
+
+    assigns = assigns |> assign(:icon, icon) |> assign(:color, color)
+    ~H"""
+    <.icon name={@icon} class={["size-4 shrink-0", @color]} />
+    """
+  end
+
+  defp format_step_duration(nil), do: "-"
+  defp format_step_duration(ms) when ms < 1000, do: "#{ms}ms"
+  defp format_step_duration(ms) when ms < 60_000, do: "#{Float.round(ms / 1000, 1)}s"
+
+  defp format_step_duration(ms) do
+    minutes = div(ms, 60_000)
+    seconds = div(rem(ms, 60_000), 1000)
+    "#{minutes}m #{seconds}s"
+  end
+
+  defp format_event_time(event) do
+    ts = Map.get(event, "timestamp") || Map.get(event, :timestamp)
+    if is_binary(ts), do: String.slice(ts, 11, 8), else: ""
+  end
+
+  defp step_detail_path(project_slug, story_id, attempt, step_idx, stories_view) do
+    base = "/projects/#{project_slug}/runs/#{story_id}/#{attempt}/step/#{step_idx}"
+    if stories_view, do: base <> "?view=#{stories_view}", else: base
+  end
+
+  defp step_log_content(nil, _run_detail), do: nil
+
+  defp step_log_content(step, run_detail) when is_map(step) and is_map(run_detail) do
+    files = run_detail["files"]
+    if is_nil(files), do: nil, else: step_log_for_kind(step.kind, files)
+  end
+
+  defp step_log_content(_step, _run_detail), do: nil
+
+  defp step_log_for_kind(kind, files) when kind in ["agent_turn", "remediation"] do
+    read_file_safe(files[:agent_stdout]) || read_file_safe(files[:agent])
+  end
+
+  defp step_log_for_kind("checks", files), do: read_file_safe(files[:checks])
+  defp step_log_for_kind("review", files), do: read_file_safe(files[:reviewer_stdout]) || read_file_safe(files[:reviewer])
+  defp step_log_for_kind("testing", files) do
+    (read_file_safe(files[:tester_stdout]) || read_file_safe(files[:tester]) || "") <>
+      "\n" <> (read_file_safe(files[:runtime]) || "")
+  end
+
+  defp step_log_for_kind("runtime", files), do: read_file_safe(files[:runtime])
+  defp step_log_for_kind("publish", files), do: read_file_safe(files[:worker])
+  defp step_log_for_kind(_kind, _files), do: nil
+
+  defp read_file_safe(nil), do: nil
+
+  defp read_file_safe(path) when is_binary(path) do
+    case File.read(path) do
+      {:ok, content} when byte_size(content) > 0 -> content
+      _ -> nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp run_detail_events(run_detail) when is_map(run_detail) do
+    attempt_dir =
+      case get_in(run_detail, ["metadata", "attempt_dir"]) do
+        dir when is_binary(dir) -> dir
+        _ -> nil
+      end
+
+    if attempt_dir do
+      attempt_dir
+      |> Path.join("events.jsonl")
+      |> read_events_jsonl()
+    else
+      []
+    end
+  end
+
+  defp run_detail_events(_), do: []
 
   # -- Story Detail Section --
 
@@ -6627,6 +6981,41 @@ defmodule KollywoodWeb.DashboardLive do
     end
   end
 
+  defp handle_live_action(socket, :step_detail, params) do
+    story_id = params["story_id"]
+    attempt = params["attempt"]
+    step_idx = params["step_idx"]
+    project = socket.assigns.current_project
+
+    if project && is_binary(attempt) && is_binary(step_idx) do
+      tab = socket.assigns.active_log_tab
+      run_detail = load_run_detail_for_attempt(project, story_id, attempt, tab)
+      parsed_idx = String.to_integer(step_idx)
+
+      steps =
+        if run_detail do
+          events = run_detail_events(run_detail)
+          Kollywood.Orchestrator.RunSteps.from_events(events)
+        else
+          []
+        end
+
+      current_step = Enum.find(steps, &(&1.idx == parsed_idx))
+
+      socket
+      |> assign(:run_detail, run_detail)
+      |> assign(:step_idx, step_idx)
+      |> assign(:current_step, current_step)
+    else
+      socket
+      |> assign(:step_idx, nil)
+      |> assign(:current_step, nil)
+    end
+  rescue
+    _ ->
+      socket |> assign(:step_idx, nil) |> assign(:current_step, nil)
+  end
+
   defp handle_live_action(socket, :story_detail, params) do
     story_id = params["story_id"]
     attempt = params["attempt"]
@@ -6739,7 +7128,8 @@ defmodule KollywoodWeb.DashboardLive do
     prompts = extract_captured_prompts(events)
 
     %{
-      "metadata" => metadata,
+      "metadata" => Map.put(metadata, "attempt_dir", Path.dirname(files.metadata)),
+      "files" => files,
       "settings_snapshot" => RunLogs.settings_snapshot(metadata),
       "current_workflow_identity" => current_workflow_identity(project),
       "phase" => phase,

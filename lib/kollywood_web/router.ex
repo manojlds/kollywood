@@ -31,6 +31,7 @@ defmodule KollywoodWeb.Router do
 
     live "/projects/:project_slug/runs/:story_id", DashboardLive, :run_detail
     live "/projects/:project_slug/runs/:story_id/:attempt", DashboardLive, :run_detail
+    live "/projects/:project_slug/runs/:story_id/:attempt/step/:step_idx", DashboardLive, :step_detail
     live "/projects/:project_slug/settings", DashboardLive, :settings
   end
 
