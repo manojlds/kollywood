@@ -581,12 +581,17 @@ defmodule KollywoodWeb.DashboardLiveTest do
     } do
       {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories/US-002")
 
-      assert render(view) =~
-               "Stop work on US-002? This will stop any in-progress run, move it to Draft, clear run data, and remove the worktree."
-
       html =
         view
         |> element("button[phx-click='reset_story'][phx-value-id='US-002']")
+        |> render_click()
+
+      assert html =~ "Confirm action"
+      assert html =~ "Stop work on US-002?"
+
+      html =
+        view
+        |> element("button[data-confirm-action='reset_story'][phx-value-id='US-002']")
         |> render_click()
 
       assert html =~ "Draft"
@@ -876,8 +881,16 @@ defmodule KollywoodWeb.DashboardLiveTest do
     } do
       {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories")
 
+      html =
+        view
+        |> element("button[phx-click='reset_story'][phx-value-id='US-002']")
+        |> render_click()
+
+      assert html =~ "Confirm action"
+      assert html =~ "Stop work on US-002?"
+
       view
-      |> element("button[phx-click='reset_story'][phx-value-id='US-002']")
+      |> element("button[data-confirm-action='reset_story'][phx-value-id='US-002']")
       |> render_click()
 
       {:ok, content} = File.read(Projects.tracker_path(project))
@@ -1441,6 +1454,21 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "Retry testing"
       assert has_element?(story_view, "button[phx-click='trigger_run'][phx-value-step='testing']")
       refute html =~ ~s(phx-value-step="testing" disabled)
+
+      html =
+        run_view
+        |> element("button[phx-click='trigger_run'][phx-value-step='testing']")
+        |> render_click()
+
+      assert html =~ "Confirm action"
+      assert html =~ "Start retry testing"
+
+      _html =
+        run_view
+        |> element("button[data-confirm-action='trigger_run'][phx-value-step='testing']")
+        |> render_click()
+
+      refute has_element?(run_view, "button[data-confirm-action='trigger_run']")
     end
 
     test "run detail disables retry action when workspace preconditions are missing", %{

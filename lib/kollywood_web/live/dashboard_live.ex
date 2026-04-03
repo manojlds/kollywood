@@ -52,6 +52,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:active_prompt_tab, "agent")
       |> assign(:active_log_tab, "agent")
       |> assign(:artifact_preview, nil)
+      |> assign(:action_confirmation, nil)
       |> assign(:preview_session, nil)
       |> assign(:step_idx, nil)
       |> assign(:current_step, nil)
@@ -92,6 +93,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:page_title, if(current_project, do: current_project.name, else: "Dashboard"))
       |> assign(:active_log_tab, active_log_tab)
       |> assign(:artifact_preview, nil)
+      |> assign(:action_confirmation, nil)
       |> assign(:settings_edit_mode, false)
       |> assign(:run_detail_story_id, params["story_id"])
       |> assign(:run_detail_attempt, params["attempt"])
@@ -357,34 +359,26 @@ defmodule KollywoodWeb.DashboardLive do
     {:noreply, socket}
   end
 
-  def handle_event("reset_story", %{"id" => id}, socket) do
-    project = socket.assigns.current_project
-
-    stop_orchestrator_issue(id)
-    if project, do: Kollywood.PreviewSessionManager.stop_if_active(project.slug, id)
-
+  def handle_event("reset_story", %{"id" => id, "confirmed" => confirmed} = _params, socket)
+      when is_binary(id) do
     socket =
-      case local_tracker_path(project) do
-        {:ok, tracker_path} ->
-          case PrdJson.reset_story(tracker_path, id) do
-            :ok ->
-              cleanup_worktree(project, id)
-
-              socket
-              |> assign(:preview_session, nil)
-              |> load_project_data(project)
-              |> sync_story_detail_selection()
-              |> put_flash(:info, "Work stopped and story moved to Draft.")
-
-            {:error, reason} ->
-              put_flash(socket, :error, "Reset failed: #{reason}")
-          end
-
-        {:error, reason} ->
-          put_flash(socket, :error, reason)
+      if confirmed_action?(%{"confirmed" => confirmed}) do
+        socket
+        |> clear_action_confirmation()
+        |> perform_reset_story(id)
+      else
+        open_reset_confirmation(socket, id)
       end
 
     {:noreply, socket}
+  end
+
+  def handle_event("reset_story", %{"id" => id}, socket) when is_binary(id) do
+    {:noreply, open_reset_confirmation(socket, id)}
+  end
+
+  def handle_event("reset_story", _params, socket) do
+    {:noreply, put_flash(socket, :error, "Story ID is required.")}
   end
 
   def handle_event("open_new_story_form", _params, socket) do
@@ -505,57 +499,20 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   def handle_event("trigger_run", params, socket) do
-    project = socket.assigns.current_project
-    story_id = Map.get(params, "story_id") || socket.assigns.run_detail_story_id
-
-    source_attempt =
-      Map.get(params, "attempt") || get_in(socket.assigns, [:run_detail, "metadata", "attempt"])
-
-    retry_step =
-      Map.get(params, "step") || get_in(socket.assigns, [:run_detail, "retry_action", "step"])
-
     socket =
-      cond do
-        is_nil(project) ->
-          put_flash(socket, :error, "Select a project before retrying a run.")
-
-        not local_provider?(project) ->
-          put_flash(socket, :error, "Step retries are only available for local projects.")
-
-        not is_binary(story_id) ->
-          put_flash(socket, :error, "No story selected for retry.")
-
-        retry_step == "full_rerun" ->
-          case trigger_full_rerun(project, story_id) do
-            :ok ->
-              socket
-              |> load_project_data(project)
-              |> sync_story_detail_selection()
-              |> put_flash(:info, "Story reset to open. The orchestrator will pick it up.")
-
-            {:error, reason} ->
-              put_flash(socket, :error, "Full rerun failed: #{reason}")
-          end
-
-        true ->
-          case StepRetry.retry(project, story_id, source_attempt, retry_step) do
-            {:ok, result} ->
-              attempt = parse_attempt(result[:attempt])
-              retry_step_label = result[:retry_step] || "step"
-              run_label = if is_integer(attempt), do: "##{attempt}", else: "new run"
-
-              socket
-              |> load_project_data(project)
-              |> sync_story_detail_selection()
-              |> maybe_navigate_to_retry_attempt(project, story_id, attempt)
-              |> put_flash(:info, "Retry #{retry_step_label} completed as #{run_label}.")
-
-            {:error, reason} ->
-              put_flash(socket, :error, "Retry failed: #{reason}")
-          end
+      if confirmed_action?(params) do
+        socket
+        |> clear_action_confirmation()
+        |> perform_trigger_run(params)
+      else
+        open_retry_confirmation(socket, params)
       end
 
     {:noreply, socket}
+  end
+
+  def handle_event("cancel_action_confirmation", _params, socket) do
+    {:noreply, clear_action_confirmation(socket)}
   end
 
   def handle_event("save_workflow", %{"body" => body}, socket) do
@@ -841,6 +798,8 @@ defmodule KollywoodWeb.DashboardLive do
           values={@story_form_values}
           error={@story_form_error}
         />
+
+        <.action_confirmation_modal confirmation={@action_confirmation} />
 
         <%!-- Story Detail Slide-over (stories list only) --%>
         <div
@@ -1866,7 +1825,6 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:status_targets, status_targets)
       |> assign(:show_reset, show_reset)
       |> assign(:reset_label, reset_action_label(status))
-      |> assign(:reset_confirm, reset_action_confirm(status, assigns.story["id"]))
       |> assign(:can_drag, can_drag)
       |> assign(:status_targets_csv, Enum.join(status_targets, ","))
 
@@ -1958,7 +1916,6 @@ defmodule KollywoodWeb.DashboardLive do
                 status_targets={@status_targets}
                 show_reset={@show_reset}
                 reset_label={@reset_label}
-                reset_confirm={@reset_confirm}
               />
             </div>
           <% end %>
@@ -1976,7 +1933,6 @@ defmodule KollywoodWeb.DashboardLive do
   attr :status_targets, :list, default: []
   attr :show_reset, :boolean, default: false
   attr :reset_label, :string, default: "Reset Story"
-  attr :reset_confirm, :string, default: nil
 
   defp story_actions_menu(assigns) do
     ~H"""
@@ -2007,9 +1963,9 @@ defmodule KollywoodWeb.DashboardLive do
           <%= if @show_reset do %>
             <li>
               <button
+                type="button"
                 phx-click="reset_story"
                 phx-value-id={@story["id"]}
-                onclick={confirm_onclick(@reset_confirm)}
                 class="text-xs text-warning"
               >
                 {@reset_label}
@@ -2360,6 +2316,72 @@ defmodule KollywoodWeb.DashboardLive do
                 <button type="submit" class="btn btn-primary btn-sm">Save Story</button>
               </div>
             </form>
+          </div>
+        </div>
+      </div>
+    <% end %>
+    """
+  end
+
+  attr :confirmation, :map, default: nil
+
+  defp action_confirmation_modal(assigns) do
+    confirmation = if is_map(assigns.confirmation), do: assigns.confirmation, else: nil
+
+    assigns =
+      assigns
+      |> assign(:confirmation, confirmation)
+      |> assign(
+        :confirm_button_class,
+        if(confirmation && confirmation[:event] == "reset_story",
+          do: "btn btn-warning btn-sm",
+          else: "btn btn-primary btn-sm"
+        )
+      )
+
+    ~H"""
+    <%= if @confirmation do %>
+      <div
+        class="fixed inset-0 z-[75] flex items-center justify-center p-4"
+        role="dialog"
+        aria-modal="true"
+      >
+        <button
+          type="button"
+          class="absolute inset-0 bg-black/60"
+          phx-click="cancel_action_confirmation"
+          aria-label="Close confirmation"
+        >
+        </button>
+
+        <div class="relative z-10 w-full max-w-lg rounded-xl border border-base-300 bg-base-100 p-5 shadow-xl">
+          <div class="space-y-2">
+            <p class="text-xs font-semibold uppercase tracking-wide text-base-content/60">
+              Confirm action
+            </p>
+            <h3 class="text-lg font-semibold">{@confirmation[:title] || "Confirm"}</h3>
+            <p class="text-sm text-base-content/80 whitespace-pre-wrap">{@confirmation[:message]}</p>
+          </div>
+
+          <div class="mt-5 flex items-center justify-end gap-2">
+            <button type="button" class="btn btn-ghost btn-sm" phx-click="cancel_action_confirmation">
+              Cancel
+            </button>
+
+            <button
+              type="button"
+              phx-click={@confirmation[:event]}
+              phx-value-id={@confirmation[:id]}
+              phx-value-story_id={@confirmation[:story_id]}
+              phx-value-attempt={@confirmation[:attempt]}
+              phx-value-step={@confirmation[:step]}
+              phx-value-confirmed="true"
+              phx-disable-with="Working..."
+              class={@confirm_button_class}
+              data-confirm-action={@confirmation[:event]}
+            >
+              {@confirmation[:confirm_label] || "Confirm"}
+            </button>
           </div>
         </div>
       </div>
@@ -3352,6 +3374,7 @@ defmodule KollywoodWeb.DashboardLive do
                     </.link>
                     <%= if step_retryable?(step, @retryable_idx) do %>
                       <button
+                        type="button"
                         phx-click="trigger_run"
                         phx-value-story_id={@story_id}
                         phx-value-attempt={@attempt}
@@ -3483,6 +3506,7 @@ defmodule KollywoodWeb.DashboardLive do
           <% end %>
           <%= if step_retryable?(@step, @retryable_idx) do %>
             <button
+              type="button"
               phx-click="trigger_run"
               phx-value-story_id={@story_id}
               phx-value-attempt={@attempt}
@@ -3924,7 +3948,6 @@ defmodule KollywoodWeb.DashboardLive do
           <% status_targets = manual_status_targets(@story["status"]) %>
           <% show_reset = show_reset_action?(current_status) %>
           <% reset_label = reset_action_label(current_status) %>
-          <% reset_confirm = reset_action_confirm(current_status, story_id) %>
           <div class="shrink-0">
             <div class="dropdown dropdown-end">
               <label tabindex="0" class="btn btn-ghost btn-sm gap-2 whitespace-nowrap">
@@ -3956,9 +3979,9 @@ defmodule KollywoodWeb.DashboardLive do
                 <%= if show_reset do %>
                   <li>
                     <button
+                      type="button"
                       phx-click="reset_story"
                       phx-value-id={story_id}
-                      onclick={confirm_onclick(reset_confirm)}
                       class="text-xs text-warning"
                     >
                       {reset_label}
@@ -5427,6 +5450,7 @@ defmodule KollywoodWeb.DashboardLive do
         <li>
           <%= if @has_retry_action do %>
             <button
+              type="button"
               phx-click="trigger_run"
               phx-value-story_id={@story_id}
               phx-value-attempt={@retry_action["attempt"]}
@@ -7133,6 +7157,166 @@ defmodule KollywoodWeb.DashboardLive do
 
       _other ->
         socket
+    end
+  end
+
+  defp confirmed_action?(params) when is_map(params) do
+    case Map.get(params, "confirmed") do
+      true -> true
+      "true" -> true
+      "1" -> true
+      1 -> true
+      _other -> false
+    end
+  end
+
+  defp confirmed_action?(_params), do: false
+
+  defp clear_action_confirmation(socket), do: assign(socket, :action_confirmation, nil)
+
+  defp open_reset_confirmation(socket, story_id) when is_binary(story_id) do
+    story = Enum.find(socket.assigns[:stories] || [], &(&1["id"] == story_id))
+    status = normalize_status(if(is_map(story), do: story["status"], else: nil))
+    action_label = reset_action_label(status)
+
+    assign(socket, :action_confirmation, %{
+      event: "reset_story",
+      id: story_id,
+      title: action_label,
+      message: reset_action_confirm(status, story_id),
+      confirm_label: action_label
+    })
+  end
+
+  defp open_reset_confirmation(socket, _story_id), do: socket
+
+  defp open_retry_confirmation(socket, params) do
+    project = socket.assigns.current_project
+    story_id = Map.get(params, "story_id") || socket.assigns.run_detail_story_id
+
+    source_attempt =
+      Map.get(params, "attempt") || get_in(socket.assigns, [:run_detail, "metadata", "attempt"])
+
+    retry_step =
+      Map.get(params, "step") || get_in(socket.assigns, [:run_detail, "retry_action", "step"])
+
+    step_label = retry_action_label(retry_step)
+    attempt_text = retry_attempt_text(source_attempt)
+
+    message =
+      case retry_step do
+        "full_rerun" ->
+          "Reset #{story_id || "this story"} to Open and enqueue a full rerun?"
+
+        _other ->
+          "Start #{String.downcase(step_label)} for #{story_id || "this story"}#{attempt_text}? This creates a new linked run attempt."
+      end
+
+    assign(socket, :action_confirmation, %{
+      event: "trigger_run",
+      story_id: story_id,
+      attempt: source_attempt,
+      step: retry_step,
+      title: step_label,
+      message: message,
+      confirm_label: if(retry_step == "full_rerun", do: "Start full rerun", else: "Start retry"),
+      disabled: is_nil(project) or not is_binary(story_id)
+    })
+  end
+
+  defp retry_action_label("checks"), do: "Retry checks"
+  defp retry_action_label("review"), do: "Retry review"
+  defp retry_action_label("testing"), do: "Retry testing"
+  defp retry_action_label("publish"), do: "Retry publish"
+  defp retry_action_label("full_rerun"), do: "Full rerun"
+
+  defp retry_action_label(step) when is_binary(step) and step != "",
+    do: "Retry #{String.downcase(step)}"
+
+  defp retry_action_label(_step), do: "Retry run"
+
+  defp retry_attempt_text(source_attempt) do
+    case parse_attempt(source_attempt) do
+      attempt when is_integer(attempt) and attempt > 0 -> " from run ##{attempt}"
+      _other -> ""
+    end
+  end
+
+  defp perform_reset_story(socket, id) do
+    project = socket.assigns.current_project
+
+    stop_orchestrator_issue(id)
+    if project, do: Kollywood.PreviewSessionManager.stop_if_active(project.slug, id)
+
+    case local_tracker_path(project) do
+      {:ok, tracker_path} ->
+        case PrdJson.reset_story(tracker_path, id) do
+          :ok ->
+            cleanup_worktree(project, id)
+
+            socket
+            |> assign(:preview_session, nil)
+            |> load_project_data(project)
+            |> sync_story_detail_selection()
+            |> put_flash(:info, "Work stopped and story moved to Draft.")
+
+          {:error, reason} ->
+            put_flash(socket, :error, "Reset failed: #{reason}")
+        end
+
+      {:error, reason} ->
+        put_flash(socket, :error, reason)
+    end
+  end
+
+  defp perform_trigger_run(socket, params) do
+    project = socket.assigns.current_project
+    story_id = Map.get(params, "story_id") || socket.assigns.run_detail_story_id
+
+    source_attempt =
+      Map.get(params, "attempt") || get_in(socket.assigns, [:run_detail, "metadata", "attempt"])
+
+    retry_step =
+      Map.get(params, "step") || get_in(socket.assigns, [:run_detail, "retry_action", "step"])
+
+    cond do
+      is_nil(project) ->
+        put_flash(socket, :error, "Select a project before retrying a run.")
+
+      not local_provider?(project) ->
+        put_flash(socket, :error, "Step retries are only available for local projects.")
+
+      not is_binary(story_id) ->
+        put_flash(socket, :error, "No story selected for retry.")
+
+      retry_step == "full_rerun" ->
+        case trigger_full_rerun(project, story_id) do
+          :ok ->
+            socket
+            |> load_project_data(project)
+            |> sync_story_detail_selection()
+            |> put_flash(:info, "Story reset to open. The orchestrator will pick it up.")
+
+          {:error, reason} ->
+            put_flash(socket, :error, "Full rerun failed: #{reason}")
+        end
+
+      true ->
+        case StepRetry.retry(project, story_id, source_attempt, retry_step) do
+          {:ok, result} ->
+            attempt = parse_attempt(result[:attempt])
+            retry_step_label = result[:retry_step] || "step"
+            run_label = if is_integer(attempt), do: "##{attempt}", else: "new run"
+
+            socket
+            |> load_project_data(project)
+            |> sync_story_detail_selection()
+            |> maybe_navigate_to_retry_attempt(project, story_id, attempt)
+            |> put_flash(:info, "Retry #{retry_step_label} completed as #{run_label}.")
+
+          {:error, reason} ->
+            put_flash(socket, :error, "Retry failed: #{reason}")
+        end
     end
   end
 
