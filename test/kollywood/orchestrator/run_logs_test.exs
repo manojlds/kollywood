@@ -330,4 +330,50 @@ defmodule Kollywood.Orchestrator.RunLogsTest do
       assert attempt.settings_snapshot == nil
     end
   end
+
+  describe "reconcile_orphaned_step_retries/2" do
+    test "marks interrupted step retries as failed and appends attempt_finished", %{root: root} do
+      config = %Config{
+        workspace: %{root: root},
+        tracker: %{path: nil, project_slug: "run-logs-test"}
+      }
+
+      issue = %{id: "US-RETRY", identifier: "US-RETRY", title: "Retry issue"}
+
+      {:ok, context} =
+        RunLogs.prepare_attempt(config, issue, nil,
+          metadata_overrides: %{"parent_attempt" => 1, "retry_step" => "testing"}
+        )
+
+      reason = "interrupted during deploy drain restart"
+
+      assert {:ok, 1} =
+               RunLogs.reconcile_orphaned_step_retries(context.project_root, reason: reason)
+
+      metadata = context.files.metadata |> File.read!() |> Jason.decode!()
+      assert metadata["status"] == "failed"
+      assert metadata["error"] == reason
+      assert is_binary(metadata["ended_at"])
+
+      lines = context.files.attempts_index |> File.read!() |> String.split("\n", trim: true)
+      assert length(lines) == 2
+
+      finished_entry = lines |> List.last() |> Jason.decode!()
+      assert finished_entry["event"] == "attempt_finished"
+      assert finished_entry["attempt"] == context.attempt
+      assert finished_entry["status"] == "failed"
+      assert finished_entry["error"] == reason
+
+      assert {:ok, 0} =
+               RunLogs.reconcile_orphaned_step_retries(context.project_root, reason: reason)
+    end
+
+    test "does not alter non-step running attempts", %{context: context} do
+      assert {:ok, 0} = RunLogs.reconcile_orphaned_step_retries(context.project_root)
+
+      metadata = context.files.metadata |> File.read!() |> Jason.decode!()
+      assert metadata["status"] == "running"
+      assert metadata["ended_at"] == nil
+    end
+  end
 end
