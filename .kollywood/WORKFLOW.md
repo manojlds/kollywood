@@ -12,7 +12,7 @@ tracker:
 workspace:
   strategy: worktree
 agent:
-  kind: cursor
+  kind: opencode
   max_attempts: 1
   max_concurrent_agents: 1
   max_turns: 20
@@ -34,12 +34,15 @@ quality:
     enabled: true
     max_cycles: 3
   testing:
-    enabled: true
+    agent:
+      kind: opencode
+      timeout_ms: 7200000
+    enabled: false
     max_cycles: 2
     timeout_ms: 7200000
-    agent:
-      kind: cursor
-      timeout_ms: 7200000
+preview:
+  enabled: false
+  ttl_minutes: 120
 runtime:
   kind: docker
   ports:
@@ -48,11 +51,6 @@ runtime:
     - server
 hooks:
   before_run: "bash -lc 'if [ -f .kollywood/AGENTS.md ]; then cp .kollywood/AGENTS.md AGENTS.md; fi; mise x -- sh -c \"mix deps.get && MIX_ENV=test mix deps.compile\"'"
-preview:
-  enabled: true
-  ttl_minutes: 120
-  reuse_testing_runtime: true
-  allow_on_demand_from_pending_merge: true
 publish:
   mode: merge
 git:
