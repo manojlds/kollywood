@@ -71,9 +71,7 @@ defmodule Kollywood.Application do
             name = :"Kollywood.WorkerConsumer.#{i}"
 
             {Kollywood.WorkerConsumer,
-             name: name,
-             max_local_workers: worker_concurrency,
-             worker_id: i}
+             name: name, max_local_workers: worker_concurrency, worker_id: i}
           end
 
         children ++ worker_children

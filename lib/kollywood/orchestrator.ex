@@ -1308,14 +1308,33 @@ defmodule Kollywood.Orchestrator do
       case state.dispatch_mode do
         :queue ->
           dispatch_to_queue(
-            state, issue, issue_id, identifier, attempt, config,
-            run_opts, run_log_context, retry_mode, retry_provenance, retry_schedule_opts
+            state,
+            issue,
+            issue_id,
+            identifier,
+            attempt,
+            config,
+            run_opts,
+            run_log_context,
+            retry_mode,
+            retry_provenance,
+            retry_schedule_opts
           )
 
         :local ->
           dispatch_locally(
-            state, issue, issue_id, identifier, attempt, config, run_opts,
-            run_log_context, retry_mode, retry_provenance, retry_schedule_opts, orchestrator_pid
+            state,
+            issue,
+            issue_id,
+            identifier,
+            attempt,
+            config,
+            run_opts,
+            run_log_context,
+            retry_mode,
+            retry_provenance,
+            retry_schedule_opts,
+            orchestrator_pid
           )
       end
     else
@@ -1352,8 +1371,18 @@ defmodule Kollywood.Orchestrator do
   end
 
   defp dispatch_locally(
-         state, issue, issue_id, identifier, attempt, config, run_opts,
-         run_log_context, retry_mode, retry_provenance, retry_schedule_opts, orchestrator_pid
+         state,
+         issue,
+         issue_id,
+         identifier,
+         attempt,
+         config,
+         run_opts,
+         run_log_context,
+         retry_mode,
+         retry_provenance,
+         retry_schedule_opts,
+         orchestrator_pid
        ) do
     run_fun = fn -> invoke_runner(state.runner, issue, run_opts) end
 
@@ -1407,8 +1436,17 @@ defmodule Kollywood.Orchestrator do
   end
 
   defp dispatch_to_queue(
-         state, issue, issue_id, identifier, attempt, config,
-         run_opts, run_log_context, retry_mode, retry_provenance, retry_schedule_opts
+         state,
+         issue,
+         issue_id,
+         identifier,
+         attempt,
+         config,
+         run_opts,
+         run_log_context,
+         retry_mode,
+         retry_provenance,
+         retry_schedule_opts
        ) do
     serializable_run_opts = serialize_run_opts_for_queue(run_opts)
     issue_snapshot = serialize_issue_for_queue(issue)
@@ -1504,7 +1542,10 @@ defmodule Kollywood.Orchestrator do
   end
 
   defp make_json_safe(value) when is_list(value), do: Enum.map(value, &make_json_safe/1)
-  defp make_json_safe(value) when is_atom(value) and not is_nil(value) and not is_boolean(value), do: Atom.to_string(value)
+
+  defp make_json_safe(value) when is_atom(value) and not is_nil(value) and not is_boolean(value),
+    do: Atom.to_string(value)
+
   defp make_json_safe(value) when is_pid(value), do: inspect(value)
   defp make_json_safe(value) when is_reference(value), do: inspect(value)
   defp make_json_safe(value) when is_function(value), do: nil
@@ -1575,12 +1616,14 @@ defmodule Kollywood.Orchestrator do
 
   defp parse_datetime(nil), do: nil
   defp parse_datetime(%DateTime{} = dt), do: dt
+
   defp parse_datetime(str) when is_binary(str) do
     case DateTime.from_iso8601(str) do
       {:ok, dt, _} -> dt
       _ -> nil
     end
   end
+
   defp parse_datetime(_), do: nil
 
   defp resolve_dispatch_mode(:queue), do: :queue

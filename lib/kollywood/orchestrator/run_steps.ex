@@ -63,7 +63,9 @@ defmodule Kollywood.Orchestrator.RunSteps do
   # --- Agent turn (coding or remediation) ---
 
   defp handle_event("turn_started", event, steps, current) do
-    carried_prompt = if current && current.kind == "prompt_captured", do: current.prompt, else: nil
+    carried_prompt =
+      if current && current.kind == "prompt_captured", do: current.prompt, else: nil
+
     steps = close_step(steps, current, event)
     cycle = int_field(event, "checks_cycle")
 
@@ -179,7 +181,9 @@ defmodule Kollywood.Orchestrator.RunSteps do
   # --- Review ---
 
   defp handle_event("review_started", event, steps, current) do
-    carried_prompt = if current && current.kind == "prompt_captured", do: current.prompt, else: nil
+    carried_prompt =
+      if current && current.kind == "prompt_captured", do: current.prompt, else: nil
+
     steps = close_step(steps, current, event)
     cycle = int_field(event, "cycle")
     seq = Enum.count(steps, fn s -> s.kind == "review" end) + 1
@@ -216,7 +220,9 @@ defmodule Kollywood.Orchestrator.RunSteps do
   # --- Testing ---
 
   defp handle_event("testing_started", event, steps, current) do
-    carried_prompt = if current && current.kind == "prompt_captured", do: current.prompt, else: nil
+    carried_prompt =
+      if current && current.kind == "prompt_captured", do: current.prompt, else: nil
+
     steps = close_step(steps, current, event)
     cycle = int_field(event, "cycle")
     seq = Enum.count(steps, fn s -> s.kind == "testing" end) + 1
@@ -608,6 +614,7 @@ defmodule Kollywood.Orchestrator.RunSteps do
   # --- Catch-all: fold unknown events into current step ---
 
   defp handle_event(_type, event, steps, nil), do: {steps, nil |> maybe_wrap_orphan(event)}
+
   defp handle_event(_type, event, steps, current) do
     {steps, %{current | events: current.events ++ [event]}}
   end
