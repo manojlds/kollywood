@@ -29,7 +29,7 @@ quality:
   max_cycles: 6
   review:
     agent:
-      kind: cursor
+      kind: opencode
       timeout_ms: 7200000
     enabled: true
     max_cycles: 3
