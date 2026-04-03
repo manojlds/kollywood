@@ -93,6 +93,7 @@ defmodule Kollywood.AgentRunner do
 
       case Workspace.create_for_issue(issue_meta.identifier, config) do
         {:ok, workspace} ->
+          config = with_agent_browser_defaults(config, workspace)
           runtime = Runtime.init(runtime_kind(config), config, workspace)
 
           state =
@@ -163,6 +164,7 @@ defmodule Kollywood.AgentRunner do
            normalize_opts(Keyword.get(opts, :session_opts, %{}), "session_opts"),
          {:ok, turn_opts} <- normalize_opts(Keyword.get(opts, :turn_opts, %{}), "turn_opts"),
          {:ok, workspace} <- resolve_retry_workspace(Keyword.get(opts, :workspace)) do
+      config = with_agent_browser_defaults(config, workspace)
       log_files = Keyword.get(opts, :log_files)
 
       runtime = Runtime.init(runtime_kind(config), config, workspace)
@@ -3169,6 +3171,40 @@ defmodule Kollywood.AgentRunner do
     %Config{config | agent: merged_agent}
   end
 
+  defp with_agent_browser_defaults(%Config{} = config, workspace) do
+    browser_env = agent_browser_env(workspace)
+
+    if map_size(browser_env) == 0 do
+      config
+    else
+      agent = Map.get(config, :agent, %{})
+
+      env =
+        agent
+        |> Map.get(:env, %{})
+        |> map_or_empty()
+        |> Map.merge(browser_env)
+
+      %Config{config | agent: Map.put(agent, :env, env)}
+    end
+  end
+
+  defp agent_browser_env(%{path: workspace_path}) when is_binary(workspace_path) do
+    artifacts_dir = Path.join(workspace_path, ".kollywood/artifacts/testing")
+    downloads_dir = Path.join(artifacts_dir, "downloads")
+
+    _ = File.mkdir_p(artifacts_dir)
+    _ = File.mkdir_p(downloads_dir)
+
+    %{
+      "AGENT_BROWSER_ARGS" => "--no-sandbox",
+      "AGENT_BROWSER_SCREENSHOT_DIR" => artifacts_dir,
+      "AGENT_BROWSER_DOWNLOAD_PATH" => downloads_dir
+    }
+  end
+
+  defp agent_browser_env(_workspace), do: %{}
+
   defp required_check_commands(config) do
     config
     |> checks_config()
@@ -3351,6 +3387,8 @@ defmodule Kollywood.AgentRunner do
   - do not start app services manually; runtime has already started managed processes
   - do not install or bootstrap tooling in this phase (`npm`, `pip`, `cargo`, package managers)
   - if `agent-browser` is unavailable, do not attempt installation; continue with what is available and write a failing report that clearly names the browser tooling blocker
+  - keep browser artifacts inside the workspace (`.kollywood/artifacts/testing`); do not use `~/.agent-browser/...` paths in reports
+  - for screenshots, prefer `agent-browser screenshot --screenshot-dir .kollywood/artifacts/testing`; avoid a leading-dot path as the first positional argument because it can be parsed as a CSS selector
   - use only injected runtime URLs (`runtime_base_url` / `runtime_urls_json`); do not scan arbitrary localhost ports
   - avoid interactive commands/flags (for example `snapshot -i`) in CI/agent runs
   - avoid waiting for `networkidle` on apps with long-lived traffic; prefer bounded waits
