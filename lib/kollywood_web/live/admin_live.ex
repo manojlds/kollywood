@@ -6,25 +6,64 @@ defmodule KollywoodWeb.AdminLive do
 
   alias Kollywood.Projects
   alias Kollywood.RepoSync
+  alias Kollywood.RunQueue
   alias Kollywood.ServiceConfig
+  alias Kollywood.WorkerConsumer
 
   @refresh_interval_ms 5_000
 
   @impl true
   def mount(_params, _session, socket) do
-    if connected?(socket), do: :timer.send_interval(@refresh_interval_ms, self(), :refresh)
+    if connected?(socket) do
+      :timer.send_interval(@refresh_interval_ms, self(), :refresh)
+      RunQueue.subscribe()
+    end
 
     {:ok,
      socket
      |> assign(:page_title, "Admin")
+     |> assign(:active_tab, :overview)
+     |> assign(:selected_worker, nil)
      |> assign(:orchestrator_status, fetch_orchestrator_status())
      |> assign(:projects, Projects.list_projects())
-     |> assign(:sync_status, %{})}
+     |> assign(:sync_status, %{})
+     |> assign(:workers, list_workers())
+     |> assign(:queue_stats, RunQueue.queue_overview_stats())
+     |> assign(:recent_queue_entries, list_recent_queue_entries())}
+  end
+
+  @impl true
+  def handle_params(params, _uri, socket) do
+    socket =
+      case socket.assigns.live_action do
+        :workers ->
+          socket
+          |> assign(:active_tab, :workers)
+          |> assign(:selected_worker, nil)
+
+        :worker_detail ->
+          worker = find_worker(params["worker_id"])
+
+          socket
+          |> assign(:active_tab, :workers)
+          |> assign(:selected_worker, worker)
+
+        _other ->
+          socket
+          |> assign(:active_tab, :overview)
+          |> assign(:selected_worker, nil)
+      end
+
+    {:noreply, socket}
   end
 
   @impl true
   def handle_info(:refresh, socket) do
-    {:noreply, assign(socket, :orchestrator_status, fetch_orchestrator_status())}
+    {:noreply, refresh_assigns(socket)}
+  end
+
+  def handle_info({:run_queue, _event}, socket) do
+    {:noreply, refresh_assigns(socket)}
   end
 
   def handle_info({:sync_done, slug, result}, socket) do
@@ -126,14 +165,40 @@ defmodule KollywoodWeb.AdminLive do
       </header>
 
       <main class="px-4 sm:px-6 lg:px-8 py-8 max-w-6xl mx-auto space-y-8">
-        <.version_section />
-        <.service_config_section />
-        <.orchestrator_section status={@orchestrator_status} />
-        <.repos_section
-          projects={@projects}
-          sync_status={@sync_status}
-          orchestrator_status={@orchestrator_status}
-        />
+        <nav class="tabs tabs-boxed bg-base-200 inline-flex" aria-label="Admin navigation">
+          <.link
+            patch={~p"/admin"}
+            class={[
+              "tab",
+              if(@active_tab == :overview, do: "tab-active")
+            ]}
+          >
+            Overview
+          </.link>
+          <.link
+            patch={~p"/admin/workers"}
+            class={[
+              "tab",
+              if(@active_tab == :workers, do: "tab-active")
+            ]}
+          >
+            Workers
+          </.link>
+        </nav>
+
+        <%= if @active_tab == :overview do %>
+          <.version_section />
+          <.service_config_section />
+          <.orchestrator_section status={@orchestrator_status} />
+          <.repos_section
+            projects={@projects}
+            sync_status={@sync_status}
+            orchestrator_status={@orchestrator_status}
+          />
+        <% else %>
+          <.workers_section workers={@workers} selected_worker={@selected_worker} />
+          <.queue_overview_section stats={@queue_stats} recent_entries={@recent_queue_entries} />
+        <% end %>
       </main>
     </div>
     """
@@ -437,6 +502,225 @@ defmodule KollywoodWeb.AdminLive do
     """
   end
 
+  # --- Workers ---
+
+  attr :workers, :list, required: true
+  attr :selected_worker, :map, default: nil
+
+  defp workers_section(assigns) do
+    ~H"""
+    <section>
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-lg font-semibold">Workers</h2>
+        <span class="text-xs text-base-content/60">{length(@workers)} detected</span>
+      </div>
+
+      <div class="card bg-base-200 border border-base-300">
+        <div class="card-body p-0">
+          <div class="overflow-x-auto">
+            <table class="table table-sm" id="workers-list">
+              <thead>
+                <tr>
+                  <th>Worker</th>
+                  <th>Status</th>
+                  <th>Node</th>
+                  <th>Active</th>
+                  <th>Last poll</th>
+                  <th>Uptime</th>
+                </tr>
+              </thead>
+              <tbody>
+                <%= if @workers == [] do %>
+                  <tr>
+                    <td colspan="6" class="text-sm text-base-content/60">No workers detected.</td>
+                  </tr>
+                <% else %>
+                  <%= for worker <- @workers do %>
+                    <tr>
+                      <td>
+                        <.link
+                          patch={~p"/admin/workers/#{worker.id}"}
+                          class="font-mono text-sm hover:text-primary"
+                        >
+                          {worker.id}
+                        </.link>
+                      </td>
+                      <td>
+                        <span class={worker_status_badge_class(worker.status)}>{worker.status}</span>
+                      </td>
+                      <td class="font-mono text-xs">{worker.node_id || "—"}</td>
+                      <td>{worker.active_workers}/{worker.max_local_workers}</td>
+                      <td class="text-xs">{format_datetime(worker.last_poll_at)}</td>
+                      <td class="text-xs">{format_duration_ms(worker.uptime_ms)}</td>
+                    </tr>
+                  <% end %>
+                <% end %>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <.worker_detail_panel :if={@selected_worker} worker={@selected_worker} />
+    </section>
+    """
+  end
+
+  attr :worker, :map, required: true
+
+  defp worker_detail_panel(assigns) do
+    ~H"""
+    <div class="card bg-base-200 border border-base-300 mt-6" id="worker-detail">
+      <div class="card-body p-4 space-y-4">
+        <div class="flex items-center justify-between">
+          <h3 class="font-medium text-sm">Worker Detail: {@worker.id}</h3>
+          <.link patch={~p"/admin/workers"} class="btn btn-xs btn-outline">Back to workers</.link>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+          <div>
+            <div class="text-base-content/60">Poll frequency</div>
+            <div class="font-medium">{worker_poll_frequency_label(@worker)}</div>
+          </div>
+          <div>
+            <div class="text-base-content/60">Claim success rate</div>
+            <div class="font-medium">{claim_success_rate_label(@worker)}</div>
+          </div>
+          <div>
+            <div class="text-base-content/60">Last seen</div>
+            <div class="font-medium">{format_datetime(@worker.last_seen_at)}</div>
+          </div>
+          <div>
+            <div class="text-base-content/60">Started at</div>
+            <div class="font-medium">{format_datetime(@worker.started_at)}</div>
+          </div>
+        </div>
+
+        <div>
+          <h4 class="font-medium text-sm mb-2">Active runs</h4>
+          <div class="overflow-x-auto">
+            <table class="table table-sm" id="worker-active-runs">
+              <thead>
+                <tr>
+                  <th>Issue</th>
+                  <th>Status</th>
+                  <th>Started</th>
+                  <th>Duration</th>
+                  <th>Queue entry</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <%= if @worker.active_runs == [] do %>
+                  <tr>
+                    <td colspan="6" class="text-sm text-base-content/60">No active runs.</td>
+                  </tr>
+                <% else %>
+                  <%= for run <- @worker.active_runs do %>
+                    <tr>
+                      <td>
+                        <div class="font-mono text-xs">{run.issue_id}</div>
+                        <div class="text-xs text-base-content/60">
+                          {run.issue_title || run.identifier || "—"}
+                        </div>
+                      </td>
+                      <td>
+                        <span class="badge badge-sm badge-ghost capitalize">{run.status}</span>
+                      </td>
+                      <td class="text-xs">
+                        {format_datetime(run.run_started_at || run.claimed_at || run.started_at)}
+                      </td>
+                      <td class="text-xs">
+                        {format_duration_ms(
+                          duration_since(run.run_started_at || run.claimed_at || run.started_at)
+                        )}
+                      </td>
+                      <td class="font-mono text-xs">#{run.queue_entry_id}</td>
+                      <td>
+                        <.link
+                          :if={run.project_slug}
+                          navigate={run_detail_path(run)}
+                          class="btn btn-xs btn-outline"
+                        >
+                          Run detail
+                        </.link>
+                      </td>
+                    </tr>
+                  <% end %>
+                <% end %>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  attr :stats, :map, required: true
+  attr :recent_entries, :list, required: true
+
+  defp queue_overview_section(assigns) do
+    ~H"""
+    <section>
+      <h2 class="text-lg font-semibold mb-3">Run Queue Overview</h2>
+
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4" id="run-queue-stats">
+        <.queue_stat_card title="Pending" value={@stats.pending_count} />
+        <.queue_stat_card title="Running" value={@stats.running_count} />
+        <.queue_stat_card title="Completed (1h)" value={@stats.completed_last_hour_count} />
+        <.queue_stat_card title="Failed (1h)" value={@stats.failed_last_hour_count} />
+      </div>
+
+      <div class="card bg-base-200 border border-base-300">
+        <div class="card-body p-4">
+          <h3 class="font-medium text-sm mb-2">Recent queue entries</h3>
+          <div class="overflow-x-auto">
+            <table class="table table-sm" id="recent-queue-entries">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Issue</th>
+                  <th>Status</th>
+                  <th>Node</th>
+                  <th>Inserted</th>
+                </tr>
+              </thead>
+              <tbody>
+                <%= for entry <- @recent_entries do %>
+                  <tr>
+                    <td class="font-mono text-xs">#{entry.id}</td>
+                    <td class="font-mono text-xs">{entry.issue_id}</td>
+                    <td>
+                      <span class={queue_status_badge_class(entry.status)}>{entry.status}</span>
+                    </td>
+                    <td class="font-mono text-xs">{entry.claimed_by_node || "—"}</td>
+                    <td class="text-xs">{format_datetime(entry.inserted_at)}</td>
+                  </tr>
+                <% end %>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+    """
+  end
+
+  attr :title, :string, required: true
+  attr :value, :integer, required: true
+
+  defp queue_stat_card(assigns) do
+    ~H"""
+    <div class="card bg-base-200 border border-base-300">
+      <div class="card-body p-3">
+        <div class="text-xs text-base-content/60">{@title}</div>
+        <div class="text-xl font-semibold">{@value}</div>
+      </div>
+    </div>
+    """
+  end
+
   # --- Repos ---
 
   attr :projects, :list, required: true
@@ -557,6 +841,128 @@ defmodule KollywoodWeb.AdminLive do
     :exit, _ -> nil
   end
 
+  defp refresh_assigns(socket) do
+    worker_id = socket.assigns[:selected_worker] && socket.assigns.selected_worker.id
+
+    workers = list_workers()
+
+    socket
+    |> assign(:orchestrator_status, fetch_orchestrator_status())
+    |> assign(:workers, workers)
+    |> assign(:queue_stats, RunQueue.queue_overview_stats())
+    |> assign(:recent_queue_entries, list_recent_queue_entries())
+    |> assign(:selected_worker, if(worker_id, do: find_worker(worker_id, workers), else: nil))
+  end
+
+  defp list_workers do
+    worker_names = discover_worker_names()
+
+    Enum.map(worker_names, fn worker_name ->
+      status = safe_worker_status(worker_name)
+      worker_id = worker_name_to_id(worker_name)
+
+      %{
+        id: worker_id,
+        node_id: status[:node_id],
+        active_workers: status[:active_workers] || 0,
+        max_local_workers: status[:max_local_workers] || 0,
+        last_poll_at: status[:last_poll_at],
+        started_at: status[:started_at],
+        last_seen_at: status[:last_seen_at],
+        uptime_ms: status[:uptime_ms],
+        poll_interval_ms: status[:poll_interval_ms],
+        poll_count: status[:poll_count] || 0,
+        claim_attempts: status[:claim_attempts] || 0,
+        claims_succeeded: status[:claims_succeeded] || 0,
+        claim_success_rate: status[:claim_success_rate],
+        active_runs: status[:active_runs] || [],
+        status: worker_status_label(status)
+      }
+    end)
+    |> Enum.sort_by(& &1.id)
+  end
+
+  defp find_worker(worker_id, workers \\ nil)
+
+  defp find_worker(worker_id, workers) when is_binary(worker_id) and is_list(workers) do
+    Enum.find(workers, &(&1.id == worker_id))
+  end
+
+  defp find_worker(worker_id, _workers) when is_binary(worker_id) do
+    Enum.find(list_workers(), &(&1.id == worker_id))
+  end
+
+  defp find_worker(_, _), do: nil
+
+  defp discover_worker_names do
+    configured =
+      if Application.get_env(:kollywood, :worker_consumer_enabled, true) do
+        count = Application.get_env(:kollywood, :worker_consumer_count, 1)
+
+        for i <- 1..count do
+          String.to_atom("Elixir.Kollywood.WorkerConsumer.#{i}")
+        end
+      else
+        []
+      end
+
+    registered =
+      Process.registered()
+      |> Enum.filter(fn atom ->
+        atom_name = Atom.to_string(atom)
+
+        atom_name == "Elixir.Kollywood.WorkerConsumer" or
+          String.starts_with?(atom_name, "Elixir.Kollywood.WorkerConsumer.")
+      end)
+
+    (configured ++ registered)
+    |> Enum.uniq()
+  end
+
+  defp safe_worker_status(worker_name) do
+    WorkerConsumer.status(worker_name)
+  rescue
+    _ -> %{}
+  catch
+    :exit, _ -> %{}
+  end
+
+  defp worker_name_to_id(worker_name) when is_atom(worker_name),
+    do: worker_name |> Atom.to_string() |> normalize_worker_id()
+
+  defp worker_name_to_id(worker_name) when is_binary(worker_name),
+    do: normalize_worker_id(worker_name)
+
+  defp worker_name_to_id(_worker_name), do: "unknown"
+
+  defp normalize_worker_id("Elixir." <> rest), do: rest
+  defp normalize_worker_id(value), do: value
+
+  defp worker_status_label(status) when is_map(status) do
+    cond do
+      status == %{} -> "stale"
+      (status[:active_workers] || 0) > 0 -> "busy"
+      stale_worker?(status) -> "stale"
+      true -> "idle"
+    end
+  end
+
+  defp worker_status_label(_status), do: "stale"
+
+  defp stale_worker?(status) do
+    with %DateTime{} = last_seen <- status[:last_seen_at],
+         poll_ms when is_integer(poll_ms) and poll_ms > 0 <- status[:poll_interval_ms] do
+      age_ms = DateTime.diff(DateTime.utc_now(), last_seen, :millisecond)
+      age_ms > poll_ms * 3
+    else
+      _ -> false
+    end
+  end
+
+  defp list_recent_queue_entries do
+    RunQueue.list_recent(12)
+  end
+
   defp format_datetime(nil), do: "—"
 
   defp format_datetime(%DateTime{} = dt) do
@@ -564,6 +970,20 @@ defmodule KollywoodWeb.AdminLive do
   end
 
   defp format_datetime(_), do: "—"
+
+  defp format_duration_ms(ms) when is_integer(ms) and ms >= 0 do
+    cond do
+      ms < 1_000 -> "#{ms}ms"
+      ms < 60_000 -> "#{div(ms, 1_000)}s"
+      ms < 3_600_000 -> "#{div(ms, 60_000)}m"
+      true -> "#{div(ms, 3_600_000)}h"
+    end
+  end
+
+  defp format_duration_ms(_), do: "—"
+
+  defp duration_since(%DateTime{} = dt), do: DateTime.diff(DateTime.utc_now(), dt, :millisecond)
+  defp duration_since(_), do: nil
 
   defp format_ms(ms) when is_integer(ms) and ms < 1000, do: "#{ms}ms"
   defp format_ms(ms) when is_integer(ms), do: "#{div(ms, 1000)}s"
@@ -630,4 +1050,42 @@ defmodule KollywoodWeb.AdminLive do
   end
 
   defp effective_project_limit_label(_status, _project), do: "-"
+
+  defp worker_status_badge_class("busy"), do: "badge badge-sm badge-warning"
+  defp worker_status_badge_class("stale"), do: "badge badge-sm badge-error"
+  defp worker_status_badge_class(_), do: "badge badge-sm badge-success"
+
+  defp queue_status_badge_class("running"), do: "badge badge-sm badge-info"
+  defp queue_status_badge_class("claimed"), do: "badge badge-sm badge-warning"
+  defp queue_status_badge_class("completed"), do: "badge badge-sm badge-success"
+  defp queue_status_badge_class("failed"), do: "badge badge-sm badge-error"
+  defp queue_status_badge_class("pending"), do: "badge badge-sm badge-ghost"
+  defp queue_status_badge_class("cancelled"), do: "badge badge-sm badge-neutral"
+  defp queue_status_badge_class(_), do: "badge badge-sm"
+
+  defp worker_poll_frequency_label(worker) do
+    poll_interval = worker.poll_interval_ms
+
+    cond do
+      is_integer(poll_interval) and poll_interval > 0 -> "#{poll_interval}ms"
+      true -> "—"
+    end
+  end
+
+  defp claim_success_rate_label(worker) do
+    case worker.claim_success_rate do
+      rate when is_float(rate) -> "#{Float.round(rate * 100, 1)}%"
+      _ -> "—"
+    end
+  end
+
+  defp run_detail_path(run) do
+    attempt = run.attempt
+
+    if is_integer(attempt) and attempt > 0 do
+      ~p"/projects/#{run.project_slug}/runs/#{run.issue_id}/#{attempt}"
+    else
+      ~p"/projects/#{run.project_slug}/runs/#{run.issue_id}"
+    end
+  end
 end
