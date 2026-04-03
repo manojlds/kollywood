@@ -59,7 +59,7 @@ defmodule Kollywood.Publisher do
       :push ->
         nil
 
-      mode when mode in [:pr, :auto_merge] ->
+      mode when mode in [:pr, :merge] ->
         base_branch =
           get_in(config, [Access.key(:git, %{}), Access.key(:base_branch, "main")]) || "main"
 
