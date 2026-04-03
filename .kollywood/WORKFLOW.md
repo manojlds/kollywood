@@ -33,6 +33,13 @@ quality:
       timeout_ms: 7200000
     enabled: true
     max_cycles: 3
+  testing:
+    enabled: true
+    max_cycles: 2
+    timeout_ms: 7200000
+    agent:
+      kind: cursor
+      timeout_ms: 7200000
 runtime:
   kind: docker
   ports:

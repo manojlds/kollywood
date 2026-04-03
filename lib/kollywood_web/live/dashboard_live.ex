@@ -4706,6 +4706,197 @@ defmodule KollywoodWeb.DashboardLive do
 
               <div class="divider my-0"></div>
 
+              <%!-- Testing --%>
+              <div>
+                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
+                  Testing
+                </p>
+                <div class="grid sm:grid-cols-2 gap-4">
+                  <div class="sm:col-span-2 flex items-center gap-2">
+                    <input
+                      type="hidden"
+                      name="settings[quality][testing][enabled]"
+                      value="false"
+                    />
+                    <input
+                      type="checkbox"
+                      name="settings[quality][testing][enabled]"
+                      value="true"
+                      checked={
+                        get_in(@workflow.parsed, ["quality", "testing", "enabled"]) == true
+                      }
+                      class="toggle toggle-sm toggle-primary"
+                    />
+                    <span class="text-sm">Enable testing</span>
+                  </div>
+                  <div>
+                    <label class="label pb-1">
+                      <span class="label-text text-sm">Max Cycles</span>
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="10"
+                      name="settings[quality][testing][max_cycles]"
+                      value={
+                        get_in(@workflow.parsed, ["quality", "testing", "max_cycles"]) ||
+                          get_in(@workflow.parsed, ["quality", "max_cycles"]) || 1
+                      }
+                      class="input input-bordered input-sm w-full"
+                    />
+                  </div>
+                  <div>
+                    <label class="label pb-1">
+                      <span class="label-text text-sm">Timeout (ms)</span>
+                    </label>
+                    <input
+                      type="number"
+                      min="1000"
+                      step="1000"
+                      name="settings[quality][testing][timeout_ms]"
+                      value={
+                        get_in(@workflow.parsed, ["quality", "testing", "timeout_ms"]) ||
+                          7_200_000
+                      }
+                      class="input input-bordered input-sm w-full"
+                    />
+                  </div>
+
+                  <%!-- Testing Agent --%>
+                  <div class="sm:col-span-2 pt-2">
+                    <p class="text-xs font-medium text-base-content/50 mb-3">
+                      Testing Agent
+                    </p>
+                    <div class="space-y-4">
+                      <div class="flex items-center gap-2">
+                        <input
+                          type="hidden"
+                          name="settings[quality][testing][agent_custom]"
+                          value="false"
+                        />
+                        <input
+                          type="checkbox"
+                          name="settings[quality][testing][agent_custom]"
+                          value="true"
+                          checked={
+                            get_in(@workflow.parsed, ["quality", "testing", "agent"]) != nil
+                          }
+                          class="toggle toggle-sm"
+                        />
+                        <span class="text-sm">Use a different agent for testing</span>
+                      </div>
+                      <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                        <div>
+                          <label class="label pb-1">
+                            <span class="label-text text-sm">Kind</span>
+                          </label>
+                          <select
+                            name="settings[quality][testing][agent][kind]"
+                            class="select select-bordered select-sm w-full"
+                          >
+                            <%= for k <- ["amp", "claude", "cursor", "opencode", "pi"] do %>
+                              <option
+                                value={k}
+                                selected={
+                                  (get_in(@workflow.parsed, [
+                                     "quality",
+                                     "testing",
+                                     "agent",
+                                     "kind"
+                                   ]) ||
+                                     get_in(@workflow.parsed, ["agent", "kind"])) == k
+                                }
+                              >
+                                {k}
+                              </option>
+                            <% end %>
+                          </select>
+                        </div>
+                        <div>
+                          <label class="label pb-1">
+                            <span class="label-text text-sm">Timeout (ms)</span>
+                          </label>
+                          <input
+                            type="number"
+                            min="1000"
+                            step="1000"
+                            name="settings[quality][testing][agent][timeout_ms]"
+                            value={
+                              get_in(@workflow.parsed, [
+                                "quality",
+                                "testing",
+                                "agent",
+                                "timeout_ms"
+                              ]) ||
+                                7_200_000
+                            }
+                            class="input input-bordered input-sm w-full"
+                          />
+                        </div>
+                        <div class="sm:col-span-2 lg:col-span-3">
+                          <label class="label pb-1">
+                            <span class="label-text text-sm">
+                              Custom command
+                              <span class="text-base-content/40 text-xs">(optional override)</span>
+                            </span>
+                          </label>
+                          <input
+                            type="text"
+                            name="settings[quality][testing][agent][command]"
+                            value={
+                              get_in(@workflow.parsed, [
+                                "quality",
+                                "testing",
+                                "agent",
+                                "command"
+                              ]) || ""
+                            }
+                            placeholder="e.g. /usr/local/bin/amp"
+                            class="input input-bordered input-sm w-full font-mono"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="divider my-0"></div>
+
+              <%!-- Preview --%>
+              <div>
+                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
+                  Preview
+                </p>
+                <div class="grid sm:grid-cols-2 gap-4">
+                  <div class="sm:col-span-2 flex items-center gap-2">
+                    <input type="hidden" name="settings[preview][enabled]" value="false" />
+                    <input
+                      type="checkbox"
+                      name="settings[preview][enabled]"
+                      value="true"
+                      checked={get_in(@workflow.parsed, ["preview", "enabled"]) == true}
+                      class="toggle toggle-sm toggle-primary"
+                    />
+                    <span class="text-sm">Enable preview</span>
+                  </div>
+                  <div>
+                    <label class="label pb-1">
+                      <span class="label-text text-sm">TTL (minutes)</span>
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      name="settings[preview][ttl_minutes]"
+                      value={get_in(@workflow.parsed, ["preview", "ttl_minutes"]) || 120}
+                      class="input input-bordered input-sm w-full"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div class="divider my-0"></div>
+
               <%!-- Runtime --%>
               <div>
                 <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
@@ -5990,7 +6181,7 @@ defmodule KollywoodWeb.DashboardLive do
   defp read_events_jsonl(_path), do: []
   # -- Settings Helpers --
 
-  @workflow_yaml_key_order ~w(tracker workspace agent quality runtime hooks publish git)
+  @workflow_yaml_key_order ~w(tracker workspace agent quality preview runtime hooks publish git)
 
   defp apply_settings(parsed, settings) do
     agent_p = Map.get(settings, "agent", %{})
@@ -5998,6 +6189,8 @@ defmodule KollywoodWeb.DashboardLive do
     quality_p = Map.get(settings, "quality", %{})
     checks_p = Map.get(quality_p, "checks", %{})
     review_p = Map.get(quality_p, "review", %{})
+    testing_p = Map.get(quality_p, "testing", %{})
+    preview_p = Map.get(settings, "preview", %{})
     runtime_p = Map.get(settings, "runtime", %{})
     publish_p = Map.get(settings, "publish", %{})
     git_p = Map.get(settings, "git", %{})
@@ -6006,6 +6199,7 @@ defmodule KollywoodWeb.DashboardLive do
     existing_quality = Map.get(parsed, "quality", %{})
     existing_checks = Map.get(existing_quality, "checks", %{})
     existing_review = Map.get(existing_quality, "review", %{})
+    existing_testing = Map.get(existing_quality, "testing", %{})
 
     command = String.trim(Map.get(agent_p, "command", ""))
 
@@ -6107,10 +6301,71 @@ defmodule KollywoodWeb.DashboardLive do
         end
       end)
 
+    existing_testing_prompt_template = get_in(parsed, ["quality", "testing", "prompt_template"])
+    testing_agent_custom = Map.get(testing_p, "agent_custom") == "true"
+    testing_agent_p = Map.get(testing_p, "agent", %{})
+
+    new_testing =
+      %{
+        "enabled" => Map.get(testing_p, "enabled") == "true",
+        "max_cycles" =>
+          parse_form_int(
+            testing_p,
+            "max_cycles",
+            Map.get(existing_testing, "max_cycles", quality_max_cycles)
+          ),
+        "timeout_ms" =>
+          parse_form_int(
+            testing_p,
+            "timeout_ms",
+            Map.get(existing_testing, "timeout_ms", 7_200_000)
+          )
+      }
+      |> then(fn t ->
+        if is_binary(existing_testing_prompt_template) and existing_testing_prompt_template != "",
+          do: Map.put(t, "prompt_template", existing_testing_prompt_template),
+          else: t
+      end)
+      |> then(fn t ->
+        if testing_agent_custom do
+          testing_agent_command = String.trim(Map.get(testing_agent_p, "command", ""))
+
+          testing_agent =
+            %{"kind" => Map.get(testing_agent_p, "kind", "claude")}
+            |> Map.put(
+              "timeout_ms",
+              parse_form_int(
+                testing_agent_p,
+                "timeout_ms",
+                Map.get(existing_testing, "agent", %{}) |> Map.get("timeout_ms", 7_200_000)
+              )
+            )
+            |> then(fn a ->
+              if testing_agent_command != "",
+                do: Map.put(a, "command", testing_agent_command),
+                else: a
+            end)
+
+          Map.put(t, "agent", testing_agent)
+        else
+          Map.delete(t, "agent")
+        end
+      end)
+
+    existing_preview = Map.get(parsed, "preview", %{})
+
+    new_preview =
+      %{
+        "enabled" => Map.get(preview_p, "enabled") == "true",
+        "ttl_minutes" =>
+          parse_form_int(preview_p, "ttl_minutes", Map.get(existing_preview, "ttl_minutes", 120))
+      }
+
     new_quality = %{
       "max_cycles" => quality_max_cycles,
       "checks" => new_checks,
-      "review" => new_review
+      "review" => new_review,
+      "testing" => new_testing
     }
 
     provider_val = Map.get(publish_p, "provider", "")
@@ -6153,6 +6408,7 @@ defmodule KollywoodWeb.DashboardLive do
         Map.get(workspace_p, "strategy", get_in(parsed, ["workspace", "strategy"]) || "clone")
     })
     |> Map.put("quality", new_quality)
+    |> Map.put("preview", new_preview)
     |> Map.put("runtime", new_runtime)
     |> Map.delete("checks")
     |> Map.delete("review")
