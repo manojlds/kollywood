@@ -52,7 +52,7 @@ defmodule Kollywood.RunQueue do
     entry =
       Entry
       |> where([e], e.status == "pending")
-      |> order_by([e], [desc: e.priority, asc: e.inserted_at])
+      |> order_by([e], desc: e.priority, asc: e.inserted_at)
       |> limit(1)
       |> Repo.one()
 
@@ -118,7 +118,8 @@ defmodule Kollywood.RunQueue do
         {:error, :not_found}
 
       entry ->
-        payload = Map.get(result_attrs, :result_payload) || Map.get(result_attrs, "result_payload")
+        payload =
+          Map.get(result_attrs, :result_payload) || Map.get(result_attrs, "result_payload")
 
         changeset =
           Entry.changeset(entry, %{
@@ -129,7 +130,10 @@ defmodule Kollywood.RunQueue do
 
         case Repo.update(changeset) do
           {:ok, updated} = ok ->
-            broadcast({:completed, updated.id, updated.issue_id, decode_payload(updated.result_payload)})
+            broadcast(
+              {:completed, updated.id, updated.issue_id, decode_payload(updated.result_payload)}
+            )
+
             ok
 
           error ->
@@ -165,6 +169,25 @@ defmodule Kollywood.RunQueue do
     end
   end
 
+  @doc "Marks running queue entries owned by one worker node as failed."
+  @spec fail_running_for_node(String.t(), String.t()) :: non_neg_integer()
+  def fail_running_for_node(node_id, error_message)
+      when is_binary(node_id) and is_binary(error_message) do
+    entry_ids =
+      Entry
+      |> where([e], e.status == "running")
+      |> where([e], e.claimed_by_node == ^node_id)
+      |> select([e], e.id)
+      |> Repo.all()
+
+    Enum.reduce(entry_ids, 0, fn entry_id, acc ->
+      case fail(entry_id, error_message) do
+        {:ok, _entry} -> acc + 1
+        _other -> acc
+      end
+    end)
+  end
+
   # --- Cancel ---
 
   @spec cancel(integer()) :: {:ok, Entry.t()} | {:error, term()}
@@ -186,7 +209,7 @@ defmodule Kollywood.RunQueue do
   def list_pending do
     Entry
     |> where([e], e.status == "pending")
-    |> order_by([e], [desc: e.priority, asc: e.inserted_at])
+    |> order_by([e], desc: e.priority, asc: e.inserted_at)
     |> Repo.all()
   end
 
@@ -194,14 +217,14 @@ defmodule Kollywood.RunQueue do
   def list_by_status(status) when is_binary(status) do
     Entry
     |> where([e], e.status == ^status)
-    |> order_by([e], [asc: e.inserted_at])
+    |> order_by([e], asc: e.inserted_at)
     |> Repo.all()
   end
 
   def list_by_status(statuses) when is_list(statuses) do
     Entry
     |> where([e], e.status in ^statuses)
-    |> order_by([e], [asc: e.inserted_at])
+    |> order_by([e], asc: e.inserted_at)
     |> Repo.all()
   end
 
@@ -213,7 +236,7 @@ defmodule Kollywood.RunQueue do
     Entry
     |> where([e], e.issue_id == ^issue_id)
     |> where([e], e.status in ["pending", "claimed", "running"])
-    |> order_by([e], [desc: e.inserted_at])
+    |> order_by([e], desc: e.inserted_at)
     |> limit(1)
     |> Repo.one()
   end
@@ -280,6 +303,7 @@ defmodule Kollywood.RunQueue do
   end
 
   defp decode_payload(nil), do: nil
+
   defp decode_payload(payload) when is_binary(payload) do
     case Jason.decode(payload) do
       {:ok, decoded} -> decoded
