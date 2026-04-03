@@ -46,7 +46,7 @@ defmodule Kollywood.StepRetry do
         with {:ok, base_config, _prompt_template, _workflow_identity} <- load_workflow(project),
              config = apply_source_snapshot(base_config, source.metadata),
              :ok <- ensure_common_preconditions(config, source.metadata),
-             :ok <- ensure_prior_phase_outputs(retry_step, config, source.events),
+             :ok <- ensure_prior_phase_outputs(retry_step, config, source_lineage_events(source)),
              {:ok, issue} <- load_issue(project, story_id),
              {:ok, _workspace} <- build_workspace(config, issue.identifier, source.metadata) do
           nil
@@ -105,7 +105,7 @@ defmodule Kollywood.StepRetry do
          config = apply_source_snapshot(base_config, source.metadata),
          :ok <- ensure_retry_step_failed(source.events, retry_step),
          :ok <- ensure_common_preconditions(config, source.metadata),
-         :ok <- ensure_prior_phase_outputs(retry_step, config, source.events),
+         :ok <- ensure_prior_phase_outputs(retry_step, config, source_lineage_events(source)),
          {:ok, issue} <- load_issue(project, story_id),
          {:ok, resolved_story_execution} <- StoryExecutionOverrides.resolve(config, issue),
          {:ok, workspace} <- build_workspace(config, issue.identifier, source.metadata),
@@ -511,6 +511,7 @@ defmodule Kollywood.StepRetry do
          {:ok, resolved} <- RunLogs.resolve_attempt(project_root, story_id, source_attempt) do
       events = read_events_jsonl(resolved.files.events)
       metadata = normalize_source_metadata(resolved.metadata, events)
+      ancestor_events = load_ancestor_events(project_root, story_id, metadata["parent_attempt"])
 
       {:ok,
        %{
@@ -518,13 +519,88 @@ defmodule Kollywood.StepRetry do
          runner_attempt: normalize_runner_attempt(metadata["runner_attempt"]),
          metadata: metadata,
          files: resolved.files,
-         events: events
+         events: events,
+         ancestor_events: ancestor_events
        }}
     else
       {:error, reason} -> {:error, reason}
       false -> {:error, "story_id is required"}
     end
   end
+
+  defp source_lineage_events(source) when is_map(source) do
+    events = if is_list(Map.get(source, :events)), do: Map.get(source, :events), else: []
+
+    ancestor_events =
+      if is_list(Map.get(source, :ancestor_events)),
+        do: Map.get(source, :ancestor_events),
+        else: []
+
+    events ++ ancestor_events
+  end
+
+  defp load_ancestor_events(project_root, story_id, parent_attempt) do
+    do_load_ancestor_events(
+      project_root,
+      story_id,
+      normalize_parent_attempt(parent_attempt),
+      MapSet.new(),
+      0
+    )
+  end
+
+  defp do_load_ancestor_events(_project_root, _story_id, nil, _seen, _depth), do: []
+
+  defp do_load_ancestor_events(_project_root, _story_id, _attempt, _seen, depth) when depth >= 20,
+    do: []
+
+  defp do_load_ancestor_events(project_root, story_id, attempt, seen, depth)
+       when is_integer(attempt) and attempt > 0 do
+    if MapSet.member?(seen, attempt) do
+      []
+    else
+      next_seen = MapSet.put(seen, attempt)
+
+      case RunLogs.resolve_attempt(project_root, story_id, attempt) do
+        {:ok, resolved} ->
+          events = read_events_jsonl(resolved.files.events)
+
+          next_parent_attempt =
+            resolved.metadata
+            |> Map.get("parent_attempt")
+            |> normalize_parent_attempt()
+
+          events ++
+            do_load_ancestor_events(
+              project_root,
+              story_id,
+              next_parent_attempt,
+              next_seen,
+              depth + 1
+            )
+
+        {:error, reason} ->
+          Logger.warning(
+            "failed to load parent attempt #{attempt} for #{story_id}: #{inspect(reason)}"
+          )
+
+          []
+      end
+    end
+  end
+
+  defp do_load_ancestor_events(_project_root, _story_id, _attempt, _seen, _depth), do: []
+
+  defp normalize_parent_attempt(value) when is_integer(value) and value > 0, do: value
+
+  defp normalize_parent_attempt(value) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {attempt, ""} when attempt > 0 -> attempt
+      _other -> nil
+    end
+  end
+
+  defp normalize_parent_attempt(_value), do: nil
 
   defp load_workflow(project) do
     path = Projects.workflow_path(project)

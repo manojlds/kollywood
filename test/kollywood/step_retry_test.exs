@@ -477,6 +477,75 @@ defmodule Kollywood.StepRetryTest do
     refute "review_started" in event_types
   end
 
+  test "retrying testing can chain from a prior testing retry attempt", %{
+    root: root,
+    project: project
+  } do
+    story_id = "US-TESTING-CHAIN"
+
+    write_tracker!(project, [
+      %{
+        "id" => story_id,
+        "title" => "Testing chain",
+        "status" => "failed",
+        "settings" => %{"execution" => %{"testing_enabled" => true}}
+      }
+    ])
+
+    testing_cli_path = write_testing_cli!(root, "pass")
+    write_clone_testing_workflow!(root, project, testing_cli_path)
+
+    workspace_path = Path.join(root, "testing-workspace-chain")
+    File.mkdir_p!(workspace_path)
+    write_workspace_pitchfork_toml!(workspace_path)
+
+    source_context =
+      prepare_failed_attempt!(
+        project,
+        story_id,
+        workspace_path,
+        [
+          %{type: :checks_passed, check_count: 1},
+          %{type: :review_passed, cycle: 1},
+          %{type: :testing_started, cycle: 1},
+          %{type: :testing_failed, cycle: 1, reason: "first testing failure"}
+        ],
+        "testing failed"
+      )
+
+    source_retry_attempt =
+      prepare_failed_attempt_with_metadata!(
+        project,
+        story_id,
+        workspace_path,
+        [
+          %{type: :runtime_starting, command: :host, runtime_profile: :full_stack},
+          %{type: :runtime_started, command: :host, runtime_profile: :full_stack},
+          %{type: :runtime_healthcheck_passed, resolved_ports: %{"PORT" => 4921}},
+          %{type: :testing_started, cycle: 1},
+          %{type: :testing_failed, cycle: 1, reason: "second testing failure"}
+        ],
+        "testing failed",
+        %{"parent_attempt" => source_context.attempt, "retry_step" => "testing"}
+      )
+
+    action = StepRetry.retry_action(project, story_id, source_retry_attempt.attempt)
+    assert action["step"] == "testing"
+    assert action["enabled"] == true
+    assert action["reason"] == nil
+
+    assert {:ok, result} =
+             StepRetry.retry(project, story_id, source_retry_attempt.attempt, "testing")
+
+    latest = resolve_attempt!(project, story_id, result.attempt)
+    event_types = read_event_types(latest.files.events)
+
+    assert "testing_started" in event_types
+    assert "testing_passed" in event_types
+    refute "checks_started" in event_types
+    refute "review_started" in event_types
+  end
+
   test "retrying publish skips checks/review and pushes commits", %{root: root, project: project} do
     story_id = "US-PUBLISH-SUCCESS"
     write_tracker!(project, [%{"id" => story_id, "title" => "Publish", "status" => "failed"}])
@@ -889,6 +958,37 @@ defmodule Kollywood.StepRetryTest do
 
     issue = %{id: story_id, identifier: story_id, title: "Story #{story_id}"}
     {:ok, context} = RunLogs.prepare_attempt(config, issue, nil)
+
+    Enum.each(events, fn event ->
+      :ok = RunLogs.append_event(context, event)
+    end)
+
+    :ok =
+      RunLogs.complete_attempt(context, %{
+        status: "failed",
+        turn_count: 1,
+        workspace_path: workspace_path,
+        error: error_reason
+      })
+
+    context
+  end
+
+  defp prepare_failed_attempt_with_metadata!(
+         project,
+         story_id,
+         workspace_path,
+         events,
+         error_reason,
+         metadata
+       ) do
+    config = %Config{
+      workspace: %{root: Path.join(System.tmp_dir!(), "kollywood_step_retry_workspaces")},
+      tracker: %{project_slug: project.slug}
+    }
+
+    issue = %{id: story_id, identifier: story_id, title: "Story #{story_id}"}
+    {:ok, context} = RunLogs.prepare_attempt(config, issue, nil, metadata)
 
     Enum.each(events, fn event ->
       :ok = RunLogs.append_event(context, event)
