@@ -510,12 +510,13 @@ defmodule Kollywood.StepRetry do
          true <- non_empty_string?(story_id) or {:error, "story_id is required"},
          {:ok, resolved} <- RunLogs.resolve_attempt(project_root, story_id, source_attempt) do
       events = read_events_jsonl(resolved.files.events)
+      metadata = normalize_source_metadata(resolved.metadata, events)
 
       {:ok,
        %{
          attempt: resolved.attempt,
-         runner_attempt: normalize_runner_attempt(resolved.metadata["runner_attempt"]),
-         metadata: resolved.metadata,
+         runner_attempt: normalize_runner_attempt(metadata["runner_attempt"]),
+         metadata: metadata,
          files: resolved.files,
          events: events
        }}
@@ -633,7 +634,7 @@ defmodule Kollywood.StepRetry do
   end
 
   defp workspace_path_from_metadata(metadata) when is_map(metadata) do
-    case metadata |> Map.get("workspace_path") |> optional_string() do
+    case metadata |> Map.get("workspace_path") |> normalize_workspace_path() do
       nil -> {:error, "workspace path is missing from source attempt metadata"}
       path -> {:ok, path}
     end
@@ -641,6 +642,48 @@ defmodule Kollywood.StepRetry do
 
   defp workspace_path_from_metadata(_metadata),
     do: {:error, "workspace path is missing from source attempt metadata"}
+
+  defp normalize_source_metadata(metadata, events) when is_map(metadata) do
+    workspace_path = normalize_workspace_path(Map.get(metadata, "workspace_path"))
+
+    workspace_path =
+      if is_binary(workspace_path) do
+        workspace_path
+      else
+        workspace_path_from_events(events)
+      end
+
+    if is_binary(workspace_path) do
+      Map.put(metadata, "workspace_path", workspace_path)
+    else
+      metadata
+    end
+  end
+
+  defp normalize_source_metadata(_metadata, _events), do: %{}
+
+  defp workspace_path_from_events(events) when is_list(events) do
+    Enum.reduce(events, nil, fn event, acc ->
+      path = event |> field(:workspace_path) |> normalize_workspace_path()
+      if is_binary(path), do: path, else: acc
+    end)
+  end
+
+  defp workspace_path_from_events(_events), do: nil
+
+  defp normalize_workspace_path(value) do
+    case optional_string(value) do
+      nil ->
+        nil
+
+      path ->
+        case String.downcase(path) do
+          "nil" -> nil
+          "null" -> nil
+          _other -> path
+        end
+    end
+  end
 
   defp workspace_strategy(%Config{} = config) do
     config

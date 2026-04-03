@@ -427,14 +427,29 @@ defmodule Kollywood.StepRetryTest do
       prepare_failed_attempt!(
         project,
         story_id,
-        workspace_path,
+        nil,
         [
-          %{type: :runtime_starting, command: :host, runtime_profile: :full_stack},
-          %{type: :runtime_started, command: :host, runtime_profile: :full_stack},
-          %{type: :runtime_healthcheck_started, resolved_ports: %{"PORT" => 4921}},
+          %{
+            type: :runtime_starting,
+            command: :host,
+            runtime_profile: :full_stack,
+            workspace_path: workspace_path
+          },
+          %{
+            type: :runtime_started,
+            command: :host,
+            runtime_profile: :full_stack,
+            workspace_path: workspace_path
+          },
+          %{
+            type: :runtime_healthcheck_started,
+            resolved_ports: %{"PORT" => 4921},
+            workspace_path: workspace_path
+          },
           %{
             type: :runtime_healthcheck_failed,
-            reason: "ports not reachable before timeout: PORT=4921"
+            reason: "ports not reachable before timeout: PORT=4921",
+            workspace_path: workspace_path
           }
         ],
         "runtime healthcheck failed: ports not reachable before timeout: PORT=4921"
