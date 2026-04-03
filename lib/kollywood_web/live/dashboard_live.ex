@@ -2494,7 +2494,6 @@ defmodule KollywoodWeb.DashboardLive do
     """
   end
 
-
   attr :story_id, :string, required: true
   attr :project, :map, required: true
   attr :preview_session, :map, default: nil
@@ -3235,7 +3234,15 @@ defmodule KollywoodWeb.DashboardLive do
 
     visible_steps =
       Enum.filter(steps, fn s ->
-        s.kind not in ["run_started", "workspace_ready", "quality_cycle", "quality_retry", "quality_passed", "run_finished", "prompt_captured"]
+        s.kind not in [
+          "run_started",
+          "workspace_ready",
+          "quality_cycle",
+          "quality_retry",
+          "quality_passed",
+          "run_finished",
+          "prompt_captured"
+        ]
       end)
 
     run_error =
@@ -3329,7 +3336,9 @@ defmodule KollywoodWeb.DashboardLive do
                 <%= for step <- @steps do %>
                   <div class="flex items-center gap-2">
                     <.link
-                      navigate={step_detail_path(@project.slug, @story_id, @attempt, step.idx, @stories_view)}
+                      navigate={
+                        step_detail_path(@project.slug, @story_id, @attempt, step.idx, @stories_view)
+                      }
                       class="flex items-center gap-3 p-3 bg-base-100 rounded-lg hover:bg-base-300 transition-colors flex-1 min-w-0"
                     >
                       <.step_status_icon kind={step.kind} status={step.status} />
@@ -3384,6 +3393,7 @@ defmodule KollywoodWeb.DashboardLive do
 
   defp step_detail_section(assigns) do
     step_log_content = step_log_content(assigns.step, assigns.run_detail)
+    step_prompt_content = step_prompt_content(assigns.step, assigns.run_detail)
 
     run_status =
       if is_map(assigns.run_detail),
@@ -3403,7 +3413,7 @@ defmodule KollywoodWeb.DashboardLive do
     retryable_idx = retryable_step_idx(all_steps, run_status)
 
     step = assigns.step
-    has_prompt = step && step.prompt != nil
+    has_prompt = is_binary(step_prompt_content) and String.trim(step_prompt_content) != ""
     has_logs = step_log_content != nil and step_log_content != ""
     has_reports = step && step.kind in ["review", "testing"]
 
@@ -3444,6 +3454,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:active_tab, active_tab)
       |> assign(:has_logs, has_logs)
       |> assign(:has_prompt, has_prompt)
+      |> assign(:step_prompt_content, step_prompt_content)
       |> assign(:has_reports, has_reports)
       |> assign(:step_report, step_report)
 
@@ -3499,7 +3510,9 @@ defmodule KollywoodWeb.DashboardLive do
                 <div class="flex items-center gap-3 p-2 bg-base-100 rounded-lg">
                   <.step_status_icon kind="check" status={check.status} />
                   <code class="text-xs flex-1 truncate">{check.command}</code>
-                  <span class="text-xs text-base-content/50">{format_step_duration(check.duration_ms)}</span>
+                  <span class="text-xs text-base-content/50">
+                    {format_step_duration(check.duration_ms)}
+                  </span>
                 </div>
               <% end %>
             </div>
@@ -3518,7 +3531,9 @@ defmodule KollywoodWeb.DashboardLive do
                     <.runtime_event_icon type={event_type} />
                     <span class="text-xs font-mono flex-1">{event_type}</span>
                     <%= if event["resolved_ports"] do %>
-                      <span class="text-xs text-base-content/50">{inspect(event["resolved_ports"])}</span>
+                      <span class="text-xs text-base-content/50">
+                        {inspect(event["resolved_ports"])}
+                      </span>
                     <% end %>
                     <%= if event["reason"] do %>
                       <span class="text-xs text-error truncate max-w-[250px]">{event["reason"]}</span>
@@ -3552,14 +3567,12 @@ defmodule KollywoodWeb.DashboardLive do
 
           <%!-- Logs tab --%>
           <%= if @active_tab == "logs" && @has_logs do %>
-            <pre
-              class="text-xs whitespace-pre-wrap break-words flex-1 min-h-[200px] max-h-[75vh] overflow-y-auto bg-neutral text-neutral-content p-4 rounded-lg font-mono"
-            ><.ansi_log content={@step_log_content} /></pre>
+            <pre class="text-xs whitespace-pre-wrap break-words flex-1 min-h-[200px] max-h-[75vh] overflow-y-auto bg-neutral text-neutral-content p-4 rounded-lg font-mono"><.ansi_log content={@step_log_content} /></pre>
           <% end %>
 
           <%!-- Prompt tab --%>
           <%= if @active_tab == "prompt" && @has_prompt do %>
-            <pre class="text-xs whitespace-pre-wrap break-words flex-1 min-h-[200px] max-h-[75vh] overflow-y-auto bg-base-300 p-4 rounded-lg">{@step.prompt}</pre>
+            <pre class="text-xs whitespace-pre-wrap break-words flex-1 min-h-[200px] max-h-[75vh] overflow-y-auto bg-base-300 p-4 rounded-lg">{@step_prompt_content}</pre>
           <% end %>
 
           <%!-- Reports tab --%>
@@ -3644,6 +3657,7 @@ defmodule KollywoodWeb.DashboardLive do
       end
 
     assigns = assigns |> assign(:icon, icon) |> assign(:color, color)
+
     ~H"""
     <.icon name={@icon} class={["size-4 shrink-0", @color]} />
     """
@@ -3679,7 +3693,9 @@ defmodule KollywoodWeb.DashboardLive do
   }
 
   defp retryable_step_idx(steps, run_status) when is_list(steps) do
-    if to_string(run_status) not in ["failed", "error"], do: nil, else: do_retryable_step_idx(steps)
+    if to_string(run_status) not in ["failed", "error"],
+      do: nil,
+      else: do_retryable_step_idx(steps)
   end
 
   defp do_retryable_step_idx(steps) do
@@ -3689,7 +3705,9 @@ defmodule KollywoodWeb.DashboardLive do
       s.status in ["failed", "error"] and s.kind in @retryable_step_kinds
     end)
     |> case do
-      nil -> nil
+      nil ->
+        nil
+
       step ->
         effective_kind = Map.get(@step_kind_to_retry, step.kind, step.kind)
 
@@ -3720,12 +3738,57 @@ defmodule KollywoodWeb.DashboardLive do
 
   defp step_log_content(_step, _run_detail), do: nil
 
+  defp step_prompt_content(nil, _run_detail), do: nil
+
+  defp step_prompt_content(step, run_detail) when is_map(step) do
+    case Map.get(step, :prompt) do
+      value when is_binary(value) ->
+        if String.trim(value) == "" do
+          fallback_step_prompt(run_detail, Map.get(step, :kind))
+        else
+          value
+        end
+
+      _other ->
+        fallback_step_prompt(run_detail, Map.get(step, :kind))
+    end
+  end
+
+  defp step_prompt_content(_step, _run_detail), do: nil
+
+  defp fallback_step_prompt(run_detail, kind) when is_map(run_detail) do
+    phase =
+      case kind do
+        "agent_turn" -> "agent"
+        "review" -> "review"
+        "testing" -> "testing"
+        _other -> nil
+      end
+
+    if is_binary(phase) do
+      run_detail
+      |> Map.get("prompts", %{})
+      |> Map.get(phase)
+      |> case do
+        value when is_binary(value) -> if(String.trim(value) == "", do: nil, else: value)
+        _other -> nil
+      end
+    else
+      nil
+    end
+  end
+
+  defp fallback_step_prompt(_run_detail, _kind), do: nil
+
   defp step_log_for_kind("agent_turn", files) do
     read_file_safe(files[:agent_stdout]) || read_file_safe(files[:agent])
   end
 
   defp step_log_for_kind("checks", files), do: read_file_safe(files[:checks])
-  defp step_log_for_kind("review", files), do: read_file_safe(files[:reviewer_stdout]) || read_file_safe(files[:reviewer])
+
+  defp step_log_for_kind("review", files),
+    do: read_file_safe(files[:reviewer_stdout]) || read_file_safe(files[:reviewer])
+
   defp step_log_for_kind("testing", files) do
     (read_file_safe(files[:tester_stdout]) || read_file_safe(files[:tester]) || "") <>
       "\n" <> (read_file_safe(files[:runtime]) || "")
@@ -4796,9 +4859,7 @@ defmodule KollywoodWeb.DashboardLive do
                       type="checkbox"
                       name="settings[quality][testing][enabled]"
                       value="true"
-                      checked={
-                        get_in(@workflow.parsed, ["quality", "testing", "enabled"]) == true
-                      }
+                      checked={get_in(@workflow.parsed, ["quality", "testing", "enabled"]) == true}
                       class="toggle toggle-sm toggle-primary"
                     />
                     <span class="text-sm">Enable testing</span>
@@ -4852,9 +4913,7 @@ defmodule KollywoodWeb.DashboardLive do
                           type="checkbox"
                           name="settings[quality][testing][agent_custom]"
                           value="true"
-                          checked={
-                            get_in(@workflow.parsed, ["quality", "testing", "agent"]) != nil
-                          }
+                          checked={get_in(@workflow.parsed, ["quality", "testing", "agent"]) != nil}
                           class="toggle toggle-sm"
                         />
                         <span class="text-sm">Use a different agent for testing</span>
@@ -5263,7 +5322,6 @@ defmodule KollywoodWeb.DashboardLive do
     <span class={"badge badge-sm whitespace-nowrap #{@color}"}>{@label}</span>
     """
   end
-
 
   defp show_run_detail_phase_label?(phase_label) when is_binary(phase_label) do
     phase_label
@@ -7282,7 +7340,10 @@ defmodule KollywoodWeb.DashboardLive do
     end
   rescue
     _ ->
-      socket |> assign(:step_idx, nil) |> assign(:current_step, nil) |> assign(:step_detail_tab, "logs")
+      socket
+      |> assign(:step_idx, nil)
+      |> assign(:current_step, nil)
+      |> assign(:step_detail_tab, "logs")
   end
 
   defp handle_live_action(socket, :story_detail, params) do

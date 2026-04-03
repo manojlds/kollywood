@@ -1129,6 +1129,67 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert preview_html =~ ~s(phx-click="close_artifact_preview")
     end
 
+    test "step detail shows prompt tab for agent, review, and testing phases", %{
+      conn: conn,
+      project: project
+    } do
+      story_id = "US-STEP-PROMPTS"
+
+      prepare_run_logs!(project.slug, story_id,
+        events: [
+          %{type: :quality_cycle_started, cycle: 1},
+          %{type: :prompt_captured, phase: :agent, prompt: "Agent first prompt"},
+          %{type: :turn_started, turn: 1},
+          %{type: :turn_succeeded, turn: 1, output: "agent output"},
+          %{type: :review_started, cycle: 1},
+          %{type: :prompt_captured, phase: :review, prompt: "Review first prompt"},
+          %{type: :review_passed, cycle: 1, output: "review output"},
+          %{type: :testing_started, cycle: 1},
+          %{type: :prompt_captured, phase: :testing, prompt: "Testing first prompt"},
+          %{type: :testing_passed, cycle: 1, output: "testing output"}
+        ],
+        status: "ok"
+      )
+
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
+
+      step_paths =
+        Regex.scan(~r|/projects/#{project.slug}/runs/#{story_id}/1/step/\d+|, html)
+        |> List.flatten()
+        |> Enum.uniq()
+
+      assert length(step_paths) == 3
+
+      [agent_step_path, review_step_path, testing_step_path] = step_paths
+
+      {:ok, agent_view, _html} = live(conn, agent_step_path)
+
+      agent_prompt_html =
+        agent_view
+        |> element("button[phx-click='set_step_detail_tab'][phx-value-tab='prompt']")
+        |> render_click()
+
+      assert agent_prompt_html =~ "Agent first prompt"
+
+      {:ok, review_view, _html} = live(conn, review_step_path)
+
+      review_prompt_html =
+        review_view
+        |> element("button[phx-click='set_step_detail_tab'][phx-value-tab='prompt']")
+        |> render_click()
+
+      assert review_prompt_html =~ "Review first prompt"
+
+      {:ok, testing_view, _html} = live(conn, testing_step_path)
+
+      testing_prompt_html =
+        testing_view
+        |> element("button[phx-click='set_step_detail_tab'][phx-value-tab='prompt']")
+        |> render_click()
+
+      assert testing_prompt_html =~ "Testing first prompt"
+    end
+
     test "run detail reports tab shows review report json view", %{
       conn: conn,
       project: project

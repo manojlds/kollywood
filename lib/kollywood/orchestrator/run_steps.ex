@@ -63,7 +63,9 @@ defmodule Kollywood.Orchestrator.RunSteps do
   # --- Agent turn (coding or remediation) ---
 
   defp handle_event("turn_started", event, steps, current) do
-    carried_prompt = if current && current.kind == "prompt_captured", do: current.prompt, else: nil
+    carried_prompt =
+      if current && current.kind == "prompt_captured", do: current.prompt, else: nil
+
     steps = close_step(steps, current, event)
     cycle = int_field(event, "checks_cycle")
 
@@ -87,27 +89,16 @@ defmodule Kollywood.Orchestrator.RunSteps do
   end
 
   defp handle_event("prompt_captured", event, steps, nil) do
-    steps = close_step(steps, nil)
+    {steps, prompt_step(event)}
+  end
 
-    {steps,
-     %{
-       kind: "prompt_captured",
-       label: "Prompt (#{str_field(event, "phase") || "agent"})",
-       status: "ok",
-       started_at: timestamp(event),
-       ended_at: timestamp(event),
-       duration_ms: 0,
-       cycle: nil,
-       turn: nil,
-       prompt: str_field(event, "prompt"),
-       events: [event],
-       error: nil,
-       detail: %{phase: str_field(event, "phase")}
-     }}
+  defp handle_event("prompt_captured", event, steps, %{status: "running"} = current) do
+    {steps, %{current | prompt: str_field(event, "prompt"), events: current.events ++ [event]}}
   end
 
   defp handle_event("prompt_captured", event, steps, current) do
-    {steps, %{current | prompt: str_field(event, "prompt"), events: current.events ++ [event]}}
+    steps = close_step(steps, current)
+    {steps, prompt_step(event)}
   end
 
   defp handle_event("turn_succeeded", event, steps, %{kind: "agent_turn"} = current) do
@@ -179,7 +170,9 @@ defmodule Kollywood.Orchestrator.RunSteps do
   # --- Review ---
 
   defp handle_event("review_started", event, steps, current) do
-    carried_prompt = if current && current.kind == "prompt_captured", do: current.prompt, else: nil
+    carried_prompt =
+      if current && current.kind == "prompt_captured", do: current.prompt, else: nil
+
     steps = close_step(steps, current, event)
     cycle = int_field(event, "cycle")
     seq = Enum.count(steps, fn s -> s.kind == "review" end) + 1
@@ -216,7 +209,9 @@ defmodule Kollywood.Orchestrator.RunSteps do
   # --- Testing ---
 
   defp handle_event("testing_started", event, steps, current) do
-    carried_prompt = if current && current.kind == "prompt_captured", do: current.prompt, else: nil
+    carried_prompt =
+      if current && current.kind == "prompt_captured", do: current.prompt, else: nil
+
     steps = close_step(steps, current, event)
     cycle = int_field(event, "cycle")
     seq = Enum.count(steps, fn s -> s.kind == "testing" end) + 1
@@ -608,6 +603,7 @@ defmodule Kollywood.Orchestrator.RunSteps do
   # --- Catch-all: fold unknown events into current step ---
 
   defp handle_event(_type, event, steps, nil), do: {steps, nil |> maybe_wrap_orphan(event)}
+
   defp handle_event(_type, event, steps, current) do
     {steps, %{current | events: current.events ++ [event]}}
   end
@@ -692,6 +688,23 @@ defmodule Kollywood.Orchestrator.RunSteps do
 
   defp event_type(event) do
     to_string(Map.get(event, "type") || Map.get(event, :type) || "")
+  end
+
+  defp prompt_step(event) do
+    %{
+      kind: "prompt_captured",
+      label: "Prompt (#{str_field(event, "phase") || "agent"})",
+      status: "ok",
+      started_at: timestamp(event),
+      ended_at: timestamp(event),
+      duration_ms: 0,
+      cycle: nil,
+      turn: nil,
+      prompt: str_field(event, "prompt"),
+      events: [event],
+      error: nil,
+      detail: %{phase: str_field(event, "phase")}
+    }
   end
 
   defp timestamp(event) do
