@@ -736,15 +736,15 @@ defmodule Kollywood.AgentRunner do
             :pr ->
               run_publish_pr(state, config, workspace, provider)
 
-            :auto_merge when provider == :local ->
-              run_publish_auto_merge_local(state, config, workspace)
+            :merge ->
+              run_publish_merge_local(state, config, workspace)
 
             :auto_merge when provider in [:github, :gitlab] ->
               run_publish_auto_merge_remote(state, config, workspace, provider)
 
             :auto_merge ->
               {:error,
-               "publish.mode auto_merge requires provider local, github, or gitlab (got: #{inspect(provider)})",
+               "publish.mode auto_merge requires provider github or gitlab (got: #{inspect(provider)})",
                emit(state, :publish_failed, %{
                  branch: workspace.branch,
                  reason: "unsupported provider"
@@ -808,7 +808,7 @@ defmodule Kollywood.AgentRunner do
     end
   end
 
-  defp run_publish_auto_merge_local(state, config, workspace) do
+  defp run_publish_merge_local(state, config, workspace) do
     if preview_enabled?(config) do
       run_publish_local_pending_merge(state, config, workspace)
     else

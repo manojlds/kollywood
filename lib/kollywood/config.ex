@@ -9,14 +9,14 @@ defmodule Kollywood.Config do
 
   @type agent_kind :: :amp | :claude | :cursor | :opencode | :pi
   @type publish_provider :: :github | :gitlab
-  @type publish_mode :: :push | :pr | :auto_merge
+  @type publish_mode :: :push | :pr | :merge | :auto_merge
   @type auto_push_policy :: :never | :on_pass
   @type auto_merge_policy :: :never | :on_pass
   @type auto_create_pr_policy :: :never | :draft | :ready
 
   @valid_agent_kinds ~w(amp claude cursor opencode pi)a
   @valid_publish_providers ~w(github gitlab)a
-  @valid_publish_modes ~w(push pr auto_merge)a
+  @valid_publish_modes ~w(push pr merge auto_merge)a
   @valid_auto_push_policies ~w(never on_pass)a
   @valid_auto_merge_policies ~w(never on_pass)a
   @valid_auto_create_pr_policies ~w(never draft ready)a
@@ -134,13 +134,21 @@ defmodule Kollywood.Config do
 
   Resolution order:
   - `publish.mode` from WORKFLOW.md (including legacy-derived mode)
-  - provider default (`:auto_merge` for local, `:pr` for github/gitlab, `:push` fallback)
+  - provider default (`:merge` for local, `:pr` for github/gitlab, `:push` fallback)
+
+  `auto_merge` is normalized to `:merge` for local provider for clarity.
   """
   @spec effective_publish_mode(t()) :: publish_mode()
   def effective_publish_mode(%__MODULE__{} = config) do
-    get_in(config, [Access.key(:publish, %{}), Access.key(:mode)]) ||
-      default_publish_mode(effective_publish_provider(config))
+    raw_mode =
+      get_in(config, [Access.key(:publish, %{}), Access.key(:mode)]) ||
+        default_publish_mode(effective_publish_provider(config))
+
+    normalize_publish_mode(raw_mode, effective_publish_provider(config))
   end
+
+  defp normalize_publish_mode(:auto_merge, :local), do: :merge
+  defp normalize_publish_mode(mode, _provider), do: mode
 
   @doc """
   Parses WORKFLOW.md content into a `%Config{}` struct.
@@ -794,13 +802,13 @@ defmodule Kollywood.Config do
 
   defp maybe_warn_legacy_publish_fields(true) do
     Logger.warning(
-      "publish.auto_push / publish.auto_create_pr / publish.auto_merge are deprecated; use publish.mode (push, pr, auto_merge)"
+      "publish.auto_push / publish.auto_create_pr / publish.auto_merge are deprecated; use publish.mode (push, merge, pr, auto_merge)"
     )
   end
 
   defp maybe_warn_legacy_publish_fields(false), do: :ok
 
-  defp default_publish_mode(:local), do: :auto_merge
+  defp default_publish_mode(:local), do: :merge
   defp default_publish_mode(provider) when provider in [:github, :gitlab], do: :pr
   defp default_publish_mode(_provider), do: :push
 
