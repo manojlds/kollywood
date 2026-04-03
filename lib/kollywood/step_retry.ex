@@ -4,6 +4,9 @@ defmodule Kollywood.StepRetry do
 
   Step retries run from a failed phase forward (`checks`, `review`, `testing`, or `publish`)
   while reusing the existing workspace and preserving prior attempts in run logs.
+
+  Runtime startup failures are retried through the `testing` phase, because runtime
+  orchestration is owned by testing execution.
   """
 
   require Logger
@@ -20,7 +23,7 @@ defmodule Kollywood.StepRetry do
   alias Kollywood.Tracker.PrdJson
   alias Kollywood.Workspace
 
-  @type step :: :checks | :review | :testing | :publish
+  @type step :: :checks | :review | :testing | :publish | :runtime
 
   @step_labels %{
     checks: "Retry checks",
@@ -424,7 +427,7 @@ defmodule Kollywood.StepRetry do
         :ok
 
       nil ->
-        {:error, "source attempt did not fail in checks, review, testing, or publish"}
+        {:error, "source attempt did not fail in checks, review, testing/runtime, or publish"}
 
       other ->
         {:error, "source attempt failed in #{Atom.to_string(other)}; retry that step instead"}
@@ -683,10 +686,12 @@ defmodule Kollywood.StepRetry do
   defp parse_step(:checks), do: {:ok, :checks}
   defp parse_step(:review), do: {:ok, :review}
   defp parse_step(:testing), do: {:ok, :testing}
+  defp parse_step(:runtime), do: {:ok, :testing}
   defp parse_step(:publish), do: {:ok, :publish}
   defp parse_step("checks"), do: {:ok, :checks}
   defp parse_step("review"), do: {:ok, :review}
   defp parse_step("testing"), do: {:ok, :testing}
+  defp parse_step("runtime"), do: {:ok, :testing}
   defp parse_step("publish"), do: {:ok, :publish}
 
   defp parse_step(step) when is_binary(step) do
@@ -697,7 +702,7 @@ defmodule Kollywood.StepRetry do
   end
 
   defp parse_step(_step),
-    do: {:error, "retry step must be one of: checks, review, testing, publish"}
+    do: {:error, "retry step must be one of: checks, review, testing, runtime, publish"}
 
   defp parse_attempt(value) when is_integer(value) and value > 0, do: {:ok, value}
 
@@ -723,13 +728,16 @@ defmodule Kollywood.StepRetry do
 
   defp failed_step(events) when is_list(events) do
     case last_failed_step(events) do
-      nil -> {:error, "source attempt did not fail in checks, review, testing, or publish"}
-      step -> {:ok, step}
+      nil ->
+        {:error, "source attempt did not fail in checks, review, testing/runtime, or publish"}
+
+      step ->
+        {:ok, step}
     end
   end
 
   defp failed_step(_events),
-    do: {:error, "source attempt did not fail in checks, review, testing, or publish"}
+    do: {:error, "source attempt did not fail in checks, review, testing/runtime, or publish"}
 
   defp last_failed_step(events) when is_list(events) do
     explicit =
@@ -740,6 +748,9 @@ defmodule Kollywood.StepRetry do
           "review_error" -> :review
           "testing_failed" -> :testing
           "testing_error" -> :testing
+          "runtime_start_failed" -> :testing
+          "runtime_healthcheck_failed" -> :testing
+          "runtime_stop_failed" -> :testing
           "publish_failed" -> :publish
           _other -> acc
         end
@@ -758,6 +769,8 @@ defmodule Kollywood.StepRetry do
           "check_started" -> :checks
           "review_started" -> :review
           "testing_started" -> :testing
+          "runtime_starting" -> :testing
+          "runtime_healthcheck_started" -> :testing
           "publish_started" -> :publish
           _other -> acc
         end
@@ -765,12 +778,13 @@ defmodule Kollywood.StepRetry do
 
     has_passed =
       Enum.any?(events, fn event ->
-        event_type(event) in [
-          "checks_passed",
-          "review_passed",
-          "testing_passed",
-          "publish_succeeded"
-        ]
+        case {last_phase, event_type(event)} do
+          {:checks, "checks_passed"} -> true
+          {:review, "review_passed"} -> true
+          {:testing, type} when type in ["testing_passed", "runtime_healthcheck_passed"] -> true
+          {:publish, "publish_succeeded"} -> true
+          _other -> false
+        end
       end)
 
     if last_phase && !has_passed, do: last_phase, else: nil

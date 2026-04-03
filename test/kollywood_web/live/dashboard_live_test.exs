@@ -1346,6 +1346,103 @@ defmodule KollywoodWeb.DashboardLiveTest do
       refute html =~ ~s(phx-value-step="checks" disabled)
     end
 
+    test "runtime healthcheck failure shows retry-from-step and retry testing action", %{
+      conn: conn,
+      project: project,
+      tmp_dir: tmp_dir
+    } do
+      story_id = "US-RETRY-RUNTIME"
+
+      append_story!(project, %{
+        "id" => story_id,
+        "title" => "Retry runtime",
+        "status" => "failed"
+      })
+
+      write_workflow!(project, """
+      ---
+      tracker:
+        kind: prd_json
+      workspace:
+        strategy: clone
+      agent:
+        kind: amp
+        command: /bin/true
+      quality:
+        max_cycles: 1
+        checks:
+          required: []
+          timeout_ms: 10000
+          fail_fast: true
+          max_cycles: 1
+        review:
+          enabled: false
+          max_cycles: 1
+        testing:
+          enabled: true
+          max_cycles: 1
+          timeout_ms: 10000
+          agent:
+            kind: amp
+            command: /bin/true
+            args: []
+            env: {}
+            timeout_ms: 10000
+      runtime:
+        kind: host
+        processes:
+          - server
+        env: {}
+        ports: {}
+        start_timeout_ms: 10000
+        stop_timeout_ms: 10000
+      publish:
+        mode: push
+      orchestrator:
+        retries_enabled: false
+      git:
+        base_branch: main
+      ---
+
+      Work on {{ issue.identifier }}.
+      """)
+
+      workspace_path = Path.join(tmp_dir, "retry-runtime-workspace")
+      File.mkdir_p!(workspace_path)
+
+      _context =
+        prepare_run_logs!(project.slug, story_id,
+          events: [
+            %{type: :runtime_starting, command: "docker", workspace_path: workspace_path},
+            %{type: :runtime_started, command: "docker", resolved_ports: %{"PORT" => 4921}},
+            %{type: :runtime_healthcheck_started, resolved_ports: %{"PORT" => 4921}},
+            %{
+              type: :runtime_healthcheck_failed,
+              reason: "ports not reachable before timeout: PORT=4921",
+              resolved_ports: %{"PORT" => 4921}
+            },
+            %{type: :runtime_stopping, command: "docker"},
+            %{type: :runtime_stopped, command: "docker"}
+          ],
+          status: "failed",
+          completion: %{workspace_path: workspace_path, error: "runtime healthcheck failed"}
+        )
+
+      {:ok, run_view, run_html} =
+        live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
+
+      assert run_html =~ "Runtime Start"
+      assert has_element?(run_view, "button[phx-click='trigger_run'][phx-value-step='testing']")
+
+      {:ok, story_view, html} =
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
+
+      assert html =~ "Actions"
+      assert html =~ "Retry testing"
+      assert has_element?(story_view, "button[phx-click='trigger_run'][phx-value-step='testing']")
+      refute html =~ ~s(phx-value-step="testing" disabled)
+    end
+
     test "run detail disables retry action when workspace preconditions are missing", %{
       conn: conn,
       project: project

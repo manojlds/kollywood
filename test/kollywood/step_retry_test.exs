@@ -370,6 +370,7 @@ defmodule Kollywood.StepRetryTest do
 
     workspace_path = Path.join(root, "testing-workspace-success")
     File.mkdir_p!(workspace_path)
+    write_workspace_pitchfork_toml!(workspace_path)
 
     source_context =
       prepare_failed_attempt!(
@@ -392,6 +393,67 @@ defmodule Kollywood.StepRetryTest do
     assert latest.metadata["status"] == "ok"
 
     event_types = read_event_types(latest.files.events)
+    assert "testing_started" in event_types
+    assert "testing_passed" in event_types
+    assert "publish_skipped" in event_types
+    refute "turn_started" in event_types
+    refute "checks_started" in event_types
+    refute "review_started" in event_types
+  end
+
+  test "runtime startup failures expose testing retry action and recover via testing retry", %{
+    root: root,
+    project: project
+  } do
+    story_id = "US-RUNTIME-RETRY"
+
+    write_tracker!(project, [
+      %{
+        "id" => story_id,
+        "title" => "Runtime Retry",
+        "status" => "failed",
+        "settings" => %{"execution" => %{"testing_enabled" => true}}
+      }
+    ])
+
+    testing_cli_path = write_testing_cli!(root, "pass")
+    write_clone_testing_workflow!(root, project, testing_cli_path)
+
+    workspace_path = Path.join(root, "runtime-workspace-retry")
+    File.mkdir_p!(workspace_path)
+    write_workspace_pitchfork_toml!(workspace_path)
+
+    source_context =
+      prepare_failed_attempt!(
+        project,
+        story_id,
+        workspace_path,
+        [
+          %{type: :runtime_starting, command: :host, runtime_profile: :full_stack},
+          %{type: :runtime_started, command: :host, runtime_profile: :full_stack},
+          %{type: :runtime_healthcheck_started, resolved_ports: %{"PORT" => 4921}},
+          %{
+            type: :runtime_healthcheck_failed,
+            reason: "ports not reachable before timeout: PORT=4921"
+          }
+        ],
+        "runtime healthcheck failed: ports not reachable before timeout: PORT=4921"
+      )
+
+    action = StepRetry.retry_action(project, story_id, source_context.attempt)
+    assert action["step"] == "testing"
+    assert action["label"] == "Retry testing"
+    assert action["enabled"] == true
+    assert action["reason"] == nil
+
+    assert {:ok, result} = StepRetry.retry(project, story_id, source_context.attempt, "runtime")
+    assert result.retry_step == "testing"
+
+    latest = resolve_attempt!(project, story_id, result.attempt)
+    event_types = read_event_types(latest.files.events)
+
+    assert "runtime_starting" in event_types
+    assert "runtime_healthcheck_passed" in event_types
     assert "testing_started" in event_types
     assert "testing_passed" in event_types
     assert "publish_skipped" in event_types
@@ -737,6 +799,13 @@ defmodule Kollywood.StepRetryTest do
 
     File.chmod!(path, 0o755)
     System.put_env("PATH", bin_dir <> ":" <> System.get_env("PATH", ""))
+  end
+
+  defp write_workspace_pitchfork_toml!(workspace_path) do
+    File.write!(Path.join(workspace_path, "pitchfork.toml"), """
+    [daemons.server]
+    run = \"/bin/true\"
+    """)
   end
 
   defp write_worktree_publish_workflow!(project, source_repo, workspaces_root) do
