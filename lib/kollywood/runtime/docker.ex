@@ -31,8 +31,10 @@ defmodule Kollywood.Runtime.Docker do
   @default_image "kollywood-runtime:latest"
   @container_workspace "/workspace"
   @container_home "/home/runtime"
+  @container_mise_installs "#{@container_home}/.local/share/mise/installs"
   @container_ready_poll_ms 500
   @container_ready_timeout_ms 30_000
+  @mise_install_timeout_ms 600_000
   @healthcheck_poll_interval_ms 250
   @healthcheck_connect_timeout_ms 250
   @healthcheck_skip_env "KOLLYWOOD_RUNTIME_SKIP_HEALTHCHECK"
@@ -110,6 +112,7 @@ defmodule Kollywood.Runtime.Docker do
   def start(state) do
     with {:ok, state} <- ensure_exec_ready(state),
          {:ok, state} <- await_container_ready(state),
+         {:ok, state} <- mise_install_tools(state),
          {:ok, state} <- start_pitchfork_in_container(state) do
       {:ok, %{state | started?: true, process_state: :running}}
     else
@@ -209,6 +212,8 @@ defmodule Kollywood.Runtime.Docker do
     env_args =
       state.env
       |> Map.put("HOME", @container_home)
+      |> Map.put_new("LANG", "C.UTF-8")
+      |> Map.put_new("LC_ALL", "C.UTF-8")
       |> Enum.flat_map(fn {k, v} -> ["-e", "#{k}=#{v}"] end)
 
     args =
@@ -222,9 +227,15 @@ defmodule Kollywood.Runtime.Docker do
         "--user",
         host_uid_gid(),
         "--tmpfs",
-        "/tmp",
+        "/tmp:exec",
         "-v",
-        "#{state.workspace_path}:#{@container_workspace}:rw"
+        "#{state.workspace_path}:#{@container_workspace}:rw",
+        "-v",
+        "#{mise_installs_host_dir()}:#{@container_mise_installs}:rw",
+        "-v",
+        "#{mise_host_dir("downloads")}:#{@container_home}/.local/share/mise/downloads:rw",
+        "-v",
+        "#{mise_host_dir("cache")}:#{@container_home}/.cache/mise:rw"
       ] ++
         env_args ++
         [state.image]
@@ -275,6 +286,36 @@ defmodule Kollywood.Runtime.Docker do
     _ ->
       Process.sleep(@container_ready_poll_ms)
       poll_container_ready(state, deadline)
+  end
+
+  defp mise_install_tools(state) do
+    Logger.info("[docker] running mise install in #{state.workspace_path}")
+
+    case System.cmd(
+           "docker",
+           [
+             "exec",
+             "-w",
+             @container_workspace,
+             state.container_id,
+             "bash",
+             "-lc",
+             "mise install --yes 2>&1"
+           ],
+           stderr_to_stdout: true,
+           timeout: @mise_install_timeout_ms
+         ) do
+      {_output, 0} ->
+        {:ok, state}
+
+      {output, code} ->
+        {:error,
+         "mise install failed (exit #{code}): #{String.trim(output) |> String.slice(-500..-1//1)}",
+         state}
+    end
+  rescue
+    error ->
+      {:error, "mise install failed: #{Exception.message(error)}", state}
   end
 
   defp start_pitchfork_in_container(state) do
@@ -417,6 +458,17 @@ defmodule Kollywood.Runtime.Docker do
     uid = :os.cmd(~c"id -u") |> to_string() |> String.trim()
     gid = :os.cmd(~c"id -g") |> to_string() |> String.trim()
     "#{uid}:#{gid}"
+  end
+
+  defp mise_installs_host_dir do
+    Path.join([System.user_home!(), ".local", "share", "mise", "installs"])
+  end
+
+  defp mise_host_dir(subdir) do
+    case subdir do
+      "downloads" -> Path.join([System.user_home!(), ".local", "share", "mise", "downloads"])
+      "cache" -> Path.join([System.user_home!(), ".cache", "mise"])
+    end
   end
 
   defp stop_required?(state) do

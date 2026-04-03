@@ -3730,12 +3730,13 @@ defmodule KollywoodWeb.DashboardLive do
     if stories_view, do: base <> "?view=#{stories_view}", else: base
   end
 
-  @retryable_step_kinds ~w(checks review testing publish)
+  @retryable_step_kinds ~w(checks review testing publish runtime)
   @step_kind_to_retry %{
     "checks" => "checks",
     "review" => "review",
     "testing" => "testing",
-    "publish" => "publish"
+    "publish" => "publish",
+    "runtime" => "testing"
   }
 
   defp retryable_step_idx(steps, run_status) when is_list(steps) do
@@ -3751,9 +3752,12 @@ defmodule KollywoodWeb.DashboardLive do
     |> case do
       nil -> nil
       step ->
+        effective_kind = Map.get(@step_kind_to_retry, step.kind, step.kind)
+
         later_success =
           Enum.any?(steps, fn s ->
-            s.idx > step.idx and s.kind == step.kind and s.status in ["ok", "passed"]
+            s_kind = Map.get(@step_kind_to_retry, s.kind, s.kind)
+            s.idx > step.idx and s_kind == effective_kind and s.status in ["ok", "passed"]
           end)
 
         if later_success, do: nil, else: step.idx

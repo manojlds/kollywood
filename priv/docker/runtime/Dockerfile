@@ -15,11 +15,11 @@ RUN useradd -m -s /bin/bash runtime && \
 
 USER runtime
 
-# Install mise
+# Install mise (project-agnostic tool manager)
 RUN curl https://mise.run | sh
 ENV PATH="/home/runtime/.local/share/mise/shims:/home/runtime/.local/bin:${PATH}"
 
-# Install pitchfork via mise
+# Install pitchfork (process manager) via mise
 RUN /home/runtime/.local/bin/mise use -g pitchfork
 
 USER root
