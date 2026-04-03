@@ -3423,11 +3423,14 @@ defmodule KollywoodWeb.DashboardLive do
         do: get_in(assigns.run_detail, ["metadata", "error"]),
         else: nil
 
+    retryable_idx = retryable_step_idx(visible_steps, run_status)
+
     assigns =
       assigns
       |> assign(:steps, visible_steps)
       |> assign(:run_status, run_status)
       |> assign(:run_error, run_error)
+      |> assign(:retryable_idx, retryable_idx)
 
     ~H"""
     <div class="flex flex-col gap-4 h-full">
@@ -3474,7 +3477,7 @@ defmodule KollywoodWeb.DashboardLive do
                       {format_step_duration(step.duration_ms)}
                     </span>
                   </.link>
-                  <%= if step_retryable?(step, @run_status) do %>
+                  <%= if step_retryable?(step, @retryable_idx) do %>
                     <button
                       phx-click="trigger_run"
                       phx-value-story_id={@story_id}
@@ -3509,7 +3512,25 @@ defmodule KollywoodWeb.DashboardLive do
   defp step_detail_section(assigns) do
     step_log_content = step_log_content(assigns.step, assigns.run_detail)
 
-    assigns = assign(assigns, :step_log_content, step_log_content)
+    run_status =
+      if is_map(assigns.run_detail),
+        do: get_in(assigns.run_detail, ["metadata", "status"]) || "unknown",
+        else: "unknown"
+
+    all_steps =
+      if is_map(assigns.run_detail) do
+        events = run_detail_events(assigns.run_detail)
+        Kollywood.Orchestrator.RunSteps.from_events(events)
+      else
+        []
+      end
+
+    retryable_idx = retryable_step_idx(all_steps, run_status)
+
+    assigns =
+      assigns
+      |> assign(:step_log_content, step_log_content)
+      |> assign(:retryable_idx, retryable_idx)
 
     ~H"""
     <div class="flex flex-col gap-4 h-full">
@@ -3534,7 +3555,7 @@ defmodule KollywoodWeb.DashboardLive do
           <%= if @step.started_at && @step.started_at != "" do %>
             <span class="text-xs text-base-content/50">{time_ago(@step.started_at)}</span>
           <% end %>
-          <%= if step_retryable?(@step, get_in(@run_detail || %{}, ["metadata", "status"])) do %>
+          <%= if step_retryable?(@step, @retryable_idx) do %>
             <button
               phx-click="trigger_run"
               phx-value-story_id={@story_id}
@@ -3717,10 +3738,30 @@ defmodule KollywoodWeb.DashboardLive do
     "publish" => "publish"
   }
 
-  defp step_retryable?(step, run_status) do
-    step.status == "failed" and
-      step.kind in @retryable_step_kinds and
-      to_string(run_status) in ["failed", "error"]
+  defp retryable_step_idx(steps, run_status) when is_list(steps) do
+    if to_string(run_status) not in ["failed", "error"], do: nil, else: do_retryable_step_idx(steps)
+  end
+
+  defp do_retryable_step_idx(steps) do
+    steps
+    |> Enum.reverse()
+    |> Enum.find(fn s ->
+      s.status in ["failed", "error"] and s.kind in @retryable_step_kinds
+    end)
+    |> case do
+      nil -> nil
+      step ->
+        later_success =
+          Enum.any?(steps, fn s ->
+            s.idx > step.idx and s.kind == step.kind and s.status in ["ok", "passed"]
+          end)
+
+        if later_success, do: nil, else: step.idx
+    end
+  end
+
+  defp step_retryable?(step, retryable_idx) do
+    retryable_idx != nil and step.idx == retryable_idx
   end
 
   defp step_retry_name(step) do

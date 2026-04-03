@@ -245,11 +245,6 @@ defmodule Kollywood.Orchestrator.RunSteps do
 
   # --- Runtime operations ---
 
-  defp handle_event("runtime_starting", event, steps, %{kind: kind} = current)
-       when kind in ["testing"] do
-    {steps, %{current | events: current.events ++ [event]}}
-  end
-
   defp handle_event("runtime_starting", event, steps, current) do
     steps = close_step(steps, current)
 
@@ -274,7 +269,7 @@ defmodule Kollywood.Orchestrator.RunSteps do
      }}
   end
 
-  defp handle_event(type, event, steps, %{kind: kind} = current)
+  defp handle_event(type, event, steps, %{kind: "runtime"} = current)
        when type in [
               "runtime_started",
               "runtime_healthcheck_started",
@@ -283,7 +278,7 @@ defmodule Kollywood.Orchestrator.RunSteps do
               "runtime_start_failed",
               "runtime_stopping",
               "runtime_stopped"
-            ] and kind in ["runtime", "testing"] do
+            ] do
     current = %{current | events: current.events ++ [event]}
 
     current =
@@ -292,9 +287,9 @@ defmodule Kollywood.Orchestrator.RunSteps do
           %{current | error: str_field(event, "reason")}
 
         "runtime_start_failed" ->
-          %{current | error: str_field(event, "reason")}
+          finish_step(current, event, "failed", str_field(event, "reason"))
 
-        "runtime_stopped" when current.kind == "runtime" ->
+        "runtime_stopped" ->
           finish_step(current, event, if(current.error, do: "failed", else: "ok"))
 
         _ ->
@@ -302,6 +297,27 @@ defmodule Kollywood.Orchestrator.RunSteps do
       end
 
     {steps, current}
+  end
+
+  defp handle_event("runtime_stopping", event, steps, current)
+       when is_nil(current) or current.kind != "runtime" do
+    steps = close_step(steps, current)
+
+    {steps,
+     %{
+       kind: "runtime",
+       label: "Runtime Stop",
+       status: "running",
+       started_at: timestamp(event),
+       ended_at: nil,
+       duration_ms: nil,
+       cycle: nil,
+       turn: nil,
+       prompt: nil,
+       events: [event],
+       error: nil,
+       detail: %{command: str_field(event, "command")}
+     }}
   end
 
   # --- Run lifecycle ---
