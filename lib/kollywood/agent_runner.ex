@@ -3314,6 +3314,11 @@ defmodule Kollywood.AgentRunner do
   Issue description:
   {{ issue.description }}
 
+  Pipeline context (important):
+  - Implementation is already complete for this cycle.
+  - Required checks and review have already been performed in earlier pipeline phases.
+  - Your job in this phase is product behavior validation and evidence capture only.
+
   Testing notes (for testing agent only):
   {{ testing_notes }}
 
@@ -3324,8 +3329,10 @@ defmodule Kollywood.AgentRunner do
   {{ runtime_url_hints }}
 
   Keep this run fast and focused:
-  - inspect only the issue-relevant diff/files (avoid full-history scans)
-  - run targeted validation only (avoid full test suites unless explicitly required)
+  - test the intended story feature first, from a user/outcome perspective
+  - then cover one nearby regression and one boundary/invalid-input scenario
+  - use targeted checks only; do not re-run broad validation already handled earlier
+  - avoid repository/toolchain investigations unless they are strictly required to explain an observed feature failure
   - finish evidence collection with minimal retries and bounded waits
 
   Validate implemented behavior end-to-end (UI/API/CLI as relevant), including:
@@ -3341,7 +3348,7 @@ defmodule Kollywood.AgentRunner do
   - video must demonstrate ONLY the key behavior being tested: navigate directly to the relevant page, perform the specific interaction, and stop recording once the result is visible — do not record setup, unrelated navigation, or idle time
   - if multiple behaviors need demonstration, prefer separate short clips over one long recording
   - include replay/trace/HAR artifacts when they help debugging
-  - do not start app services manually (`mix phx.server`, `pitchfork start`, etc.); runtime has already started managed processes
+  - do not start app services manually; runtime has already started managed processes
   - use only injected runtime URLs (`runtime_base_url` / `runtime_urls_json`); do not scan arbitrary localhost ports
   - avoid interactive commands/flags (for example `snapshot -i`) in CI/agent runs
   - avoid waiting for `networkidle` on apps with long-lived traffic; prefer bounded waits
@@ -3367,6 +3374,7 @@ defmodule Kollywood.AgentRunner do
   - `verdict` must be exactly `"pass"` or `"fail"`.
   - Include at least one checkpoint.
   - Use `"fail"` if acceptance behavior fails or required coverage is missing.
+  - Always write `{{ testing_json_path }}` even when blocked (for example runtime/access/tooling issues); in that case use `"fail"` and explain the blocker in checkpoint `details`.
   - If screenshot/video artifacts do not visibly demonstrate the claimed acceptance behavior, use `"fail"` and explain what is missing.
   - Artifact `description` should say what behavior is proven and which checkpoint it supports.
   - Overwrite `{{ testing_json_path }}` exactly once (do not append multiple JSON objects).

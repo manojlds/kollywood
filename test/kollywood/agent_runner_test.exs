@@ -283,6 +283,19 @@ defmodule Kollywood.AgentRunnerTest do
     refute prompt_history =~ "## Verification"
   end
 
+  test "default testing prompt stays stack-agnostic and focused", _context do
+    prompt = AgentRunner.default_testing_prompt_template()
+
+    assert prompt =~ "Pipeline context (important):"
+    assert prompt =~ "Required checks and review have already been performed"
+    assert prompt =~ "test the intended story feature first"
+    assert prompt =~ "product behavior validation and evidence capture only"
+    assert prompt =~ "Always write `{{ testing_json_path }}` even when blocked"
+
+    refute prompt =~ "mix phx.server"
+    refute prompt =~ "pitchfork start"
+  end
+
   test "injects prior failure context into implementation prompts", %{
     workspace_root: workspace_root,
     cli_path: cli_path,
