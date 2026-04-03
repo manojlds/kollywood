@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_DIR="${KOLLYWOOD_SERVER_DIR:-$HOME/projects/kollywood-server}"
+RELEASE_DIR="$REPO_DIR/_build/prod/rel/kollywood"
+SERVICE_NAME="kollywood-server.service"
+
+log() { printf '\033[1;34m==> %s\033[0m\n' "$*"; }
+err() { printf '\033[1;31m==> ERROR: %s\033[0m\n' "$*" >&2; exit 1; }
+
+[[ -d "$REPO_DIR" ]] || err "Server repo not found at $REPO_DIR"
+
+cd "$REPO_DIR"
+
+log "Pulling latest code"
+git pull origin main --ff-only
+
+log "Installing deps"
+MIX_ENV=prod mix deps.get --only prod
+
+log "Compiling"
+MIX_ENV=prod mix compile
+
+log "Building assets"
+MIX_ENV=prod mix assets.deploy
+
+log "Building release"
+MIX_ENV=prod mix release --overwrite
+
+VERSION=$("$RELEASE_DIR/bin/kollywood" eval 'IO.puts(Kollywood.Version.full())' 2>/dev/null)
+log "Release built: $VERSION"
+
+log "Restarting $SERVICE_NAME"
+systemctl --user restart "$SERVICE_NAME"
+
+sleep 2
+
+if systemctl --user is-active --quiet "$SERVICE_NAME"; then
+  log "Service is running"
+  systemctl --user status "$SERVICE_NAME" --no-pager | head -10
+else
+  err "Service failed to start"
+fi
+
+log "Deploy complete: $VERSION"

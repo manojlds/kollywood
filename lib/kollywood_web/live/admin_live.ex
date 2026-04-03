@@ -126,6 +126,7 @@ defmodule KollywoodWeb.AdminLive do
       </header>
 
       <main class="px-4 sm:px-6 lg:px-8 py-8 max-w-6xl mx-auto space-y-8">
+        <.version_section />
         <.service_config_section />
         <.orchestrator_section status={@orchestrator_status} />
         <.repos_section
@@ -135,6 +136,51 @@ defmodule KollywoodWeb.AdminLive do
         />
       </main>
     </div>
+    """
+  end
+
+  # --- Version ---
+
+  defp version_section(assigns) do
+    assigns =
+      assigns
+      |> assign(:version, Kollywood.Version.full())
+      |> assign(:git_sha, Kollywood.Version.git_sha())
+      |> assign(:build_time, Kollywood.Version.build_time())
+      |> assign(:otp_release, :erlang.system_info(:otp_release) |> to_string())
+      |> assign(:elixir_version, System.version())
+      |> assign(:beam_pid, :os.getpid() |> to_string())
+
+    ~H"""
+    <section>
+      <h2 class="text-lg font-semibold mb-3">System</h2>
+      <div class="card bg-base-200 border border-base-300">
+        <div class="card-body p-4">
+          <div class="flex flex-wrap gap-x-6 gap-y-2 text-sm">
+            <div>
+              <span class="text-base-content/60">Version</span>
+              <span class="font-mono font-medium ml-1">{@version}</span>
+            </div>
+            <div>
+              <span class="text-base-content/60">Built</span>
+              <span class="font-mono text-xs ml-1">{@build_time}</span>
+            </div>
+            <div>
+              <span class="text-base-content/60">OTP</span>
+              <span class="font-mono ml-1">{@otp_release}</span>
+            </div>
+            <div>
+              <span class="text-base-content/60">Elixir</span>
+              <span class="font-mono ml-1">{@elixir_version}</span>
+            </div>
+            <div>
+              <span class="text-base-content/60">BEAM PID</span>
+              <span class="font-mono ml-1">{@beam_pid}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
     """
   end
 
