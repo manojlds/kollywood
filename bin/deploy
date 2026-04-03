@@ -27,6 +27,10 @@ MIX_ENV=prod mix assets.deploy
 log "Building release"
 MIX_ENV=prod mix release --overwrite
 
+ENV_FILE="$HOME/.config/kollywood-server/kollywood-server.env"
+if [[ -f "$ENV_FILE" ]]; then
+  set -a; source "$ENV_FILE"; set +a
+fi
 VERSION=$("$RELEASE_DIR/bin/kollywood" eval 'IO.puts(Kollywood.Version.full())' 2>/dev/null)
 log "Release built: $VERSION"
 
