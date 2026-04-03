@@ -1,17 +1,30 @@
 defmodule Kollywood.MixProject do
   use Mix.Project
 
+  @version "0.1.0"
+
   def project do
     [
       app: :kollywood,
-      version: "0.1.0",
+      version: @version,
       elixir: "~> 1.15",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       aliases: aliases(),
       deps: deps(),
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
-      listeners: [Phoenix.CodeReloader]
+      listeners: [Phoenix.CodeReloader],
+      releases: releases()
+    ]
+  end
+
+  defp releases do
+    [
+      kollywood: [
+        include_executables_for: [:unix],
+        applications: [runtime_tools: :permanent],
+        cookie: "kollywood_cookie_#{:erlang.phash2(System.get_env("SECRET_KEY_BASE", "dev"))}"
+      ]
     ]
   end
 
