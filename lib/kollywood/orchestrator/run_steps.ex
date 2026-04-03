@@ -244,6 +244,9 @@ defmodule Kollywood.Orchestrator.RunSteps do
   end
 
   # --- Runtime operations ---
+  #
+  # Runtime start/stop are top-level pipeline steps emitted by the agent runner
+  # before testing and after the full pipeline respectively.
 
   defp handle_event("runtime_starting", event, steps, current) do
     steps = close_step(steps, current)
@@ -281,22 +284,22 @@ defmodule Kollywood.Orchestrator.RunSteps do
             ] do
     current = %{current | events: current.events ++ [event]}
 
-    current =
-      case type do
-        "runtime_healthcheck_failed" ->
-          %{current | error: str_field(event, "reason")}
+    case type do
+      "runtime_healthcheck_passed" ->
+        {steps ++ [finish_step(current, event, "ok")], nil}
 
-        "runtime_start_failed" ->
-          finish_step(current, event, "failed", str_field(event, "reason"))
+      "runtime_healthcheck_failed" ->
+        {steps ++ [finish_step(current, event, "failed", str_field(event, "reason"))], nil}
 
-        "runtime_stopped" ->
-          finish_step(current, event, if(current.error, do: "failed", else: "ok"))
+      "runtime_start_failed" ->
+        {steps ++ [finish_step(current, event, "failed", str_field(event, "reason"))], nil}
 
-        _ ->
-          current
-      end
+      "runtime_stopped" ->
+        {steps ++ [finish_step(current, event, if(current.error, do: "failed", else: "ok"))], nil}
 
-    {steps, current}
+      _ ->
+        {steps, current}
+    end
   end
 
   defp handle_event("runtime_stopping", event, steps, current)
@@ -489,7 +492,30 @@ defmodule Kollywood.Orchestrator.RunSteps do
   end
 
   defp handle_event("publish_succeeded", event, steps, %{kind: "publish"} = current) do
-    {steps, finish_step(current, event, "ok")}
+    finished = finish_step(current, event, "ok")
+
+    if Map.get(current.detail, :pending_merge) do
+      branch = Map.get(current.detail, :branch)
+
+      pending = %{
+        kind: "pending_merge",
+        label: "Pending Merge",
+        status: "ok",
+        started_at: timestamp(event),
+        ended_at: timestamp(event),
+        duration_ms: 0,
+        cycle: nil,
+        turn: nil,
+        prompt: nil,
+        events: [],
+        error: nil,
+        detail: %{branch: branch}
+      }
+
+      {steps ++ [finished], pending}
+    else
+      {steps, finished}
+    end
   end
 
   defp handle_event("publish_failed", event, steps, %{kind: "publish"} = current) do
@@ -513,6 +539,59 @@ defmodule Kollywood.Orchestrator.RunSteps do
        events: [event],
        error: nil,
        detail: %{reason: str_field(event, "reason")}
+     }}
+  end
+
+  # --- Pending merge / preview ---
+
+  defp handle_event("publish_pending_merge", event, steps, %{kind: "publish"} = current) do
+    detail = Map.put(current.detail, :pending_merge, true)
+    {steps, %{current | detail: detail, events: current.events ++ [event]}}
+  end
+
+  defp handle_event("publish_pending_merge", event, steps, current) do
+    steps = close_step(steps, current)
+
+    {steps,
+     %{
+       kind: "pending_merge",
+       label: "Pending Merge",
+       status: "ok",
+       started_at: timestamp(event),
+       ended_at: timestamp(event),
+       duration_ms: 0,
+       cycle: nil,
+       turn: nil,
+       prompt: nil,
+       events: [event],
+       error: nil,
+       detail: %{
+         branch: str_field(event, "branch"),
+         reason: str_field(event, "reason")
+       }
+     }}
+  end
+
+  defp handle_event("preview_runtime_handoff", event, steps, current) do
+    steps = close_step(steps, current)
+
+    {steps,
+     %{
+       kind: "preview",
+       label: "Preview",
+       status: "ok",
+       started_at: timestamp(event),
+       ended_at: timestamp(event),
+       duration_ms: 0,
+       cycle: nil,
+       turn: nil,
+       prompt: nil,
+       events: [event],
+       error: nil,
+       detail: %{
+         story_id: str_field(event, "story_id"),
+         runtime_kind: str_field(event, "runtime_kind")
+       }
      }}
   end
 

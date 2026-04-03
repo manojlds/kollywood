@@ -164,8 +164,7 @@ defmodule Kollywood.Runtime.Docker do
   def ensure_exec_ready(state) do
     with {:ok, state} <- ensure_isolation(state),
          {:ok, state} <- create_container(state),
-         {:ok, state} <- start_container(state),
-         :ok <- chown_runtime_home(state) do
+         {:ok, state} <- start_container(state) do
       {:ok, state}
     else
       {:error, reason, failed_state} ->
@@ -319,8 +318,6 @@ defmodule Kollywood.Runtime.Docker do
   end
 
   defp start_pitchfork_in_container(state) do
-    write_pitchfork_local_toml_in_container!(state)
-
     daemon_list = Enum.join(state.processes, " ")
 
     exec_args =
@@ -344,41 +341,6 @@ defmodule Kollywood.Runtime.Docker do
          "pitchfork start inside container failed (exit #{code}): #{String.trim(output)}",
          state}
     end
-  end
-
-  defp write_pitchfork_local_toml_in_container!(state) do
-    env_entries =
-      state.env
-      |> Enum.sort()
-      |> Enum.map_join("\\n", fn {k, v} ->
-        escaped = String.replace(v, "\"", "\\\"")
-        "#{k} = \\\"#{escaped}\\\""
-      end)
-
-    content =
-      state.processes
-      |> Enum.map_join("\\n\\n", fn daemon ->
-        "[daemons.#{daemon}.env]\\n#{env_entries}"
-      end)
-
-    System.cmd(
-      "docker",
-      [
-        "exec",
-        "-w",
-        @container_workspace,
-        state.container_id,
-        "bash",
-        "-c",
-        "printf '#{content}\\n' > pitchfork.local.toml"
-      ],
-      stderr_to_stdout: true
-    )
-  rescue
-    error ->
-      Logger.warning(
-        "failed to write pitchfork.local.toml in container: #{Exception.message(error)}"
-      )
   end
 
   defp stop_pitchfork_in_container(%{container_id: nil}), do: :ok
@@ -441,17 +403,6 @@ defmodule Kollywood.Runtime.Docker do
       |> String.slice(0, 64)
 
     "kollywood-rt-#{sanitized}"
-  end
-
-  defp chown_runtime_home(%{container_id: cid}) do
-    case System.cmd(
-           "docker",
-           ["exec", "-u", "root", cid, "chown", "-R", host_uid_gid(), @container_home],
-           stderr_to_stdout: true
-         ) do
-      {_output, 0} -> :ok
-      {output, code} -> {:error, "chown home failed (exit #{code}): #{String.trim(output)}"}
-    end
   end
 
   defp host_uid_gid do

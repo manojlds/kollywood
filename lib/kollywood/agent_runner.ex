@@ -249,6 +249,7 @@ defmodule Kollywood.AgentRunner do
        ) do
     with {:ok, state} <- run_required_checks(state, config),
          {:ok, state} <- run_review_if_enabled(state, config, 1),
+         {:ok, state} <- ensure_runtime_if_needed(state, config),
          {:ok, state} <- run_testing_if_enabled(state, config, 1),
          {:ok, state} <- run_publish(state, config) do
       {:ok, state}
@@ -270,6 +271,7 @@ defmodule Kollywood.AgentRunner do
          _turn_opts
        ) do
     with {:ok, state} <- run_review_if_enabled(state, config, 1),
+         {:ok, state} <- ensure_runtime_if_needed(state, config),
          {:ok, state} <- run_testing_if_enabled(state, config, 1),
          {:ok, state} <- run_publish(state, config) do
       {:ok, state}
@@ -289,7 +291,8 @@ defmodule Kollywood.AgentRunner do
          _session_opts,
          _turn_opts
        ) do
-    with {:ok, state} <- run_testing_if_enabled(state, config, 1),
+    with {:ok, state} <- ensure_runtime_if_needed(state, config),
+         {:ok, state} <- run_testing_if_enabled(state, config, 1),
          {:ok, state} <- run_publish(state, config) do
       {:ok, state}
     else
@@ -1210,6 +1213,7 @@ defmodule Kollywood.AgentRunner do
 
     with {:ok, state} <- run_required_checks(state, config),
          {:ok, state} <- run_review_if_enabled(state, config, cycle),
+         {:ok, state} <- ensure_runtime_if_needed(state, config),
          {:ok, state} <- run_testing_if_enabled(state, config, cycle) do
       {:ok, emit(state, :quality_cycle_passed, %{cycle: cycle})}
     else
@@ -1503,8 +1507,7 @@ defmodule Kollywood.AgentRunner do
 
       workspace_tjp = workspace_testing_json_path(state.workspace)
 
-      with {:ok, state} <- ensure_runtime_for_testing(state),
-           :ok <- reset_testing_json(workspace_tjp),
+      with :ok <- reset_testing_json(workspace_tjp),
            {:ok, prompt} <- build_testing_prompt(state, config, cycle, workspace_tjp),
            state = maybe_emit_prompt(state, cycle, :testing, prompt),
            {:ok, testing_run} <- run_testing_turn(state, config, prompt, state.log_files) do
@@ -1960,6 +1963,14 @@ defmodule Kollywood.AgentRunner do
   end
 
   defp ensure_runtime_for_checks(state), do: {:ok, state}
+
+  defp ensure_runtime_if_needed(state, config) do
+    if testing_enabled?(config) or preview_enabled?(config) do
+      ensure_runtime_for_testing(state)
+    else
+      {:ok, state}
+    end
+  end
 
   defp ensure_runtime_for_testing(state) do
     runtime = state.runtime

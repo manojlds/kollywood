@@ -46,6 +46,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:story_detail_tab, "details")
       |> assign(:settings_edit_mode, false)
       |> assign(:run_detail_panel_tab, "logs")
+      |> assign(:run_view_tab, "steps")
       |> assign(:reports_tab, "review")
       |> assign(:active_prompt_tab, "agent")
       |> assign(:active_log_tab, "agent")
@@ -140,6 +141,11 @@ defmodule KollywoodWeb.DashboardLive do
       |> maybe_patch_log_tab(next_tab)
 
     {:noreply, socket}
+  end
+
+  def handle_event("set_run_view_tab", %{"tab" => tab}, socket) do
+    next_tab = if tab in ["steps", "settings"], do: tab, else: "steps"
+    {:noreply, assign(socket, :run_view_tab, next_tab)}
   end
 
   def handle_event("set_run_detail_panel_tab", %{"tab" => tab}, socket) do
@@ -787,6 +793,7 @@ defmodule KollywoodWeb.DashboardLive do
                   attempt={@run_detail_attempt}
                   project={@current_project}
                   stories_view={@stories_view}
+                  run_view_tab={@run_view_tab}
                 />
               <% :step_detail -> %>
                 <.step_detail_section
@@ -2480,203 +2487,6 @@ defmodule KollywoodWeb.DashboardLive do
     """
   end
 
-  # -- Run Detail Section --
-
-  attr :run_detail, :map, default: nil
-  attr :story_id, :string, default: nil
-  attr :attempt, :string, default: nil
-  attr :run_detail_panel_tab, :string, default: "logs"
-  attr :reports_tab, :string, default: "review"
-  attr :active_prompt_tab, :string, default: "agent"
-  attr :active_log_tab, :string, default: "agent"
-  attr :project, Project, required: true
-  attr :stories_view, :string, default: @default_stories_view
-
-  defp run_detail_section(assigns) do
-    snapshot =
-      if is_map(assigns.run_detail),
-        do: Map.get(assigns.run_detail, "settings_snapshot"),
-        else: nil
-
-    run_settings =
-      if is_map(assigns.run_detail),
-        do: get_in(assigns.run_detail, ["metadata", "run_settings"]) || %{},
-        else: %{}
-
-    current_workflow_identity =
-      if is_map(assigns.run_detail),
-        do: Map.get(assigns.run_detail, "current_workflow_identity"),
-        else: %{}
-
-    assigns =
-      assigns
-      |> assign(:settings_snapshot, snapshot)
-      |> assign(:run_settings, run_settings)
-      |> assign(:current_workflow_identity, current_workflow_identity)
-      |> assign(
-        :workflow_fingerprint_status,
-        workflow_fingerprint_status(snapshot, current_workflow_identity)
-      )
-
-    ~H"""
-    <div class="flex flex-col gap-4 h-full">
-      <div class="flex flex-wrap items-center justify-between gap-2 sm:gap-3">
-        <div class="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3">
-          <.link
-            navigate={story_runs_tab_path(@project.slug, @story_id, @stories_view)}
-            class="btn btn-ghost btn-sm gap-2"
-          >
-            <.icon name="hero-arrow-left" class="size-4" /> Back to Runs
-          </.link>
-          <span class="badge badge-outline font-mono text-sm">{@story_id}</span>
-          <%= if @run_detail do %>
-            <.run_status_badge status={@run_detail["metadata"]["status"] || "unknown"} />
-            <%= if show_retry_mode_badge?(@run_detail["retry_mode"]) do %>
-              <.run_retry_mode_badge mode={@run_detail["retry_mode"]} />
-            <% end %>
-            <%= if show_run_detail_phase_label?(@run_detail["phase_label"]) do %>
-              <span class="text-sm text-base-content/60">{@run_detail["phase_label"]}</span>
-            <% end %>
-          <% end %>
-        </div>
-
-        <%= if @run_detail do %>
-          <.run_actions_menu retry_action={@run_detail["retry_action"]} story_id={@story_id} />
-        <% end %>
-      </div>
-
-      <%= if @run_detail && @run_detail["retry_summary"] do %>
-        <p class="break-words text-xs text-base-content/60">{@run_detail["retry_summary"]}</p>
-      <% end %>
-
-      <%= if @run_detail && run_detail_error(@run_detail) do %>
-        <div class="alert alert-error text-sm gap-2">
-          <.icon name="hero-exclamation-triangle" class="size-4 shrink-0" />
-          <p class="break-words min-w-0">{run_detail_error(@run_detail)}</p>
-        </div>
-      <% end %>
-
-      <%= if @run_detail do %>
-        <div class="flex gap-0 border-b border-base-300">
-          <%= for {tab, label} <- [
-            {"logs", "Logs"},
-            {"reports", "Reports"},
-            {"prompts", "Prompts"},
-            {"settings", "Settings"}
-          ] do %>
-            <button
-              phx-click="set_run_detail_panel_tab"
-              phx-value-tab={tab}
-              class={[
-                "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
-                @run_detail_panel_tab == tab && "border-primary text-primary",
-                @run_detail_panel_tab != tab &&
-                  "border-transparent text-base-content/60 hover:text-base-content"
-              ]}
-            >
-              {label}
-            </button>
-          <% end %>
-        </div>
-
-        <%= if @run_detail_panel_tab == "settings" do %>
-          <.settings_used_section
-            snapshot={@settings_snapshot}
-            run_settings={@run_settings}
-            current_workflow_identity={@current_workflow_identity}
-            workflow_fingerprint_status={@workflow_fingerprint_status}
-          />
-        <% else %>
-          <%= if @run_detail_panel_tab == "prompts" do %>
-            <.prompts_section
-              prompts={@run_detail["prompts"] || %{}}
-              active_prompt_tab={@active_prompt_tab}
-            />
-          <% else %>
-            <%= if @run_detail_panel_tab == "reports" do %>
-              <div class="space-y-4">
-                <div class="flex gap-0 border-b border-base-300">
-                  <%= for {tab, label} <- [{"review", "Review"}, {"testing", "Testing"}] do %>
-                    <button
-                      phx-click="set_reports_tab"
-                      phx-value-tab={tab}
-                      class={[
-                        "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
-                        @reports_tab == tab && "border-primary text-primary",
-                        @reports_tab != tab &&
-                          "border-transparent text-base-content/60 hover:text-base-content"
-                      ]}
-                    >
-                      {label}
-                    </button>
-                  <% end %>
-                </div>
-
-                <%= if @reports_tab == "testing" do %>
-                  <.testing_report_section
-                    report={@run_detail["testing_report"]}
-                    cycles={@run_detail["testing_cycles"]}
-                    cycle_reports={@run_detail["testing_cycle_reports"]}
-                    project_slug={@project.slug}
-                    story_id={@story_id}
-                    attempt={Map.get(@run_detail["metadata"], "attempt")}
-                  />
-                <% else %>
-                  <.review_report_section
-                    report={@run_detail["review_report"]}
-                    cycles={@run_detail["review_cycles"]}
-                    cycle_reports={@run_detail["review_cycle_reports"]}
-                  />
-                <% end %>
-              </div>
-            <% else %>
-              <div class="flex gap-0 border-b border-base-300">
-                <%= for {tab, label} <- [
-                {"agent", "Agent"},
-                {"review_agent", "Review Agent"},
-                {"testing_agent", "Testing Agent"},
-                {"worker", "Worker"}
-              ] do %>
-                  <button
-                    phx-click="set_log_tab"
-                    phx-value-tab={tab}
-                    class={[
-                      "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
-                      @active_log_tab == tab && "border-primary text-primary",
-                      @active_log_tab != tab &&
-                        "border-transparent text-base-content/60 hover:text-base-content"
-                    ]}
-                  >
-                    {label}
-                  </button>
-                <% end %>
-              </div>
-
-              <%= if @run_detail["active_log_content"] do %>
-                <pre
-                  id="log-output"
-                  phx-hook=".LogScroll"
-                  class="font-mono text-xs leading-relaxed bg-base-300 p-4 rounded-lg overflow-auto max-h-[75vh] whitespace-pre-wrap"
-                ><.ansi_log content={@run_detail["active_log_content"]} /></pre>
-              <% else %>
-                <p class="text-base-content/50 text-sm italic">No output yet.</p>
-              <% end %>
-            <% end %>
-          <% end %>
-        <% end %>
-      <% else %>
-        <p class="text-base-content/50 text-sm italic">No run logs found for this story.</p>
-      <% end %>
-    </div>
-    <script :type={Phoenix.LiveView.ColocatedHook} name=".LogScroll">
-      export default {
-        updated() {
-          this.el.scrollTop = this.el.scrollHeight
-        }
-      }
-    </script>
-    """
-  end
 
   attr :story_id, :string, required: true
   attr :project, :map, required: true
@@ -3398,6 +3208,7 @@ defmodule KollywoodWeb.DashboardLive do
   attr :attempt, :string, default: nil
   attr :project, Project, required: true
   attr :stories_view, :string, default: @default_stories_view
+  attr :run_view_tab, :string, default: "steps"
 
   defp run_steps_section(assigns) do
     steps =
@@ -3425,12 +3236,34 @@ defmodule KollywoodWeb.DashboardLive do
 
     retryable_idx = retryable_step_idx(visible_steps, run_status)
 
+    snapshot =
+      if is_map(assigns.run_detail),
+        do: Map.get(assigns.run_detail, "settings_snapshot"),
+        else: nil
+
+    run_settings =
+      if is_map(assigns.run_detail),
+        do: get_in(assigns.run_detail, ["metadata", "run_settings"]) || %{},
+        else: %{}
+
+    current_workflow_identity =
+      if is_map(assigns.run_detail),
+        do: Map.get(assigns.run_detail, "current_workflow_identity"),
+        else: %{}
+
     assigns =
       assigns
       |> assign(:steps, visible_steps)
       |> assign(:run_status, run_status)
       |> assign(:run_error, run_error)
       |> assign(:retryable_idx, retryable_idx)
+      |> assign(:settings_snapshot, snapshot)
+      |> assign(:run_settings, run_settings)
+      |> assign(:current_workflow_identity, current_workflow_identity)
+      |> assign(
+        :workflow_fingerprint_status,
+        workflow_fingerprint_status(snapshot, current_workflow_identity)
+      )
 
     ~H"""
     <div class="flex flex-col gap-4 h-full">
@@ -3455,46 +3288,76 @@ defmodule KollywoodWeb.DashboardLive do
         </div>
       <% end %>
 
-      <div class="card bg-base-200 border border-base-300">
-        <div class="card-body p-0">
-          <h3 class="card-title text-lg px-5 pt-4 pb-2">Pipeline Steps</h3>
-          <%= if @steps == [] do %>
-            <p class="text-base-content/60 py-4 px-5">No steps recorded yet.</p>
-          <% else %>
-            <div class="space-y-1 px-3 pb-3">
-              <%= for step <- @steps do %>
-                <div class="flex items-center gap-2">
-                  <.link
-                    navigate={step_detail_path(@project.slug, @story_id, @attempt, step.idx, @stories_view)}
-                    class="flex items-center gap-3 p-3 bg-base-100 rounded-lg hover:bg-base-300 transition-colors flex-1 min-w-0"
-                  >
-                    <.step_status_icon kind={step.kind} status={step.status} />
-                    <span class="text-sm font-medium flex-1 truncate">{step.label}</span>
-                    <%= if step.error do %>
-                      <span class="text-xs text-error truncate max-w-[200px]">{step.error}</span>
-                    <% end %>
-                    <span class="text-xs text-base-content/50 shrink-0">
-                      {format_step_duration(step.duration_ms)}
-                    </span>
-                  </.link>
-                  <%= if step_retryable?(step, @retryable_idx) do %>
-                    <button
-                      phx-click="trigger_run"
-                      phx-value-story_id={@story_id}
-                      phx-value-attempt={@attempt}
-                      phx-value-step={step_retry_name(step)}
-                      class="btn btn-ghost btn-xs text-primary shrink-0"
-                      title={"Retry from #{step.label}"}
-                    >
-                      <.icon name="hero-arrow-path" class="size-3.5" />
-                    </button>
-                  <% end %>
-                </div>
-              <% end %>
-            </div>
-          <% end %>
-        </div>
+      <div class="flex gap-0 border-b border-base-300">
+        <%= for {tab, label, icon} <- [
+          {"steps", "Steps", "hero-list-bullet"},
+          {"settings", "Settings", "hero-cog-6-tooth"}
+        ] do %>
+          <button
+            phx-click="set_run_view_tab"
+            phx-value-tab={tab}
+            class={[
+              "flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
+              @run_view_tab == tab && "border-primary text-primary",
+              @run_view_tab != tab &&
+                "border-transparent text-base-content/60 hover:text-base-content"
+            ]}
+          >
+            <.icon name={icon} class="size-4" />
+            {label}
+          </button>
+        <% end %>
       </div>
+
+      <%= if @run_view_tab == "steps" do %>
+        <div class="card bg-base-200 border border-base-300">
+          <div class="card-body p-0">
+            <h3 class="card-title text-lg px-5 pt-4 pb-2">Pipeline Steps</h3>
+            <%= if @steps == [] do %>
+              <p class="text-base-content/60 py-4 px-5">No steps recorded yet.</p>
+            <% else %>
+              <div class="space-y-1 px-3 pb-3">
+                <%= for step <- @steps do %>
+                  <div class="flex items-center gap-2">
+                    <.link
+                      navigate={step_detail_path(@project.slug, @story_id, @attempt, step.idx, @stories_view)}
+                      class="flex items-center gap-3 p-3 bg-base-100 rounded-lg hover:bg-base-300 transition-colors flex-1 min-w-0"
+                    >
+                      <.step_status_icon kind={step.kind} status={step.status} />
+                      <span class="text-sm font-medium flex-1 truncate">{step.label}</span>
+                      <%= if step.error do %>
+                        <span class="text-xs text-error truncate max-w-[200px]">{step.error}</span>
+                      <% end %>
+                      <span class="text-xs text-base-content/50 shrink-0">
+                        {format_step_duration(step.duration_ms)}
+                      </span>
+                    </.link>
+                    <%= if step_retryable?(step, @retryable_idx) do %>
+                      <button
+                        phx-click="trigger_run"
+                        phx-value-story_id={@story_id}
+                        phx-value-attempt={@attempt}
+                        phx-value-step={step_retry_name(step)}
+                        class="btn btn-ghost btn-xs text-primary shrink-0"
+                        title={"Retry from #{step.label}"}
+                      >
+                        <.icon name="hero-arrow-path" class="size-3.5" />
+                      </button>
+                    <% end %>
+                  </div>
+                <% end %>
+              </div>
+            <% end %>
+          </div>
+        </div>
+      <% else %>
+        <.settings_used_section
+          snapshot={@settings_snapshot}
+          run_settings={@run_settings}
+          current_workflow_identity={@current_workflow_identity}
+          workflow_fingerprint_status={@workflow_fingerprint_status}
+        />
+      <% end %>
     </div>
     """
   end
@@ -3684,6 +3547,8 @@ defmodule KollywoodWeb.DashboardLive do
       {"testing", _} -> {"hero-beaker-mini", "bg-accent/20 text-accent"}
       {"runtime", _} -> {"hero-server-mini", "bg-base-content/20 text-base-content/60"}
       {"publish", _} -> {"hero-arrow-up-tray-mini", "bg-primary/20 text-primary"}
+      {"pending_merge", _} -> {"hero-clock-mini", "bg-warning/20 text-warning"}
+      {"preview", _} -> {"hero-eye-mini", "bg-info/20 text-info"}
       _ -> {"hero-ellipsis-horizontal-mini", "bg-base-content/20 text-base-content/60"}
     end
   end
@@ -5134,27 +4999,6 @@ defmodule KollywoodWeb.DashboardLive do
     """
   end
 
-  attr :mode, :any, default: "full_rerun"
-
-  defp run_retry_mode_badge(assigns) do
-    mode = normalize_retry_mode(assigns.mode)
-
-    {color, label} =
-      case mode do
-        "agent_continuation" -> {"badge-info badge-outline", "Agent continuation"}
-        _other -> {"badge-ghost", "Full rerun"}
-      end
-
-    assigns = assigns |> assign(:color, color) |> assign(:label, label)
-
-    ~H"""
-    <span class={"badge badge-xs whitespace-nowrap #{@color}"}>{@label}</span>
-    """
-  end
-
-  defp show_retry_mode_badge?(mode) do
-    normalize_retry_mode(mode) == "agent_continuation"
-  end
 
   defp show_run_detail_phase_label?(phase_label) when is_binary(phase_label) do
     phase_label

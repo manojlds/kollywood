@@ -493,6 +493,95 @@ defmodule Kollywood.StepRetryTest do
     assert latest.metadata["error"] =~ "no commits found on branch"
   end
 
+  test "retry uses original run settings when workflow has changed since the run", %{
+    root: root,
+    project: project
+  } do
+    story_id = "US-DRIFT"
+    write_tracker!(project, [%{"id" => story_id, "title" => "Drift", "status" => "failed"}])
+
+    write_clone_checks_workflow!(project)
+
+    workspace_path = Path.join(root, "drift-workspace")
+    File.mkdir_p!(workspace_path)
+    File.write!(Path.join(workspace_path, "ready.txt"), "ok\n")
+
+    snapshot = %{
+      "resolved" => %{
+        "testing" => %{"enabled" => "false"},
+        "review" => %{"enabled" => "false"},
+        "preview" => %{"enabled" => "false"}
+      }
+    }
+
+    source_context =
+      prepare_failed_attempt_with_snapshot!(
+        project,
+        story_id,
+        workspace_path,
+        [
+          %{type: :turn_succeeded, turn: 1, output: "agent output"},
+          %{type: :checks_started, check_count: 1},
+          %{type: :check_failed, check_index: 1, command: "test -f ready.txt", reason: "missing"},
+          %{type: :checks_failed, error_count: 1}
+        ],
+        "checks failed",
+        snapshot
+      )
+
+    write_workflow!(
+      project,
+      """
+      ---
+      tracker:
+        kind: prd_json
+      workspace:
+        strategy: clone
+      agent:
+        kind: amp
+        command: /bin/true
+        retries_enabled: true
+      quality:
+        max_cycles: 1
+        checks:
+          required:
+            - test -f ready.txt
+          timeout_ms: 10000
+          fail_fast: true
+          max_cycles: 1
+        review:
+          enabled: true
+        testing:
+          enabled: false
+      preview:
+        enabled: true
+      publish:
+        mode: push
+      orchestrator:
+        retries_enabled: false
+      git:
+        base_branch: main
+      ---
+
+      Work on {{ issue.identifier }}.
+      """
+    )
+
+    result = StepRetry.retry_action(project, story_id, source_context.attempt)
+    assert result["enabled"] == true
+    assert result["reason"] == nil
+
+    assert {:ok, retry_result} =
+             StepRetry.retry(project, story_id, source_context.attempt, "checks")
+
+    latest = resolve_attempt!(project, story_id, retry_result.attempt)
+    event_types = read_event_types(latest.files.events)
+
+    assert "checks_started" in event_types
+    refute "review_started" in event_types
+    assert "publish_skipped" in event_types
+  end
+
   defp write_clone_checks_workflow!(project) do
     write_workflow!(
       project,
@@ -716,6 +805,41 @@ defmodule Kollywood.StepRetryTest do
 
     issue = %{id: story_id, identifier: story_id, title: "Story #{story_id}"}
     {:ok, context} = RunLogs.prepare_attempt(config, issue, nil)
+
+    Enum.each(events, fn event ->
+      :ok = RunLogs.append_event(context, event)
+    end)
+
+    :ok =
+      RunLogs.complete_attempt(context, %{
+        status: "failed",
+        turn_count: 1,
+        workspace_path: workspace_path,
+        error: error_reason
+      })
+
+    context
+  end
+
+  defp prepare_failed_attempt_with_snapshot!(
+         project,
+         story_id,
+         workspace_path,
+         events,
+         error_reason,
+         settings_snapshot
+       ) do
+    config = %Config{
+      workspace: %{root: Path.join(System.tmp_dir!(), "kollywood_step_retry_workspaces")},
+      tracker: %{project_slug: project.slug}
+    }
+
+    issue = %{id: story_id, identifier: story_id, title: "Story #{story_id}"}
+
+    {:ok, context} =
+      RunLogs.prepare_attempt(config, issue, nil, %{
+        "settings_snapshot" => settings_snapshot
+      })
 
     Enum.each(events, fn event ->
       :ok = RunLogs.append_event(context, event)
