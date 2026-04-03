@@ -3349,6 +3349,8 @@ defmodule Kollywood.AgentRunner do
   - if multiple behaviors need demonstration, prefer separate short clips over one long recording
   - include replay/trace/HAR artifacts when they help debugging
   - do not start app services manually; runtime has already started managed processes
+  - do not install or bootstrap tooling in this phase (`npm`, `pip`, `cargo`, package managers)
+  - if `agent-browser` is unavailable, do not attempt installation; continue with what is available and write a failing report that clearly names the browser tooling blocker
   - use only injected runtime URLs (`runtime_base_url` / `runtime_urls_json`); do not scan arbitrary localhost ports
   - avoid interactive commands/flags (for example `snapshot -i`) in CI/agent runs
   - avoid waiting for `networkidle` on apps with long-lived traffic; prefer bounded waits

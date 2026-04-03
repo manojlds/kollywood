@@ -290,6 +290,8 @@ defmodule Kollywood.AgentRunnerTest do
     assert prompt =~ "Required checks and review have already been performed"
     assert prompt =~ "test the intended story feature first"
     assert prompt =~ "product behavior validation and evidence capture only"
+    assert prompt =~ "do not install or bootstrap tooling"
+    assert prompt =~ "if `agent-browser` is unavailable, do not attempt installation"
     assert prompt =~ "Always write `{{ testing_json_path }}` even when blocked"
 
     refute prompt =~ "mix phx.server"
