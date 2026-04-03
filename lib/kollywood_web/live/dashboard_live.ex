@@ -3714,7 +3714,9 @@ defmodule KollywoodWeb.DashboardLive do
         later_success =
           Enum.any?(steps, fn s ->
             s_kind = Map.get(@step_kind_to_retry, s.kind, s.kind)
-            s.idx > step.idx and s_kind == effective_kind and s.status in ["ok", "passed"]
+
+            s.idx > step.idx and s_kind == effective_kind and
+              retry_step_completed_successfully?(s)
           end)
 
         if later_success, do: nil, else: step.idx
@@ -3728,6 +3730,32 @@ defmodule KollywoodWeb.DashboardLive do
   defp step_retry_name(step) do
     Map.get(@step_kind_to_retry, step.kind, "full_rerun")
   end
+
+  defp retry_step_completed_successfully?(%{kind: "runtime"} = step) do
+    step.status in ["ok", "passed"] and not runtime_stop_only_step?(step)
+  end
+
+  defp retry_step_completed_successfully?(step), do: step.status in ["ok", "passed"]
+
+  defp runtime_stop_only_step?(%{events: events}) when is_list(events) do
+    event_types = Enum.map(events, &runtime_step_event_type/1)
+
+    Enum.any?(event_types, &(&1 == "runtime_stopping")) and
+      Enum.any?(event_types, &(&1 == "runtime_stopped")) and
+      not Enum.any?(event_types, &(&1 in ["runtime_starting", "runtime_healthcheck_started"]))
+  end
+
+  defp runtime_stop_only_step?(_step), do: false
+
+  defp runtime_step_event_type(event) when is_map(event) do
+    case Map.get(event, "type") || Map.get(event, :type) do
+      value when is_atom(value) -> Atom.to_string(value)
+      value when is_binary(value) -> value
+      _other -> ""
+    end
+  end
+
+  defp runtime_step_event_type(_event), do: ""
 
   defp step_log_content(nil, _run_detail), do: nil
 
