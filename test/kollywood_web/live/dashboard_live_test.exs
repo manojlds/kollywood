@@ -1465,7 +1465,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       _html =
         run_view
-        |> element("button[data-confirm-action='trigger_run'][phx-value-step='testing']")
+        |> element("button[phx-click='cancel_action_confirmation']", "Cancel")
         |> render_click()
 
       refute has_element?(run_view, "button[data-confirm-action='trigger_run']")
