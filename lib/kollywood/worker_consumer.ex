@@ -70,10 +70,21 @@ defmodule Kollywood.WorkerConsumer do
   def init(opts) do
     node_id = Keyword.get(opts, :node_id, node_identifier())
 
+    recovered_running =
+      RunQueue.fail_running_for_node(
+        node_id,
+        "orphaned running queue entry recovered on worker startup"
+      )
+
+    if recovered_running > 0 do
+      Logger.warning(
+        "WorkerConsumer recovered #{recovered_running} orphaned running queue entr#{if recovered_running == 1, do: "y", else: "ies"} for node #{node_id}"
+      )
+    end
+
     state = %__MODULE__{
       agent_pool: Keyword.get(opts, :agent_pool, AgentPool),
-      poll_interval_ms:
-        pos_int(Keyword.get(opts, :poll_interval_ms), @default_poll_interval_ms),
+      poll_interval_ms: pos_int(Keyword.get(opts, :poll_interval_ms), @default_poll_interval_ms),
       max_local_workers:
         pos_int(Keyword.get(opts, :max_local_workers), @default_max_local_workers),
       stale_reclaim_interval_ms:
@@ -231,7 +242,10 @@ defmodule Kollywood.WorkerConsumer do
         %{state | active_workers: Map.put(state.active_workers, entry_id, worker_entry)}
 
       error ->
-        Logger.error("WorkerConsumer: failed to start worker for entry #{entry_id}: #{inspect(error)}")
+        Logger.error(
+          "WorkerConsumer: failed to start worker for entry #{entry_id}: #{inspect(error)}"
+        )
+
         RunQueue.fail(entry_id, "failed to start worker: #{inspect(error)}")
         state
     end
@@ -263,7 +277,9 @@ defmodule Kollywood.WorkerConsumer do
 
   defp decode_run_opts(entry) do
     case entry.run_opts_snapshot do
-      nil -> []
+      nil ->
+        []
+
       json when is_binary(json) ->
         case Jason.decode(json) do
           {:ok, map} when is_map(map) -> opts_from_map(map)
@@ -403,14 +419,17 @@ defmodule Kollywood.WorkerConsumer do
   defp serializable_value(value) when is_pid(value), do: inspect(value)
   defp serializable_value(value) when is_reference(value), do: inspect(value)
   defp serializable_value(value) when is_function(value), do: nil
+
   defp serializable_value(value) when is_map(value) do
     Enum.into(value, %{}, fn {k, v} -> {to_string(k), serializable_value(v)} end)
   rescue
     _ -> inspect(value)
   end
+
   defp serializable_value(value) when is_list(value) do
     Enum.map(value, &serializable_value/1)
   end
+
   defp serializable_value(value), do: value
 
   # --- Scheduling ---

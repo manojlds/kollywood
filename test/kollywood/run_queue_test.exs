@@ -125,6 +125,29 @@ defmodule Kollywood.RunQueueTest do
     end
   end
 
+  describe "fail_running_for_node/2" do
+    test "marks running entries for one node as failed" do
+      {:ok, entry_a} = RunQueue.enqueue(%{issue_id: "node-a", identifier: "US-A"})
+      {:ok, entry_b} = RunQueue.enqueue(%{issue_id: "node-b", identifier: "US-B"})
+
+      assert {:ok, _} = RunQueue.claim("node-1")
+      assert {:ok, _} = RunQueue.claim("node-2")
+
+      assert {:ok, _} = RunQueue.mark_running(entry_a.id)
+      assert {:ok, _} = RunQueue.mark_running(entry_b.id)
+
+      count = RunQueue.fail_running_for_node("node-1", "startup recovery")
+      assert count == 1
+
+      refreshed_a = RunQueue.get(entry_a.id)
+      refreshed_b = RunQueue.get(entry_b.id)
+
+      assert refreshed_a.status == "failed"
+      assert refreshed_a.error == "startup recovery"
+      assert refreshed_b.status == "running"
+    end
+  end
+
   describe "cancel/1" do
     test "marks entry as cancelled" do
       {:ok, entry} = RunQueue.enqueue(%{issue_id: "x", identifier: "US-X"})
