@@ -18,6 +18,9 @@ git pull origin main --ff-only
 log "Installing deps"
 MIX_ENV=prod mix deps.get --only prod
 
+log "Cleaning previous build artifacts"
+MIX_ENV=prod mix clean
+
 log "Compiling"
 MIX_ENV=prod mix compile
 
@@ -45,5 +48,37 @@ if systemctl --user is-active --quiet "$SERVICE_NAME"; then
 else
   err "Service failed to start"
 fi
+
+HEALTHCHECK_URL="${KOLLYWOOD_HEALTHCHECK_URL:-http://127.0.0.1:${PORT:-4000}/api/health}"
+log "Checking health endpoint at $HEALTHCHECK_URL"
+
+HEALTH_PAYLOAD=""
+for _attempt in {1..15}; do
+  if HEALTH_PAYLOAD=$(curl --silent --show-error --fail --max-time 3 "$HEALTHCHECK_URL"); then
+    break
+  fi
+
+  sleep 1
+done
+
+[[ -n "$HEALTH_PAYLOAD" ]] || err "Health endpoint did not respond at $HEALTHCHECK_URL"
+
+if [[ "$HEALTH_PAYLOAD" =~ \"status\"[[:space:]]*:[[:space:]]*\"([^\"]+)\" ]]; then
+  HEALTH_STATUS="${BASH_REMATCH[1]}"
+else
+  err "Health payload missing status: $HEALTH_PAYLOAD"
+fi
+
+if [[ "$HEALTH_PAYLOAD" =~ \"version_full\"[[:space:]]*:[[:space:]]*\"([^\"]+)\" ]]; then
+  REPORTED_VERSION="${BASH_REMATCH[1]}"
+else
+  err "Health payload missing version_full: $HEALTH_PAYLOAD"
+fi
+
+[[ "$HEALTH_STATUS" == "ok" ]] || err "Health status is '$HEALTH_STATUS'"
+[[ "$REPORTED_VERSION" == "$VERSION" ]] ||
+  err "Health version mismatch (expected $VERSION, got $REPORTED_VERSION)"
+
+log "Health check passed: $REPORTED_VERSION"
 
 log "Deploy complete: $VERSION"

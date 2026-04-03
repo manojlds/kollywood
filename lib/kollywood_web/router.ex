@@ -31,13 +31,18 @@ defmodule KollywoodWeb.Router do
 
     live "/projects/:project_slug/runs/:story_id", DashboardLive, :run_detail
     live "/projects/:project_slug/runs/:story_id/:attempt", DashboardLive, :run_detail
-    live "/projects/:project_slug/runs/:story_id/:attempt/step/:step_idx", DashboardLive, :step_detail
+
+    live "/projects/:project_slug/runs/:story_id/:attempt/step/:step_idx",
+         DashboardLive,
+         :step_detail
+
     live "/projects/:project_slug/settings", DashboardLive, :settings
   end
 
   scope "/api", KollywoodWeb do
     pipe_through :api
 
+    get "/health", HealthController, :show
     get "/projects/resolve", ProjectController, :resolve
     get "/projects/:project_slug/stories", StoryController, :index
     post "/projects/:project_slug/stories", StoryController, :create
