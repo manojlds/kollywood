@@ -119,6 +119,29 @@ defmodule KollywoodWeb.DashboardLive do
     {:noreply, socket}
   end
 
+  def handle_info(
+        {:step_retry_finished, project_slug, story_id, source_attempt, retry_step, result},
+        socket
+      ) do
+    socket =
+      case socket.assigns[:current_project] do
+        %Project{slug: ^project_slug} = project ->
+          handle_step_retry_finished(
+            socket,
+            project,
+            story_id,
+            source_attempt,
+            retry_step,
+            result
+          )
+
+        _other ->
+          socket
+      end
+
+    {:noreply, socket}
+  end
+
   def handle_info(:poll_logs, socket) do
     tab = socket.assigns.active_log_tab
     run_detail = load_selected_run_detail(socket, tab)
@@ -7302,22 +7325,74 @@ defmodule KollywoodWeb.DashboardLive do
         end
 
       true ->
-        case StepRetry.retry(project, story_id, source_attempt, retry_step) do
-          {:ok, result} ->
-            attempt = parse_attempt(result[:attempt])
-            retry_step_label = result[:retry_step] || "step"
-            run_label = if is_integer(attempt), do: "##{attempt}", else: "new run"
-
-            socket
-            |> load_project_data(project)
-            |> sync_story_detail_selection()
-            |> maybe_navigate_to_retry_attempt(project, story_id, attempt)
-            |> put_flash(:info, "Retry #{retry_step_label} completed as #{run_label}.")
-
-          {:error, reason} ->
-            put_flash(socket, :error, "Retry failed: #{reason}")
-        end
+        start_step_retry_async(socket, project, story_id, source_attempt, retry_step)
     end
+  end
+
+  defp start_step_retry_async(socket, %Project{} = project, story_id, source_attempt, retry_step)
+       when is_binary(story_id) do
+    parent = self()
+    project_slug = project.slug
+
+    spawn(fn ->
+      result =
+        try do
+          StepRetry.retry(project, story_id, source_attempt, retry_step)
+        rescue
+          error -> {:error, Exception.message(error)}
+        catch
+          kind, reason -> {:error, "retry task #{kind}: #{inspect(reason)}"}
+        end
+
+      send(
+        parent,
+        {:step_retry_finished, project_slug, story_id, source_attempt, retry_step, result}
+      )
+    end)
+
+    socket
+    |> load_project_data(project)
+    |> sync_story_detail_selection()
+    |> put_flash(
+      :info,
+      "Started #{String.downcase(retry_action_label(retry_step))}. This can take a few minutes."
+    )
+  end
+
+  defp start_step_retry_async(socket, _project, _story_id, _source_attempt, _retry_step),
+    do: socket
+
+  defp handle_step_retry_finished(
+         socket,
+         %Project{} = project,
+         story_id,
+         _source_attempt,
+         _retry_step,
+         {:ok, result}
+       ) do
+    attempt = parse_attempt(result[:attempt])
+    retry_step_label = result[:retry_step] || "step"
+    run_label = if is_integer(attempt), do: "##{attempt}", else: "new run"
+
+    socket
+    |> load_project_data(project)
+    |> sync_story_detail_selection()
+    |> maybe_navigate_to_retry_attempt(project, story_id, attempt)
+    |> put_flash(:info, "Retry #{retry_step_label} completed as #{run_label}.")
+  end
+
+  defp handle_step_retry_finished(
+         socket,
+         %Project{} = project,
+         _story_id,
+         _source_attempt,
+         _retry_step,
+         {:error, reason}
+       ) do
+    socket
+    |> load_project_data(project)
+    |> sync_story_detail_selection()
+    |> put_flash(:error, "Retry failed: #{reason}")
   end
 
   defp show_reset_action?(status) do
