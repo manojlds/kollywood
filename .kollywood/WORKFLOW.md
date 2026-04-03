@@ -47,7 +47,7 @@ preview:
   reuse_testing_runtime: true
   allow_on_demand_from_pending_merge: true
 publish:
-  mode: auto_merge
+  mode: merge
 git:
   base_branch: main
 ---

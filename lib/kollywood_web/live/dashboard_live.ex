@@ -4778,7 +4778,7 @@ defmodule KollywoodWeb.DashboardLive do
                       >
                         Auto (from provider)
                       </option>
-                      <%= for v <- ["push", "pr", "auto_merge"] do %>
+                      <%= for v <- ["push", "merge", "pr", "auto_merge"] do %>
                         <option
                           value={v}
                           selected={to_string(get_in(@workflow.parsed, ["publish", "mode"])) == v}

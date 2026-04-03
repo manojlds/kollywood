@@ -541,7 +541,7 @@ defmodule Kollywood.ConfigTest do
 
     assert Config.effective_publish_mode(github_config) == :pr
     assert Config.effective_publish_mode(gitlab_config) == :pr
-    assert Config.effective_publish_mode(local_config) == :auto_merge
+    assert Config.effective_publish_mode(local_config) == :merge
     assert Config.effective_publish_mode(unknown_config) == :push
   end
 
