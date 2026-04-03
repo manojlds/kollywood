@@ -54,7 +54,15 @@ defmodule Kollywood.WorkerConsumerTest do
       RunQueue.enqueue(%{
         issue_id: "test-issue-1",
         identifier: "US-100",
-        config_snapshot: Jason.encode!(%{"issue" => %{"id" => "test-issue-1", "identifier" => "US-100", "title" => "Test", "state" => "open"}}),
+        config_snapshot:
+          Jason.encode!(%{
+            "issue" => %{
+              "id" => "test-issue-1",
+              "identifier" => "US-100",
+              "title" => "Test",
+              "state" => "open"
+            }
+          }),
         run_opts_snapshot: Jason.encode!(%{})
       })
 

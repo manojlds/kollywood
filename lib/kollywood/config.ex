@@ -113,9 +113,11 @@ defmodule Kollywood.Config do
   end
 
   defp safe_atom(nil), do: nil
+
   defp safe_atom(str) when is_binary(str) and str != "" do
     safe_existing_atom(str)
   end
+
   defp safe_atom(atom) when is_atom(atom), do: atom
   defp safe_atom(_), do: nil
 

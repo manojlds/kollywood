@@ -2,9 +2,7 @@ defmodule Kollywood.Version do
   @moduledoc "Compile-time version info from mix.exs and git."
 
   @mix_version Mix.Project.config()[:version]
-  @git_sha (case System.cmd("git", ["rev-parse", "--short=8", "HEAD"],
-                   stderr_to_stdout: true
-                 ) do
+  @git_sha (case System.cmd("git", ["rev-parse", "--short=8", "HEAD"], stderr_to_stdout: true) do
               {sha, 0} -> String.trim(sha)
               _ -> "unknown"
             end)

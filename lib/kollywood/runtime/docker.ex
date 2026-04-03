@@ -265,8 +265,7 @@ defmodule Kollywood.Runtime.Docker do
 
   defp poll_container_ready(state, deadline) do
     if System.monotonic_time(:millisecond) >= deadline do
-      {:error,
-       "container did not become ready within #{@container_ready_timeout_ms}ms", state}
+      {:error, "container did not become ready within #{@container_ready_timeout_ms}ms", state}
     else
       case System.cmd(
              "docker",
@@ -344,8 +343,7 @@ defmodule Kollywood.Runtime.Docker do
         {:ok, state}
 
       {output, code} ->
-        {:error,
-         "pitchfork start inside container failed (exit #{code}): #{String.trim(output)}",
+        {:error, "pitchfork start inside container failed (exit #{code}): #{String.trim(output)}",
          state}
     end
   end
