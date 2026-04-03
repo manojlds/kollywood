@@ -265,7 +265,26 @@ defmodule Kollywood.Workspace do
         end
 
       {output, _code} ->
-        {:error, "Failed to create worktree: #{String.trim(output)}"}
+        cond do
+          File.dir?(workspace.path) ->
+            Logger.info(
+              "Worktree creation raced but directory exists; reusing #{workspace.path}"
+            )
+
+            {:ok, %{workspace | branch: branch}}
+
+          branch_exists?(source, branch) ->
+            case git(["worktree", "add", workspace.path, branch], source) do
+              {_output, 0} ->
+                {:ok, %{workspace | branch: branch}}
+
+              {_, _} ->
+                {:error, "Failed to create worktree: #{String.trim(output)}"}
+            end
+
+          true ->
+            {:error, "Failed to create worktree: #{String.trim(output)}"}
+        end
     end
   end
 
@@ -440,6 +459,10 @@ defmodule Kollywood.Workspace do
       _ ->
         :ok
     end
+  end
+
+  defp branch_exists?(source, branch) do
+    match?({_output, 0}, git(["show-ref", "--verify", "refs/heads/#{branch}"], source))
   end
 
   defp git_repo_dir?(path) when is_binary(path) do
