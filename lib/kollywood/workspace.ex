@@ -247,6 +247,9 @@ defmodule Kollywood.Workspace do
 
     Logger.info("Creating worktree for #{identifier} at #{workspace.path} (branch: #{branch})")
 
+    git(["worktree", "prune"], source)
+    cleanup_stale_branch(source, branch)
+
     case git(["worktree", "add", "-b", branch, workspace.path], source) do
       {_output, 0} ->
         workspace = %{workspace | branch: branch}
@@ -262,14 +265,7 @@ defmodule Kollywood.Workspace do
         end
 
       {output, _code} ->
-        # Branch may already exist — try adding worktree for existing branch
-        case git(["worktree", "add", workspace.path, branch], source) do
-          {_output, 0} ->
-            {:ok, %{workspace | branch: branch}}
-
-          {_, _} ->
-            {:error, "Failed to create worktree: #{String.trim(output)}"}
-        end
+        {:error, "Failed to create worktree: #{String.trim(output)}"}
     end
   end
 
@@ -432,6 +428,17 @@ defmodule Kollywood.Workspace do
       end
     else
       :ok
+    end
+  end
+
+  defp cleanup_stale_branch(source, branch) do
+    case git(["show-ref", "--verify", "refs/heads/#{branch}"], source) do
+      {_output, 0} ->
+        Logger.info("Removing stale branch #{branch} before worktree creation")
+        git(["branch", "-D", branch], source)
+
+      _ ->
+        :ok
     end
   end
 
