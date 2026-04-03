@@ -9,7 +9,7 @@ defmodule Kollywood.Config do
 
   @type agent_kind :: :amp | :claude | :cursor | :opencode | :pi
   @type publish_provider :: :github | :gitlab
-  @type publish_mode :: :push | :pr | :merge | :auto_merge
+  @type publish_mode :: :push | :pr | :merge
   @type auto_push_policy :: :never | :on_pass
   @type auto_merge_policy :: :never | :on_pass
   @type auto_create_pr_policy :: :never | :draft | :ready
@@ -136,7 +136,7 @@ defmodule Kollywood.Config do
   - `publish.mode` from WORKFLOW.md (including legacy-derived mode)
   - provider default (`:merge` for local, `:pr` for github/gitlab, `:push` fallback)
 
-  `auto_merge` is normalized to `:merge` for local provider for clarity.
+  `auto_merge` in WORKFLOW.md is accepted as a backward-compatible alias for `merge`.
   """
   @spec effective_publish_mode(t()) :: publish_mode()
   def effective_publish_mode(%__MODULE__{} = config) do
@@ -144,11 +144,11 @@ defmodule Kollywood.Config do
       get_in(config, [Access.key(:publish, %{}), Access.key(:mode)]) ||
         default_publish_mode(effective_publish_provider(config))
 
-    normalize_publish_mode(raw_mode, effective_publish_provider(config))
+    normalize_publish_mode(raw_mode)
   end
 
-  defp normalize_publish_mode(:auto_merge, :local), do: :merge
-  defp normalize_publish_mode(mode, _provider), do: mode
+  defp normalize_publish_mode(:auto_merge), do: :merge
+  defp normalize_publish_mode(mode), do: mode
 
   @doc """
   Parses WORKFLOW.md content into a `%Config{}` struct.
@@ -802,7 +802,7 @@ defmodule Kollywood.Config do
 
   defp maybe_warn_legacy_publish_fields(true) do
     Logger.warning(
-      "publish.auto_push / publish.auto_create_pr / publish.auto_merge are deprecated; use publish.mode (push, merge, pr, auto_merge)"
+      "publish.auto_push / publish.auto_create_pr / publish.auto_merge are deprecated; use publish.mode (push, merge, pr)"
     )
   end
 

@@ -496,7 +496,7 @@ defmodule Kollywood.ConfigTest do
     assert config.publish.auto_create_pr == :draft
   end
 
-  test "parses publish.mode auto_merge explicitly" do
+  test "parses publish.mode auto_merge as alias for merge" do
     content = """
     ---
     publish:
@@ -512,7 +512,7 @@ defmodule Kollywood.ConfigTest do
 
     assert {:ok, config, _} = Config.parse(content)
     assert config.publish.mode == :auto_merge
-    assert Config.effective_publish_mode(config) == :auto_merge
+    assert Config.effective_publish_mode(config) == :merge
   end
 
   test "omitting publish.mode preserves provider defaults" do
