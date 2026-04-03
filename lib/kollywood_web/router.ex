@@ -17,7 +17,9 @@ defmodule KollywoodWeb.Router do
   scope "/", KollywoodWeb do
     pipe_through :browser
 
-    live "/admin", AdminLive, :index
+    live "/admin", AdminLive, :overview
+    live "/admin/workers", AdminLive, :workers
+    live "/admin/workers/:worker_id", AdminLive, :worker_detail
     live "/", ProjectsLive, :index
     live "/projects/new", ProjectsLive, :new
     live "/projects/:project_slug", DashboardLive, :overview
@@ -31,7 +33,11 @@ defmodule KollywoodWeb.Router do
 
     live "/projects/:project_slug/runs/:story_id", DashboardLive, :run_detail
     live "/projects/:project_slug/runs/:story_id/:attempt", DashboardLive, :run_detail
-    live "/projects/:project_slug/runs/:story_id/:attempt/step/:step_idx", DashboardLive, :step_detail
+
+    live "/projects/:project_slug/runs/:story_id/:attempt/step/:step_idx",
+         DashboardLive,
+         :step_detail
+
     live "/projects/:project_slug/settings", DashboardLive, :settings
   end
 
