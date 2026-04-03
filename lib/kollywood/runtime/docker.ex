@@ -162,11 +162,15 @@ defmodule Kollywood.Runtime.Docker do
   def ensure_exec_ready(%{container_id: cid} = state) when is_binary(cid), do: {:ok, state}
 
   def ensure_exec_ready(state) do
-    with {:ok, state} <- ensure_isolation(state),
+    with :ok <- write_pitchfork_local_toml(state),
+         {:ok, state} <- ensure_isolation(state),
          {:ok, state} <- create_container(state),
          {:ok, state} <- start_container(state) do
       {:ok, state}
     else
+      {:error, reason} when is_binary(reason) ->
+        {:error, "failed to prepare docker container: #{reason}", state}
+
       {:error, reason, failed_state} ->
         cleanup_container(failed_state)
         {:error, "failed to prepare docker container: #{reason}", failed_state}
@@ -265,8 +269,7 @@ defmodule Kollywood.Runtime.Docker do
 
   defp poll_container_ready(state, deadline) do
     if System.monotonic_time(:millisecond) >= deadline do
-      {:error,
-       "container did not become ready within #{@container_ready_timeout_ms}ms", state}
+      {:error, "container did not become ready within #{@container_ready_timeout_ms}ms", state}
     else
       case System.cmd(
              "docker",
@@ -344,8 +347,7 @@ defmodule Kollywood.Runtime.Docker do
         {:ok, state}
 
       {output, code} ->
-        {:error,
-         "pitchfork start inside container failed (exit #{code}): #{String.trim(output)}",
+        {:error, "pitchfork start inside container failed (exit #{code}): #{String.trim(output)}",
          state}
     end
   end
@@ -432,6 +434,74 @@ defmodule Kollywood.Runtime.Docker do
   defp stop_required?(state) do
     state.started? == true or state.process_state == :start_failed
   end
+
+  defp write_pitchfork_local_toml(state) do
+    path = Path.join(state.workspace_path || "", "pitchfork.local.toml")
+
+    with {:ok, daemon_runs} <- daemon_run_map(state.workspace_path, state.processes),
+         :ok <- File.rm(path) |> ignore_enoent(),
+         :ok <- File.write(path, render_pitchfork_local(daemon_runs, state.env) <> "\n") do
+      :ok
+    else
+      {:error, reason} -> {:error, "failed to prepare pitchfork.local.toml: #{inspect(reason)}"}
+    end
+  end
+
+  defp daemon_run_map(workspace_path, daemons) do
+    pitchfork_path = Path.join(workspace_path, "pitchfork.toml")
+
+    with {:ok, content} <- File.read(pitchfork_path) do
+      runs = extract_daemon_runs(content)
+
+      Enum.reduce_while(daemons, {:ok, %{}}, fn daemon, {:ok, acc} ->
+        case Map.fetch(runs, daemon) do
+          {:ok, run_value} ->
+            {:cont, {:ok, Map.put(acc, daemon, run_value)}}
+
+          :error ->
+            {:halt, {:error, "missing run command for daemon #{daemon} in pitchfork.toml"}}
+        end
+      end)
+    else
+      {:error, reason} -> {:error, "unable to read pitchfork.toml: #{inspect(reason)}"}
+    end
+  end
+
+  defp extract_daemon_runs(content) do
+    regex =
+      ~r/^\s*\[daemons\.([\w.-]+)\]\s*$([\s\S]*?)(?=^\s*\[|\z)/m
+
+    Regex.scan(regex, content)
+    |> Enum.reduce(%{}, fn [_full, daemon, body], acc ->
+      case Regex.run(~r/^\s*run\s*=\s*(.+)\s*$/m, body) do
+        [_match, run_value] -> Map.put(acc, daemon, String.trim(run_value))
+        _ -> acc
+      end
+    end)
+  end
+
+  defp render_pitchfork_local(daemon_runs, env) do
+    env_entries =
+      env
+      |> Enum.sort_by(fn {k, _v} -> to_string(k) end)
+      |> Enum.map_join("\n", fn {k, v} -> "#{k} = #{inspect(to_string(v))}" end)
+
+    daemon_runs
+    |> Enum.sort_by(fn {daemon, _run} -> daemon end)
+    |> Enum.map_join("\n\n", fn {daemon, run_value} ->
+      """
+      [daemons.#{daemon}]
+      run = #{run_value}
+
+      [daemons.#{daemon}.env]
+      #{env_entries}\
+      """
+    end)
+  end
+
+  defp ignore_enoent(:ok), do: :ok
+  defp ignore_enoent({:error, :enoent}), do: :ok
+  defp ignore_enoent(other), do: other
 
   # ── Port offset isolation (shared with Host) ──────────────────────
 

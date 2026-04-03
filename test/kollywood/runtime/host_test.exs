@@ -90,6 +90,27 @@ defmodule Kollywood.Runtime.HostTest do
       assert {:ok, stopped} = Runtime.stop(state)
       assert stopped.started? == false
     end
+
+    test "start removes stale pitchfork.local.toml so env overrides still apply", %{
+      workspace_path: ws
+    } do
+      local_toml = Path.join(ws, "pitchfork.local.toml")
+      File.write!(local_toml, "[daemons.test_server.env]\nTEST_HTTP_PORT = \"49999\"\n")
+
+      port = available_port()
+      state = init_runtime(ws, "stale-local-toml", port)
+
+      assert {:ok, started} = Runtime.start(state)
+      assert :ok = Runtime.healthcheck(started)
+      assert_port_open(port)
+
+      local_content = File.read!(local_toml)
+      assert local_content =~ "[daemons.test_server]"
+      assert local_content =~ "[daemons.test_server.env]"
+      assert local_content =~ "TEST_HTTP_PORT = \"#{port}\""
+
+      assert {:ok, _stopped} = Runtime.stop(started)
+    end
   end
 
   describe "port isolation" do
@@ -260,6 +281,13 @@ defmodule Kollywood.Runtime.HostTest do
       {:error, _reason} ->
         :ok
     end
+  end
+
+  defp available_port do
+    {:ok, socket} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
+    {:ok, port} = :inet.port(socket)
+    :ok = :gen_tcp.close(socket)
+    port
   end
 
   defp cleanup_stale_processes(root) do

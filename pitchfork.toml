@@ -1,7 +1,7 @@
 #:schema https://pitchfork.jdx.dev/schema.json
 
 [daemons.server]
-run = "mise run setup && exec mix phx.server"
+run = "bash -lc 'mise run setup && exec mix phx.server'"
 mise = true
 ready_http = "http://127.0.0.1:${PORT:-4000}/"
 ready_delay = 1

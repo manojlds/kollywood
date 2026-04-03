@@ -257,21 +257,25 @@ defmodule Kollywood.Runtime.Host do
   defp start_pitchfork(%{processes: []} = state), do: {:ok, state}
 
   defp start_pitchfork(state) do
-    write_pitchfork_local_toml!(state)
-    cleanup_stale_daemons(state)
+    with :ok <- write_pitchfork_local_toml(state) do
+      cleanup_stale_daemons(state)
 
-    args = ["start"] ++ state.processes
+      args = ["start"] ++ state.processes
 
-    case System.cmd("pitchfork", args,
-           cd: state.workspace_path,
-           env: string_env(state.env),
-           stderr_to_stdout: true
-         ) do
-      {_output, 0} ->
-        {:ok, state}
+      case System.cmd("pitchfork", args,
+             cd: state.workspace_path,
+             env: string_env(state.env),
+             stderr_to_stdout: true
+           ) do
+        {_output, 0} ->
+          {:ok, state}
 
-      {output, code} ->
-        {:error, "pitchfork start failed (exit #{code}): #{String.trim(output)}", state}
+        {output, code} ->
+          {:error, "pitchfork start failed (exit #{code}): #{String.trim(output)}", state}
+      end
+    else
+      {:error, reason} ->
+        {:error, reason, state}
     end
   rescue
     error ->
@@ -301,28 +305,73 @@ defmodule Kollywood.Runtime.Host do
     state.started? == true or state.process_state == :start_failed
   end
 
-  defp write_pitchfork_local_toml!(state) do
+  defp write_pitchfork_local_toml(state) do
     path = Path.join(state.workspace_path, "pitchfork.local.toml")
 
-    env_entries =
-      state.env
-      |> Enum.sort()
-      |> Enum.map_join("\n", fn {k, v} -> "#{k} = #{inspect(v)}" end)
-
-    content =
-      state.processes
-      |> Enum.map_join("\n\n", fn daemon ->
-        """
-        [daemons.#{daemon}.env]
-        #{env_entries}\
-        """
-      end)
-
-    File.write!(path, content <> "\n")
-  rescue
-    error ->
-      Logger.warning("failed to write pitchfork.local.toml: #{Exception.message(error)}")
+    with {:ok, daemon_runs} <- daemon_run_map(state.workspace_path, state.processes),
+         :ok <- File.rm(path) |> ignore_enoent(),
+         :ok <- File.write(path, render_pitchfork_local(daemon_runs, state.env) <> "\n") do
+      :ok
+    else
+      {:error, reason} -> {:error, "failed to prepare pitchfork.local.toml: #{inspect(reason)}"}
+    end
   end
+
+  defp daemon_run_map(workspace_path, daemons) do
+    pitchfork_path = Path.join(workspace_path, "pitchfork.toml")
+
+    with {:ok, content} <- File.read(pitchfork_path) do
+      runs = extract_daemon_runs(content)
+
+      Enum.reduce_while(daemons, {:ok, %{}}, fn daemon, {:ok, acc} ->
+        case Map.fetch(runs, daemon) do
+          {:ok, run_value} ->
+            {:cont, {:ok, Map.put(acc, daemon, run_value)}}
+
+          :error ->
+            {:halt, {:error, "missing run command for daemon #{daemon} in pitchfork.toml"}}
+        end
+      end)
+    else
+      {:error, reason} -> {:error, "unable to read pitchfork.toml: #{inspect(reason)}"}
+    end
+  end
+
+  defp extract_daemon_runs(content) do
+    regex =
+      ~r/^\s*\[daemons\.([\w.-]+)\]\s*$([\s\S]*?)(?=^\s*\[|\z)/m
+
+    Regex.scan(regex, content)
+    |> Enum.reduce(%{}, fn [_full, daemon, body], acc ->
+      case Regex.run(~r/^\s*run\s*=\s*(.+)\s*$/m, body) do
+        [_match, run_value] -> Map.put(acc, daemon, String.trim(run_value))
+        _ -> acc
+      end
+    end)
+  end
+
+  defp render_pitchfork_local(daemon_runs, env) do
+    env_entries =
+      env
+      |> Enum.sort_by(fn {k, _v} -> to_string(k) end)
+      |> Enum.map_join("\n", fn {k, v} -> "#{k} = #{inspect(to_string(v))}" end)
+
+    daemon_runs
+    |> Enum.sort_by(fn {daemon, _run} -> daemon end)
+    |> Enum.map_join("\n\n", fn {daemon, run_value} ->
+      """
+      [daemons.#{daemon}]
+      run = #{run_value}
+
+      [daemons.#{daemon}.env]
+      #{env_entries}\
+      """
+    end)
+  end
+
+  defp ignore_enoent(:ok), do: :ok
+  defp ignore_enoent({:error, :enoent}), do: :ok
+  defp ignore_enoent(other), do: other
 
   defp cleanup_stale_daemons(state) do
     case System.cmd("pitchfork", ["status", "--json"],

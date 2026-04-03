@@ -175,7 +175,7 @@ defmodule Kollywood.Runtime.DockerTest do
   defp pitchfork_toml do
     ~S"""
     [daemons.test_server]
-    run = "python3 -u -c \"import http.server, os, signal, sys; signal.signal(signal.SIGTERM, lambda *a: sys.exit(0)); port = int(os.environ.get('TEST_HTTP_PORT', '48800')); s = http.server.HTTPServer(('127.0.0.1', port), http.server.BaseHTTPRequestHandler); print(f'test_server listening on {port}', flush=True); s.serve_forever()\""
+    run = "perl -MIO::Socket::INET -e '$p=$ENV{TEST_HTTP_PORT}||48800; $s=IO::Socket::INET->new(LocalAddr=>\"127.0.0.1\",LocalPort=>$p,Proto=>\"tcp\",Listen=>5,Reuse=>1) or die $!; while($c=$s->accept){ close $c; }'"
     """
   end
 end
