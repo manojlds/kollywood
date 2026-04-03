@@ -22,6 +22,8 @@ defmodule Kollywood.Orchestrator.RunLogs do
   worker/reviewer/check/runtime output.
   """
 
+  require Logger
+
   alias Kollywood.AgentRunner.Result
   alias Kollywood.Config
   alias Kollywood.ServiceConfig
@@ -441,6 +443,133 @@ defmodule Kollywood.Orchestrator.RunLogs do
   def resolve_attempt(_project_root, _story_id, attempt) do
     {:error, "invalid attempt selector: #{inspect(attempt)}"}
   end
+
+  @doc "Marks interrupted step-retry attempts that were left in running state as failed."
+  @spec reconcile_orphaned_step_retries(String.t(), keyword()) ::
+          {:ok, non_neg_integer()} | {:error, String.t()}
+  def reconcile_orphaned_step_retries(project_root, opts \\ [])
+
+  def reconcile_orphaned_step_retries(project_root, opts) when is_binary(project_root) do
+    run_logs_root = Path.join([project_root | @base_log_dir])
+
+    reason =
+      opts
+      |> Keyword.get(:reason)
+      |> optional_string()
+      |> Kernel.||("step retry interrupted before completion")
+
+    case File.ls(run_logs_root) do
+      {:ok, entries} ->
+        count =
+          entries
+          |> Enum.sort()
+          |> Enum.reduce(0, fn story_entry, acc ->
+            acc + reconcile_story_step_retries(run_logs_root, story_entry, reason)
+          end)
+
+        {:ok, count}
+
+      {:error, :enoent} ->
+        {:ok, 0}
+
+      {:error, reason} ->
+        {:error, "failed to list run logs at #{run_logs_root}: #{inspect(reason)}"}
+    end
+  end
+
+  def reconcile_orphaned_step_retries(_project_root, _opts) do
+    {:error, "project_root must be a non-empty string"}
+  end
+
+  defp reconcile_story_step_retries(run_logs_root, story_entry, reason) do
+    story_dir = Path.join(run_logs_root, story_entry)
+
+    if File.dir?(story_dir) do
+      File.ls(story_dir)
+      |> case do
+        {:ok, attempt_entries} ->
+          attempt_entries
+          |> Enum.sort()
+          |> Enum.reduce(0, fn entry, acc ->
+            case parse_attempt_entry(entry) do
+              attempt when is_integer(attempt) ->
+                acc + maybe_reconcile_attempt(story_dir, story_entry, attempt, reason)
+
+              _other ->
+                acc
+            end
+          end)
+
+        {:error, ls_reason} ->
+          Logger.warning("failed to list attempt entries at #{story_dir}: #{inspect(ls_reason)}")
+          0
+      end
+    else
+      0
+    end
+  end
+
+  defp maybe_reconcile_attempt(story_dir, story_id_fallback, attempt, reason)
+       when is_integer(attempt) and attempt > 0 do
+    dir = attempt_dir(story_dir, attempt)
+    files = build_attempt_files(story_dir, dir)
+    metadata = read_json_file(files.metadata)
+
+    if orphaned_step_retry_attempt?(metadata) do
+      timestamp = now_iso8601()
+
+      reconciled =
+        metadata
+        |> Map.put("status", "failed")
+        |> Map.put("ended_at", timestamp)
+        |> Map.put("error", reason)
+
+      story_id = Map.get(reconciled, "story_id") || story_id_fallback
+
+      with :ok <- write_json(files.metadata, reconciled),
+           :ok <-
+             append_jsonl(files.attempts_index, %{
+               "event" => "attempt_finished",
+               "story_id" => story_id,
+               "attempt" => attempt,
+               "runner_attempt" => Map.get(reconciled, "runner_attempt"),
+               "timestamp" => timestamp,
+               "status" => "failed",
+               "error" => reason,
+               "retry_mode" => Map.get(reconciled, "retry_mode", "full_rerun"),
+               "retry_provenance" => Map.get(reconciled, "retry_provenance", %{})
+             }) do
+        1
+      else
+        {:error, write_reason} ->
+          Logger.warning(
+            "failed to reconcile orphaned step retry attempt=#{attempt} story=#{story_id}: #{inspect(write_reason)}"
+          )
+
+          0
+      end
+    else
+      0
+    end
+  end
+
+  defp orphaned_step_retry_attempt?(metadata) when is_map(metadata) do
+    status =
+      metadata
+      |> Map.get("status")
+      |> optional_string()
+      |> case do
+        nil -> nil
+        value -> String.downcase(value)
+      end
+
+    retry_step = metadata |> Map.get("retry_step") |> optional_string()
+    ended_at = metadata |> Map.get("ended_at") |> optional_string()
+
+    status == "running" and is_binary(retry_step) and is_nil(ended_at)
+  end
+
+  defp orphaned_step_retry_attempt?(_metadata), do: false
 
   defp story_dir(project_root, story_id) do
     Path.join([project_root | @base_log_dir] ++ [sanitize_story_id(story_id)])
