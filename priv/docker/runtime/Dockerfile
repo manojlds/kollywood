@@ -24,6 +24,9 @@ RUN /home/runtime/.local/bin/mise use -g pitchfork
 
 USER root
 
+# Make home world-writable so any --user uid:gid can write to it
+RUN chmod -R 777 /home/runtime
+
 VOLUME /workspace
 WORKDIR /workspace
 

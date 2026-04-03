@@ -894,8 +894,8 @@ defmodule Kollywood.AgentRunnerTest do
     assert :runtime_started in event_types
     assert :runtime_healthcheck_started in event_types
     assert :runtime_healthcheck_failed in event_types
-    assert :testing_error in event_types
     assert :runtime_stopped in event_types
+    refute :testing_started in event_types
   end
 
   test "runtime identity env cannot be overridden by user env", %{
@@ -1600,8 +1600,7 @@ defmodule Kollywood.AgentRunnerTest do
              )
 
     assert result.error =~ "testing requires runtime.processes to be configured"
-    assert :testing_started in Enum.map(result.events, & &1.type)
-    assert :testing_error in Enum.map(result.events, & &1.type)
+    refute :testing_started in Enum.map(result.events, & &1.type)
   end
 
   test "push mode pushes branch only", %{root: root, git_cli_path: git_cli_path} do

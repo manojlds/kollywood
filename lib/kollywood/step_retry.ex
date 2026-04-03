@@ -40,7 +40,8 @@ defmodule Kollywood.StepRetry do
          {:ok, source} <- load_source_attempt(project, story_id, parsed_attempt),
          {:ok, retry_step} <- failed_step(source.events) do
       reason =
-        with {:ok, config, _prompt_template, _workflow_identity} <- load_workflow(project),
+        with {:ok, base_config, _prompt_template, _workflow_identity} <- load_workflow(project),
+             config = apply_source_snapshot(base_config, source.metadata),
              :ok <- ensure_common_preconditions(config, source.metadata),
              :ok <- ensure_prior_phase_outputs(retry_step, config, source.events),
              {:ok, issue} <- load_issue(project, story_id),
@@ -97,7 +98,8 @@ defmodule Kollywood.StepRetry do
     with {:ok, retry_step} <- parse_step(step),
          {:ok, parsed_attempt} <- parse_attempt(source_attempt),
          {:ok, source} <- load_source_attempt(project, story_id, parsed_attempt),
-         {:ok, config, prompt_template, workflow_identity} <- load_workflow(project),
+         {:ok, base_config, prompt_template, workflow_identity} <- load_workflow(project),
+         config = apply_source_snapshot(base_config, source.metadata),
          :ok <- ensure_retry_step_failed(source.events, retry_step),
          :ok <- ensure_common_preconditions(config, source.metadata),
          :ok <- ensure_prior_phase_outputs(retry_step, config, source.events),
@@ -332,6 +334,49 @@ defmodule Kollywood.StepRetry do
       :ok
     end
   end
+
+  @behavioral_snapshot_keys [
+    {["resolved", "review", "enabled"], [:review, :enabled]},
+    {["resolved", "testing", "enabled"], [:testing, :enabled]},
+    {["resolved", "preview", "enabled"], [:preview, :enabled]}
+  ]
+
+  defp apply_source_snapshot(%Config{} = config, metadata) when is_map(metadata) do
+    case RunLogs.settings_snapshot(metadata) do
+      nil ->
+        config
+
+      snapshot when is_map(snapshot) ->
+        Enum.reduce(@behavioral_snapshot_keys, config, fn {snap_path, config_path}, acc ->
+          case get_in_string_keys(snapshot, snap_path) do
+            nil -> acc
+            value -> put_in_config(acc, config_path, snapshot_bool(value))
+          end
+        end)
+    end
+  end
+
+  defp apply_source_snapshot(config, _metadata), do: config
+
+  defp put_in_config(%Config{} = config, [section, key], value) do
+    current = Map.get(config, section) || %{}
+    Map.put(config, section, Map.put(current, key, value))
+  end
+
+  defp get_in_string_keys(value, []), do: value
+
+  defp get_in_string_keys(map, [key | rest]) when is_map(map) do
+    case Map.get(map, key) do
+      nil -> nil
+      child -> get_in_string_keys(child, rest)
+    end
+  end
+
+  defp get_in_string_keys(_map, _path), do: nil
+
+  defp snapshot_bool(true), do: true
+  defp snapshot_bool("true"), do: true
+  defp snapshot_bool(_), do: false
 
   defp ensure_attempt_failed(metadata) when is_map(metadata) do
     status =
