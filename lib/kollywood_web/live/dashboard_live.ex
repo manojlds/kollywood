@@ -3460,19 +3460,33 @@ defmodule KollywoodWeb.DashboardLive do
           <% else %>
             <div class="space-y-1 px-3 pb-3">
               <%= for step <- @steps do %>
-                <.link
-                  navigate={step_detail_path(@project.slug, @story_id, @attempt, step.idx, @stories_view)}
-                  class="flex items-center gap-3 p-3 bg-base-100 rounded-lg hover:bg-base-300 transition-colors"
-                >
-                  <.step_status_icon kind={step.kind} status={step.status} />
-                  <span class="text-sm font-medium flex-1 truncate">{step.label}</span>
-                  <%= if step.error do %>
-                    <span class="text-xs text-error truncate max-w-[200px]">{step.error}</span>
+                <div class="flex items-center gap-2">
+                  <.link
+                    navigate={step_detail_path(@project.slug, @story_id, @attempt, step.idx, @stories_view)}
+                    class="flex items-center gap-3 p-3 bg-base-100 rounded-lg hover:bg-base-300 transition-colors flex-1 min-w-0"
+                  >
+                    <.step_status_icon kind={step.kind} status={step.status} />
+                    <span class="text-sm font-medium flex-1 truncate">{step.label}</span>
+                    <%= if step.error do %>
+                      <span class="text-xs text-error truncate max-w-[200px]">{step.error}</span>
+                    <% end %>
+                    <span class="text-xs text-base-content/50 shrink-0">
+                      {format_step_duration(step.duration_ms)}
+                    </span>
+                  </.link>
+                  <%= if step_retryable?(step, @run_status) do %>
+                    <button
+                      phx-click="trigger_run"
+                      phx-value-story_id={@story_id}
+                      phx-value-attempt={@attempt}
+                      phx-value-step={step_retry_name(step)}
+                      class="btn btn-ghost btn-xs text-primary shrink-0"
+                      title={"Retry from #{step.label}"}
+                    >
+                      <.icon name="hero-arrow-path" class="size-3.5" />
+                    </button>
                   <% end %>
-                  <span class="text-xs text-base-content/50 shrink-0">
-                    {format_step_duration(step.duration_ms)}
-                  </span>
-                </.link>
+                </div>
               <% end %>
             </div>
           <% end %>
@@ -3519,6 +3533,17 @@ defmodule KollywoodWeb.DashboardLive do
           <span class="text-xs text-base-content/50">{format_step_duration(@step.duration_ms)}</span>
           <%= if @step.started_at && @step.started_at != "" do %>
             <span class="text-xs text-base-content/50">{time_ago(@step.started_at)}</span>
+          <% end %>
+          <%= if step_retryable?(@step, get_in(@run_detail || %{}, ["metadata", "status"])) do %>
+            <button
+              phx-click="trigger_run"
+              phx-value-story_id={@story_id}
+              phx-value-attempt={@attempt}
+              phx-value-step={step_retry_name(@step)}
+              class="btn btn-sm btn-primary gap-1"
+            >
+              <.icon name="hero-arrow-path" class="size-4" /> Retry from here
+            </button>
           <% end %>
         </div>
 
@@ -3682,6 +3707,24 @@ defmodule KollywoodWeb.DashboardLive do
   defp step_detail_path(project_slug, story_id, attempt, step_idx, stories_view) do
     base = "/projects/#{project_slug}/runs/#{story_id}/#{attempt}/step/#{step_idx}"
     if stories_view, do: base <> "?view=#{stories_view}", else: base
+  end
+
+  @retryable_step_kinds ~w(checks review testing publish)
+  @step_kind_to_retry %{
+    "checks" => "checks",
+    "review" => "review",
+    "testing" => "testing",
+    "publish" => "publish"
+  }
+
+  defp step_retryable?(step, run_status) do
+    step.status == "failed" and
+      step.kind in @retryable_step_kinds and
+      to_string(run_status) in ["failed", "error"]
+  end
+
+  defp step_retry_name(step) do
+    Map.get(@step_kind_to_retry, step.kind, "full_rerun")
   end
 
   defp step_log_content(nil, _run_detail), do: nil
