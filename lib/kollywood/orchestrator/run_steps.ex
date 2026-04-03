@@ -23,53 +23,57 @@ defmodule Kollywood.Orchestrator.RunSteps do
           detail: map()
         }
 
-  @doc "Parse events into an ordered list of pipeline steps."
-  @spec from_events([map()]) :: [step()]
-  def from_events(events) when is_list(events) do
+  @doc """
+  Parse events into an ordered list of pipeline steps.
+
+  Options:
+    - `:run_in_progress` (boolean, default false) — when true, open steps
+      keep their `"running"` status instead of being marked `"interrupted"`.
+  """
+  @spec from_events([map()], keyword()) :: [step()]
+  def from_events(events, opts \\ [])
+
+  def from_events(events, opts) when is_list(events) do
+    run_in_progress = Keyword.get(opts, :run_in_progress, false)
+
     events
-    |> scan_steps()
+    |> scan_steps(run_in_progress)
     |> Enum.with_index()
     |> Enum.map(fn {step, idx} -> Map.put(step, :idx, idx) end)
   end
 
-  def from_events(_), do: []
+  def from_events(_, _opts), do: []
 
-  defp scan_steps(events) do
+  defp scan_steps(events, run_in_progress) do
     {steps, current} =
       Enum.reduce(events, {[], nil}, fn event, {steps, current} ->
         type = event_type(event)
         handle_event(type, event, steps, current)
       end)
 
-    finalize(steps, current)
+    finalize(steps, current, run_in_progress)
   end
 
   # --- Agent turn (coding or remediation) ---
 
   defp handle_event("turn_started", event, steps, current) do
+    carried_prompt = if current && current.kind == "prompt_captured", do: current.prompt, else: nil
     steps = close_step(steps, current)
-    turn = int_field(event, "turn")
     cycle = int_field(event, "checks_cycle")
-    remediation = str_field(event, "remediation") == "true"
 
-    label =
-      cond do
-        remediation and cycle -> "Remediation (Cycle #{cycle})"
-        remediation -> "Remediation"
-        true -> "Agent Turn #{turn || "?"}"
-      end
+    seq = Enum.count(steps, fn s -> s.kind == "agent_turn" end) + 1
 
     {steps,
      %{
-       kind: if(remediation, do: "remediation", else: "agent_turn"),
-       label: label,
+       kind: "agent_turn",
+       label: "Agent Turn #{seq}",
        status: "running",
        started_at: timestamp(event),
        ended_at: nil,
        duration_ms: nil,
        cycle: cycle,
-       turn: turn,
-       prompt: nil,
+       turn: seq,
+       prompt: carried_prompt,
        events: [event],
        error: nil,
        detail: %{}
@@ -100,13 +104,11 @@ defmodule Kollywood.Orchestrator.RunSteps do
     {steps, %{current | prompt: str_field(event, "prompt"), events: current.events ++ [event]}}
   end
 
-  defp handle_event("turn_succeeded", event, steps, %{kind: kind} = current)
-       when kind in ["agent_turn", "remediation"] do
+  defp handle_event("turn_succeeded", event, steps, %{kind: "agent_turn"} = current) do
     {steps, finish_step(current, event, "ok")}
   end
 
-  defp handle_event("turn_failed", event, steps, %{kind: kind} = current)
-       when kind in ["agent_turn", "remediation"] do
+  defp handle_event("turn_failed", event, steps, %{kind: "agent_turn"} = current) do
     {steps, finish_step(current, event, "failed", str_field(event, "reason"))}
   end
 
@@ -114,15 +116,13 @@ defmodule Kollywood.Orchestrator.RunSteps do
 
   defp handle_event("checks_started", event, steps, current) do
     steps = close_step(steps, current)
-
-    cycle =
-      int_field(event, "cycle") ||
-        Enum.count(steps, fn s -> s.kind == "checks" end) + 1
+    cycle = int_field(event, "cycle")
+    seq = Enum.count(steps, fn s -> s.kind == "checks" end) + 1
 
     {steps,
      %{
        kind: "checks",
-       label: "Checks (Cycle #{cycle})",
+       label: "Checks#{if seq > 1, do: " (#{seq})", else: ""}",
        status: "running",
        started_at: timestamp(event),
        ended_at: nil,
@@ -173,20 +173,22 @@ defmodule Kollywood.Orchestrator.RunSteps do
   # --- Review ---
 
   defp handle_event("review_started", event, steps, current) do
+    carried_prompt = if current && current.kind == "prompt_captured", do: current.prompt, else: nil
     steps = close_step(steps, current)
     cycle = int_field(event, "cycle")
+    seq = Enum.count(steps, fn s -> s.kind == "review" end) + 1
 
     {steps,
      %{
        kind: "review",
-       label: "Review (Cycle #{cycle || "?"})",
+       label: "Review#{if seq > 1, do: " (#{seq})", else: ""}",
        status: "running",
        started_at: timestamp(event),
        ended_at: nil,
        duration_ms: nil,
        cycle: cycle,
        turn: nil,
-       prompt: nil,
+       prompt: carried_prompt,
        events: [event],
        error: nil,
        detail: %{agent_kind: str_field(event, "agent_kind")}
@@ -208,20 +210,22 @@ defmodule Kollywood.Orchestrator.RunSteps do
   # --- Testing ---
 
   defp handle_event("testing_started", event, steps, current) do
+    carried_prompt = if current && current.kind == "prompt_captured", do: current.prompt, else: nil
     steps = close_step(steps, current)
     cycle = int_field(event, "cycle")
+    seq = Enum.count(steps, fn s -> s.kind == "testing" end) + 1
 
     {steps,
      %{
        kind: "testing",
-       label: "Testing (Cycle #{cycle || "?"})",
+       label: "Testing#{if seq > 1, do: " (#{seq})", else: ""}",
        status: "running",
        started_at: timestamp(event),
        ended_at: nil,
        duration_ms: nil,
        cycle: cycle,
        turn: nil,
-       prompt: nil,
+       prompt: carried_prompt,
        events: [event],
        error: nil,
        detail: %{
@@ -606,15 +610,19 @@ defmodule Kollywood.Orchestrator.RunSteps do
 
   # --- Helpers ---
 
-  defp finalize(steps, nil), do: steps
-  defp finalize(steps, current), do: close_step(steps, current)
+  defp finalize(steps, nil, _run_in_progress), do: steps
 
-  defp close_step(steps, nil), do: steps
+  defp finalize(steps, current, run_in_progress) do
+    step =
+      if current.status == "running" and not run_in_progress,
+        do: %{current | status: "interrupted"},
+        else: current
 
-  defp close_step(steps, step) do
-    step = if step.status == "running", do: %{step | status: "interrupted"}, else: step
     steps ++ [step]
   end
+
+  defp close_step(steps, nil), do: steps
+  defp close_step(steps, step), do: steps ++ [step]
 
   defp finish_step(step, event, status, error \\ nil) do
     ended_at = timestamp(event)

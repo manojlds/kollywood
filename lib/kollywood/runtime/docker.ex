@@ -290,27 +290,34 @@ defmodule Kollywood.Runtime.Docker do
   defp mise_install_tools(state) do
     Logger.info("[docker] running mise install in #{state.workspace_path}")
 
-    case System.cmd(
-           "docker",
-           [
-             "exec",
-             "-w",
-             @container_workspace,
-             state.container_id,
-             "bash",
-             "-lc",
-             "mise install --yes 2>&1"
-           ],
-           stderr_to_stdout: true,
-           timeout: @mise_install_timeout_ms
-         ) do
-      {_output, 0} ->
+    task =
+      Task.async(fn ->
+        System.cmd(
+          "docker",
+          [
+            "exec",
+            "-w",
+            @container_workspace,
+            state.container_id,
+            "bash",
+            "-lc",
+            "mise install --yes 2>&1"
+          ],
+          stderr_to_stdout: true
+        )
+      end)
+
+    case Task.yield(task, @mise_install_timeout_ms) || Task.shutdown(task) do
+      {:ok, {_output, 0}} ->
         {:ok, state}
 
-      {output, code} ->
+      {:ok, {output, code}} ->
         {:error,
          "mise install failed (exit #{code}): #{String.trim(output) |> String.slice(-500..-1//1)}",
          state}
+
+      nil ->
+        {:error, "mise install timed out after #{div(@mise_install_timeout_ms, 1000)}s", state}
     end
   rescue
     error ->

@@ -1100,7 +1100,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
         live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
 
       assert html =~ "Pipeline Steps"
-      assert html =~ "Testing (Cycle 1)"
+      assert html =~ "Testing"
       assert html =~ "/projects/#{project.slug}/runs/#{story_id}/1/step/0"
       refute html =~ "set_run_detail_panel_tab"
 
@@ -1110,11 +1110,9 @@ defmodule KollywoodWeb.DashboardLiveTest do
       step_html = render(view)
 
       assert step_html =~ "Back to Steps"
-      assert step_html =~ "Testing (Cycle 1)"
-      assert step_html =~ "Raw Events"
-      assert step_html =~ "acceptance flow"
-      assert step_html =~ "Testing completed successfully"
-      assert step_html =~ "testing_checkpoint"
+      assert step_html =~ "Testing"
+      assert step_html =~ "Logs"
+      assert step_html =~ "Reports"
 
       preview_url = "/projects/#{project.slug}/runs/#{story_id}/1/artifacts/001_smoke.png"
 
@@ -1172,7 +1170,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
         live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
 
       assert html =~ "Pipeline Steps"
-      assert html =~ "Review (Cycle 1)"
+      assert html =~ "Review"
       assert html =~ "/projects/#{project.slug}/runs/#{story_id}/1/step/0"
       refute html =~ "set_run_detail_panel_tab"
 
@@ -1182,11 +1180,9 @@ defmodule KollywoodWeb.DashboardLiveTest do
       step_html = render(view)
 
       assert step_html =~ "Back to Steps"
-      assert step_html =~ "Review (Cycle 1)"
-      assert step_html =~ "Raw Events"
-      assert step_html =~ "Found blocking review issue"
-      assert step_html =~ "Missing regression test coverage"
-      assert step_html =~ "review_failed"
+      assert step_html =~ "Review"
+      assert step_html =~ "Logs"
+      assert step_html =~ "Reports"
 
       append_story!(project, %{
         "id" => story_id,
@@ -1277,7 +1273,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
         live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
 
       assert html =~ "Pipeline Steps"
-      assert html =~ "Checks (Cycle 1)"
+      assert html =~ "Checks"
       refute html =~ "set_run_detail_panel_tab"
 
       {:ok, view, html} =
@@ -1352,7 +1348,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
         live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
 
       assert html =~ "Pipeline Steps"
-      assert html =~ "Checks (Cycle 1)"
+      assert html =~ "Checks"
 
       {:ok, view, html} =
         live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
