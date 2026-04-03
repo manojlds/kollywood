@@ -45,10 +45,16 @@ defmodule Kollywood.Orchestrator.RunSteps do
   def from_events(_, _opts), do: []
 
   defp scan_steps(events, run_in_progress) do
-    {steps, current} =
-      Enum.reduce(events, {[], nil}, fn event, {steps, current} ->
-        type = event_type(event)
-        handle_event(type, event, steps, current)
+    {steps, current, _finished} =
+      Enum.reduce(events, {[], nil, false}, fn event, {steps, current, finished} ->
+        if finished do
+          {steps, current, true}
+        else
+          type = event_type(event)
+          {new_steps, new_current} = handle_event(type, event, steps, current)
+          finished = type == "run_finished"
+          {new_steps, new_current, finished}
+        end
       end)
 
     finalize(steps, current, run_in_progress)
@@ -58,7 +64,7 @@ defmodule Kollywood.Orchestrator.RunSteps do
 
   defp handle_event("turn_started", event, steps, current) do
     carried_prompt = if current && current.kind == "prompt_captured", do: current.prompt, else: nil
-    steps = close_step(steps, current)
+    steps = close_step(steps, current, event)
     cycle = int_field(event, "checks_cycle")
 
     seq = Enum.count(steps, fn s -> s.kind == "agent_turn" end) + 1
@@ -115,7 +121,7 @@ defmodule Kollywood.Orchestrator.RunSteps do
   # --- Checks ---
 
   defp handle_event("checks_started", event, steps, current) do
-    steps = close_step(steps, current)
+    steps = close_step(steps, current, event)
     cycle = int_field(event, "cycle")
     seq = Enum.count(steps, fn s -> s.kind == "checks" end) + 1
 
@@ -174,7 +180,7 @@ defmodule Kollywood.Orchestrator.RunSteps do
 
   defp handle_event("review_started", event, steps, current) do
     carried_prompt = if current && current.kind == "prompt_captured", do: current.prompt, else: nil
-    steps = close_step(steps, current)
+    steps = close_step(steps, current, event)
     cycle = int_field(event, "cycle")
     seq = Enum.count(steps, fn s -> s.kind == "review" end) + 1
 
@@ -211,7 +217,7 @@ defmodule Kollywood.Orchestrator.RunSteps do
 
   defp handle_event("testing_started", event, steps, current) do
     carried_prompt = if current && current.kind == "prompt_captured", do: current.prompt, else: nil
-    steps = close_step(steps, current)
+    steps = close_step(steps, current, event)
     cycle = int_field(event, "cycle")
     seq = Enum.count(steps, fn s -> s.kind == "testing" end) + 1
 
@@ -253,7 +259,7 @@ defmodule Kollywood.Orchestrator.RunSteps do
   # before testing and after the full pipeline respectively.
 
   defp handle_event("runtime_starting", event, steps, current) do
-    steps = close_step(steps, current)
+    steps = close_step(steps, current, event)
 
     {steps,
      %{
@@ -308,7 +314,7 @@ defmodule Kollywood.Orchestrator.RunSteps do
 
   defp handle_event("runtime_stopping", event, steps, current)
        when is_nil(current) or current.kind != "runtime" do
-    steps = close_step(steps, current)
+    steps = close_step(steps, current, event)
 
     {steps,
      %{
@@ -330,7 +336,7 @@ defmodule Kollywood.Orchestrator.RunSteps do
   # --- Run lifecycle ---
 
   defp handle_event("run_started", event, steps, current) do
-    steps = close_step(steps, current)
+    steps = close_step(steps, current, event)
 
     {steps,
      %{
@@ -353,7 +359,7 @@ defmodule Kollywood.Orchestrator.RunSteps do
   end
 
   defp handle_event("workspace_ready", event, steps, current) do
-    steps = close_step(steps, current)
+    steps = close_step(steps, current, event)
 
     {steps,
      %{
@@ -373,7 +379,7 @@ defmodule Kollywood.Orchestrator.RunSteps do
   end
 
   defp handle_event("run_finished", event, steps, current) do
-    steps = close_step(steps, current)
+    steps = close_step(steps, current, event)
     status = str_field(event, "status") || "finished"
     reason = str_field(event, "reason")
 
@@ -398,7 +404,7 @@ defmodule Kollywood.Orchestrator.RunSteps do
   # --- Quality cycle markers ---
 
   defp handle_event("quality_cycle_started", event, steps, current) do
-    steps = close_step(steps, current)
+    steps = close_step(steps, current, event)
     cycle = int_field(event, "cycle")
 
     {steps,
@@ -423,7 +429,7 @@ defmodule Kollywood.Orchestrator.RunSteps do
   end
 
   defp handle_event("quality_cycle_retrying", event, steps, current) do
-    steps = close_step(steps, current)
+    steps = close_step(steps, current, event)
 
     {steps,
      %{
@@ -443,7 +449,7 @@ defmodule Kollywood.Orchestrator.RunSteps do
   end
 
   defp handle_event("quality_cycle_passed", event, steps, current) do
-    steps = close_step(steps, current)
+    steps = close_step(steps, current, event)
 
     {steps,
      %{
@@ -476,7 +482,7 @@ defmodule Kollywood.Orchestrator.RunSteps do
   # --- Publish ---
 
   defp handle_event("publish_started", event, steps, current) do
-    steps = close_step(steps, current)
+    steps = close_step(steps, current, event)
 
     {steps,
      %{
@@ -527,7 +533,7 @@ defmodule Kollywood.Orchestrator.RunSteps do
   end
 
   defp handle_event("publish_skipped", event, steps, current) do
-    steps = close_step(steps, current)
+    steps = close_step(steps, current, event)
 
     {steps,
      %{
@@ -554,7 +560,7 @@ defmodule Kollywood.Orchestrator.RunSteps do
   end
 
   defp handle_event("publish_pending_merge", event, steps, current) do
-    steps = close_step(steps, current)
+    steps = close_step(steps, current, event)
 
     {steps,
      %{
@@ -577,7 +583,7 @@ defmodule Kollywood.Orchestrator.RunSteps do
   end
 
   defp handle_event("preview_runtime_handoff", event, steps, current) do
-    steps = close_step(steps, current)
+    steps = close_step(steps, current, event)
 
     {steps,
      %{
@@ -621,8 +627,27 @@ defmodule Kollywood.Orchestrator.RunSteps do
     steps ++ [step]
   end
 
-  defp close_step(steps, nil), do: steps
-  defp close_step(steps, step), do: steps ++ [step]
+  defp close_step(steps, step_or_nil, event \\ nil)
+  defp close_step(steps, nil, _event), do: steps
+
+  defp close_step(steps, step, event) do
+    step =
+      if step.status == "running" do
+        ended_at = if event, do: timestamp(event), else: step.started_at
+
+        duration_ms =
+          case {step.started_at, ended_at} do
+            {s, e} when is_binary(s) and is_binary(e) -> duration_between(s, e)
+            _ -> nil
+          end
+
+        %{step | status: "interrupted", ended_at: ended_at, duration_ms: duration_ms}
+      else
+        step
+      end
+
+    steps ++ [step]
+  end
 
   defp finish_step(step, event, status, error \\ nil) do
     ended_at = timestamp(event)
