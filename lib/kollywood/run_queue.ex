@@ -233,7 +233,7 @@ defmodule Kollywood.RunQueue do
 
     {count, _} =
       Entry
-      |> where([e], e.status in ["claimed", "running"])
+      |> where([e], e.status == "claimed")
       |> where([e], e.claimed_at < ^cutoff)
       |> Repo.update_all(
         set: [

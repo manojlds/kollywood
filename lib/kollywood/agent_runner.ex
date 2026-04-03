@@ -1957,7 +1957,7 @@ defmodule Kollywood.AgentRunner do
   defp ensure_runtime_for_checks(state), do: {:ok, state}
 
   defp ensure_runtime_if_needed(state, config) do
-    if testing_enabled?(config) or preview_enabled?(config) do
+    if testing_enabled?(config) do
       ensure_runtime_for_testing(state)
     else
       {:ok, state}

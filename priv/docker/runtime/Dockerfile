@@ -22,6 +22,10 @@ ENV PATH="/home/runtime/.local/share/mise/shims:/home/runtime/.local/bin:${PATH}
 # Install pitchfork (process manager) via mise
 RUN /home/runtime/.local/bin/mise use -g pitchfork
 
+# Pre-install Elixir + Erlang so workspace startup doesn't compile from scratch
+RUN mise trust /workspace/mise.toml && \
+    mise install erlang@27.3.4.9 elixir@1.18.4-otp-27
+
 USER root
 
 # Make home world-writable so any --user uid:gid can write to it
