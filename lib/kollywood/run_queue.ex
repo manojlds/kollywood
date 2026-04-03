@@ -61,20 +61,24 @@ defmodule Kollywood.RunQueue do
         :none
 
       entry ->
-        changeset =
-          Entry.changeset(entry, %{
-            status: "claimed",
-            claimed_by_node: node_id,
-            claimed_at: now
-          })
+        {updated_count, _} =
+          Entry
+          |> where([e], e.id == ^entry.id and e.status == "pending")
+          |> Repo.update_all(
+            set: [
+              status: "claimed",
+              claimed_by_node: node_id,
+              claimed_at: now,
+              updated_at: now
+            ]
+          )
 
-        case Repo.update(changeset) do
-          {:ok, updated} ->
-            broadcast({:claimed, updated.id, updated.issue_id, node_id})
-            {:ok, updated}
-
-          {:error, _changeset} ->
-            :none
+        if updated_count == 1 do
+          updated = Repo.get!(Entry, entry.id)
+          broadcast({:claimed, updated.id, updated.issue_id, node_id})
+          {:ok, updated}
+        else
+          :none
         end
     end
   end
