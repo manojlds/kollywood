@@ -514,6 +514,11 @@ defmodule KollywoodWeb.DashboardLive do
     {:noreply, clear_story_form(socket)}
   end
 
+  def handle_event("update_story_form", %{"story" => story_params}, socket) do
+    values = merge_story_form_values(socket.assigns.story_form_values, story_params)
+    {:noreply, assign(socket, :story_form_values, values)}
+  end
+
   def handle_event("save_story", %{"story" => story_params}, socket) do
     project = socket.assigns.current_project
     mode = socket.assigns.story_form_mode
@@ -2169,7 +2174,12 @@ defmodule KollywoodWeb.DashboardLive do
               </div>
             <% end %>
 
-            <form id="story-editor-form" phx-submit="save_story" class="space-y-4">
+            <form
+              id="story-editor-form"
+              phx-change="update_story_form"
+              phx-submit="save_story"
+              class="space-y-4"
+            >
               <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label class="label py-1"><span class="label-text text-sm">Story ID</span></label>
