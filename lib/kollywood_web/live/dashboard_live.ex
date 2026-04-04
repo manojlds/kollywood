@@ -54,6 +54,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:artifact_preview, nil)
       |> assign(:action_confirmation, nil)
       |> assign(:preview_session, nil)
+      |> assign(:preview_panel_error, nil)
       |> assign(:step_idx, nil)
       |> assign(:current_step, nil)
       |> assign(:log_poll_timer, nil)
@@ -97,6 +98,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:settings_edit_mode, false)
       |> assign(:run_detail_story_id, params["story_id"])
       |> assign(:run_detail_attempt, params["attempt"])
+      |> assign(:preview_panel_error, nil)
       |> assign(:stories_view, stories_view)
       |> assign(
         :collapsed_story_groups,
@@ -214,10 +216,13 @@ defmodule KollywoodWeb.DashboardLive do
         {:ok, session} ->
           socket
           |> assign(:preview_session, session)
+          |> assign(:preview_panel_error, nil)
           |> put_flash(:info, "Preview started.")
 
         {:error, reason} ->
-          put_flash(socket, :error, "Preview failed: #{reason}")
+          socket
+          |> assign(:preview_panel_error, reason)
+          |> put_flash(:error, "Preview failed: #{reason}")
       end
 
     {:noreply, socket}
@@ -232,10 +237,13 @@ defmodule KollywoodWeb.DashboardLive do
           :ok ->
             socket
             |> assign(:preview_session, nil)
+            |> assign(:preview_panel_error, nil)
             |> put_flash(:info, "Preview stopped.")
 
           {:error, reason} ->
-            put_flash(socket, :error, "Stop preview failed: #{reason}")
+            socket
+            |> assign(:preview_panel_error, reason)
+            |> put_flash(:error, "Stop preview failed: #{reason}")
         end
       else
         put_flash(socket, :error, "No project selected.")
@@ -254,12 +262,15 @@ defmodule KollywoodWeb.DashboardLive do
 
           socket
           |> assign(:preview_session, nil)
+          |> assign(:preview_panel_error, nil)
           |> load_project_data(project)
           |> sync_story_detail_selection()
           |> put_flash(:info, "Story merged successfully.")
 
         {:error, reason} ->
-          put_flash(socket, :error, "Merge failed: #{reason}")
+          socket
+          |> assign(:preview_panel_error, reason)
+          |> put_flash(:error, "Merge failed: #{reason}")
       end
 
     {:noreply, socket}
@@ -760,6 +771,7 @@ defmodule KollywoodWeb.DashboardLive do
                   story={@selected_story}
                   story_id={@run_detail_story_id}
                   run_detail={@run_detail}
+                  workflow={@workflow}
                   run_detail_panel_tab={@run_detail_panel_tab}
                   reports_tab={@reports_tab}
                   active_prompt_tab={@active_prompt_tab}
@@ -771,6 +783,7 @@ defmodule KollywoodWeb.DashboardLive do
                   story_attempts={Enum.filter(@run_attempts, &(&1.story_id == @run_detail_story_id))}
                   selected_attempt={@run_detail_attempt}
                   preview_session={@preview_session}
+                  preview_panel_error={@preview_panel_error}
                 />
               <% :run_detail -> %>
                 <.run_steps_section
@@ -2542,14 +2555,17 @@ defmodule KollywoodWeb.DashboardLive do
   attr :story_id, :string, required: true
   attr :project, :map, required: true
   attr :preview_session, :map, default: nil
+  attr :panel_error, :string, default: nil
 
   defp preview_controls_panel(assigns) do
     session = assigns.preview_session
     has_session = is_map(session) and session.status in [:running, :starting]
+    local_project = local_provider?(assigns.project)
 
     assigns =
       assigns
       |> assign(:has_session, has_session)
+      |> assign(:local_project, local_project)
       |> assign(:session_status, if(has_session, do: session.status, else: nil))
       |> assign(:preview_url, if(has_session, do: session.preview_url, else: nil))
       |> assign(:expires_at, if(has_session, do: session.expires_at, else: nil))
@@ -2563,6 +2579,13 @@ defmodule KollywoodWeb.DashboardLive do
         </h3>
         <span class="badge badge-sm badge-warning">Pending Merge</span>
       </div>
+
+      <%= if is_binary(@panel_error) and String.trim(@panel_error) != "" do %>
+        <div class="alert alert-error text-xs gap-2">
+          <.icon name="hero-exclamation-triangle" class="size-3.5 shrink-0" />
+          <span class="break-words">{@panel_error}</span>
+        </div>
+      <% end %>
 
       <%= if @has_session do %>
         <div class="space-y-2">
@@ -2609,37 +2632,46 @@ defmodule KollywoodWeb.DashboardLive do
             >
               Stop Preview
             </button>
-            <button
-              phx-click="merge_story"
-              phx-value-story_id={@story_id}
-              onclick={"return confirm('Merge #{@story_id}? This will stop the preview and merge the branch.')"}
-              class="btn btn-success btn-xs"
-            >
-              Approve & Merge
-            </button>
+
+            <%= if @local_project do %>
+              <button
+                phx-click="merge_story"
+                phx-value-story_id={@story_id}
+                onclick={"return confirm('Merge #{@story_id}? This will stop the preview and merge the branch.')"}
+                class="btn btn-success btn-xs"
+              >
+                Approve & Merge
+              </button>
+            <% end %>
           </div>
         </div>
       <% else %>
-        <p class="text-sm text-base-content/70">
-          Start a preview to validate changes before merging.
-        </p>
-        <div class="flex gap-2">
-          <button
-            phx-click="start_preview"
-            phx-value-story_id={@story_id}
-            class="btn btn-primary btn-sm gap-2"
-          >
-            <.icon name="hero-play" class="size-4" /> Start Preview
-          </button>
-          <button
-            phx-click="merge_story"
-            phx-value-story_id={@story_id}
-            onclick={"return confirm('Merge #{@story_id} without previewing?')"}
-            class="btn btn-outline btn-success btn-sm"
-          >
-            Merge Without Preview
-          </button>
-        </div>
+        <%= if @local_project do %>
+          <p class="text-sm text-base-content/70">
+            Start a preview to validate changes before merging.
+          </p>
+          <div class="flex gap-2">
+            <button
+              phx-click="start_preview"
+              phx-value-story_id={@story_id}
+              class="btn btn-primary btn-sm gap-2"
+            >
+              <.icon name="hero-play" class="size-4" /> Start Preview
+            </button>
+            <button
+              phx-click="merge_story"
+              phx-value-story_id={@story_id}
+              onclick={"return confirm('Merge #{@story_id} without previewing?')"}
+              class="btn btn-outline btn-success btn-sm"
+            >
+              Merge Without Preview
+            </button>
+          </div>
+        <% else %>
+          <p class="text-sm text-base-content/70">
+            Preview and merge actions from this panel are available for local projects only.
+          </p>
+        <% end %>
       <% end %>
     </div>
     """
@@ -3937,6 +3969,7 @@ defmodule KollywoodWeb.DashboardLive do
   attr :story, :map, default: nil
   attr :story_id, :string, default: nil
   attr :run_detail, :map, default: nil
+  attr :workflow, :map, default: %{}
   attr :run_detail_panel_tab, :string, default: "logs"
   attr :reports_tab, :string, default: "review"
   attr :active_prompt_tab, :string, default: "agent"
@@ -3948,6 +3981,7 @@ defmodule KollywoodWeb.DashboardLive do
   attr :story_attempts, :list, default: []
   attr :selected_attempt, :string, default: nil
   attr :preview_session, :map, default: nil
+  attr :preview_panel_error, :string, default: nil
 
   defp story_detail_section(assigns) do
     snapshot =
@@ -3968,6 +4002,7 @@ defmodule KollywoodWeb.DashboardLive do
     assigns =
       assigns
       |> assign(:editable, local_provider?(assigns.project))
+      |> assign(:preview_enabled, preview_enabled_for_story?(assigns.story, assigns.workflow))
       |> assign(:settings_snapshot, snapshot)
       |> assign(:run_settings, run_settings)
       |> assign(:current_workflow_identity, current_workflow_identity)
@@ -4072,6 +4107,17 @@ defmodule KollywoodWeb.DashboardLive do
 
       <%= if @story do %>
         <h1 class="text-2xl font-bold">{@story["title"]}</h1>
+      <% end %>
+
+      <%= if @story &&
+            normalize_status(@story["status"]) == "pending_merge" &&
+            @preview_enabled do %>
+        <.preview_controls_panel
+          story_id={@story["id"] || @story_id}
+          project={@project}
+          preview_session={@preview_session}
+          panel_error={@preview_panel_error}
+        />
       <% end %>
 
       <div class="flex gap-0 border-b border-base-300">
@@ -4204,14 +4250,6 @@ defmodule KollywoodWeb.DashboardLive do
                   {@story["lastError"]}
                 </p>
               </div>
-            <% end %>
-
-            <%= if normalize_status(@story["status"]) == "pending_merge" do %>
-              <.preview_controls_panel
-                story_id={@story["id"] || @story_id}
-                project={@project}
-                preview_session={@preview_session}
-              />
             <% end %>
           </div>
         <% else %>
@@ -5629,6 +5667,8 @@ defmodule KollywoodWeb.DashboardLive do
     alias Kollywood.PreviewSessionManager
 
     with true <- is_map(project) or {:error, "no project selected"},
+         true <-
+           local_provider?(project) or {:error, "preview is only available for local projects"},
          {:ok, config, _prompt_template} <- load_project_config(project),
          {:ok, workspace_path} <- find_story_workspace_path(project, story_id) do
       workspace_key =
@@ -5789,6 +5829,7 @@ defmodule KollywoodWeb.DashboardLive do
         "testing_enabled" -> "testingEnabled"
         "testing_agent_kind" -> "testingAgentKind"
         "testing_max_cycles" -> "testingMaxCycles"
+        "preview_enabled" -> "previewEnabled"
         other -> other
       end
 
@@ -5803,6 +5844,42 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp story_execution_override_value(_story, _key), do: ""
+
+  defp preview_enabled_for_story?(story, workflow)
+       when is_map(story) and is_map(workflow) do
+    workflow_enabled =
+      workflow
+      |> Map.get(:parsed, %{})
+      |> Map.get("preview", %{})
+      |> Map.get("enabled")
+      |> truthy_setting?()
+
+    execution = story |> Map.get("settings", %{}) |> Map.get("execution", %{})
+    override = Map.get(execution, "preview_enabled") || Map.get(execution, "previewEnabled")
+
+    case override do
+      nil -> workflow_enabled
+      "" -> workflow_enabled
+      value -> truthy_setting?(value)
+    end
+  end
+
+  defp preview_enabled_for_story?(_story, _workflow), do: false
+
+  defp truthy_setting?(value) when is_boolean(value), do: value
+  defp truthy_setting?(value) when is_integer(value), do: value > 0
+
+  defp truthy_setting?(value) when is_binary(value) do
+    case value |> String.trim() |> String.downcase() do
+      "true" -> true
+      "1" -> true
+      "yes" -> true
+      "on" -> true
+      _ -> false
+    end
+  end
+
+  defp truthy_setting?(_value), do: false
 
   defp override_form_value(execution, key) when is_map(execution) do
     value = Map.get(execution, key)
@@ -6097,7 +6174,8 @@ defmodule KollywoodWeb.DashboardLive do
       recent_runs: [],
       run_detail: nil,
       run_detail_story_id: nil,
-      run_detail_attempt: nil
+      run_detail_attempt: nil,
+      preview_panel_error: nil
     )
   end
 
@@ -6113,6 +6191,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:counters, counters)
       |> assign(:run_attempts, run_attempts)
       |> assign(:recent_runs, recent_runs)
+      |> assign(:workflow, load_workflow(project))
 
     # Load run detail if the action requires it
     story_id = socket.assigns[:run_detail_story_id]
@@ -7695,6 +7774,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:selected_story, story)
       |> assign(:run_detail, run_detail)
       |> assign(:story_detail_tab, story_tab)
+      |> assign(:preview_panel_error, nil)
 
     if run_detail && get_in(run_detail, ["metadata", "status"]) == "running" do
       {:ok, timer} = :timer.send_interval(1000, self(), :poll_logs)

@@ -936,6 +936,85 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "/projects/#{project.slug}/stories/#{story_id}?tab=runs"
     end
 
+    test "pending merge story shows preview panel above tabs when preview is enabled", %{
+      conn: conn,
+      project: project
+    } do
+      story_id = "US-PREVIEW-TOP"
+
+      write_workflow!(project, """
+      ---
+      preview:
+        enabled: true
+      ---
+
+      body
+      """)
+
+      append_story!(project, %{
+        "id" => story_id,
+        "title" => "Preview Top Placement",
+        "status" => "pending_merge"
+      })
+
+      {:ok, view, html} = live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}")
+
+      title_pos = html |> :binary.match("Preview Top Placement") |> elem(0)
+      panel_pos = html |> :binary.match("Preview Environment") |> elem(0)
+      tabs_pos = html |> :binary.match("phx-value-tab=\"details\"") |> elem(0)
+
+      assert title_pos < panel_pos
+      assert panel_pos < tabs_pos
+      assert html =~ "Start Preview"
+      assert html =~ "Merge Without Preview"
+
+      html =
+        view
+        |> element("button[phx-click='start_preview'][phx-value-story_id='#{story_id}']")
+        |> render_click()
+
+      assert html =~ "Preview Environment"
+      assert html =~ "alert alert-error text-xs"
+    end
+
+    test "pending merge preview panel hides merge actions for non-local projects", %{
+      conn: conn,
+      tmp_dir: tmp_dir
+    } do
+      {:ok, remote_project} =
+        Projects.create_project(%{
+          name: "Remote Preview #{System.unique_integer([:positive])}",
+          provider: :github,
+          repository: Path.join(tmp_dir, "remote-preview-repo")
+        })
+
+      tracker_path = Projects.tracker_path(remote_project)
+      File.mkdir_p!(Path.dirname(tracker_path))
+
+      File.write!(
+        tracker_path,
+        Jason.encode!(%{
+          "userStories" => [
+            %{
+              "id" => "US-REMOTE-PREVIEW",
+              "title" => "Remote pending merge",
+              "status" => "pending_merge",
+              "settings" => %{"execution" => %{"preview_enabled" => true}}
+            }
+          ]
+        })
+      )
+
+      {:ok, _view, html} =
+        live(conn, ~p"/projects/#{remote_project.slug}/stories/US-REMOTE-PREVIEW")
+
+      assert html =~ "Preview Environment"
+      assert html =~ "available for local projects only"
+      refute html =~ "Start Preview"
+      refute html =~ "Merge Without Preview"
+      refute html =~ "Approve &amp; Merge"
+    end
+
     test "run detail shows where to access preview controls after pending merge handoff", %{
       conn: conn,
       project: project
