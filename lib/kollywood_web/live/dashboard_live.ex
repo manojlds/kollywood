@@ -30,6 +30,7 @@ defmodule KollywoodWeb.DashboardLive do
   @agent_kind_options StoryExecutionOverrides.valid_agent_kind_strings()
   @log_tabs ["agent", "review_agent", "testing_agent", "worker"]
   @reports_tabs ["review", "testing"]
+  @interaction_surfaces [:story_editor, :workflow_editor, :story_overrides_editor]
 
   @impl true
   def mount(params, _session, socket) do
@@ -116,8 +117,7 @@ defmodule KollywoodWeb.DashboardLive do
   def handle_info(:refresh, socket) do
     socket =
       socket
-      |> load_project_data(socket.assigns.current_project)
-      |> sync_story_detail_selection()
+      |> apply_interaction_safe_refresh()
       |> assign(:orchestrator_status, fetch_orchestrator_status())
 
     {:noreply, socket}
@@ -6170,6 +6170,52 @@ defmodule KollywoodWeb.DashboardLive do
     |> assign(:story_form_values, %{})
     |> assign(:story_form_error, nil)
   end
+
+  defp apply_interaction_safe_refresh(socket) do
+    case interaction_safe_refresh_policy(socket) do
+      %{mode: :full} ->
+        socket
+        |> load_project_data(socket.assigns.current_project)
+        |> sync_story_detail_selection()
+
+      %{mode: :defer} ->
+        socket
+    end
+  end
+
+  defp interaction_safe_refresh_policy(socket) do
+    active_surfaces =
+      @interaction_surfaces
+      |> Enum.filter(&interaction_surface_active?(socket, &1))
+      |> MapSet.new()
+
+    mode =
+      if MapSet.intersection(
+           active_surfaces,
+           MapSet.new([:workflow_editor, :story_overrides_editor])
+         ) !=
+           MapSet.new() do
+        :defer
+      else
+        :full
+      end
+
+    %{mode: mode, active_surfaces: active_surfaces}
+  end
+
+  defp interaction_surface_active?(socket, :story_editor) do
+    socket.assigns[:story_form_mode] in [:new, :edit]
+  end
+
+  defp interaction_surface_active?(socket, :workflow_editor) do
+    socket.assigns[:live_action] == :settings
+  end
+
+  defp interaction_surface_active?(socket, :story_overrides_editor) do
+    socket.assigns[:live_action] == :story_detail and socket.assigns[:settings_edit_mode] == true
+  end
+
+  defp interaction_surface_active?(_socket, _surface), do: false
 
   defp clear_story_form_if_editing(socket, story_id) when is_binary(story_id) do
     if socket.assigns.story_form_story_id == story_id do
