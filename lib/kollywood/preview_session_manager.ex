@@ -129,14 +129,25 @@ defmodule Kollywood.PreviewSessionManager do
   def handle_call({:start_preview, project_slug, story_id, opts}, _from, state) do
     key = {project_slug, story_id}
 
-    case Map.get(state.sessions, key) do
+    case load_preview_session_from_db(project_slug, story_id) do
       %{status: status} = existing when status in [:running, :starting] ->
         {:reply, {:ok, existing}, state}
 
       _ ->
-        session = build_starting_session(opts)
+        runtime_state =
+          case load_runtime_session_from_db(project_slug, story_id) do
+            %{status: status, runtime_state: persisted_runtime}
+            when status in [:running, :starting] and is_map(persisted_runtime) ->
+              persisted_runtime
+
+            _other ->
+              %{}
+          end
+
+        session = build_starting_session(opts, runtime_state)
         ref = make_ref()
         launch_async_start(self(), key, opts, ref)
+        persist_upsert(key, session, :preview)
 
         state =
           state
@@ -150,7 +161,7 @@ defmodule Kollywood.PreviewSessionManager do
   def handle_call({:stop_preview, project_slug, story_id}, _from, state) do
     key = {project_slug, story_id}
 
-    case Map.get(state.sessions, key) do
+    case load_preview_session_from_db(project_slug, story_id) || Map.get(state.sessions, key) do
       nil ->
         {:reply, {:error, "no active preview session"}, state}
 
@@ -170,7 +181,7 @@ defmodule Kollywood.PreviewSessionManager do
   def handle_call({:handoff_runtime, project_slug, story_id, runtime_state, opts}, _from, state) do
     key = {project_slug, story_id}
 
-    case Map.get(state.sessions, key) do
+    case load_preview_session_from_db(project_slug, story_id) do
       %{status: status} = existing when status in [:running, :starting] ->
         {:reply, {:ok, existing}, state}
 
@@ -203,14 +214,25 @@ defmodule Kollywood.PreviewSessionManager do
   end
 
   def handle_call({:get_session, project_slug, story_id}, _from, state) do
-    {:reply, Map.get(state.sessions, {project_slug, story_id}), state}
+    {:reply, load_preview_session_from_db(project_slug, story_id), state}
   end
 
   def handle_call(:list_sessions, _from, state) do
     list =
-      Enum.map(state.sessions, fn {{project, story_id}, session} ->
-        %{project: project, story_id: story_id, session: session}
-      end)
+      case RuntimeSessions.list(session_type: :preview) do
+        {:ok, entries} ->
+          Enum.map(entries, fn entry ->
+            %{
+              project: entry.project_slug,
+              story_id: entry.story_id,
+              session: session_from_persisted(entry)
+            }
+          end)
+
+        {:error, reason} ->
+          Logger.warning("Failed to list preview sessions from db: #{reason}")
+          []
+      end
 
     {:reply, list, state}
   end
@@ -223,10 +245,12 @@ defmodule Kollywood.PreviewSessionManager do
 
         case result do
           {:ok, session} ->
+            persist_upsert(key, session, :preview)
             {:noreply, put_session(state, key, session)}
 
           {:error, reason} ->
             failed_session = failed_session(state, key, reason)
+            persist_upsert(key, failed_session, :preview)
             {:noreply, put_session(state, key, failed_session)}
         end
 
@@ -240,19 +264,14 @@ defmodule Kollywood.PreviewSessionManager do
   def handle_info(:ttl_check, state) do
     now = DateTime.utc_now()
 
-    expired =
-      state.sessions
-      |> Enum.filter(fn {_key, session} ->
-        session.status == :running and DateTime.compare(now, session.expires_at) == :gt
-      end)
-      |> Enum.map(fn {key, _session} -> key end)
+    expired = expired_preview_keys(now)
 
     state =
       Enum.reduce(expired, state, fn key, acc ->
         {project, story_id} = key
         Logger.info("Preview session expired project=#{project} story=#{story_id}")
 
-        case Map.get(acc.sessions, key) do
+        case load_preview_session_from_db(project, story_id) || Map.get(acc.sessions, key) do
           nil ->
             acc
 
@@ -301,16 +320,24 @@ defmodule Kollywood.PreviewSessionManager do
     end
   end
 
-  defp build_starting_session(opts) do
+  defp build_starting_session(opts, runtime_state) do
     config = Keyword.get(opts, :config, %{})
     now = DateTime.utc_now()
     ttl_minutes = Keyword.get(opts, :ttl_minutes, preview_ttl(config))
 
+    resolved_ports =
+      case runtime_state do
+        state when is_map(state) -> Map.get(state, :resolved_ports, %{})
+        _other -> %{}
+      end
+
     %{
-      runtime_state: %{},
-      runtime_kind: get_in(config, [Access.key(:runtime, %{}), Access.key(:kind, :host)]),
-      preview_url: nil,
-      resolved_ports: %{},
+      runtime_state: runtime_state,
+      runtime_kind:
+        Map.get(runtime_state, :kind) ||
+          get_in(config, [Access.key(:runtime, %{}), Access.key(:kind, :host)]),
+      preview_url: build_preview_url(runtime_state),
+      resolved_ports: resolved_ports,
       started_at: now,
       expires_at: DateTime.add(now, ttl_minutes * 60, :second),
       last_error: nil,
@@ -423,18 +450,20 @@ defmodule Kollywood.PreviewSessionManager do
 
   defp do_stop_session(%{runtime_state: runtime_state, status: status})
        when status in [:running, :starting] do
-    try do
-      Runtime.stop(runtime_state)
-    rescue
-      error ->
-        Logger.warning("Error stopping preview runtime: #{Exception.message(error)}")
-    end
+    if is_map(runtime_state) and is_atom(runtime_state[:module]) do
+      try do
+        Runtime.stop(runtime_state)
+      rescue
+        error ->
+          Logger.warning("Error stopping preview runtime: #{Exception.message(error)}")
+      end
 
-    try do
-      Runtime.release(runtime_state)
-    rescue
-      error ->
-        Logger.warning("Error releasing preview runtime: #{Exception.message(error)}")
+      try do
+        Runtime.release(runtime_state)
+      rescue
+        error ->
+          Logger.warning("Error releasing preview runtime: #{Exception.message(error)}")
+      end
     end
 
     :ok
@@ -574,6 +603,63 @@ defmodule Kollywood.PreviewSessionManager do
   defp persist_delete({project_slug, story_id}) do
     _ = RuntimeSessions.delete(project_slug, story_id)
     :ok
+  end
+
+  defp load_preview_session_from_db(project_slug, story_id) do
+    case RuntimeSessions.get(project_slug, story_id) do
+      {:ok, %{session_type: :preview} = entry} ->
+        session_from_persisted(entry)
+
+      {:ok, _other} ->
+        nil
+
+      nil ->
+        nil
+
+      {:error, reason} ->
+        Logger.warning(
+          "Failed to load preview session project=#{project_slug} story=#{story_id}: #{reason}"
+        )
+
+        nil
+    end
+  end
+
+  defp load_runtime_session_from_db(project_slug, story_id) do
+    case RuntimeSessions.get(project_slug, story_id) do
+      {:ok, entry} -> session_from_persisted(entry)
+      _other -> nil
+    end
+  end
+
+  defp session_from_persisted(entry) when is_map(entry) do
+    %{
+      runtime_state: entry.runtime_state,
+      runtime_kind: entry.runtime_kind,
+      preview_url: entry.preview_url,
+      resolved_ports: entry.resolved_ports || %{},
+      started_at: entry.started_at || DateTime.utc_now(),
+      expires_at:
+        entry.expires_at || DateTime.add(DateTime.utc_now(), @default_ttl_minutes * 60, :second),
+      last_error: entry.last_error,
+      workspace_path: entry.workspace_path,
+      status: entry.status || :running
+    }
+  end
+
+  defp expired_preview_keys(now) do
+    case RuntimeSessions.list(session_type: :preview, status: :running) do
+      {:ok, entries} ->
+        entries
+        |> Enum.filter(fn entry ->
+          is_struct(entry.expires_at, DateTime) and DateTime.compare(now, entry.expires_at) == :gt
+        end)
+        |> Enum.map(fn entry -> {entry.project_slug, entry.story_id} end)
+
+      {:error, reason} ->
+        Logger.warning("Failed to list preview sessions for ttl check: #{reason}")
+        []
+    end
   end
 
   defp restore_sessions_from_db do
