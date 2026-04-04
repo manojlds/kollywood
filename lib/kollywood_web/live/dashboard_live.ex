@@ -7950,6 +7950,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:story_detail_tab, story_tab)
       |> assign(:preview_starting_story_id, socket.assigns[:preview_starting_story_id])
       |> assign(:preview_panel_error, socket.assigns[:preview_panel_error])
+      |> sync_story_detail_selection()
 
     if run_detail && get_in(run_detail, ["metadata", "status"]) == "running" do
       {:ok, timer} = :timer.send_interval(1000, self(), :poll_logs)

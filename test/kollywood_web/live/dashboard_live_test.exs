@@ -1004,6 +1004,47 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "PORT=4912"
     end
 
+    test "story detail load shows already-running preview session", %{
+      conn: conn,
+      project: project
+    } do
+      story_id = "US-PREVIEW-RELOAD"
+
+      write_workflow!(project, """
+      ---
+      preview:
+        enabled: true
+      ---
+
+      body
+      """)
+
+      append_story!(project, %{
+        "id" => story_id,
+        "title" => "Preview reload",
+        "status" => "pending_merge"
+      })
+
+      assert {:ok, _session} =
+               Kollywood.PreviewSessionManager.handoff_runtime(
+                 project.slug,
+                 story_id,
+                 %{
+                   module: Kollywood.Runtime.Host,
+                   kind: :host,
+                   workspace_path: Path.join(System.tmp_dir!(), "preview-reload-test"),
+                   resolved_ports: %{"PORT" => 4950}
+                 },
+                 []
+               )
+
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}")
+
+      assert html =~ "Preview running"
+      assert html =~ "URL: http://localhost:4950"
+      assert html =~ "PORT=4950"
+    end
+
     test "pending merge preview panel keeps start preview for non-local projects and hides local merge",
          %{
            conn: conn,
