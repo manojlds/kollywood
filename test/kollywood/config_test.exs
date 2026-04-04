@@ -271,6 +271,7 @@ defmodule Kollywood.ConfigTest do
     assert config.runtime.port_offset_mod == 1000
     assert config.runtime.start_timeout_ms == 120_000
     assert config.runtime.stop_timeout_ms == 60_000
+    assert config.runtime.image == nil
 
     assert config.quality.max_cycles == 1
 
@@ -710,6 +711,61 @@ defmodule Kollywood.ConfigTest do
     assert config.runtime.port_offset_mod == 250
     assert config.runtime.start_timeout_ms == 30_000
     assert config.runtime.stop_timeout_ms == 15_000
+  end
+
+  test "parses runtime.image as non-empty string" do
+    content = """
+    ---
+    runtime:
+      kind: docker
+      image: ghcr.io/acme/runtime:1.2.3
+    workspace:
+      root: /tmp
+    agent:
+      kind: pi
+    ---
+    prompt
+    """
+
+    assert {:ok, config, _} = Config.parse(content)
+    assert config.runtime.kind == :docker
+    assert config.runtime.image == "ghcr.io/acme/runtime:1.2.3"
+  end
+
+  test "rejects empty runtime.image" do
+    content = """
+    ---
+    runtime:
+      kind: docker
+      image: "   "
+    workspace:
+      root: /tmp
+    agent:
+      kind: pi
+    ---
+    prompt
+    """
+
+    assert {:error, msg} = Config.parse(content)
+    assert msg =~ "runtime.image must be a non-empty string"
+  end
+
+  test "rejects non-string runtime.image" do
+    content = """
+    ---
+    runtime:
+      kind: docker
+      image: 123
+    workspace:
+      root: /tmp
+    agent:
+      kind: pi
+    ---
+    prompt
+    """
+
+    assert {:error, msg} = Config.parse(content)
+    assert msg =~ "runtime.image must be a non-empty string"
   end
 
   test "rejects invalid runtime kind" do
