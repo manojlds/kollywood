@@ -267,9 +267,7 @@ defmodule Kollywood.Workspace do
       {output, _code} ->
         cond do
           File.dir?(workspace.path) ->
-            Logger.info(
-              "Worktree creation raced but directory exists; reusing #{workspace.path}"
-            )
+            Logger.info("Worktree creation raced but directory exists; reusing #{workspace.path}")
 
             {:ok, %{workspace | branch: branch}}
 
