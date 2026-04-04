@@ -264,11 +264,19 @@ defmodule Kollywood.PreviewSessionManager do
       {:ok, session}
     else
       {:error, reason, failed_state} ->
+        Logger.warning(
+          "Preview session failed to start project=#{project_slug} story=#{story_id} reason=#{reason}"
+        )
+
         Runtime.stop(failed_state)
         Runtime.release(failed_state)
         {:error, "preview start failed: #{reason}"}
 
       {:error, reason} ->
+        Logger.warning(
+          "Preview session failed to start project=#{project_slug} story=#{story_id} reason=#{reason}"
+        )
+
         {:error, "preview start failed: #{reason}"}
     end
   end
