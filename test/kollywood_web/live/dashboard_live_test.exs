@@ -878,9 +878,12 @@ defmodule KollywoodWeb.DashboardLiveTest do
         }
       }
 
-      view
-      |> form("#story-editor-form")
-      |> render_change(form_params)
+      render_change_with_refresh_ticks(
+        view,
+        "#story-editor-form",
+        form_params,
+        2
+      )
 
       append_story!(project, %{
         "id" => "US-REFRESH",
@@ -888,7 +891,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
         "status" => "open"
       })
 
-      send(view.pid, :refresh)
+      refresh_ticks(view, 2)
       html = render(view)
 
       assert html =~ ~s(value="US-150")
@@ -907,6 +910,22 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ ~s(value="opencode" selected)
       assert html =~ ~s(name="story[execution_testing_max_cycles]" value="4")
       assert html =~ "US-REFRESH"
+
+      view
+      |> element("#story-editor-form")
+      |> render_submit(form_params)
+
+      {:ok, content} = File.read(Projects.tracker_path(project))
+      {:ok, data} = Jason.decode(content)
+      story = Enum.find(data["userStories"], &(&1["id"] == "US-150"))
+
+      assert story["title"] == "Typing title"
+      assert story["description"] == "Typing description"
+      assert story["status"] == "open"
+      assert story["dependsOn"] == ["US-001", "US-002"]
+      assert story["settings"]["execution"]["agent_kind"] == "cursor"
+      assert story["settings"]["execution"]["review_max_cycles"] == 3
+      assert story["settings"]["execution"]["testing_enabled"] == true
     end
 
     test "edit story form preserves in-progress input across refresh cycles", %{
@@ -939,12 +958,13 @@ defmodule KollywoodWeb.DashboardLiveTest do
         }
       }
 
-      view
-      |> form("#story-editor-form")
-      |> render_change(form_params)
-
-      send(view.pid, :refresh)
-      html = render(view)
+      html =
+        render_change_with_refresh_ticks(
+          view,
+          "#story-editor-form",
+          form_params,
+          2
+        )
 
       assert html =~ ~s(value="US-001")
       assert html =~ ~s(value="Edited typing title")
@@ -961,6 +981,22 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ ~s(value="false" selected)
       assert html =~ ~s(value="amp" selected)
       assert html =~ ~s(name="story[execution_testing_max_cycles]" value="1")
+
+      view
+      |> element("#story-editor-form")
+      |> render_submit(form_params)
+
+      {:ok, content} = File.read(Projects.tracker_path(project))
+      {:ok, data} = Jason.decode(content)
+      story = Enum.find(data["userStories"], &(&1["id"] == "US-001"))
+
+      assert story["title"] == "Edited typing title"
+      assert story["description"] == "Edited typing description"
+      assert story["status"] == "done"
+      assert story["dependsOn"] == ["US-004"]
+      assert story["settings"]["execution"]["agent_kind"] == "claude"
+      assert story["settings"]["execution"]["review_agent_kind"] == "cursor"
+      assert story["settings"]["execution"]["testing_enabled"] == false
     end
   end
 
@@ -2709,11 +2745,32 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       update_story_execution_overrides!(project, "US-001", %{"agent_kind" => "cursor"})
 
-      send(view.pid, :refresh)
+      refresh_ticks(view, 2)
       html = render(view)
 
       assert html =~ ~s(option value="claude" selected)
       refute html =~ ~s(option value="cursor" selected)
+
+      view
+      |> element("form[phx-submit='save_story_overrides']")
+      |> render_submit(%{
+        overrides: %{
+          "testing_enabled" => "true",
+          "agent_kind" => "claude",
+          "review_agent_kind" => "",
+          "review_max_cycles" => "",
+          "testing_agent_kind" => "",
+          "testing_max_cycles" => "",
+          "preview_enabled" => ""
+        }
+      })
+
+      {:ok, content} = File.read(Projects.tracker_path(project))
+      {:ok, data} = Jason.decode(content)
+      story = Enum.find(data["userStories"], &(&1["id"] == "US-001"))
+
+      assert story["settings"]["execution"]["agent_kind"] == "claude"
+      assert story["settings"]["execution"]["testing_enabled"] == true
     end
   end
 
