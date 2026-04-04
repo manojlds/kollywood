@@ -2687,6 +2687,82 @@ defmodule KollywoodWeb.DashboardLiveTest do
       execution = get_in(story, ["settings", "execution"]) || %{}
       assert execution == %{}
     end
+
+    test "story overrides edit mode defers refresh data replacement", %{
+      conn: conn,
+      project: project
+    } do
+      update_story_execution_overrides!(project, "US-001", %{"agent_kind" => "claude"})
+
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories/US-001")
+
+      view
+      |> element("button[phx-click='set_story_tab'][phx-value-tab='settings']")
+      |> render_click()
+
+      html =
+        view
+        |> element("button[phx-click='toggle_settings_edit']")
+        |> render_click()
+
+      assert html =~ ~s(option value="claude" selected)
+
+      update_story_execution_overrides!(project, "US-001", %{"agent_kind" => "cursor"})
+
+      send(view.pid, :refresh)
+      html = render(view)
+
+      assert html =~ ~s(option value="claude" selected)
+      refute html =~ ~s(option value="cursor" selected)
+    end
+  end
+
+  describe "interaction-safe refresh policy" do
+    test "settings page defers workflow data refresh while editing", %{
+      conn: conn,
+      project: project
+    } do
+      write_workflow!(project, """
+      ---
+      agent:
+        kind: cursor
+        max_turns: 1
+      quality:
+        max_cycles: 1
+        checks:
+          required: []
+      ---
+
+      Original workflow body.
+      """)
+
+      {:ok, view, html} = live(conn, ~p"/projects/#{project.slug}/settings")
+
+      assert html =~ ~s(name="settings[agent][max_turns]" value="1")
+      assert html =~ "Original workflow body."
+
+      write_workflow!(project, """
+      ---
+      agent:
+        kind: claude
+        max_turns: 9
+      quality:
+        max_cycles: 1
+        checks:
+          required: []
+      ---
+
+      Background update should wait.
+      """)
+
+      send(view.pid, :refresh)
+      html = render(view)
+
+      assert html =~ ~s(name="settings[agent][max_turns]" value="1")
+      assert html =~ "Original workflow body."
+      refute html =~ ~s(name="settings[agent][max_turns]" value="9")
+      refute html =~ "Background update should wait."
+    end
   end
 
   defp append_story!(project, story) do
@@ -2702,5 +2778,24 @@ defmodule KollywoodWeb.DashboardLiveTest do
     workflow_path = Projects.workflow_path(project)
     File.mkdir_p!(Path.dirname(workflow_path))
     File.write!(workflow_path, content)
+  end
+
+  defp update_story_execution_overrides!(project, story_id, execution_overrides) do
+    tracker_path = Projects.tracker_path(project)
+    {:ok, content} = File.read(tracker_path)
+    {:ok, decoded} = Jason.decode(content)
+
+    stories =
+      Enum.map(decoded["userStories"] || [], fn story ->
+        if story["id"] == story_id do
+          settings = Map.get(story, "settings", %{})
+          Map.put(story, "settings", Map.put(settings, "execution", execution_overrides))
+        else
+          story
+        end
+      end)
+
+    payload = Map.put(decoded, "userStories", stories)
+    File.write!(tracker_path, Jason.encode!(payload, pretty: true))
   end
 end
