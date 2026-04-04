@@ -150,6 +150,11 @@ defmodule KollywoodWeb.DashboardLive do
       case socket.assigns[:current_project] do
         %Project{slug: ^project_slug} ->
           case result do
+            {:ok, %{status: :starting} = session} ->
+              socket
+              |> assign(:preview_session, session)
+              |> assign(:preview_panel_error, nil)
+
             {:ok, session} ->
               socket
               |> assign(:preview_session, session)
@@ -5981,8 +5986,13 @@ defmodule KollywoodWeb.DashboardLive do
       not is_binary(story_id) ->
         socket
 
-      is_map(session) and session.status in [:running, :starting] ->
+      is_map(session) and session.status == :running ->
         assign(socket, :preview_starting_story_id, nil)
+
+      is_map(session) and session.status == :failed ->
+        socket
+        |> assign(:preview_starting_story_id, nil)
+        |> assign(:preview_panel_error, session.last_error || "Preview failed to start")
 
       true ->
         socket

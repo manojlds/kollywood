@@ -122,7 +122,7 @@ defmodule Kollywood.PreviewSessionManager do
   def init(_opts) do
     restored_sessions = restore_sessions_from_db()
     schedule_ttl_check()
-    {:ok, %{sessions: restored_sessions}}
+    {:ok, %{sessions: restored_sessions, start_refs: %{}}}
   end
 
   @impl true
@@ -134,13 +134,16 @@ defmodule Kollywood.PreviewSessionManager do
         {:reply, {:ok, existing}, state}
 
       _ ->
-        case do_start_preview(key, opts) do
-          {:ok, session} ->
-            {:reply, {:ok, session}, put_session(state, key, session)}
+        session = build_starting_session(opts)
+        ref = make_ref()
+        launch_async_start(self(), key, opts, ref)
 
-          {:error, reason} ->
-            {:reply, {:error, reason}, state}
-        end
+        state =
+          state
+          |> put_session(key, session)
+          |> put_start_ref(key, ref)
+
+        {:reply, {:ok, session}, state}
     end
   end
 
@@ -154,7 +157,13 @@ defmodule Kollywood.PreviewSessionManager do
       session ->
         do_stop_session(session)
         persist_delete(key)
-        {:reply, :ok, drop_session(state, key)}
+
+        state =
+          state
+          |> drop_session(key)
+          |> clear_start_ref(key)
+
+        {:reply, :ok, state}
     end
   end
 
@@ -207,6 +216,27 @@ defmodule Kollywood.PreviewSessionManager do
   end
 
   @impl true
+  def handle_info({:preview_start_complete, key, ref, result}, state) do
+    case Map.get(state.start_refs, key) do
+      ^ref ->
+        state = clear_start_ref(state, key)
+
+        case result do
+          {:ok, session} ->
+            {:noreply, put_session(state, key, session)}
+
+          {:error, reason} ->
+            failed_session = failed_session(state, key, reason)
+            {:noreply, put_session(state, key, failed_session)}
+        end
+
+      _other ->
+        cleanup_stale_start_result(key, result)
+        {:noreply, state}
+    end
+  end
+
+  @impl true
   def handle_info(:ttl_check, state) do
     now = DateTime.utc_now()
 
@@ -232,6 +262,7 @@ defmodule Kollywood.PreviewSessionManager do
         end
 
         drop_session(acc, key)
+        |> clear_start_ref(key)
       end)
 
     schedule_ttl_check()
@@ -269,6 +300,72 @@ defmodule Kollywood.PreviewSessionManager do
         )
     end
   end
+
+  defp build_starting_session(opts) do
+    config = Keyword.get(opts, :config, %{})
+    now = DateTime.utc_now()
+    ttl_minutes = Keyword.get(opts, :ttl_minutes, preview_ttl(config))
+
+    %{
+      runtime_state: %{},
+      runtime_kind: get_in(config, [Access.key(:runtime, %{}), Access.key(:kind, :host)]),
+      preview_url: nil,
+      resolved_ports: %{},
+      started_at: now,
+      expires_at: DateTime.add(now, ttl_minutes * 60, :second),
+      last_error: nil,
+      workspace_path: Keyword.get(opts, :workspace_path),
+      status: :starting
+    }
+  end
+
+  defp launch_async_start(manager_pid, key, opts, ref) when is_pid(manager_pid) do
+    spawn(fn ->
+      result =
+        try do
+          do_start_preview(key, opts)
+        rescue
+          error -> {:error, Exception.message(error)}
+        catch
+          kind, reason -> {:error, "preview task #{kind}: #{inspect(reason)}"}
+        end
+
+      send(manager_pid, {:preview_start_complete, key, ref, result})
+    end)
+  end
+
+  defp put_start_ref(state, key, ref) do
+    %{state | start_refs: Map.put(state.start_refs, key, ref)}
+  end
+
+  defp clear_start_ref(state, key) do
+    %{state | start_refs: Map.delete(state.start_refs, key)}
+  end
+
+  defp failed_session(state, key, reason) do
+    now = DateTime.utc_now()
+    existing = Map.get(state.sessions, key, %{})
+
+    %{
+      runtime_state: %{},
+      runtime_kind: Map.get(existing, :runtime_kind, :host),
+      preview_url: nil,
+      resolved_ports: %{},
+      started_at: Map.get(existing, :started_at, now),
+      expires_at: Map.get(existing, :expires_at, now),
+      last_error: reason,
+      workspace_path: Map.get(existing, :workspace_path),
+      status: :failed
+    }
+  end
+
+  defp cleanup_stale_start_result(_key, {:ok, session}) do
+    session
+    |> Map.get(:runtime_state)
+    |> safe_stop_and_release()
+  end
+
+  defp cleanup_stale_start_result(_key, _result), do: :ok
 
   defp do_start_preview_cold(
          project_slug,
