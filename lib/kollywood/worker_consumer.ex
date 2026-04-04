@@ -508,6 +508,10 @@ defmodule Kollywood.WorkerConsumer do
   defp serialize_result(result), do: inspect(result)
 
   defp serializable_value(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
+
+  defp serializable_value(value) when is_atom(value) and value not in [true, false, nil],
+    do: Atom.to_string(value)
+
   defp serializable_value(value) when is_pid(value), do: inspect(value)
   defp serializable_value(value) when is_reference(value), do: inspect(value)
   defp serializable_value(value) when is_function(value), do: nil

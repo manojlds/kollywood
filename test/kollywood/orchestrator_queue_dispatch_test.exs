@@ -29,6 +29,54 @@ defmodule Kollywood.OrchestratorQueueDispatchTest do
     raw: %{}
   }
 
+  defmodule QueueMergeTracker do
+    @behaviour Kollywood.Tracker
+
+    alias Kollywood.Config
+
+    @impl true
+    def list_active_issues(%Config{} = config) do
+      {:ok, get_in(config, [Access.key(:tracker, %{}), Access.key(:test_issues, [])])}
+    end
+
+    @impl true
+    def list_pending_merge_issues(_config), do: {:ok, []}
+
+    @impl true
+    def claim_issue(_config, _issue_id), do: :ok
+
+    @impl true
+    def mark_in_progress(_config, _issue_id), do: :ok
+
+    @impl true
+    def mark_resumable(_config, _issue_id, _done_metadata), do: :ok
+
+    @impl true
+    def mark_done(%Config{} = config, issue_id, _metadata) do
+      notify(config, {:tracker_mark_done, issue_id})
+      :ok
+    end
+
+    @impl true
+    def mark_pending_merge(_config, _issue_id, _metadata), do: :ok
+
+    @impl true
+    def mark_merged(%Config{} = config, issue_id, _metadata) do
+      notify(config, {:tracker_mark_merged, issue_id})
+      :ok
+    end
+
+    @impl true
+    def mark_failed(_config, _issue_id, _reason, _attempt), do: :ok
+
+    defp notify(config, message) do
+      case get_in(config, [Access.key(:tracker, %{}), Access.key(:test_pid)]) do
+        pid when is_pid(pid) -> send(pid, message)
+        _other -> :ok
+      end
+    end
+  end
+
   setup do
     :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo)
     Ecto.Adapters.SQL.Sandbox.mode(Repo, {:shared, self()})
@@ -120,5 +168,77 @@ defmodule Kollywood.OrchestratorQueueDispatchTest do
     running = status.running
     running_count = if is_list(running), do: length(running), else: map_size(running)
     assert running_count >= 1
+  end
+
+  test "queue dispatch preserves publish_merged event for tracker finalization" do
+    suffix = System.unique_integer([:positive])
+    issue_id = "issue-q-merge-#{suffix}"
+    identifier = "US-Q-MERGE-#{suffix}"
+
+    issue = %{
+      "id" => issue_id,
+      "identifier" => identifier,
+      "title" => "Queue merge event",
+      "description" => "Ensure queue result retains publish events",
+      "priority" => 1,
+      "state" => "open",
+      "status" => "open"
+    }
+
+    tracker_config =
+      @test_config.tracker
+      |> Map.put(:kind, "queue_merge_test")
+      |> Map.put(:test_pid, self())
+      |> Map.put(:test_issues, [issue])
+
+    workflow_store = %Config{@test_config | tracker: tracker_config}
+
+    {:ok, pool} = Kollywood.AgentPool.start_link(name: nil)
+
+    {:ok, orch} =
+      Orchestrator.start_link(
+        name: nil,
+        workflow_store: workflow_store,
+        tracker: QueueMergeTracker,
+        runner: fn _issue, _opts ->
+          now = DateTime.utc_now()
+          {:ok, %Result{status: :ok, started_at: now, ended_at: now}}
+        end,
+        agent_pool: pool,
+        auto_poll: false,
+        dispatch_mode: :queue,
+        ephemeral_store: nil,
+        retry_store: nil,
+        retries_enabled: false,
+        poll_interval_ms: 60_000
+      )
+
+    capture_log(fn -> assert :ok = Orchestrator.poll_now(orch) end)
+
+    entry =
+      RunQueue.list_by_status(["pending", "claimed", "running", "completed"])
+      |> Enum.find(&(&1.issue_id == issue_id))
+
+    assert entry
+
+    result_payload = %{
+      "status" => "ok",
+      "issue_id" => issue_id,
+      "identifier" => identifier,
+      "started_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+      "ended_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+      "events" => [
+        %{
+          "type" => "publish_merged",
+          "base_branch" => "main",
+          "branch" => "kollywood/#{identifier}"
+        }
+      ]
+    }
+
+    send(orch, {:run_queue, {:completed, entry.id, entry.issue_id, result_payload}})
+
+    assert_receive {:tracker_mark_done, ^issue_id}, 2_000
+    assert_receive {:tracker_mark_merged, ^issue_id}, 2_000
   end
 end
