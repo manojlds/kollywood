@@ -847,6 +847,121 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       refute Enum.any?(data["userStories"], &(&1["id"] == "US-003"))
     end
+
+    test "new story form preserves in-progress input across refresh cycles", %{
+      conn: conn,
+      project: project
+    } do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories")
+
+      view
+      |> element("button[phx-click='open_new_story_form']")
+      |> render_click()
+
+      form_params = %{
+        story: %{
+          "id" => "US-150",
+          "title" => "Typing title",
+          "description" => "Typing description",
+          "acceptanceCriteria" => "A\nB",
+          "priority" => "9",
+          "status" => "open",
+          "dependsOn" => "US-001,US-002",
+          "notes" => "Typing notes",
+          "testingNotes" => "Typing testing notes",
+          "execution_agent_kind" => "cursor",
+          "execution_review_agent_kind" => "claude",
+          "execution_review_max_cycles" => "3",
+          "execution_testing_enabled" => "true",
+          "execution_testing_agent_kind" => "opencode",
+          "execution_testing_max_cycles" => "4"
+        }
+      }
+
+      view
+      |> form("#story-editor-form")
+      |> render_change(form_params)
+
+      append_story!(project, %{
+        "id" => "US-REFRESH",
+        "title" => "Background Refresh",
+        "status" => "open"
+      })
+
+      send(view.pid, :refresh)
+      html = render(view)
+
+      assert html =~ ~s(value="US-150")
+      assert html =~ ~s(value="Typing title")
+      assert html =~ "Typing description"
+      assert html =~ "A\nB"
+      assert html =~ ~s(value="9")
+      assert html =~ ~s(value="open" selected)
+      assert html =~ ~s(value="US-001,US-002")
+      assert html =~ "Typing notes"
+      assert html =~ "Typing testing notes"
+      assert html =~ ~s(value="cursor" selected)
+      assert html =~ ~s(value="claude" selected)
+      assert html =~ ~s(name="story[execution_review_max_cycles]" value="3")
+      assert html =~ ~s(value="true" selected)
+      assert html =~ ~s(value="opencode" selected)
+      assert html =~ ~s(name="story[execution_testing_max_cycles]" value="4")
+      assert html =~ "US-REFRESH"
+    end
+
+    test "edit story form preserves in-progress input across refresh cycles", %{
+      conn: conn,
+      project: project
+    } do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/stories")
+
+      view
+      |> element("button[phx-click='open_edit_story_form'][phx-value-id='US-001']")
+      |> render_click()
+
+      form_params = %{
+        story: %{
+          "id" => "US-001",
+          "title" => "Edited typing title",
+          "description" => "Edited typing description",
+          "acceptanceCriteria" => "Edited A\nEdited B",
+          "priority" => "5",
+          "status" => "done",
+          "dependsOn" => "US-004",
+          "notes" => "Edited typing notes",
+          "testingNotes" => "Edited typing testing notes",
+          "execution_agent_kind" => "claude",
+          "execution_review_agent_kind" => "cursor",
+          "execution_review_max_cycles" => "2",
+          "execution_testing_enabled" => "false",
+          "execution_testing_agent_kind" => "amp",
+          "execution_testing_max_cycles" => "1"
+        }
+      }
+
+      view
+      |> form("#story-editor-form")
+      |> render_change(form_params)
+
+      send(view.pid, :refresh)
+      html = render(view)
+
+      assert html =~ ~s(value="US-001")
+      assert html =~ ~s(value="Edited typing title")
+      assert html =~ "Edited typing description"
+      assert html =~ "Edited A\nEdited B"
+      assert html =~ ~s(value="5")
+      assert html =~ ~s(value="done" selected)
+      assert html =~ ~s(value="US-004")
+      assert html =~ "Edited typing notes"
+      assert html =~ "Edited typing testing notes"
+      assert html =~ ~s(value="claude" selected)
+      assert html =~ ~s(value="cursor" selected)
+      assert html =~ ~s(name="story[execution_review_max_cycles]" value="2")
+      assert html =~ ~s(value="false" selected)
+      assert html =~ ~s(value="amp" selected)
+      assert html =~ ~s(name="story[execution_testing_max_cycles]" value="1")
+    end
   end
 
   describe "draft stories" do
