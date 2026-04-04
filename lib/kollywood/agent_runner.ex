@@ -15,6 +15,7 @@ defmodule Kollywood.AgentRunner do
   alias Kollywood.PromptBuilder
   alias Kollywood.Publisher
   alias Kollywood.Runtime
+  alias Kollywood.RuntimeSessions
   alias Kollywood.StoryExecutionOverrides
   alias Kollywood.Tracker
   alias Kollywood.WorkflowStore
@@ -76,6 +77,7 @@ defmodule Kollywood.AgentRunner do
         events_rev: [],
         on_event: on_event,
         attempt: attempt,
+        project_slug: tracker_project_slug(config),
         log_files: log_files,
         continuation: continuation
       }
@@ -182,6 +184,7 @@ defmodule Kollywood.AgentRunner do
         events_rev: [],
         on_event: on_event,
         attempt: attempt,
+        project_slug: tracker_project_slug(config),
         log_files: log_files
       }
 
@@ -2062,6 +2065,10 @@ defmodule Kollywood.AgentRunner do
 
         {:error, reason, state}
     end
+    |> tap(fn
+      {:ok, started_state} -> persist_testing_runtime(started_state)
+      _other -> :ok
+    end)
   end
 
   defp maybe_stop_runtime(state) do
@@ -2069,7 +2076,9 @@ defmodule Kollywood.AgentRunner do
 
     if runtime.profile == :checks_only or not runtime_needs_stop?(runtime) do
       runtime = Runtime.release(runtime)
-      {:ok, Map.put(state, :runtime, runtime)}
+      state = Map.put(state, :runtime, runtime)
+      clear_persisted_runtime(state)
+      {:ok, state}
     else
       state =
         emit(state, :runtime_stopping, %{
@@ -2089,6 +2098,7 @@ defmodule Kollywood.AgentRunner do
               command: runtime.command
             })
 
+          clear_persisted_runtime(state)
           {:ok, state}
 
         {:error, reason, runtime} ->
@@ -2102,9 +2112,41 @@ defmodule Kollywood.AgentRunner do
               reason: reason
             })
 
+          clear_persisted_runtime(state)
           {:error, reason, state}
       end
     end
+  end
+
+  defp persist_testing_runtime(%{runtime: runtime} = state) when is_map(runtime) do
+    project_slug = state[:project_slug] || "default"
+    story_id = to_string(state[:issue_id] || "")
+
+    if story_id != "" and runtime_needs_stop?(runtime) do
+      _ =
+        RuntimeSessions.upsert(project_slug, story_id, runtime,
+          status: :running,
+          session_type: :testing,
+          started_at: DateTime.utc_now()
+        )
+
+      :ok
+    else
+      :ok
+    end
+  end
+
+  defp persist_testing_runtime(_state), do: :ok
+
+  defp clear_persisted_runtime(state) do
+    project_slug = state[:project_slug] || "default"
+    story_id = to_string(state[:issue_id] || "")
+
+    if story_id != "" do
+      _ = RuntimeSessions.delete(project_slug, story_id)
+    end
+
+    :ok
   end
 
   defp runtime_needs_stop?(runtime) do
