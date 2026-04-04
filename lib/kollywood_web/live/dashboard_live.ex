@@ -171,6 +171,19 @@ defmodule KollywoodWeb.DashboardLive do
     {:noreply, socket}
   end
 
+  def handle_info(:preview_poll, socket) do
+    socket =
+      socket
+      |> sync_story_detail_selection()
+      |> maybe_clear_preview_starting()
+
+    if socket.assigns[:preview_starting_story_id] do
+      Process.send_after(self(), :preview_poll, 500)
+    end
+
+    {:noreply, socket}
+  end
+
   def handle_info(:poll_logs, socket) do
     tab = socket.assigns.active_log_tab
     run_detail = load_selected_run_detail(socket, tab)
@@ -240,6 +253,8 @@ defmodule KollywoodWeb.DashboardLive do
 
     case project do
       %Project{slug: slug} ->
+        Logger.warning("preview start requested project=#{slug} story=#{story_id}")
+
         parent = self()
 
         spawn(fn ->
@@ -260,6 +275,8 @@ defmodule KollywoodWeb.DashboardLive do
           |> assign(:preview_starting_story_id, story_id)
           |> assign(:preview_panel_error, nil)
           |> put_flash(:info, "Starting preview...")
+
+        Process.send_after(self(), :preview_poll, 500)
 
         {:noreply, socket}
 
@@ -5746,6 +5763,17 @@ defmodule KollywoodWeb.DashboardLive do
         workspace_path: workspace_path,
         workspace_key: workspace_key
       )
+      |> tap(fn
+        {:ok, _session} ->
+          Logger.warning(
+            "preview start finished project=#{project.slug} story=#{story_id} result=ok"
+          )
+
+        {:error, reason} ->
+          Logger.warning(
+            "preview start finished project=#{project.slug} story=#{story_id} result=error reason=#{reason}"
+          )
+      end)
     else
       {:error, reason} -> {:error, reason}
       false -> {:error, "no project selected"}
@@ -5944,6 +5972,22 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp truthy_setting?(_value), do: false
+
+  defp maybe_clear_preview_starting(socket) do
+    story_id = socket.assigns[:preview_starting_story_id]
+    session = socket.assigns[:preview_session]
+
+    cond do
+      not is_binary(story_id) ->
+        socket
+
+      is_map(session) and session.status in [:running, :starting] ->
+        assign(socket, :preview_starting_story_id, nil)
+
+      true ->
+        socket
+    end
+  end
 
   defp override_form_value(execution, key) when is_map(execution) do
     value = Map.get(execution, key)
