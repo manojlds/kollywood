@@ -316,27 +316,17 @@ defmodule KollywoodWeb.DashboardLive do
     {:noreply, socket}
   end
 
-  def handle_event("merge_story", %{"story_id" => story_id}, socket) do
+  def handle_event("merge_story", %{"story_id" => story_id} = params, socket) do
     project = socket.assigns.current_project
+    mode = Map.get(params, "mode")
 
     socket =
-      case merge_pending_story(project, story_id) do
-        :ok ->
-          Kollywood.PreviewSessionManager.stop_if_active(project.slug, story_id)
-
-          socket
-          |> assign(:preview_session, nil)
-          |> assign(:preview_starting_story_id, nil)
-          |> assign(:preview_panel_error, nil)
-          |> load_project_data(project)
-          |> sync_story_detail_selection()
-          |> put_flash(:info, "Story merged successfully.")
-
-        {:error, reason} ->
-          socket
-          |> assign(:preview_starting_story_id, nil)
-          |> assign(:preview_panel_error, reason)
-          |> put_flash(:error, "Merge failed: #{reason}")
+      if confirmed_action?(params) do
+        socket
+        |> clear_action_confirmation()
+        |> perform_merge_story(project, story_id)
+      else
+        open_merge_confirmation(socket, project, story_id, mode)
       end
 
     {:noreply, socket}
@@ -2476,6 +2466,7 @@ defmodule KollywoodWeb.DashboardLive do
               phx-click={@confirmation[:event]}
               phx-value-id={@confirmation[:id]}
               phx-value-story_id={@confirmation[:story_id]}
+              phx-value-mode={@confirmation[:mode]}
               phx-value-attempt={@confirmation[:attempt]}
               phx-value-step={@confirmation[:step]}
               phx-value-confirmed="true"
@@ -2727,7 +2718,7 @@ defmodule KollywoodWeb.DashboardLive do
               <button
                 phx-click="merge_story"
                 phx-value-story_id={@story_id}
-                onclick={"return confirm('Merge #{@story_id}? This will stop the preview and merge the branch.')"}
+                phx-value-mode="approve"
                 class="btn btn-success btn-xs"
               >
                 Approve & Merge
@@ -2781,7 +2772,7 @@ defmodule KollywoodWeb.DashboardLive do
               <button
                 phx-click="merge_story"
                 phx-value-story_id={@story_id}
-                onclick={"return confirm('Merge #{@story_id} without previewing?')"}
+                phx-value-mode="without_preview"
                 class="btn btn-outline btn-success btn-sm"
               >
                 Merge Without Preview
@@ -5827,6 +5818,7 @@ defmodule KollywoodWeb.DashboardLive do
 
     with true <- is_map(project) or {:error, "no project selected"},
          {:ok, config, _prompt_template} <- load_project_config(project),
+         config <- with_project_tracker_slug(config, project),
          {:ok, workspace_path} <- find_story_workspace_path(project, story_id),
          {:ok, tracker_path} <- local_tracker_path(project),
          {:ok, stories} <- PrdJson.list_stories(tracker_path),
@@ -5851,6 +5843,15 @@ defmodule KollywoodWeb.DashboardLive do
       false -> {:error, "no project selected"}
     end
   end
+
+  defp with_project_tracker_slug(config, %Project{slug: slug})
+       when is_binary(slug) and slug != "" do
+    tracker = map_or_empty(Map.get(config, :tracker))
+    tracker = Map.put(tracker, :project_slug, slug)
+    Map.put(config, :tracker, tracker)
+  end
+
+  defp with_project_tracker_slug(config, _project), do: config
 
   defp load_project_config(project) do
     path = Projects.workflow_path(project)
@@ -7540,6 +7541,67 @@ defmodule KollywoodWeb.DashboardLive do
       confirm_label: if(retry_step == "full_rerun", do: "Start full rerun", else: "Start retry"),
       disabled: is_nil(project) or not is_binary(story_id)
     })
+  end
+
+  defp open_merge_confirmation(socket, project, story_id, mode) when is_binary(story_id) do
+    local_project = local_provider?(project)
+
+    mode =
+      case mode do
+        "without_preview" -> "without_preview"
+        _other -> "approve"
+      end
+
+    {title, message, label} =
+      case mode do
+        "without_preview" ->
+          {
+            "Merge without preview",
+            "Merge #{story_id} without starting a preview?",
+            "Merge without preview"
+          }
+
+        _ ->
+          {
+            "Approve and merge",
+            "Approve #{story_id}, stop preview runtime (if running), and merge the branch?",
+            "Approve & merge"
+          }
+      end
+
+    assign(socket, :action_confirmation, %{
+      event: "merge_story",
+      story_id: story_id,
+      mode: mode,
+      title: title,
+      message: message,
+      confirm_label: label,
+      disabled: not local_project
+    })
+  end
+
+  defp open_merge_confirmation(socket, _project, _story_id, _mode), do: socket
+
+  defp perform_merge_story(socket, project, story_id) do
+    case merge_pending_story(project, story_id) do
+      :ok ->
+        if match?(%Project{}, project),
+          do: Kollywood.PreviewSessionManager.stop_if_active(project.slug, story_id)
+
+        socket
+        |> assign(:preview_session, nil)
+        |> assign(:preview_starting_story_id, nil)
+        |> assign(:preview_panel_error, nil)
+        |> load_project_data(project)
+        |> sync_story_detail_selection()
+        |> put_flash(:info, "Story merged successfully.")
+
+      {:error, reason} ->
+        socket
+        |> assign(:preview_starting_story_id, nil)
+        |> assign(:preview_panel_error, reason)
+        |> put_flash(:error, "Merge failed: #{reason}")
+    end
   end
 
   defp retry_action_label("checks"), do: "Retry checks"
