@@ -974,13 +974,15 @@ defmodule KollywoodWeb.DashboardLiveTest do
         |> render_click()
 
       assert html =~ "Preview Environment"
-      assert html =~ "alert alert-error text-xs"
+      assert html =~ "Starting preview runtime..."
+      assert html =~ "Starting Preview"
     end
 
-    test "pending merge preview panel hides merge actions for non-local projects", %{
-      conn: conn,
-      tmp_dir: tmp_dir
-    } do
+    test "pending merge preview panel keeps start preview for non-local projects and hides local merge",
+         %{
+           conn: conn,
+           tmp_dir: tmp_dir
+         } do
       {:ok, remote_project} =
         Projects.create_project(%{
           name: "Remote Preview #{System.unique_integer([:positive])}",
@@ -1009,8 +1011,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
         live(conn, ~p"/projects/#{remote_project.slug}/stories/US-REMOTE-PREVIEW")
 
       assert html =~ "Preview Environment"
-      assert html =~ "available for local projects only"
-      refute html =~ "Start Preview"
+      assert html =~ "Start Preview"
       refute html =~ "Merge Without Preview"
       refute html =~ "Approve &amp; Merge"
     end
