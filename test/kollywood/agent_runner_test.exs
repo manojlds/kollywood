@@ -32,6 +32,13 @@ defmodule Kollywood.AgentRunnerTest do
     #!/usr/bin/env bash
     set -eu
 
+    if [ ! -f pitchfork.toml ]; then
+      cat > pitchfork.toml <<'EOF'
+    [daemons.server]
+    run = "sleep 60"
+    EOF
+    fi
+
     prompt="$(cat)"
 
     if [ -n "${PROMPT_LOG_FILE:-}" ]; then
