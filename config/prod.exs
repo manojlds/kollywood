@@ -7,6 +7,14 @@ import Config
 # before starting your production server.
 config :kollywood, KollywoodWeb.Endpoint, cache_static_manifest: "priv/static/cache_manifest.json"
 
+config :kollywood, KollywoodWeb.Endpoint,
+  check_origin: [
+    "//localhost",
+    "//localhost:4000",
+    "//127.0.0.1",
+    "//127.0.0.1:4000"
+  ]
+
 # SSL is handled at the network level (Tailscale). No force_ssl needed.
 
 # Do not print debug messages in production
