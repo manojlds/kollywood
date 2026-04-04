@@ -976,6 +976,32 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "Preview Environment"
       assert html =~ "Starting preview runtime..."
       assert html =~ "Starting Preview"
+
+      now = DateTime.utc_now()
+
+      send(
+        view.pid,
+        {:preview_start_finished, project.slug, story_id,
+         {:ok,
+          %{
+            status: :running,
+            preview_url: "http://localhost:4912",
+            resolved_ports: %{"PORT" => 4912},
+            expires_at: DateTime.add(now, 3600, :second),
+            runtime_kind: :host,
+            runtime_state: %{},
+            started_at: now,
+            workspace_path: "/tmp/preview-panel-test",
+            last_error: nil
+          }}}
+      )
+
+      Process.sleep(10)
+      html = render(view)
+
+      assert html =~ "Preview running"
+      assert html =~ "URL: http://localhost:4912"
+      assert html =~ "PORT=4912"
     end
 
     test "pending merge preview panel keeps start preview for non-local projects and hides local merge",

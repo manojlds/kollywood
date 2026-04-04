@@ -2627,15 +2627,19 @@ defmodule KollywoodWeb.DashboardLive do
 
   defp preview_controls_panel(assigns) do
     session = assigns.preview_session
-    has_session = is_map(session) and session.status in [:running, :starting]
+    running_session = is_map(session) and session.status == :running
+    starting_session = is_map(session) and session.status == :starting
+    has_session = running_session or starting_session
     local_project = local_provider?(assigns.project)
 
     assigns =
       assigns
       |> assign(:has_session, has_session)
+      |> assign(:running_session, running_session)
+      |> assign(:starting_session, starting_session)
       |> assign(:local_project, local_project)
       |> assign(:session_status, if(has_session, do: session.status, else: nil))
-      |> assign(:preview_url, if(has_session, do: session.preview_url, else: nil))
+      |> assign(:preview_url, if(has_session, do: preview_url_for_session(session), else: nil))
       |> assign(:expires_at, if(has_session, do: session.expires_at, else: nil))
       |> assign(:resolved_ports, if(has_session, do: session.resolved_ports, else: %{}))
 
@@ -2655,7 +2659,7 @@ defmodule KollywoodWeb.DashboardLive do
         </div>
       <% end %>
 
-      <%= if @has_session do %>
+      <%= if @running_session do %>
         <div class="space-y-2">
           <div class="flex items-center gap-2">
             <span class="relative flex h-2 w-2">
@@ -2667,6 +2671,7 @@ defmodule KollywoodWeb.DashboardLive do
           </div>
 
           <%= if @preview_url do %>
+            <p class="text-xs text-base-content/70 font-mono break-all">URL: {@preview_url}</p>
             <a
               href={@preview_url}
               target="_blank"
@@ -2675,6 +2680,8 @@ defmodule KollywoodWeb.DashboardLive do
             >
               <.icon name="hero-arrow-top-right-on-square" class="size-4" /> Open Preview
             </a>
+          <% else %>
+            <p class="text-xs text-base-content/60">Preview URL not available yet.</p>
           <% end %>
 
           <%= if map_size(@resolved_ports) > 0 do %>
@@ -2720,8 +2727,18 @@ defmodule KollywoodWeb.DashboardLive do
           <% end %>
         </div>
       <% else %>
-        <%= if @preview_starting do %>
+        <%= if @starting_session or @preview_starting do %>
           <p class="text-sm text-base-content/70">Starting preview runtime...</p>
+
+          <%= if map_size(@resolved_ports) > 0 do %>
+            <div class="text-xs text-base-content/60">
+              Reserved ports:
+              <%= for {name, port} <- @resolved_ports do %>
+                <span class="badge badge-ghost badge-xs mx-0.5">{name}={port}</span>
+              <% end %>
+            </div>
+          <% end %>
+
           <div class="flex gap-2">
             <button class="btn btn-primary btn-sm gap-2" disabled>
               <span class="loading loading-spinner loading-xs"></span> Starting Preview
@@ -6022,6 +6039,24 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp build_override_settings(_params), do: %{"execution" => %{}}
+
+  defp preview_url_for_session(session) when is_map(session) do
+    case session[:preview_url] do
+      value when is_binary(value) and value != "" ->
+        value
+
+      _ ->
+        ports = session[:resolved_ports] || %{}
+
+        case ports do
+          %{"PORT" => port} when is_integer(port) and port > 0 -> "http://localhost:#{port}"
+          %{PORT: port} when is_integer(port) and port > 0 -> "http://localhost:#{port}"
+          _ -> nil
+        end
+    end
+  end
+
+  defp preview_url_for_session(_session), do: nil
 
   defp normalize_story_form_params(params) when is_map(params) do
     %{
