@@ -22,6 +22,7 @@ defmodule KollywoodWeb.DashboardLive do
     {"open", "Open"},
     {"in_progress", "In Progress"},
     {"done", "Done"},
+    {"pending_merge", "Pending Merge"},
     {"merged", "Merged"},
     {"failed", "Failed"}
   ]
@@ -1081,10 +1082,11 @@ defmodule KollywoodWeb.DashboardLive do
     ~H"""
     <div class="space-y-6">
       <.orchestrator_status_bar status={@orchestrator_status} />
-      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div class="grid grid-cols-2 lg:grid-cols-5 gap-4">
         <.stat_card title="Open" value={@counters.open} color="info" />
         <.stat_card title="In Progress" value={@counters.in_progress} color="warning" />
         <.stat_card title="Done" value={@counters.done} color="success" />
+        <.stat_card title="Pending Merge" value={@counters.pending_merge} color="warning" />
         <.stat_card title="Failed" value={@counters.failed} color="error" />
       </div>
 
@@ -5548,6 +5550,7 @@ defmodule KollywoodWeb.DashboardLive do
         "open" -> "badge-info"
         "in_progress" -> "badge-warning"
         "done" -> "badge-success"
+        "pending_merge" -> "badge-warning"
         "failed" -> "badge-error"
         "cancelled" -> "badge-ghost"
         "draft" -> "badge-ghost badge-outline"
@@ -6343,7 +6346,7 @@ defmodule KollywoodWeb.DashboardLive do
   defp load_project_data(socket, nil) do
     assign(socket,
       stories: [],
-      counters: %{open: 0, in_progress: 0, done: 0, failed: 0},
+      counters: %{open: 0, in_progress: 0, done: 0, pending_merge: 0, failed: 0},
       run_attempts: [],
       recent_runs: [],
       run_detail: nil,
@@ -6438,6 +6441,7 @@ defmodule KollywoodWeb.DashboardLive do
       open: count_status(stories, "open"),
       in_progress: count_status(stories, "in_progress"),
       done: count_status(stories, "done"),
+      pending_merge: count_status(stories, "pending_merge"),
       failed: count_status(stories, "failed")
     }
   end

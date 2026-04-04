@@ -27,6 +27,11 @@ defmodule KollywoodWeb.DashboardLiveTest do
       "id" => "US-003",
       "title" => "Draft Story",
       "status" => "draft"
+    },
+    %{
+      "id" => "US-004",
+      "title" => "Pending Merge Story",
+      "status" => "pending_merge"
     }
   ]
 
@@ -84,6 +89,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "Open"
       assert html =~ "In Progress"
       assert html =~ "Done"
+      assert html =~ "Pending Merge"
       assert html =~ "Failed"
     end
 
@@ -401,6 +407,13 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert has_element?(view, "#stories-column-open #story-card-US-001")
       assert has_element?(view, "#stories-column-in_progress #story-card-US-002")
       assert has_element?(view, "#stories-column-draft #story-card-US-003")
+      assert has_element?(view, "#stories-column-pending_merge #story-card-US-004")
+
+      assert has_element?(
+               view,
+               "#stories-column-pending_merge header .badge.badge-sm.badge-ghost",
+               "1"
+             )
 
       html = render(view)
 
@@ -408,13 +421,15 @@ defmodule KollywoodWeb.DashboardLiveTest do
       open_pos = :binary.match(html, ~s(id="stories-column-open")) |> elem(0)
       ip_pos = :binary.match(html, ~s(id="stories-column-in_progress")) |> elem(0)
       done_pos = :binary.match(html, ~s(id="stories-column-done")) |> elem(0)
+      pending_merge_pos = :binary.match(html, ~s(id="stories-column-pending_merge")) |> elem(0)
       merged_pos = :binary.match(html, ~s(id="stories-column-merged")) |> elem(0)
       failed_pos = :binary.match(html, ~s(id="stories-column-failed")) |> elem(0)
 
       assert draft_pos < open_pos
       assert open_pos < ip_pos
       assert ip_pos < done_pos
-      assert done_pos < merged_pos
+      assert done_pos < pending_merge_pos
+      assert pending_merge_pos < merged_pos
       assert merged_pos < failed_pos
 
       assert html =~ "flex min-w-full items-start gap-3"
@@ -477,14 +492,27 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert has_element?(view, "#stories-list-group-draft")
       assert has_element?(view, "#stories-list-group-open")
       assert has_element?(view, "#stories-list-group-in_progress")
+      assert has_element?(view, "#stories-list-group-pending_merge")
       assert has_element?(view, "#stories-list-group-content-draft")
+      assert has_element?(view, "#stories-list-group-content-pending_merge #story-card-US-004")
+
+      assert has_element?(
+               view,
+               "#stories-list-group-pending_merge .badge.badge-sm.badge-ghost",
+               "1"
+             )
 
       html = render(view)
       draft_pos = :binary.match(html, ~s(id="stories-list-group-draft")) |> elem(0)
       open_pos = :binary.match(html, ~s(id="stories-list-group-open")) |> elem(0)
       ip_pos = :binary.match(html, ~s(id="stories-list-group-in_progress")) |> elem(0)
+
+      pending_merge_pos =
+        :binary.match(html, ~s(id="stories-list-group-pending_merge")) |> elem(0)
+
       assert draft_pos < open_pos
       assert open_pos < ip_pos
+      assert ip_pos < pending_merge_pos
 
       view
       |> element("#stories-list-group-toggle-draft")
