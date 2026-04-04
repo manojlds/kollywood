@@ -611,7 +611,8 @@ defmodule Kollywood.Config do
   end
 
   defp parse_runtime_settings(runtime) when is_map(runtime) do
-    with {:ok, ports} <- parse_runtime_ports(Map.get(runtime, "ports", %{})) do
+    with {:ok, ports} <- parse_runtime_ports(Map.get(runtime, "ports", %{})),
+         {:ok, image} <- parse_runtime_image(runtime) do
       {:ok,
        %{
          processes: command_list(Map.get(runtime, "processes", [])),
@@ -621,13 +622,35 @@ defmodule Kollywood.Config do
          start_timeout_ms:
            positive_integer(Map.get(runtime, "start_timeout_ms", 120_000), 120_000),
          stop_timeout_ms: positive_integer(Map.get(runtime, "stop_timeout_ms", 60_000), 60_000),
-         image: optional_string(Map.get(runtime, "image"))
+         image: image
        }}
     end
   end
 
   defp parse_runtime_settings(value) do
     {:error, "runtime must be a map (got: #{inspect(value)})"}
+  end
+
+  defp parse_runtime_image(runtime) when is_map(runtime) do
+    has_image_key = Map.has_key?(runtime, "image") or Map.has_key?(runtime, :image)
+    image = Map.get(runtime, "image", Map.get(runtime, :image))
+
+    case {has_image_key, image} do
+      {false, _} ->
+        {:ok, nil}
+
+      {true, value} when is_binary(value) ->
+        trimmed = String.trim(value)
+
+        if trimmed == "" do
+          {:error, "runtime.image must be a non-empty string (got: #{inspect(value)})"}
+        else
+          {:ok, trimmed}
+        end
+
+      {true, value} ->
+        {:error, "runtime.image must be a non-empty string (got: #{inspect(value)})"}
+    end
   end
 
   defp parse_runtime_ports(values) when is_map(values) do

@@ -1163,6 +1163,8 @@ defmodule Kollywood.OrchestratorTest do
     assert get_in(settings_snapshot, ["resolved", "testing", "enabled"]) == "true"
     assert get_in(settings_snapshot, ["resolved", "testing", "agent", "kind"]) == "opencode"
     assert get_in(settings_snapshot, ["resolved", "preview", "enabled"]) == "true"
+    assert Map.has_key?(get_in(settings_snapshot, ["resolved", "runtime"]), "image")
+    assert get_in(settings_snapshot, ["resolved", "runtime", "image"]) == "nil"
     assert get_in(settings_snapshot, ["resolved", "runtime", "processes"]) == []
     assert get_in(settings_snapshot, ["sources", "publish", "mode"]) == "provider_default"
   end
