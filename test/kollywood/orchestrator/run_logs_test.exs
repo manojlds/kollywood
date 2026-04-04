@@ -205,6 +205,14 @@ defmodule Kollywood.Orchestrator.RunLogsTest do
       assert length(metadata["testing_artifacts"]) == 1
       assert hd(metadata["testing_artifacts"])["kind"] == "screenshot"
     end
+
+    test "preserves nil error for successful runs", %{context: context} do
+      assert :ok = RunLogs.complete_attempt(context, %{status: :ok, turn_count: 1, error: nil})
+
+      metadata = File.read!(context.files.metadata) |> Jason.decode!()
+      assert metadata["status"] == "ok"
+      assert Map.get(metadata, "error") == nil
+    end
   end
 
   describe "append_event/2 with turn_succeeded" do

@@ -3292,10 +3292,22 @@ defmodule KollywoodWeb.DashboardLive do
 
     run_error =
       if is_map(assigns.run_detail),
-        do: get_in(assigns.run_detail, ["metadata", "error"]),
+        do: normalize_run_error(get_in(assigns.run_detail, ["metadata", "error"])),
         else: nil
 
     retryable_idx = retryable_step_idx(visible_steps, run_status)
+
+    preview_handoff? =
+      Enum.any?(visible_steps, fn step -> step.kind in ["pending_merge", "preview"] end)
+
+    preview_story_path =
+      case {assigns.project, assigns.story_id} do
+        {%Project{slug: slug}, story_id} when is_binary(slug) and is_binary(story_id) ->
+          story_detail_path(slug, story_id, assigns.stories_view)
+
+        _other ->
+          nil
+      end
 
     snapshot =
       if is_map(assigns.run_detail),
@@ -3318,6 +3330,8 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:run_status, run_status)
       |> assign(:run_error, run_error)
       |> assign(:retryable_idx, retryable_idx)
+      |> assign(:preview_handoff?, preview_handoff?)
+      |> assign(:preview_story_path, preview_story_path)
       |> assign(:settings_snapshot, snapshot)
       |> assign(:run_settings, run_settings)
       |> assign(:current_workflow_identity, current_workflow_identity)
@@ -3346,6 +3360,22 @@ defmodule KollywoodWeb.DashboardLive do
         <div class="alert alert-error text-sm gap-2">
           <.icon name="hero-exclamation-triangle" class="size-4 shrink-0" />
           <p class="break-words min-w-0">{@run_error}</p>
+        </div>
+      <% end %>
+
+      <%= if @preview_handoff? do %>
+        <div class="alert alert-info text-sm gap-2">
+          <.icon name="hero-eye" class="size-4 shrink-0" />
+          <div class="min-w-0 space-y-2">
+            <p class="break-words">
+              This run entered pending merge. Preview controls are on the story Details tab.
+            </p>
+            <%= if @preview_story_path do %>
+              <.link navigate={@preview_story_path} class="btn btn-primary btn-xs gap-2">
+                <.icon name="hero-arrow-top-right-on-square" class="size-3.5" /> Open Story Details
+              </.link>
+            <% end %>
+          </div>
         </div>
       <% end %>
 
@@ -6253,6 +6283,18 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp latest_run_by_story_id(_run_attempts), do: %{}
+
+  defp normalize_run_error(value) when is_binary(value) do
+    trimmed = String.trim(value)
+
+    if trimmed == "" or String.downcase(trimmed) == "nil" do
+      nil
+    else
+      trimmed
+    end
+  end
+
+  defp normalize_run_error(_value), do: nil
 
   defp run_attempt_sort_key(run) when is_map(run) do
     {run.ended_at || run.started_at || "", run.attempt || 0}
