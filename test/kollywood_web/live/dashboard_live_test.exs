@@ -936,6 +936,26 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "/projects/#{project.slug}/stories/#{story_id}?tab=runs"
     end
 
+    test "run detail shows where to access preview controls after pending merge handoff", %{
+      conn: conn,
+      project: project
+    } do
+      story_id = "US-PREVIEW-HANDOFF"
+
+      prepare_run_logs!(project.slug, story_id,
+        events: [
+          %{type: :publish_pending_merge, branch: "preview/us-preview-handoff"}
+        ],
+        status: "ok"
+      )
+
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
+
+      assert html =~ "Preview controls are on the story Details tab"
+      assert html =~ "Open Story Details"
+      assert html =~ "/projects/#{project.slug}/stories/#{story_id}"
+    end
+
     test "runs list shows view link for stories with tracker run metadata", %{
       conn: conn,
       project: project
@@ -1469,6 +1489,34 @@ defmodule KollywoodWeb.DashboardLiveTest do
         |> render_click()
 
       refute has_element?(run_view, "button[data-confirm-action='trigger_run']")
+    end
+
+    test "run detail suppresses nil error banner for successful attempt metadata", %{
+      conn: conn,
+      project: project
+    } do
+      story_id = "US-NIL-ERROR"
+
+      append_story!(project, %{
+        "id" => story_id,
+        "title" => "Nil error banner",
+        "status" => "done"
+      })
+
+      _context =
+        prepare_run_logs!(project.slug, story_id,
+          events: [
+            %{type: :run_started},
+            %{type: :run_finished, status: "ok"}
+          ],
+          status: "ok",
+          completion: %{error: "nil"}
+        )
+
+      {:ok, _run_view, run_html} = live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
+
+      refute run_html =~ "alert alert-error"
+      refute run_html =~ ">nil<"
     end
 
     test "run detail disables retry action when workspace preconditions are missing", %{

@@ -1023,6 +1023,7 @@ defmodule Kollywood.Orchestrator.RunLogs do
   defp stringify_value(%NaiveDateTime{} = value), do: NaiveDateTime.to_iso8601(value)
   defp stringify_value(%Date{} = value), do: Date.to_iso8601(value)
   defp stringify_value(%Time{} = value), do: Time.to_iso8601(value)
+  defp stringify_value(nil), do: nil
   defp stringify_value(value) when is_atom(value), do: Atom.to_string(value)
   defp stringify_value(value) when is_map(value), do: stringify_map(value)
   defp stringify_value(value) when is_list(value), do: Enum.map(value, &stringify_value/1)
