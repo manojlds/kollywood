@@ -1608,12 +1608,8 @@ defmodule Kollywood.Orchestrator do
   defp reconstruct_result_from_payload(payload) when is_map(payload) do
     now = DateTime.utc_now()
 
-    status =
-      case Map.get(payload, "status") do
-        "ok" -> :ok
-        "max_turns_reached" -> :max_turns_reached
-        _ -> :failed
-      end
+    status = parse_result_status(Map.get(payload, "status") || Map.get(payload, :status))
+    events = decode_result_events(Map.get(payload, "events") || Map.get(payload, :events))
 
     result = %Result{
       status: status,
@@ -1623,6 +1619,7 @@ defmodule Kollywood.Orchestrator do
       workspace_path: Map.get(payload, "workspace_path"),
       turn_count: Map.get(payload, "turn_count", 0),
       last_output: Map.get(payload, "last_output"),
+      events: events,
       started_at: parse_datetime(Map.get(payload, "started_at")) || now,
       ended_at: parse_datetime(Map.get(payload, "ended_at")) || now
     }
@@ -1634,6 +1631,15 @@ defmodule Kollywood.Orchestrator do
     now = DateTime.utc_now()
     {:error, %Result{status: :failed, error: "invalid result", started_at: now, ended_at: now}}
   end
+
+  defp parse_result_status(:ok), do: :ok
+  defp parse_result_status(:max_turns_reached), do: :max_turns_reached
+  defp parse_result_status("ok"), do: :ok
+  defp parse_result_status("max_turns_reached"), do: :max_turns_reached
+  defp parse_result_status(_status), do: :failed
+
+  defp decode_result_events(events) when is_list(events), do: events
+  defp decode_result_events(_events), do: []
 
   defp parse_datetime(nil), do: nil
   defp parse_datetime(%DateTime{} = dt), do: dt
