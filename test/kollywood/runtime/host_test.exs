@@ -111,6 +111,36 @@ defmodule Kollywood.Runtime.HostTest do
 
       assert {:ok, _stopped} = Runtime.stop(started)
     end
+
+    test "start preserves shell chaining in run command", %{workspace_path: ws} do
+      chained_toml = """
+      [daemons.test_server]
+      run = \"printf 'shell-ok' > shell-chain.txt && python3 -u -c \\\"import http.server, os, signal, sys; signal.signal(signal.SIGTERM, lambda *a: sys.exit(0)); port = int(os.environ.get('TEST_HTTP_PORT', '48500')); s = http.server.HTTPServer(('127.0.0.1', port), http.server.BaseHTTPRequestHandler); s.serve_forever()\\\"\"
+      """
+
+      File.write!(Path.join(ws, "pitchfork.toml"), chained_toml)
+
+      port = available_port()
+
+      config = %{
+        runtime: %{
+          processes: ["test_server"],
+          env: %{},
+          ports: %{"TEST_HTTP_PORT" => port},
+          port_offset_mod: 1,
+          start_timeout_ms: 45_000,
+          stop_timeout_ms: 15_000
+        }
+      }
+
+      state = Runtime.init(:host, config, %{path: ws, key: "shell-chain"})
+
+      assert {:ok, started} = Runtime.start(state)
+      assert :ok = Runtime.healthcheck(started)
+      assert File.read!(Path.join(ws, "shell-chain.txt")) == "shell-ok"
+
+      assert {:ok, _stopped} = Runtime.stop(started)
+    end
   end
 
   describe "port isolation" do

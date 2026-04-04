@@ -123,7 +123,7 @@ defmodule Kollywood.Runtime.DockerTest do
     end
 
     test "full lifecycle: create, start, healthcheck, stop", %{workspace_path: ws} do
-      port = 48800
+      port = available_port()
 
       config =
         docker_config(
@@ -139,6 +139,34 @@ defmodule Kollywood.Runtime.DockerTest do
       assert started.container_id != nil
 
       assert :ok = Runtime.healthcheck(started)
+
+      assert {:ok, stopped} = Runtime.stop(started)
+      assert stopped.started? == false
+      assert stopped.container_id == nil
+    end
+
+    test "full lifecycle preserves shell chaining in run command", %{workspace_path: ws} do
+      chained_toml = """
+      [daemons.test_server]
+      run = \"printf 'docker-shell-ok' > docker-shell-chain.txt && perl -MIO::Socket::INET -e '$p=$ENV{TEST_HTTP_PORT}||48800; $s=IO::Socket::INET->new(LocalAddr=>\\\"127.0.0.1\\\",LocalPort=>$p,Proto=>\\\"tcp\\\",Listen=>5,Reuse=>1) or die $!; while($c=$s->accept){ close $c; }'\"
+      """
+
+      File.write!(Path.join(ws, "pitchfork.toml"), chained_toml)
+
+      port = available_port()
+
+      config =
+        docker_config(
+          processes: ["test_server"],
+          ports: %{"TEST_HTTP_PORT" => port},
+          port_offset_mod: 1
+        )
+
+      state = Runtime.init(:docker, config, %{path: ws, key: "docker-shell-chain"})
+
+      assert {:ok, started} = Runtime.start(state)
+      assert :ok = Runtime.healthcheck(started)
+      assert File.read!(Path.join(ws, "docker-shell-chain.txt")) == "docker-shell-ok"
 
       assert {:ok, stopped} = Runtime.stop(started)
       assert stopped.started? == false
@@ -177,5 +205,12 @@ defmodule Kollywood.Runtime.DockerTest do
     [daemons.test_server]
     run = "perl -MIO::Socket::INET -e '$p=$ENV{TEST_HTTP_PORT}||48800; $s=IO::Socket::INET->new(LocalAddr=>\"127.0.0.1\",LocalPort=>$p,Proto=>\"tcp\",Listen=>5,Reuse=>1) or die $!; while($c=$s->accept){ close $c; }'"
     """
+  end
+
+  defp available_port do
+    {:ok, socket} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
+    {:ok, port} = :inet.port(socket)
+    :ok = :gen_tcp.close(socket)
+    port
   end
 end

@@ -456,7 +456,7 @@ defmodule Kollywood.Runtime.Docker do
       Enum.reduce_while(daemons, {:ok, %{}}, fn daemon, {:ok, acc} ->
         case Map.fetch(runs, daemon) do
           {:ok, run_value} ->
-            {:cont, {:ok, Map.put(acc, daemon, run_value)}}
+            {:cont, {:ok, Map.put(acc, daemon, normalize_daemon_run(run_value))}}
 
           :error ->
             {:halt, {:error, "missing run command for daemon #{daemon} in pitchfork.toml"}}
@@ -478,6 +478,50 @@ defmodule Kollywood.Runtime.Docker do
         _ -> acc
       end
     end)
+  end
+
+  defp normalize_daemon_run(run_value) when is_binary(run_value) do
+    trimmed = String.trim(run_value)
+    decoded = unwrap_toml_string(trimmed)
+
+    if shell_wrapper_needed?(decoded) and not shell_wrapped?(decoded) do
+      inspect("bash -lc '#{shell_single_quote(decoded)}'")
+    else
+      trimmed
+    end
+  end
+
+  defp normalize_daemon_run(run_value), do: run_value
+
+  defp unwrap_toml_string(value) when is_binary(value) do
+    value = String.trim(value)
+
+    cond do
+      String.length(value) >= 2 and String.starts_with?(value, "\"") and
+          String.ends_with?(value, "\"") ->
+        value
+        |> String.slice(1, String.length(value) - 2)
+        |> String.replace("\\\"", "\"")
+
+      String.length(value) >= 2 and String.starts_with?(value, "'") and
+          String.ends_with?(value, "'") ->
+        String.slice(value, 1, String.length(value) - 2)
+
+      true ->
+        value
+    end
+  end
+
+  defp shell_wrapper_needed?(command) when is_binary(command) do
+    String.contains?(command, "&&") or String.contains?(command, "||")
+  end
+
+  defp shell_wrapped?(command) when is_binary(command) do
+    String.starts_with?(command, "bash -lc ") or String.starts_with?(command, "sh -lc ")
+  end
+
+  defp shell_single_quote(command) when is_binary(command) do
+    String.replace(command, "'", "'\"'\"'")
   end
 
   defp render_pitchfork_local(daemon_runs, env) do
