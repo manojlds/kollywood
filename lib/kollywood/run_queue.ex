@@ -248,6 +248,31 @@ defmodule Kollywood.RunQueue do
     |> Repo.aggregate(:count)
   end
 
+  @spec queue_overview_stats() :: %{
+          pending_count: non_neg_integer(),
+          running_count: non_neg_integer(),
+          completed_last_hour_count: non_neg_integer(),
+          failed_last_hour_count: non_neg_integer()
+        }
+  def queue_overview_stats do
+    cutoff = DateTime.add(DateTime.utc_now(), -3600, :second)
+
+    %{
+      pending_count: count_by_status("pending"),
+      running_count: count_by_status("running"),
+      completed_last_hour_count: count_completed_since(cutoff),
+      failed_last_hour_count: count_failed_since(cutoff)
+    }
+  end
+
+  @spec list_recent(non_neg_integer()) :: [Entry.t()]
+  def list_recent(limit \\ 10) when is_integer(limit) and limit > 0 do
+    Entry
+    |> order_by([e], desc: e.inserted_at)
+    |> limit(^limit)
+    |> Repo.all()
+  end
+
   # --- Stale claim recovery ---
 
   @spec reclaim_stale(pos_integer()) :: non_neg_integer()
@@ -309,5 +334,25 @@ defmodule Kollywood.RunQueue do
       {:ok, decoded} -> decoded
       {:error, _} -> payload
     end
+  end
+
+  defp count_by_status(status) do
+    Entry
+    |> where([e], e.status == ^status)
+    |> Repo.aggregate(:count)
+  end
+
+  defp count_completed_since(cutoff) do
+    Entry
+    |> where([e], e.status == "completed")
+    |> where([e], e.completed_at > ^cutoff)
+    |> Repo.aggregate(:count)
+  end
+
+  defp count_failed_since(cutoff) do
+    Entry
+    |> where([e], e.status == "failed")
+    |> where([e], e.completed_at > ^cutoff)
+    |> Repo.aggregate(:count)
   end
 end

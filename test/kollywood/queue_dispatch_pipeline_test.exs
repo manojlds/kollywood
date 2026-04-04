@@ -108,7 +108,9 @@ defmodule Kollywood.QueueDispatchPipelineTest do
 
   describe "on_event reconstruction in WorkerConsumer" do
     test "inject_on_event builds a callable on_event from log_files" do
-      test_dir = Path.join(@tmp_dir, "kollywood_test_on_event_#{System.unique_integer([:positive])}")
+      test_dir =
+        Path.join(@tmp_dir, "kollywood_test_on_event_#{System.unique_integer([:positive])}")
+
       File.mkdir_p!(test_dir)
 
       on_exit(fn -> File.rm_rf!(test_dir) end)
@@ -131,7 +133,11 @@ defmodule Kollywood.QueueDispatchPipelineTest do
       on_event = Keyword.fetch!(run_opts_with_event, :on_event)
       assert is_function(on_event, 1)
 
-      on_event.(%{type: "turn_started", turn: 1, timestamp: DateTime.utc_now() |> DateTime.to_iso8601()})
+      on_event.(%{
+        type: "turn_started",
+        turn: 1,
+        timestamp: DateTime.utc_now() |> DateTime.to_iso8601()
+      })
 
       events_content = File.read!(events_path)
       assert String.contains?(events_content, "turn_started")
@@ -185,8 +191,10 @@ defmodule Kollywood.QueueDispatchPipelineTest do
       log_files = Keyword.get(opts, :log_files)
 
       assert is_map(log_files)
+
       assert Map.has_key?(log_files, :agent_stdout),
              "Expected atom key :agent_stdout but got string keys: #{inspect(Map.keys(log_files))}"
+
       assert Map.has_key?(log_files, :reviewer_stdout)
       assert log_files[:agent_stdout] == "/tmp/agent_stdout.log"
     end
@@ -194,7 +202,9 @@ defmodule Kollywood.QueueDispatchPipelineTest do
 
   describe "full queue dispatch pipeline" do
     test "worker consumer writes events to log files from queue entry" do
-      test_dir = Path.join(@tmp_dir, "kollywood_test_pipeline_#{System.unique_integer([:positive])}")
+      test_dir =
+        Path.join(@tmp_dir, "kollywood_test_pipeline_#{System.unique_integer([:positive])}")
+
       File.mkdir_p!(test_dir)
 
       on_exit(fn -> File.rm_rf!(test_dir) end)
@@ -227,7 +237,12 @@ defmodule Kollywood.QueueDispatchPipelineTest do
           run_opts_snapshot: run_opts_snapshot,
           config_snapshot:
             Jason.encode!(%{
-              "issue" => %{"id" => issue_id, "identifier" => "US-PIPE-1", "title" => "Test", "state" => "open"}
+              "issue" => %{
+                "id" => issue_id,
+                "identifier" => "US-PIPE-1",
+                "title" => "Test",
+                "state" => "open"
+              }
             })
         })
 

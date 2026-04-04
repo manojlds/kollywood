@@ -28,10 +28,16 @@ defmodule Kollywood.WorkerConsumer do
     :poll_timer_ref,
     :stale_reclaim_timer_ref,
     :node_id,
+    :started_at,
+    :last_seen_at,
+    :last_poll_at,
     poll_interval_ms: @default_poll_interval_ms,
     max_local_workers: @default_max_local_workers,
     stale_reclaim_interval_ms: @default_stale_reclaim_interval_ms,
-    active_workers: %{}
+    active_workers: %{},
+    poll_count: 0,
+    claim_attempts: 0,
+    claims_succeeded: 0
   ]
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -69,6 +75,7 @@ defmodule Kollywood.WorkerConsumer do
   @impl true
   def init(opts) do
     node_id = Keyword.get(opts, :node_id, node_identifier())
+    now = DateTime.utc_now()
 
     recovered_running =
       RunQueue.fail_running_for_node(
@@ -90,7 +97,12 @@ defmodule Kollywood.WorkerConsumer do
       stale_reclaim_interval_ms:
         pos_int(Keyword.get(opts, :stale_reclaim_interval_ms), @default_stale_reclaim_interval_ms),
       node_id: node_id,
-      active_workers: %{}
+      active_workers: %{},
+      started_at: now,
+      last_seen_at: now,
+      poll_count: 0,
+      claim_attempts: 0,
+      claims_succeeded: 0
     }
 
     RunQueue.subscribe()
@@ -105,11 +117,52 @@ defmodule Kollywood.WorkerConsumer do
 
   @impl true
   def handle_call(:status, _from, state) do
+    active_runs =
+      Enum.map(state.active_workers, fn {entry_id, worker} ->
+        queue_entry = RunQueue.get(entry_id)
+
+        %{
+          queue_entry_id: entry_id,
+          issue_id: worker.issue_id,
+          identifier: worker.identifier,
+          issue_title: worker.issue_title,
+          project_slug: worker.project_slug,
+          attempt: worker.attempt,
+          started_at: worker.started_at,
+          status: queue_status_label(queue_entry),
+          run_started_at: queue_entry && queue_entry.started_at,
+          claimed_at: queue_entry && queue_entry.claimed_at
+        }
+      end)
+
+    claim_success_rate =
+      if state.claim_attempts > 0 do
+        Float.round(state.claims_succeeded / state.claim_attempts, 4)
+      else
+        nil
+      end
+
+    uptime_ms =
+      case state.started_at do
+        %DateTime{} = started_at -> DateTime.diff(DateTime.utc_now(), started_at, :millisecond)
+        _ -> nil
+      end
+
     reply = %{
       node_id: state.node_id,
       active_workers: map_size(state.active_workers),
       max_local_workers: state.max_local_workers,
-      available_slots: max(state.max_local_workers - map_size(state.active_workers), 0)
+      available_slots: max(state.max_local_workers - map_size(state.active_workers), 0),
+      poll_interval_ms: state.poll_interval_ms,
+      poll_count: state.poll_count,
+      claim_attempts: state.claim_attempts,
+      claims_succeeded: state.claims_succeeded,
+      claim_success_rate: claim_success_rate,
+      started_at: state.started_at,
+      last_seen_at: state.last_seen_at,
+      last_poll_at: state.last_poll_at,
+      uptime_ms: uptime_ms,
+      active_runs: active_runs
     }
 
     {:reply, reply, state}
@@ -117,12 +170,15 @@ defmodule Kollywood.WorkerConsumer do
 
   @impl true
   def handle_info(:poll, state) do
+    now = DateTime.utc_now()
+    state = %{state | last_poll_at: now, last_seen_at: now, poll_count: state.poll_count + 1}
     state = try_claim_and_run(state)
     state = schedule_poll(state)
     {:noreply, state}
   end
 
   def handle_info(:reclaim_stale, state) do
+    state = touch_seen(state)
     reclaimed = RunQueue.reclaim_stale()
 
     if reclaimed > 0 do
@@ -134,15 +190,33 @@ defmodule Kollywood.WorkerConsumer do
   end
 
   def handle_info({:run_queue, {:enqueued, _id, _issue_id}}, state) do
+    state = touch_seen(state)
     state = try_claim_and_run(state)
     {:noreply, state}
   end
 
   def handle_info({:run_queue, _event}, state) do
-    {:noreply, state}
+    {:noreply, touch_seen(state)}
+  end
+
+  def handle_info({:run_worker_result, _issue_id, worker_pid, result}, state) do
+    state = touch_seen(state)
+
+    case result do
+      {:worker_done, entry_id, _inner_worker_pid, inner_result} ->
+        handle_info({:worker_done, entry_id, worker_pid, inner_result}, state)
+
+      _other ->
+        case find_worker_by_pid(state, worker_pid) do
+          {entry_id, _worker} -> handle_info({:worker_done, entry_id, worker_pid, result}, state)
+          nil -> {:noreply, state}
+        end
+    end
   end
 
   def handle_info({:worker_done, entry_id, worker_pid, result}, state) do
+    state = touch_seen(state)
+
     case Map.pop(state.active_workers, entry_id) do
       {%{worker_pid: ^worker_pid, monitor_ref: ref}, active_workers} ->
         Process.demonitor(ref, [:flush])
@@ -155,6 +229,8 @@ defmodule Kollywood.WorkerConsumer do
   end
 
   def handle_info({:DOWN, ref, :process, pid, reason}, state) do
+    state = touch_seen(state)
+
     case find_worker_by_ref(state, ref) do
       {entry_id, %{worker_pid: ^pid}} ->
         active_workers = Map.delete(state.active_workers, entry_id)
@@ -182,6 +258,14 @@ defmodule Kollywood.WorkerConsumer do
       state
     else
       entries = RunQueue.claim_batch(state.node_id, available_slots)
+      claims_count = length(entries)
+
+      state = %{
+        state
+        | claim_attempts: state.claim_attempts + available_slots,
+          claims_succeeded: state.claims_succeeded + claims_count,
+          last_seen_at: DateTime.utc_now()
+      }
 
       Enum.reduce(entries, state, fn entry, acc ->
         start_worker_for_entry(acc, entry)
@@ -224,6 +308,10 @@ defmodule Kollywood.WorkerConsumer do
           worker_pid: worker_pid,
           monitor_ref: monitor_ref,
           issue_id: issue_id,
+          issue_title: extract_issue_title(entry),
+          identifier: identifier,
+          project_slug: entry.project_slug,
+          attempt: entry.attempt,
           started_at: DateTime.utc_now()
         }
 
@@ -236,6 +324,10 @@ defmodule Kollywood.WorkerConsumer do
           worker_pid: worker_pid,
           monitor_ref: monitor_ref,
           issue_id: issue_id,
+          issue_title: extract_issue_title(entry),
+          identifier: identifier,
+          project_slug: entry.project_slug,
+          attempt: entry.attempt,
           started_at: DateTime.utc_now()
         }
 
@@ -453,6 +545,36 @@ defmodule Kollywood.WorkerConsumer do
       worker.monitor_ref == ref
     end)
   end
+
+  defp find_worker_by_pid(state, pid) do
+    Enum.find(state.active_workers, fn {_entry_id, worker} ->
+      worker.worker_pid == pid
+    end)
+  end
+
+  defp queue_status_label(nil), do: "unknown"
+
+  defp queue_status_label(entry) do
+    case entry.status do
+      status when status in ["claimed", "running"] -> status
+      _ -> "completed"
+    end
+  end
+
+  defp extract_issue_title(entry) do
+    case entry.config_snapshot do
+      json when is_binary(json) ->
+        case Jason.decode(json) do
+          {:ok, %{"issue" => %{"title" => title}}} when is_binary(title) and title != "" -> title
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp touch_seen(state), do: %{state | last_seen_at: DateTime.utc_now()}
 
   defp node_identifier do
     node_name = Atom.to_string(node())

@@ -17,7 +17,9 @@ defmodule KollywoodWeb.Router do
   scope "/", KollywoodWeb do
     pipe_through :browser
 
-    live "/admin", AdminLive, :index
+    live "/admin", AdminLive, :overview
+    live "/admin/workers", AdminLive, :workers
+    live "/admin/workers/:worker_id", AdminLive, :worker_detail
     live "/", ProjectsLive, :index
     live "/projects/new", ProjectsLive, :new
     live "/projects/:project_slug", DashboardLive, :overview
