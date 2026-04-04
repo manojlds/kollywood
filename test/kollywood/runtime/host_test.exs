@@ -40,7 +40,7 @@ defmodule Kollywood.Runtime.HostTest do
     test "start launches process, healthcheck confirms port, stop tears it down", %{
       workspace_path: ws
     } do
-      port = 48501
+      port = available_port()
 
       config = %{
         runtime: %{
@@ -71,7 +71,7 @@ defmodule Kollywood.Runtime.HostTest do
     end
 
     test "start is idempotent — second call is a no-op", %{workspace_path: ws} do
-      port = 48502
+      port = available_port()
       state = init_runtime(ws, "idempotent", port)
 
       assert {:ok, started} = Runtime.start(state)
@@ -84,7 +84,7 @@ defmodule Kollywood.Runtime.HostTest do
     end
 
     test "stop on a never-started runtime is a no-op", %{workspace_path: ws} do
-      state = init_runtime(ws, "stop-noop", 48503)
+      state = init_runtime(ws, "stop-noop", available_port())
 
       assert state.started? == false
       assert {:ok, stopped} = Runtime.stop(state)
@@ -192,15 +192,42 @@ defmodule Kollywood.Runtime.HostTest do
       assert_receive {:reacquired, lease_name_b}, 10_000
       assert lease_name_b != nil
     end
+
+    test "start fails when all candidate runtime ports are already occupied", %{
+      workspace_path: ws
+    } do
+      occupied_port = available_port()
+
+      {:ok, socket} =
+        :gen_tcp.listen(occupied_port, [
+          :binary,
+          active: false,
+          ip: {127, 0, 0, 1},
+          reuseaddr: true
+        ])
+
+      on_exit(fn ->
+        :gen_tcp.close(socket)
+      end)
+
+      config = runtime_config([], %{"TEST_HTTP_PORT" => occupied_port}, 1)
+      state = Runtime.init(:host, config, %{path: ws, key: "occupied-port"})
+
+      assert {:error, msg, failed_state} = Runtime.start(state)
+      assert msg =~ "no available runtime port offsets"
+      assert failed_state.process_state == :isolation_failed
+    end
   end
 
   describe "healthcheck" do
     test "healthcheck fails when port is not reachable within timeout", %{workspace_path: ws} do
+      ghost_port = available_port()
+
       config = %{
         runtime: %{
           processes: [],
           env: %{},
-          ports: %{"GHOST_PORT" => 48700},
+          ports: %{"GHOST_PORT" => ghost_port},
           port_offset_mod: 1,
           start_timeout_ms: 1_000,
           stop_timeout_ms: 5_000
@@ -216,11 +243,13 @@ defmodule Kollywood.Runtime.HostTest do
     test "healthcheck is skipped when KOLLYWOOD_RUNTIME_SKIP_HEALTHCHECK is set", %{
       workspace_path: ws
     } do
+      ghost_port = available_port()
+
       config = %{
         runtime: %{
           processes: [],
           env: %{"KOLLYWOOD_RUNTIME_SKIP_HEALTHCHECK" => "1"},
-          ports: %{"GHOST_PORT" => 48701},
+          ports: %{"GHOST_PORT" => ghost_port},
           port_offset_mod: 1,
           start_timeout_ms: 1_000,
           stop_timeout_ms: 5_000

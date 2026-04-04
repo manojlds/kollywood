@@ -512,10 +512,8 @@ defmodule Kollywood.Runtime.Docker do
     modulus = pos_int(state.port_offset_mod, 1000)
     seed = port_offset_seed(state.workspace_identity, modulus)
 
-    case acquire_lease(modulus, seed) do
-      {:ok, offset, lease_name} ->
-        resolved_ports = resolve_ports(state.port_bases, offset)
-
+    case acquire_lease(modulus, seed, state.port_bases) do
+      {:ok, offset, lease_name, resolved_ports} ->
         env =
           build_env(
             state.workspace_key,
@@ -540,21 +538,41 @@ defmodule Kollywood.Runtime.Docker do
     end
   end
 
-  defp acquire_lease(modulus, seed) do
+  defp acquire_lease(modulus, seed, port_bases) do
     0..(modulus - 1)
     |> Enum.reduce_while(:none, fn probe, _acc ->
       offset = rem(seed + probe, modulus)
       lease_name = {:kollywood, :runtime_port_offset, modulus, offset}
 
       case :global.register_name(lease_name, self()) do
-        :yes -> {:halt, {:ok, offset, lease_name}}
-        :no -> {:cont, :none}
+        :yes ->
+          resolved_ports = resolve_ports(port_bases, offset)
+
+          if ports_available?(resolved_ports) do
+            {:halt, {:ok, offset, lease_name, resolved_ports}}
+          else
+            :global.unregister_name(lease_name)
+            {:cont, :none}
+          end
+
+        :no ->
+          {:cont, :none}
       end
     end)
     |> case do
-      {:ok, _, _} = ok -> ok
-      :none -> {:error, "no available runtime port offsets within modulus #{modulus}"}
+      {:ok, _, _, _} = ok ->
+        ok
+
+      :none ->
+        {:error,
+         "no available runtime port offsets within modulus #{modulus} (ports occupied or leased)"}
     end
+  end
+
+  defp ports_available?(resolved_ports) when map_size(resolved_ports) == 0, do: true
+
+  defp ports_available?(resolved_ports) do
+    Enum.all?(resolved_ports, fn {_name, port} -> not runtime_port_open?(port) end)
   end
 
   defp release_lease(lease_name) do
