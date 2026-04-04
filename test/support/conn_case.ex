@@ -29,6 +29,7 @@ defmodule KollywoodWeb.ConnCase do
       import Phoenix.ConnTest
       import Phoenix.LiveViewTest
       import KollywoodWeb.ConnCase
+      import KollywoodWeb.LiveRefreshRaceHelpers
     end
   end
 
