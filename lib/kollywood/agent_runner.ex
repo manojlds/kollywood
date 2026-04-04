@@ -3172,38 +3172,102 @@ defmodule Kollywood.AgentRunner do
   end
 
   defp with_agent_browser_defaults(%Config{} = config, workspace) do
-    browser_env = agent_browser_env(workspace)
+    agent = Map.get(config, :agent, %{})
+
+    env =
+      agent
+      |> Map.get(:env, %{})
+      |> map_or_empty()
+
+    browser_env = agent_browser_env(workspace, env)
 
     if map_size(browser_env) == 0 do
       config
     else
-      agent = Map.get(config, :agent, %{})
-
-      env =
-        agent
-        |> Map.get(:env, %{})
-        |> map_or_empty()
-        |> Map.merge(browser_env)
-
-      %Config{config | agent: Map.put(agent, :env, env)}
+      %Config{config | agent: Map.put(agent, :env, Map.merge(env, browser_env))}
     end
   end
 
-  defp agent_browser_env(%{path: workspace_path}) when is_binary(workspace_path) do
+  defp agent_browser_env(%{path: workspace_path}, existing_env)
+       when is_binary(workspace_path) and is_map(existing_env) do
     artifacts_dir = Path.join(workspace_path, ".kollywood/artifacts/testing")
     downloads_dir = Path.join(artifacts_dir, "downloads")
 
     _ = File.mkdir_p(artifacts_dir)
     _ = File.mkdir_p(downloads_dir)
 
+    ffmpeg_dir = bundled_ffmpeg_dir(workspace_path)
+
     %{
       "AGENT_BROWSER_ARGS" => "--no-sandbox",
       "AGENT_BROWSER_SCREENSHOT_DIR" => artifacts_dir,
       "AGENT_BROWSER_DOWNLOAD_PATH" => downloads_dir
     }
+    |> maybe_put_agent_path(existing_env, ffmpeg_dir)
   end
 
-  defp agent_browser_env(_workspace), do: %{}
+  defp agent_browser_env(_workspace, _existing_env), do: %{}
+
+  defp bundled_ffmpeg_dir(workspace_path) do
+    Path.join([
+      workspace_path,
+      ".kollywood",
+      "artifacts",
+      "testing",
+      "ffmpeg-static",
+      "*",
+      "ffmpeg"
+    ])
+    |> Path.wildcard()
+    |> Enum.find(&ffmpeg_binary?/1)
+    |> case do
+      nil -> nil
+      path -> Path.dirname(path)
+    end
+  end
+
+  defp ffmpeg_binary?(path) do
+    case File.stat(path) do
+      {:ok, %File.Stat{type: :regular, mode: mode}} -> Bitwise.band(mode, 0o111) != 0
+      _ -> false
+    end
+  end
+
+  defp maybe_put_agent_path(env, _existing_env, nil), do: env
+
+  defp maybe_put_agent_path(env, existing_env, ffmpeg_dir) do
+    base_path = env_value(existing_env, "PATH") || System.get_env("PATH") || ""
+    entries = String.split(base_path, ":", trim: true)
+
+    path_value =
+      if ffmpeg_dir in entries do
+        Enum.join(entries, ":")
+      else
+        Enum.join([ffmpeg_dir | entries], ":")
+      end
+
+    if path_value == "" do
+      env
+    else
+      Map.put(env, "PATH", path_value)
+    end
+  end
+
+  defp env_value(env, key) when is_map(env) and is_binary(key) do
+    case Map.fetch(env, key) do
+      {:ok, value} ->
+        to_string(value)
+
+      :error ->
+        Enum.find_value(env, fn
+          {k, v} when is_atom(k) ->
+            if Atom.to_string(k) == key, do: to_string(v), else: nil
+
+          _ ->
+            nil
+        end)
+    end
+  end
 
   defp required_check_commands(config) do
     config
