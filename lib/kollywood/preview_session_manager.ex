@@ -27,6 +27,7 @@ defmodule Kollywood.PreviewSessionManager do
   require Logger
 
   alias Kollywood.Runtime
+  alias Kollywood.RuntimeSessions
 
   @ttl_check_interval_ms 30_000
   @default_ttl_minutes 120
@@ -119,8 +120,9 @@ defmodule Kollywood.PreviewSessionManager do
 
   @impl true
   def init(_opts) do
+    restored_sessions = restore_sessions_from_db()
     schedule_ttl_check()
-    {:ok, %{sessions: %{}}}
+    {:ok, %{sessions: restored_sessions}}
   end
 
   @impl true
@@ -151,6 +153,7 @@ defmodule Kollywood.PreviewSessionManager do
 
       session ->
         do_stop_session(session)
+        persist_delete(key)
         {:reply, :ok, drop_session(state, key)}
     end
   end
@@ -183,6 +186,8 @@ defmodule Kollywood.PreviewSessionManager do
         Logger.info(
           "Preview session created via handoff project=#{project_slug} story=#{story_id}"
         )
+
+        persist_upsert(key, session, :preview)
 
         {:reply, {:ok, session}, put_session(state, key, session)}
     end
@@ -218,8 +223,12 @@ defmodule Kollywood.PreviewSessionManager do
         Logger.info("Preview session expired project=#{project} story=#{story_id}")
 
         case Map.get(acc.sessions, key) do
-          nil -> acc
-          session -> do_stop_session(session)
+          nil ->
+            acc
+
+          session ->
+            do_stop_session(session)
+            persist_delete(key)
         end
 
         drop_session(acc, key)
@@ -239,6 +248,36 @@ defmodule Kollywood.PreviewSessionManager do
     workspace_key = Keyword.get(opts, :workspace_key, story_id)
     ttl_minutes = Keyword.get(opts, :ttl_minutes, preview_ttl(config))
 
+    key = {project_slug, story_id}
+
+    case maybe_reuse_persisted_runtime(key, workspace_path, ttl_minutes) do
+      {:ok, session} ->
+        Logger.info(
+          "Preview session reused persisted runtime project=#{project_slug} story=#{story_id}"
+        )
+
+        {:ok, session}
+
+      :none ->
+        do_start_preview_cold(
+          project_slug,
+          story_id,
+          config,
+          workspace_path,
+          workspace_key,
+          ttl_minutes
+        )
+    end
+  end
+
+  defp do_start_preview_cold(
+         project_slug,
+         story_id,
+         config,
+         workspace_path,
+         workspace_key,
+         ttl_minutes
+       ) do
     runtime_kind = get_in(config, [Access.key(:runtime, %{}), Access.key(:kind, :host)])
 
     workspace = %{path: workspace_path, key: workspace_key}
@@ -261,6 +300,7 @@ defmodule Kollywood.PreviewSessionManager do
       }
 
       Logger.info("Preview session started project=#{project_slug} story=#{story_id}")
+      persist_upsert({project_slug, story_id}, session, :preview)
       {:ok, session}
     else
       {:error, reason, failed_state} ->
@@ -270,12 +310,15 @@ defmodule Kollywood.PreviewSessionManager do
 
         Runtime.stop(failed_state)
         Runtime.release(failed_state)
+        persist_delete({project_slug, story_id})
         {:error, "preview start failed: #{reason}"}
 
       {:error, reason} ->
         Logger.warning(
           "Preview session failed to start project=#{project_slug} story=#{story_id} reason=#{reason}"
         )
+
+        persist_delete({project_slug, story_id})
 
         {:error, "preview start failed: #{reason}"}
     end
@@ -352,6 +395,151 @@ defmodule Kollywood.PreviewSessionManager do
 
   defp schedule_ttl_check do
     Process.send_after(self(), :ttl_check, @ttl_check_interval_ms)
+  end
+
+  defp maybe_reuse_persisted_runtime({project_slug, story_id}, workspace_path, ttl_minutes) do
+    case RuntimeSessions.get(project_slug, story_id) do
+      {:ok, persisted}
+      when persisted.status in [:running, :starting] and
+             persisted.session_type in [:testing, :preview] ->
+        runtime_state = persisted.runtime_state
+
+        cond do
+          not is_map(runtime_state) ->
+            persist_delete({project_slug, story_id})
+            :none
+
+          runtime_state[:workspace_path] != workspace_path ->
+            :none
+
+          true ->
+            runtime_state = reacquire_lease(runtime_state)
+
+            case Runtime.healthcheck(runtime_state) do
+              :ok ->
+                now = DateTime.utc_now()
+
+                session = %{
+                  runtime_state: runtime_state,
+                  runtime_kind: Map.get(runtime_state, :kind, persisted.runtime_kind || :host),
+                  preview_url: build_preview_url(runtime_state),
+                  resolved_ports: Map.get(runtime_state, :resolved_ports, %{}),
+                  started_at: persisted.started_at || now,
+                  expires_at: DateTime.add(now, ttl_minutes * 60, :second),
+                  last_error: nil,
+                  workspace_path: workspace_path,
+                  status: :running
+                }
+
+                persist_upsert({project_slug, story_id}, session, :preview)
+                {:ok, session}
+
+              {:error, reason} ->
+                Logger.warning(
+                  "Persisted runtime not healthy project=#{project_slug} story=#{story_id} reason=#{reason}"
+                )
+
+                safe_stop_and_release(runtime_state)
+                persist_delete({project_slug, story_id})
+                :none
+            end
+        end
+
+      {:ok, _other} ->
+        :none
+
+      nil ->
+        :none
+
+      {:error, reason} ->
+        Logger.warning(
+          "Failed to load persisted runtime session project=#{project_slug} story=#{story_id}: #{reason}"
+        )
+
+        :none
+    end
+  end
+
+  defp persist_upsert({project_slug, story_id}, session, session_type) do
+    _ =
+      RuntimeSessions.upsert(project_slug, story_id, session.runtime_state,
+        status: session.status,
+        session_type: session_type,
+        preview_url: session.preview_url,
+        started_at: session.started_at,
+        expires_at: session.expires_at,
+        last_error: session.last_error
+      )
+
+    :ok
+  end
+
+  defp persist_delete({project_slug, story_id}) do
+    _ = RuntimeSessions.delete(project_slug, story_id)
+    :ok
+  end
+
+  defp restore_sessions_from_db do
+    case RuntimeSessions.list(status: :running, session_type: :preview) do
+      {:ok, entries} ->
+        now = DateTime.utc_now()
+
+        Enum.reduce(entries, %{}, fn entry, acc ->
+          key = {entry.project_slug, entry.story_id}
+
+          if is_struct(entry.expires_at, DateTime) and
+               DateTime.compare(now, entry.expires_at) == :gt do
+            safe_stop_and_release(entry.runtime_state)
+            persist_delete(key)
+            acc
+          else
+            runtime_state = reacquire_lease(entry.runtime_state)
+
+            case Runtime.healthcheck(runtime_state) do
+              :ok ->
+                session = %{
+                  runtime_state: runtime_state,
+                  runtime_kind: Map.get(runtime_state, :kind, entry.runtime_kind || :host),
+                  preview_url: build_preview_url(runtime_state),
+                  resolved_ports: Map.get(runtime_state, :resolved_ports, %{}),
+                  started_at: entry.started_at || now,
+                  expires_at:
+                    entry.expires_at || DateTime.add(now, @default_ttl_minutes * 60, :second),
+                  last_error: entry.last_error,
+                  workspace_path: entry.workspace_path,
+                  status: :running
+                }
+
+                Map.put(acc, key, session)
+
+              {:error, _reason} ->
+                safe_stop_and_release(runtime_state)
+                persist_delete(key)
+                acc
+            end
+          end
+        end)
+
+      {:error, reason} ->
+        Logger.warning("Failed to restore preview sessions from db: #{reason}")
+        %{}
+    end
+  end
+
+  defp safe_stop_and_release(runtime_state) do
+    try do
+      Runtime.stop(runtime_state)
+    rescue
+      _ -> :ok
+    end
+
+    try do
+      Runtime.release(runtime_state)
+    rescue
+      _ -> :ok
+    end
+
+    :ok
   end
 
   defp normalize_stop_result(:ok), do: :ok
