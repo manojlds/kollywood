@@ -1004,6 +1004,44 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "PORT=4912"
     end
 
+    test "pending merge actions use in-app confirmation modal", %{conn: conn, project: project} do
+      story_id = "US-PREVIEW-MERGE-CONFIRM"
+
+      write_workflow!(project, """
+      ---
+      preview:
+        enabled: true
+      ---
+
+      body
+      """)
+
+      append_story!(project, %{
+        "id" => story_id,
+        "title" => "Preview merge confirm",
+        "status" => "pending_merge"
+      })
+
+      {:ok, view, html} = live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}")
+
+      refute html =~ "onclick=\"return confirm('Merge"
+
+      html =
+        view
+        |> element(
+          "button[phx-click='merge_story'][phx-value-story_id='#{story_id}'][phx-value-mode='without_preview']"
+        )
+        |> render_click()
+
+      assert html =~ "Confirm action"
+      assert html =~ "Merge #{story_id} without starting a preview?"
+
+      assert has_element?(
+               view,
+               "button[data-confirm-action='merge_story'][phx-value-story_id='#{story_id}'][phx-value-mode='without_preview']"
+             )
+    end
+
     test "story detail load shows already-running preview session", %{
       conn: conn,
       project: project
