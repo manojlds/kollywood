@@ -162,8 +162,8 @@ defmodule Kollywood.Runtime.Docker do
   def ensure_exec_ready(%{container_id: cid} = state) when is_binary(cid), do: {:ok, state}
 
   def ensure_exec_ready(state) do
-    with :ok <- write_pitchfork_local_toml(state),
-         {:ok, state} <- ensure_isolation(state),
+    with {:ok, state} <- ensure_isolation(state),
+         :ok <- write_pitchfork_local_toml(state),
          {:ok, state} <- create_container(state),
          {:ok, state} <- start_container(state) do
       {:ok, state}

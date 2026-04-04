@@ -2629,14 +2629,29 @@ defmodule KollywoodWeb.DashboardLive do
     session = assigns.preview_session
     running_session = is_map(session) and session.status == :running
     starting_session = is_map(session) and session.status == :starting
+    failed_session = is_map(session) and session.status == :failed
     has_session = running_session or starting_session
     local_project = local_provider?(assigns.project)
+
+    effective_error =
+      cond do
+        is_binary(assigns.panel_error) and String.trim(assigns.panel_error) != "" ->
+          assigns.panel_error
+
+        failed_session and is_binary(session.last_error) and String.trim(session.last_error) != "" ->
+          session.last_error
+
+        true ->
+          nil
+      end
 
     assigns =
       assigns
       |> assign(:has_session, has_session)
       |> assign(:running_session, running_session)
       |> assign(:starting_session, starting_session)
+      |> assign(:failed_session, failed_session)
+      |> assign(:effective_error, effective_error)
       |> assign(:local_project, local_project)
       |> assign(:session_status, if(has_session, do: session.status, else: nil))
       |> assign(:preview_url, if(has_session, do: preview_url_for_session(session), else: nil))
@@ -2652,10 +2667,10 @@ defmodule KollywoodWeb.DashboardLive do
         <span class="badge badge-sm badge-warning">Pending Merge</span>
       </div>
 
-      <%= if is_binary(@panel_error) and String.trim(@panel_error) != "" do %>
+      <%= if is_binary(@effective_error) and String.trim(@effective_error) != "" do %>
         <div class="alert alert-error text-xs gap-2">
           <.icon name="hero-exclamation-triangle" class="size-3.5 shrink-0" />
-          <span class="break-words">{@panel_error}</span>
+          <span class="break-words">{@effective_error}</span>
         </div>
       <% end %>
 
@@ -2745,9 +2760,14 @@ defmodule KollywoodWeb.DashboardLive do
             </button>
           </div>
         <% else %>
-          <p class="text-sm text-base-content/70">
-            Start a preview to validate changes before merging.
-          </p>
+          <%= if @failed_session do %>
+            <p class="text-sm text-base-content/70">Previous preview failed. Try starting again.</p>
+          <% else %>
+            <p class="text-sm text-base-content/70">
+              Start a preview to validate changes before merging.
+            </p>
+          <% end %>
+
           <div class="flex gap-2">
             <button
               phx-click="start_preview"
