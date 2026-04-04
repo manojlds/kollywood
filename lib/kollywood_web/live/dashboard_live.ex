@@ -2690,28 +2690,35 @@ defmodule KollywoodWeb.DashboardLive do
               </button>
             <% end %>
           </div>
+
+          <%= unless @local_project do %>
+            <p class="text-xs text-base-content/60">
+              Merge for remote providers happens on the PR/MR platform.
+            </p>
+          <% end %>
         </div>
       <% else %>
-        <%= if @local_project do %>
-          <%= if @preview_starting do %>
-            <p class="text-sm text-base-content/70">Starting preview runtime...</p>
-            <div class="flex gap-2">
-              <button class="btn btn-primary btn-sm gap-2" disabled>
-                <span class="loading loading-spinner loading-xs"></span> Starting Preview
-              </button>
-            </div>
-          <% else %>
-            <p class="text-sm text-base-content/70">
-              Start a preview to validate changes before merging.
-            </p>
-            <div class="flex gap-2">
-              <button
-                phx-click="start_preview"
-                phx-value-story_id={@story_id}
-                class="btn btn-primary btn-sm gap-2"
-              >
-                <.icon name="hero-play" class="size-4" /> Start Preview
-              </button>
+        <%= if @preview_starting do %>
+          <p class="text-sm text-base-content/70">Starting preview runtime...</p>
+          <div class="flex gap-2">
+            <button class="btn btn-primary btn-sm gap-2" disabled>
+              <span class="loading loading-spinner loading-xs"></span> Starting Preview
+            </button>
+          </div>
+        <% else %>
+          <p class="text-sm text-base-content/70">
+            Start a preview to validate changes before merging.
+          </p>
+          <div class="flex gap-2">
+            <button
+              phx-click="start_preview"
+              phx-value-story_id={@story_id}
+              class="btn btn-primary btn-sm gap-2"
+            >
+              <.icon name="hero-play" class="size-4" /> Start Preview
+            </button>
+
+            <%= if @local_project do %>
               <button
                 phx-click="merge_story"
                 phx-value-story_id={@story_id}
@@ -2720,11 +2727,13 @@ defmodule KollywoodWeb.DashboardLive do
               >
                 Merge Without Preview
               </button>
-            </div>
-          <% end %>
-        <% else %>
-          <p class="text-sm text-base-content/70">
-            Preview and merge actions from this panel are available for local projects only.
+            <% end %>
+          </div>
+        <% end %>
+
+        <%= unless @local_project do %>
+          <p class="text-xs text-base-content/60">
+            Merge for remote providers happens on the PR/MR platform.
           </p>
         <% end %>
       <% end %>

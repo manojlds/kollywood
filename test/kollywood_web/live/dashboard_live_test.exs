@@ -1012,6 +1012,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       assert html =~ "Preview Environment"
       assert html =~ "Start Preview"
+      assert html =~ "PR/MR platform"
       refute html =~ "Merge Without Preview"
       refute html =~ "Approve &amp; Merge"
     end
