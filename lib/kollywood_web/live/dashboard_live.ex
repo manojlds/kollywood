@@ -3601,6 +3601,11 @@ defmodule KollywoodWeb.DashboardLive do
                     >
                       <.step_status_icon kind={step.kind} status={step.status} />
                       <span class="text-sm font-medium flex-1 truncate">{step.label}</span>
+                      <%= if is_binary(step.error) and String.contains?(step.error, "Recovery commands:") do %>
+                        <span class="badge badge-warning badge-xs font-mono shrink-0">
+                          Recovery commands
+                        </span>
+                      <% end %>
                       <%= if step.error do %>
                         <span class="text-xs text-error truncate max-w-[200px]">{step.error}</span>
                       <% end %>
@@ -3758,6 +3763,13 @@ defmodule KollywoodWeb.DashboardLive do
           <div class="alert alert-error text-sm gap-2">
             <.icon name="hero-exclamation-triangle" class="size-4 shrink-0" />
             <p class="break-words min-w-0">{@step.error}</p>
+          </div>
+        <% end %>
+
+        <%= if is_binary(@step.error) and String.contains?(@step.error, "Recovery commands:") do %>
+          <div class="alert alert-warning text-xs gap-2 whitespace-pre-wrap font-mono">
+            <.icon name="hero-command-line" class="size-4 shrink-0" />
+            <pre class="break-words min-w-0 leading-relaxed">{@step.error}</pre>
           </div>
         <% end %>
 

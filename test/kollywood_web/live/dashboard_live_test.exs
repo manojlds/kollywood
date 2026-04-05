@@ -1963,6 +1963,66 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert run_html =~ "push -u origin"
     end
 
+    test "run detail step row marks recovery guidance errors", %{conn: conn, project: project} do
+      story_id = "US-STEP-RECOVERY-BADGE"
+
+      _context =
+        prepare_run_logs!(project.slug, story_id,
+          events: [
+            %{type: :publish_started, mode: "push", branch: "kw/US-STEP-RECOVERY-BADGE"},
+            %{
+              type: :publish_failed,
+              reason:
+                "push failed\nRecovery commands:\n  git -C '/tmp/work' status --short\n  git -C '/tmp/work' push -u origin 'kw/US-STEP-RECOVERY-BADGE'"
+            },
+            %{type: :run_finished, status: "failed"}
+          ],
+          status: "failed",
+          completion: %{error: "publish failed"}
+        )
+
+      {:ok, _run_view, run_html} = live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
+
+      assert run_html =~ "Publish"
+      assert run_html =~ "Recovery commands"
+      assert run_html =~ "US-STEP-RECOVERY-BADGE"
+    end
+
+    test "step detail renders recovery commands block when step error includes guidance", %{
+      conn: conn,
+      project: project
+    } do
+      story_id = "US-STEP-RECOVERY-DETAIL"
+
+      _context =
+        prepare_run_logs!(project.slug, story_id,
+          events: [
+            %{type: :publish_started, mode: "push", branch: "kw/US-STEP-RECOVERY-DETAIL"},
+            %{
+              type: :publish_failed,
+              reason:
+                "push failed\nRecovery commands:\n  git -C '/tmp/work' status --short\n  git -C '/tmp/work' push -u origin 'kw/US-STEP-RECOVERY-DETAIL'"
+            },
+            %{type: :run_finished, status: "failed"}
+          ],
+          status: "failed",
+          completion: %{error: "publish failed"}
+        )
+
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
+
+      [step_path | _] =
+        Regex.scan(~r|/projects/#{project.slug}/runs/#{story_id}/1/step/\d+|, html)
+        |> List.flatten()
+        |> Enum.uniq()
+
+      {:ok, _step_view, step_html} = live(conn, step_path)
+
+      assert step_html =~ "Recovery commands:"
+      assert step_html =~ "hero-command-line"
+      assert step_html =~ "push -u origin"
+    end
+
     test "run detail disables retry action when workspace preconditions are missing", %{
       conn: conn,
       project: project
