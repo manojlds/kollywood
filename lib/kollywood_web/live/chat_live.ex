@@ -159,25 +159,55 @@ defmodule KollywoodWeb.ChatLive do
   def render(assigns) do
     status = get_in(assigns, [:chat_selected_snapshot, :status]) || :idle
     messages = get_in(assigns, [:chat_selected_snapshot, :messages]) || []
+    selected_title = get_in(assigns, [:chat_selected_snapshot, :title]) || "Project Chat"
+
+    status_meta = status_meta(status)
+
+    status_help =
+      case status do
+        :starting -> "Starting ACP session... your first prompt will be queued."
+        :running -> "Agent is responding..."
+        :cancelling -> "Cancelling current response..."
+        :error -> get_in(assigns, [:chat_selected_snapshot, :error]) || "Chat session error"
+        _ -> nil
+      end
+
+    input_disabled = status in [:cancelling] or is_nil(assigns.chat_selected_session_id)
+
+    send_label =
+      cond do
+        status == :starting -> "Queue"
+        status == :running -> "Send"
+        true -> "Send"
+      end
 
     assigns =
       assigns
       |> assign(:chat_status, status)
       |> assign(:chat_messages, messages)
+      |> assign(:chat_selected_title, selected_title)
+      |> assign(:chat_status_meta, status_meta)
+      |> assign(:chat_status_help, status_help)
+      |> assign(:chat_input_disabled, input_disabled)
+      |> assign(:chat_send_label, send_label)
 
     ~H"""
-    <div class="min-h-screen bg-base-100">
-      <header class="navbar bg-base-200 border-b border-base-300 px-4 sm:px-6 lg:px-8">
+    <div class="min-h-screen bg-gradient-to-b from-slate-50 via-white to-teal-50/30">
+      <header class="navbar bg-white/90 backdrop-blur border-b border-slate-200 px-4 sm:px-6 lg:px-8">
         <div class="flex-1 flex items-center gap-4">
           <.link navigate={~p"/"} class="flex items-center gap-2">
-            <.icon name="hero-rocket-launch" class="size-6 text-primary" />
-            <span class="text-xl font-bold">Kollywood</span>
+            <.icon name="hero-rocket-launch" class="size-6 text-teal-600" />
+            <span class="text-xl font-semibold tracking-tight text-slate-900">Kollywood</span>
           </.link>
         </div>
 
         <div class="flex-none flex items-center gap-4">
           <div class="dropdown dropdown-end">
-            <div tabindex="0" role="button" class="btn btn-outline btn-sm gap-2">
+            <div
+              tabindex="0"
+              role="button"
+              class="btn btn-outline btn-sm gap-2 border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+            >
               <.icon name="hero-folder" class="size-4" />
               <%= if @current_project do %>
                 {@current_project.name}
@@ -188,17 +218,21 @@ defmodule KollywoodWeb.ChatLive do
             </div>
             <ul
               tabindex="0"
-              class="dropdown-content menu menu-sm bg-base-100 rounded-box z-[1] w-64 p-2 shadow-lg border border-base-300 mt-2"
+              class="dropdown-content menu menu-sm bg-white rounded-box z-[1] w-72 p-2 shadow-xl border border-slate-200 mt-2"
             >
               <%= for project <- @projects do %>
                 <li>
                   <.link
                     navigate={chat_path(project.slug, nil)}
-                    class={[@current_project && @current_project.id == project.id && "bg-base-200"]}
+                    class={[
+                      "rounded-md",
+                      @current_project && @current_project.id == project.id &&
+                        "bg-teal-50 text-teal-700"
+                    ]}
                   >
                     <span class="truncate">{project.name}</span>
                     <%= if @current_project && @current_project.id == project.id do %>
-                      <.icon name="hero-check" class="size-4 text-success" />
+                      <.icon name="hero-check" class="size-4 text-teal-600" />
                     <% end %>
                   </.link>
                 </li>
@@ -209,7 +243,7 @@ defmodule KollywoodWeb.ChatLive do
       </header>
 
       <%= if @current_project do %>
-        <nav class="bg-base-100 border-b border-base-300 px-4 sm:px-6 lg:px-8">
+        <nav class="bg-white border-b border-slate-200 px-4 sm:px-6 lg:px-8">
           <div class="flex gap-1 overflow-x-auto">
             <.nav_tab
               label="Overview"
@@ -241,23 +275,28 @@ defmodule KollywoodWeb.ChatLive do
         </nav>
 
         <main class="px-4 sm:px-6 lg:px-8 py-6">
-          <div class="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-[18rem_1fr] gap-4">
-            <aside class="card bg-base-100 border border-base-300">
+          <div class="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-[19rem_1fr] gap-4 lg:gap-5">
+            <aside class="card bg-white border border-slate-200 shadow-sm">
               <div class="card-body p-4 gap-3">
-                <button type="button" phx-click="new_chat" class="btn btn-primary btn-sm">
+                <button
+                  type="button"
+                  phx-click="new_chat"
+                  class="btn btn-sm bg-teal-600 hover:bg-teal-700 text-white border-0"
+                >
                   <.icon name="hero-plus" class="size-4" /> New Chat
                 </button>
 
-                <div class="space-y-2 max-h-[65vh] overflow-y-auto">
+                <div class="space-y-2 max-h-[68vh] overflow-y-auto pr-1">
                   <%= if @chat_sessions == [] do %>
-                    <p class="text-sm text-base-content/60">No chats yet.</p>
+                    <p class="text-sm text-slate-500">No chats yet.</p>
                   <% else %>
                     <%= for session <- @chat_sessions do %>
                       <div class={[
-                        "rounded-lg border p-2",
+                        "rounded-xl border p-2.5 transition",
                         @chat_selected_session_id == session.id &&
-                          "border-primary bg-primary/5",
-                        @chat_selected_session_id != session.id && "border-base-300"
+                          "border-teal-500 bg-teal-50/60",
+                        @chat_selected_session_id != session.id &&
+                          "border-slate-200 bg-white hover:bg-slate-50"
                       ]}>
                         <button
                           type="button"
@@ -265,8 +304,10 @@ defmodule KollywoodWeb.ChatLive do
                           phx-value-id={session.id}
                           class="w-full text-left"
                         >
-                          <p class="text-sm font-medium truncate">{session.title || session.id}</p>
-                          <p class="text-xs text-base-content/60">
+                          <p class="text-sm font-medium truncate text-slate-900">
+                            {session.title || session.id}
+                          </p>
+                          <p class="text-xs text-slate-500">
                             {session.status} • {format_timestamp(
                               session.updated_at || session.inserted_at
                             )}
@@ -277,7 +318,7 @@ defmodule KollywoodWeb.ChatLive do
                           type="button"
                           phx-click="delete_chat"
                           phx-value-id={session.id}
-                          class="btn btn-ghost btn-xs text-error mt-2"
+                          class="btn btn-ghost btn-xs text-rose-600 mt-2 hover:bg-rose-50"
                         >
                           Delete
                         </button>
@@ -288,18 +329,25 @@ defmodule KollywoodWeb.ChatLive do
               </div>
             </aside>
 
-            <section class="card bg-base-100 border border-base-300 min-h-[70vh]">
+            <section class="card bg-white border border-slate-200 shadow-sm min-h-[70vh]">
               <div class="card-body p-4 gap-4">
                 <div class="flex items-center justify-between">
-                  <h2 class="text-lg font-semibold">
-                    <%= if @chat_selected_snapshot do %>
-                      {@chat_selected_snapshot.title}
-                    <% else %>
-                      Project Chat
-                    <% end %>
+                  <h2 class="text-lg font-semibold text-slate-900">
+                    {@chat_selected_title}
                   </h2>
-                  <span class="badge badge-outline">{@chat_status}</span>
+                  <span class={[
+                    @chat_status_meta.badge_class,
+                    "badge border-0 text-xs uppercase tracking-wide"
+                  ]}>
+                    {@chat_status_meta.label}
+                  </span>
                 </div>
+
+                <%= if @chat_status_help do %>
+                  <div class="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                    {@chat_status_help}
+                  </div>
+                <% end %>
 
                 <%= if @chat_error do %>
                   <div class="alert alert-error">
@@ -307,22 +355,22 @@ defmodule KollywoodWeb.ChatLive do
                   </div>
                 <% end %>
 
-                <div class="flex-1 overflow-y-auto border border-base-300 rounded-lg p-3 space-y-3 bg-base-100/50 min-h-[22rem]">
+                <div class="flex-1 overflow-y-auto border border-slate-200 rounded-xl p-3 space-y-3 bg-white min-h-[22rem]">
                   <%= if @chat_messages == [] do %>
-                    <p class="text-sm text-base-content/60">
+                    <p class="text-sm text-slate-500">
                       Start a new chat and ask the agent to plan work or create stories.
                     </p>
                   <% else %>
                     <%= for message <- @chat_messages do %>
                       <div class={[
-                        "rounded-lg border p-3",
-                        message.role == "user" && "border-info/40 bg-info/5",
-                        message.role == "assistant" && "border-success/40 bg-success/5"
+                        "rounded-xl border p-3",
+                        message.role == "user" && "border-sky-200 bg-sky-50/60",
+                        message.role == "assistant" && "border-emerald-200 bg-emerald-50/60"
                       ]}>
-                        <p class="text-xs font-semibold uppercase tracking-wide text-base-content/60 mb-1">
+                        <p class="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">
                           {message.role}
                         </p>
-                        <pre class="whitespace-pre-wrap break-words text-sm font-sans">{message.content}</pre>
+                        <pre class="whitespace-pre-wrap break-words text-sm font-sans text-slate-800">{message.content}</pre>
                       </div>
                     <% end %>
                   <% end %>
@@ -331,16 +379,23 @@ defmodule KollywoodWeb.ChatLive do
                 <form phx-submit="send_chat" phx-change="change_chat_input" class="space-y-2">
                   <textarea
                     name="message"
-                    class="textarea textarea-bordered w-full h-24"
+                    class="textarea textarea-bordered w-full h-24 border-slate-300 bg-white text-slate-900"
                     placeholder="Ask the agent to plan a feature, break it into stories, or refine requirements..."
+                    disabled={@chat_input_disabled}
                   ><%= @chat_input %></textarea>
 
                   <div class="flex items-center gap-2">
-                    <button type="submit" class="btn btn-primary btn-sm">Send</button>
+                    <button
+                      type="submit"
+                      class="btn btn-sm bg-teal-600 hover:bg-teal-700 text-white border-0"
+                      disabled={@chat_input_disabled}
+                    >
+                      {@chat_send_label}
+                    </button>
                     <button
                       type="button"
                       phx-click="cancel_chat"
-                      class="btn btn-outline btn-sm"
+                      class="btn btn-outline btn-sm border-slate-300 text-slate-700"
                       disabled={
                         @chat_selected_session_id == nil or
                           @chat_status not in [:running, :cancelling]
@@ -527,6 +582,27 @@ defmodule KollywoodWeb.ChatLive do
 
   defp chat_path(project_slug, session_id),
     do: ~p"/projects/#{project_slug}/chat?session=#{session_id}"
+
+  defp status_meta(:starting),
+    do: %{label: "starting", badge_class: "badge-warning text-amber-800 bg-amber-100"}
+
+  defp status_meta(:running),
+    do: %{label: "running", badge_class: "badge-info text-sky-800 bg-sky-100"}
+
+  defp status_meta(:ready),
+    do: %{label: "ready", badge_class: "badge-success text-emerald-800 bg-emerald-100"}
+
+  defp status_meta(:cancelling),
+    do: %{label: "cancelling", badge_class: "badge-warning text-amber-800 bg-amber-100"}
+
+  defp status_meta(:error),
+    do: %{label: "error", badge_class: "badge-error text-rose-800 bg-rose-100"}
+
+  defp status_meta(:stopped),
+    do: %{label: "stopped", badge_class: "badge-neutral text-slate-800 bg-slate-200"}
+
+  defp status_meta(_other),
+    do: %{label: "idle", badge_class: "badge-neutral text-slate-800 bg-slate-200"}
 
   defp format_timestamp(nil), do: "just now"
 

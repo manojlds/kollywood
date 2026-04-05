@@ -43,4 +43,14 @@ defmodule KollywoodWeb.ChatLiveTest do
 
     refute render(view) =~ "No chats yet."
   end
+
+  test "chat status guidance and queue label render for starting state", %{
+    conn: conn,
+    project: project
+  } do
+    {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/chat")
+
+    assert html =~ "Start a new chat and ask the agent"
+    assert html =~ "Send"
+  end
 end
