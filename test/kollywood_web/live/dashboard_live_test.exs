@@ -1938,6 +1938,31 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert run_html =~ "Failed"
     end
 
+    test "run detail renders recovery commands block when run error includes guidance", %{
+      conn: conn,
+      project: project
+    } do
+      story_id = "US-RECOVERY-GUIDANCE"
+
+      _context =
+        prepare_run_logs!(project.slug, story_id,
+          events: [
+            %{type: :run_finished, status: "failed"}
+          ],
+          status: "failed",
+          completion: %{
+            error:
+              "push failed\nRecovery commands:\n  git -C '/tmp/work' status --short\n  git -C '/tmp/work' push -u origin 'kw/US-RECOVERY-GUIDANCE'"
+          }
+        )
+
+      {:ok, _run_view, run_html} = live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
+
+      assert run_html =~ "Recovery commands:"
+      assert run_html =~ "hero-command-line"
+      assert run_html =~ "push -u origin"
+    end
+
     test "run detail disables retry action when workspace preconditions are missing", %{
       conn: conn,
       project: project

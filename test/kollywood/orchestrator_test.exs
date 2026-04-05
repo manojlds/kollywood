@@ -484,6 +484,10 @@ defmodule Kollywood.OrchestratorTest do
       end)
 
     assert log =~ "Managed repo sync failed: forced sync failure"
+
+    status = Orchestrator.status(orchestrator)
+    assert status.last_error =~ "Repository sync failed"
+    assert status.last_error =~ "Recovery commands:"
   end
 
   test "dispatches issues by priority with bounded concurrency", %{root: root} do

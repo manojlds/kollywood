@@ -3532,6 +3532,13 @@ defmodule KollywoodWeb.DashboardLive do
         </div>
       <% end %>
 
+      <%= if is_binary(@run_error) and String.contains?(@run_error, "Recovery commands:") do %>
+        <div class="alert alert-warning text-xs gap-2 whitespace-pre-wrap font-mono">
+          <.icon name="hero-command-line" class="size-4 shrink-0" />
+          <pre class="break-words min-w-0 leading-relaxed">{@run_error}</pre>
+        </div>
+      <% end %>
+
       <%= if @terminal_reason do %>
         <div class="alert alert-info text-sm gap-2">
           <.icon name="hero-information-circle" class="size-4 shrink-0" />
