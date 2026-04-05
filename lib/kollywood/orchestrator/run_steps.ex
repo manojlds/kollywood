@@ -466,7 +466,15 @@ defmodule Kollywood.Orchestrator.RunSteps do
   # --- Session lifecycle (fold into current step) ---
 
   defp handle_event(type, event, steps, current)
-       when type in ["session_started", "session_stopped", "session_stop_failed"] do
+       when type in [
+              "execution_session_started",
+              "execution_session_completed",
+              "execution_session_stopped",
+              "execution_session_stop_failed",
+              "session_started",
+              "session_stopped",
+              "session_stop_failed"
+            ] do
     if current do
       {steps, %{current | events: current.events ++ [event]}}
     else

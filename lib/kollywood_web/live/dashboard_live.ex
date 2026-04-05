@@ -3453,6 +3453,16 @@ defmodule KollywoodWeb.DashboardLive do
         do: normalize_run_error(get_in(assigns.run_detail, ["metadata", "error"])),
         else: nil
 
+    terminal_reason =
+      if is_map(assigns.run_detail) do
+        run_terminal_reason(
+          Map.get(assigns.run_detail, "metadata", %{}),
+          run_detail_events(assigns.run_detail)
+        )
+      else
+        nil
+      end
+
     retryable_idx = retryable_step_idx(visible_steps, run_status)
 
     preview_handoff? =
@@ -3487,6 +3497,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:steps, visible_steps)
       |> assign(:run_status, run_status)
       |> assign(:run_error, run_error)
+      |> assign(:terminal_reason, terminal_reason)
       |> assign(:retryable_idx, retryable_idx)
       |> assign(:preview_handoff?, preview_handoff?)
       |> assign(:preview_story_path, preview_story_path)
@@ -3518,6 +3529,13 @@ defmodule KollywoodWeb.DashboardLive do
         <div class="alert alert-error text-sm gap-2">
           <.icon name="hero-exclamation-triangle" class="size-4 shrink-0" />
           <p class="break-words min-w-0">{@run_error}</p>
+        </div>
+      <% end %>
+
+      <%= if @terminal_reason do %>
+        <div class="alert alert-info text-sm gap-2">
+          <.icon name="hero-information-circle" class="size-4 shrink-0" />
+          <p class="break-words min-w-0">{@terminal_reason}</p>
         </div>
       <% end %>
 
@@ -5581,6 +5599,8 @@ defmodule KollywoodWeb.DashboardLive do
       case assigns.status do
         "running" -> {"badge-warning", "Running"}
         "ok" -> {"badge-success", "Passed"}
+        "completed" -> {"badge-success", "Completed"}
+        "max_turns_reached" -> {"badge-warning", "Max turns"}
         "finished" -> {"badge-success", "Done"}
         "failed" -> {"badge-error", "Failed"}
         "stopped" -> {"badge-ghost", "Stopped"}
@@ -5627,7 +5647,7 @@ defmodule KollywoodWeb.DashboardLive do
     status = normalize_run_status(Map.get(run, :status) || Map.get(run, "status"))
 
     show_run_detail_phase_label?(phase_label) and
-      status not in ["ok", "finished", "failed", "stopped"]
+      status not in ["ok", "finished", "failed", "stopped", "completed", "max_turns_reached"]
   end
 
   defp show_recent_activity_phase_label?(_run), do: false
@@ -6609,6 +6629,55 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp normalize_run_error(_value), do: nil
+
+  defp run_terminal_reason(metadata, events) when is_map(metadata) and is_list(events) do
+    status = normalize_run_status(Map.get(metadata, "status"))
+    metadata_error = normalize_run_error(Map.get(metadata, "error"))
+
+    completion_signal =
+      events
+      |> Enum.reverse()
+      |> Enum.find_value(fn event ->
+        type = to_string(map_field(event, :type) || "")
+
+        if type == "completion_detected" do
+          map_field(event, :signal)
+          |> case do
+            signal when is_binary(signal) ->
+              trimmed = String.trim(signal)
+              if trimmed == "", do: nil, else: trimmed
+
+            signal when is_atom(signal) ->
+              signal |> Atom.to_string() |> String.trim()
+
+            _other ->
+              nil
+          end
+        else
+          nil
+        end
+      end)
+
+    cond do
+      status == "completed" and is_binary(completion_signal) ->
+        "Completed by signal: #{completion_signal}"
+
+      status == "completed" ->
+        "Completed by signal"
+
+      status == "max_turns_reached" ->
+        "Stopped because max turns was reached"
+
+      is_binary(metadata_error) and
+          String.contains?(String.downcase(metadata_error), "idle timeout") ->
+        "Stopped because agent output was idle for too long"
+
+      true ->
+        nil
+    end
+  end
+
+  defp run_terminal_reason(_metadata, _events), do: nil
 
   defp run_attempt_sort_key(run) when is_map(run) do
     {run.ended_at || run.started_at || "", run.attempt || 0}

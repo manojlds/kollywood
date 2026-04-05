@@ -687,6 +687,8 @@ defmodule Kollywood.Config do
         positive_integer(Map.get(agent, "max_retry_backoff_ms", 300_000), 300_000),
       command: optional_string(Map.get(agent, "command")),
       args: string_list(Map.get(agent, "args", [])),
+      completion_signals: completion_signals(Map.get(agent, "completion_signals", [])),
+      idle_timeout_ms: positive_integer(Map.get(agent, "idle_timeout_ms"), nil),
       env: string_map(Map.get(agent, "env", %{})),
       timeout_ms:
         positive_integer(Map.get(agent, "timeout_ms", @default_timeout_ms), @default_timeout_ms)
@@ -938,6 +940,16 @@ defmodule Kollywood.Config do
   end
 
   defp command_list(_values), do: []
+
+  defp completion_signals(values) when is_list(values) do
+    values
+    |> Enum.map(&to_string/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
+  defp completion_signals(_values), do: []
 
   defp string_list(values) when is_list(values) do
     Enum.map(values, &to_string/1)

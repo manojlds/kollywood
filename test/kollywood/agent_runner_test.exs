@@ -54,6 +54,10 @@ defmodule Kollywood.AgentRunnerTest do
       esac
     fi
 
+    if [ -n "${AGENT_SLEEP_SECS:-}" ]; then
+      sleep "$AGENT_SLEEP_SECS"
+    fi
+
     echo "ok:$prompt"
     """)
 
@@ -213,7 +217,7 @@ defmodule Kollywood.AgentRunnerTest do
     prompt_log: prompt_log
   } do
     config = runner_config(workspace_root, cli_path, prompt_log)
-    template = "Work on {{ issue.identifier }}"
+    template = "Work on {{ issue.identifier }} DONE_SIGNAL"
 
     assert {:ok, result} =
              AgentRunner.run_issue(@issue,
@@ -230,14 +234,18 @@ defmodule Kollywood.AgentRunnerTest do
     assert Enum.map(result.events, & &1.type) == [
              :run_started,
              :workspace_ready,
+             :execution_session_started,
              :session_started,
              :prompt_captured,
+             :prompt_settings_captured,
              :turn_started,
              :turn_succeeded,
-             :session_stopped,
              :quality_cycle_started,
              :quality_cycle_passed,
              :publish_skipped,
+             :execution_session_completed,
+             :session_stopped,
+             :execution_session_stopped,
              :run_finished
            ]
   end
@@ -255,7 +263,7 @@ defmodule Kollywood.AgentRunnerTest do
         fail_fast: true
       })
 
-    template = "Work on {{ issue.identifier }}"
+    template = "Work on {{ issue.identifier }} DONE_SIGNAL"
 
     assert {:ok, _result} =
              AgentRunner.run_issue(@issue,
@@ -277,7 +285,7 @@ defmodule Kollywood.AgentRunnerTest do
     prompt_log: prompt_log
   } do
     config = runner_config(workspace_root, cli_path, prompt_log)
-    template = "Work on {{ issue.identifier }}"
+    template = "Work on {{ issue.identifier }} DONE_SIGNAL"
 
     assert {:ok, _result} =
              AgentRunner.run_issue(@issue,
@@ -344,7 +352,7 @@ defmodule Kollywood.AgentRunnerTest do
     prompt_log: prompt_log
   } do
     config = runner_config(workspace_root, cli_path, prompt_log, %{before_run: "exit 9"})
-    template = "Work on {{ issue.identifier }}"
+    template = "Work on {{ issue.identifier }} DONE_SIGNAL"
 
     assert {:error, result} =
              AgentRunner.run_issue(@issue,
@@ -403,6 +411,56 @@ defmodule Kollywood.AgentRunnerTest do
     assert prompt_history =~ "continuation turn #3"
   end
 
+  test "stops early when completion signal is detected", %{
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    prompt_log: prompt_log
+  } do
+    config =
+      runner_config(workspace_root, cli_path, prompt_log, %{}, %{
+        max_turns: 5,
+        completion_signals: ["DONE_SIGNAL"]
+      })
+
+    template = "Work on {{ issue.identifier }} DONE_SIGNAL"
+
+    assert {:ok, result} =
+             AgentRunner.run_issue(@issue,
+               config: config,
+               prompt_template: template,
+               mode: :max_turns
+             )
+
+    assert result.status == :completed
+    assert result.turn_count == 1
+    assert :completion_detected in Enum.map(result.events, & &1.type)
+  end
+
+  test "fails turn when idle timeout is reached", %{
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    prompt_log: prompt_log
+  } do
+    config =
+      runner_config(workspace_root, cli_path, prompt_log, %{}, %{
+        idle_timeout_ms: 100,
+        env: %{"AGENT_SLEEP_SECS" => "1"}
+      })
+
+    template = "Work on {{ issue.identifier }}"
+
+    assert {:error, result} =
+             AgentRunner.run_issue(@issue,
+               config: config,
+               prompt_template: template,
+               mode: :single_turn
+             )
+
+    assert result.status == :failed
+    assert result.error =~ "idle timeout"
+    assert :idle_timeout_reached in Enum.map(result.events, & &1.type)
+  end
+
   test "stops session when a later turn fails", %{
     workspace_root: workspace_root,
     cli_path: cli_path,
@@ -426,7 +484,11 @@ defmodule Kollywood.AgentRunnerTest do
     assert result.status == :failed
     assert result.turn_count == 2
     assert result.error =~ "forced failure"
-    assert Enum.take(Enum.map(result.events, & &1.type), -2) == [:session_stopped, :run_finished]
+
+    assert Enum.take(Enum.map(result.events, & &1.type), -2) ==
+             [:execution_session_stopped, :run_finished]
+
+    assert :session_stopped in Enum.map(result.events, & &1.type)
   end
 
   test "fails when a required check command fails", %{

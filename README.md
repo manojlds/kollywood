@@ -172,6 +172,25 @@ mix kollywood.orch.logs US-001 --attempt 2
 mix kollywood.orch.logs US-001 --follow
 ```
 
+### Run terminal statuses and events
+
+Run metadata (`run_logs/*/metadata.json`) stores a terminal `status` and event stream (`events.jsonl`).
+
+- terminal statuses:
+  - `ok`: run completed without an early stop condition
+  - `completed`: agent output matched a configured completion signal
+  - `max_turns_reached`: run stopped after reaching configured turn limit
+  - `failed`: run ended on an error (agent, checks, review/testing, runtime, or publish)
+- key terminal events:
+  - `completion_detected`: includes the matched `signal`
+  - `idle_timeout_reached`: emitted when a turn exceeds `agent.idle_timeout_ms` without output
+  - `run_finished`: final event; includes terminal `status`
+- execution session lifecycle events (for observability):
+  - `execution_session_started`, `execution_session_completed`, `execution_session_stopped`, `execution_session_stop_failed`
+  - legacy `session_started`/`session_stopped` may also appear for backward compatibility
+
+Dashboard run detail surfaces explicit terminal reasons for completion signal, max turns, and idle timeout.
+
 Quality gates are configured in `.kollywood/WORKFLOW.md`:
 
 - `quality.max_cycles`: overall maximum quality loop cycles

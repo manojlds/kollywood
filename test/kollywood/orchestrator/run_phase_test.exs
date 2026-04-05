@@ -16,6 +16,14 @@ defmodule Kollywood.Orchestrator.RunPhaseTest do
       assert phase.label == "Agent turn 2"
     end
 
+    test "maps execution_session_started to agent session phase" do
+      phase = RunPhase.from_events([%{type: :execution_session_started, session_id: "exec-1"}])
+
+      assert phase.kind == "agent"
+      assert phase.label == "Agent session started"
+      assert phase.event_type == "execution_session_started"
+    end
+
     test "derives checks counters with check count" do
       phase =
         RunPhase.from_events([
@@ -166,6 +174,31 @@ defmodule Kollywood.Orchestrator.RunPhaseTest do
       assert phase.kind == "finished"
       assert phase.label == "Run finished"
     end
+
+    test "prefers completion signal label over generic run completed" do
+      phase =
+        RunPhase.from_events([
+          %{type: :completion_detected, signal: "DONE_SIGNAL"},
+          %{type: :run_finished, status: :completed}
+        ])
+
+      assert phase.kind == "finished"
+      assert phase.label == "Completed by signal DONE_SIGNAL"
+    end
+
+    test "maps max_turns terminal status to explicit label" do
+      phase = RunPhase.from_events([%{type: :run_finished, status: :max_turns_reached}])
+
+      assert phase.kind == "finished"
+      assert phase.label == "Max turns reached"
+    end
+
+    test "maps idle timeout event to failed idle-timeout phase" do
+      phase = RunPhase.from_events([%{type: :idle_timeout_reached}])
+
+      assert phase.kind == "failed"
+      assert phase.label == "Idle timeout reached"
+    end
   end
 
   describe "from_status/2" do
@@ -181,6 +214,13 @@ defmodule Kollywood.Orchestrator.RunPhaseTest do
 
       assert phase.kind == "finished"
       assert phase.label == "Run finished"
+    end
+
+    test "maps max_turns status to explicit terminal label" do
+      phase = RunPhase.from_status("max_turns_reached")
+
+      assert phase.kind == "finished"
+      assert phase.label == "Max turns reached"
     end
   end
 end

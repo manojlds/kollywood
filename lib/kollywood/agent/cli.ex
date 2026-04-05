@@ -45,11 +45,23 @@ defmodule Kollywood.Agent.CLI do
     with {:ok, extra_args} <- extra_args(opts),
          {:ok, env} <- merge_turn_env(session.env, opts),
          {:ok, timeout_ms} <- turn_timeout(session.timeout_ms, opts),
+         {:ok, idle_timeout_ms} <- turn_idle_timeout(opts),
          {:ok, prompt_mode} <- turn_prompt_mode(session.prompt_mode, opts) do
       args = session.args ++ extra_args
       raw_log = opt(opts, :raw_log, nil)
       raw_log_mode = opt(opts, :raw_log_mode, :raw)
-      execute(session, args, prompt, prompt_mode, env, timeout_ms, raw_log, raw_log_mode)
+
+      execute(
+        session,
+        args,
+        prompt,
+        prompt_mode,
+        env,
+        timeout_ms,
+        idle_timeout_ms,
+        raw_log,
+        raw_log_mode
+      )
     end
   end
 
@@ -59,7 +71,17 @@ defmodule Kollywood.Agent.CLI do
   @spec stop_session(Session.t()) :: :ok
   def stop_session(%Session{}), do: :ok
 
-  defp execute(session, args, prompt, prompt_mode, env, timeout_ms, raw_log, raw_log_mode) do
+  defp execute(
+         session,
+         args,
+         prompt,
+         prompt_mode,
+         env,
+         timeout_ms,
+         idle_timeout_ms,
+         raw_log,
+         raw_log_mode
+       ) do
     {command, command_args, command_opts, cleanup} =
       command_invocation(session, args, prompt, prompt_mode, env)
 
@@ -67,7 +89,15 @@ defmodule Kollywood.Agent.CLI do
       started_at = System.monotonic_time(:millisecond)
 
       result =
-        port_execute(command, command_args, command_opts, timeout_ms, raw_log, raw_log_mode)
+        port_execute(
+          command,
+          command_args,
+          command_opts,
+          timeout_ms,
+          idle_timeout_ms,
+          raw_log,
+          raw_log_mode
+        )
 
       case result do
         {:ok, {output, 0}} ->
@@ -86,6 +116,9 @@ defmodule Kollywood.Agent.CLI do
 
         {:error, :timeout} ->
           {:error, "Agent command timed out after #{timeout_ms}ms"}
+
+        {:error, :idle_timeout} ->
+          {:error, "Agent command hit idle timeout after #{idle_timeout_ms}ms without output"}
       end
     rescue
       error in ErlangError ->
@@ -96,7 +129,7 @@ defmodule Kollywood.Agent.CLI do
     end
   end
 
-  defp port_execute(command, args, opts, timeout_ms, raw_log, raw_log_mode) do
+  defp port_execute(command, args, opts, timeout_ms, idle_timeout_ms, raw_log, raw_log_mode) do
     # Port.open requires charlists for executable, args, cd, and env keys/values.
     # System.cmd handles these conversions internally; we must do them explicitly.
     executable =
@@ -124,22 +157,50 @@ defmodule Kollywood.Agent.CLI do
 
     port = Port.open({:spawn_executable, executable}, port_opts)
     deadline = System.monotonic_time(:millisecond) + timeout_ms
-    collect_port_output(port, raw_log, init_raw_log_state(raw_log_mode), [], deadline)
+
+    collect_port_output(
+      port,
+      raw_log,
+      init_raw_log_state(raw_log_mode),
+      [],
+      deadline,
+      idle_timeout_ms,
+      System.monotonic_time(:millisecond)
+    )
   end
 
-  defp collect_port_output(port, raw_log, raw_log_state, chunks, deadline) do
-    remaining = deadline - System.monotonic_time(:millisecond)
+  defp collect_port_output(
+         port,
+         raw_log,
+         raw_log_state,
+         chunks,
+         deadline,
+         idle_timeout_ms,
+         last_output_at
+       ) do
+    now = System.monotonic_time(:millisecond)
+    remaining = deadline - now
+    idle_remaining = idle_remaining(idle_timeout_ms, now, last_output_at)
+    receive_timeout = min_timeout(remaining, idle_remaining)
 
-    if remaining <= 0 do
+    if receive_timeout <= 0 do
       Port.close(port)
-      {:error, :timeout}
+      if remaining <= 0, do: {:error, :timeout}, else: {:error, :idle_timeout}
     else
       receive do
         {^port, {:data, chunk}} ->
           {log_chunk, raw_log_state} = format_raw_log_chunk(raw_log_state, chunk)
           maybe_write_raw_log(raw_log, log_chunk)
 
-          collect_port_output(port, raw_log, raw_log_state, [chunks, chunk], deadline)
+          collect_port_output(
+            port,
+            raw_log,
+            raw_log_state,
+            [chunks, chunk],
+            deadline,
+            idle_timeout_ms,
+            System.monotonic_time(:millisecond)
+          )
 
         {^port, {:exit_status, status}} ->
           {tail_chunk, _raw_log_state} = flush_raw_log_chunk(raw_log_state)
@@ -147,9 +208,9 @@ defmodule Kollywood.Agent.CLI do
 
           {:ok, {IO.iodata_to_binary(chunks), status}}
       after
-        remaining ->
+        receive_timeout ->
           Port.close(port)
-          {:error, :timeout}
+          if remaining <= 0, do: {:error, :timeout}, else: {:error, :idle_timeout}
       end
     end
   end
@@ -293,12 +354,36 @@ defmodule Kollywood.Agent.CLI do
     parse_timeout(opt(opts, :timeout_ms, default_timeout), "turn timeout_ms")
   end
 
+  defp turn_idle_timeout(opts) do
+    parse_optional_timeout(opt(opts, :idle_timeout_ms, nil), "turn idle_timeout_ms")
+  end
+
   defp timeout_ms(opts, defaults) do
     parse_timeout(opt(opts, :timeout_ms, defaults.timeout_ms), "session timeout_ms")
   end
 
   defp parse_timeout(value, _label) when is_integer(value) and value > 0, do: {:ok, value}
   defp parse_timeout(_value, label), do: {:error, "#{label} must be a positive integer"}
+
+  defp parse_optional_timeout(nil, _label), do: {:ok, nil}
+
+  defp parse_optional_timeout(value, _label) when is_integer(value) and value > 0,
+    do: {:ok, value}
+
+  defp parse_optional_timeout(_value, label),
+    do: {:error, "#{label} must be a positive integer when provided"}
+
+  defp idle_remaining(nil, _now, _last_output_at), do: :infinity
+
+  defp idle_remaining(idle_timeout_ms, now, last_output_at)
+       when is_integer(idle_timeout_ms) and is_integer(last_output_at) do
+    idle_timeout_ms - (now - last_output_at)
+  end
+
+  defp idle_remaining(_idle_timeout_ms, _now, _last_output_at), do: :infinity
+
+  defp min_timeout(left, :infinity), do: left
+  defp min_timeout(left, right) when is_integer(left) and is_integer(right), do: min(left, right)
 
   defp prompt_mode(opts, defaults) do
     parse_prompt_mode(opt(opts, :prompt_mode, defaults.prompt_mode), "session prompt_mode")
