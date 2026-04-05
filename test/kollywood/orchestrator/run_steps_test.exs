@@ -4,6 +4,34 @@ defmodule Kollywood.Orchestrator.RunStepsTest do
   alias Kollywood.Orchestrator.RunSteps
 
   describe "from_events/2" do
+    test "folds execution session lifecycle events into current agent turn" do
+      steps =
+        RunSteps.from_events([
+          %{type: :turn_started, turn: 1},
+          %{type: :execution_session_started, session_id: "exec-1"},
+          %{type: :session_started, session_id: "legacy-1"},
+          %{type: :turn_succeeded, turn: 1, output: "done"},
+          %{type: :execution_session_completed, status: :ok},
+          %{type: :session_stopped, session_id: "legacy-1"},
+          %{type: :execution_session_stopped, session_id: "exec-1"},
+          %{type: :run_finished, status: "ok"}
+        ])
+
+      agent_turn = Enum.find(steps, &(&1.kind == "agent_turn"))
+      assert agent_turn
+
+      event_types =
+        Enum.map(agent_turn.events, fn event ->
+          to_string(Map.get(event, :type) || Map.get(event, "type"))
+        end)
+
+      assert "execution_session_started" in event_types
+      assert "execution_session_completed" in event_types
+      assert "execution_session_stopped" in event_types
+      assert "session_started" in event_types
+      assert "session_stopped" in event_types
+    end
+
     test "carries agent prompt when prompt event follows a completed marker step" do
       steps =
         RunSteps.from_events([
@@ -34,6 +62,41 @@ defmodule Kollywood.Orchestrator.RunStepsTest do
 
       assert Enum.any?(steps, &(&1.kind == "review" and &1.prompt == "Review first prompt"))
       assert Enum.any?(steps, &(&1.kind == "testing" and &1.prompt == "Testing first prompt"))
+    end
+
+    test "keeps completion_detected event attached to current agent turn" do
+      steps =
+        RunSteps.from_events([
+          %{type: :turn_started, turn: 1},
+          %{type: :turn_succeeded, turn: 1, output: "done"},
+          %{type: :completion_detected, signal: "DONE_SIGNAL"},
+          %{type: :run_finished, status: "completed"}
+        ])
+
+      agent_turn = Enum.find(steps, &(&1.kind == "agent_turn"))
+      assert agent_turn
+
+      assert Enum.any?(agent_turn.events, fn event ->
+               to_string(Map.get(event, :type) || Map.get(event, "type")) == "completion_detected"
+             end)
+    end
+
+    test "keeps idle_timeout_reached event attached to current agent turn" do
+      steps =
+        RunSteps.from_events([
+          %{type: :turn_started, turn: 1},
+          %{type: :idle_timeout_reached, reason: "timeout"},
+          %{type: :turn_failed, turn: 1, reason: "idle timeout"},
+          %{type: :run_finished, status: "failed"}
+        ])
+
+      agent_turn = Enum.find(steps, &(&1.kind == "agent_turn"))
+      assert agent_turn
+
+      assert Enum.any?(agent_turn.events, fn event ->
+               to_string(Map.get(event, :type) || Map.get(event, "type")) ==
+                 "idle_timeout_reached"
+             end)
     end
   end
 end

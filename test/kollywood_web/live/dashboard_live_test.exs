@@ -1884,6 +1884,60 @@ defmodule KollywoodWeb.DashboardLiveTest do
       refute run_html =~ ">nil<"
     end
 
+    test "run detail shows completion signal terminal reason", %{conn: conn, project: project} do
+      story_id = "US-COMPLETION-REASON"
+
+      _context =
+        prepare_run_logs!(project.slug, story_id,
+          events: [
+            %{type: :completion_detected, signal: "DONE_SIGNAL"},
+            %{type: :run_finished, status: "completed"}
+          ],
+          status: "completed"
+        )
+
+      {:ok, _run_view, run_html} = live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
+
+      assert run_html =~ "Completed by signal: DONE_SIGNAL"
+      assert run_html =~ "Completed"
+    end
+
+    test "run detail shows max-turns terminal reason", %{conn: conn, project: project} do
+      story_id = "US-MAX-TURNS-REASON"
+
+      _context =
+        prepare_run_logs!(project.slug, story_id,
+          events: [
+            %{type: :run_finished, status: "max_turns_reached"}
+          ],
+          status: "max_turns_reached"
+        )
+
+      {:ok, _run_view, run_html} = live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
+
+      assert run_html =~ "Stopped because max turns was reached"
+      assert run_html =~ "Max turns"
+    end
+
+    test "run detail shows idle-timeout terminal reason", %{conn: conn, project: project} do
+      story_id = "US-IDLE-TIMEOUT-REASON"
+
+      _context =
+        prepare_run_logs!(project.slug, story_id,
+          events: [
+            %{type: :idle_timeout_reached, reason: "Agent command hit idle timeout"},
+            %{type: :run_finished, status: "failed"}
+          ],
+          status: "failed",
+          completion: %{error: "Agent command hit idle timeout after 100ms without output"}
+        )
+
+      {:ok, _run_view, run_html} = live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
+
+      assert run_html =~ "Stopped because agent output was idle for too long"
+      assert run_html =~ "Failed"
+    end
+
     test "run detail disables retry action when workspace preconditions are missing", %{
       conn: conn,
       project: project

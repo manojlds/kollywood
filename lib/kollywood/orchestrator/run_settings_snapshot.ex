@@ -277,6 +277,8 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshot do
       "kind" => source_marker(raw, ["agent", "kind"]),
       "command" => source_marker(raw, ["agent", "command"]),
       "args" => source_marker(raw, ["agent", "args"]),
+      "completion_signals" => source_marker(raw, ["agent", "completion_signals"]),
+      "idle_timeout_ms" => source_marker(raw, ["agent", "idle_timeout_ms"]),
       "env" => source_marker(raw, ["agent", "env"]),
       "timeout_ms" => source_marker(raw, ["agent", "timeout_ms"]),
       "max_turns" => source_marker(raw, ["agent", "max_turns"]),

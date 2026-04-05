@@ -1624,7 +1624,7 @@ defmodule Kollywood.Orchestrator do
       ended_at: parse_datetime(Map.get(payload, "ended_at")) || now
     }
 
-    if status == :ok, do: {:ok, result}, else: {:error, result}
+    if status in [:ok, :completed], do: {:ok, result}, else: {:error, result}
   end
 
   defp reconstruct_result_from_payload(_) do
@@ -1633,8 +1633,10 @@ defmodule Kollywood.Orchestrator do
   end
 
   defp parse_result_status(:ok), do: :ok
+  defp parse_result_status(:completed), do: :completed
   defp parse_result_status(:max_turns_reached), do: :max_turns_reached
   defp parse_result_status("ok"), do: :ok
+  defp parse_result_status("completed"), do: :completed
   defp parse_result_status("max_turns_reached"), do: :max_turns_reached
   defp parse_result_status(_status), do: :failed
 
@@ -1827,7 +1829,7 @@ defmodule Kollywood.Orchestrator do
     done_metadata = tracker_done_metadata(result, run_entry)
 
     case result.status do
-      :ok ->
+      status when status in [:ok, :completed] ->
         mark_merged? = publish_merged?(result)
         mark_pending_merge? = publish_pending_merge?(result)
 
@@ -2288,7 +2290,10 @@ defmodule Kollywood.Orchestrator do
 
   defp originating_session_id(events) when is_list(events) do
     events
-    |> Enum.filter(fn event -> event_type(event) == "session_started" end)
+    |> Enum.filter(fn event ->
+      type = event_type(event)
+      type in ["execution_session_started", "session_started"]
+    end)
     |> Enum.map(&field(&1, :session_id))
     |> Enum.reject(&is_nil/1)
     |> List.last()

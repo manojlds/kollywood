@@ -167,6 +167,26 @@ defmodule Kollywood.ConfigTest do
     assert config.agent.max_retry_backoff_ms == 120_000
   end
 
+  test "parses agent completion_signals and idle_timeout_ms" do
+    content = """
+    ---
+    workspace:
+      root: /tmp
+    agent:
+      kind: opencode
+      completion_signals:
+        - TASK_DONE
+        - FINAL_RESPONSE
+      idle_timeout_ms: 45000
+    ---
+    prompt
+    """
+
+    assert {:ok, config, _} = Config.parse(content)
+    assert config.agent.completion_signals == ["TASK_DONE", "FINAL_RESPONSE"]
+    assert config.agent.idle_timeout_ms == 45_000
+  end
+
   test "ignores invalid project max concurrent agent entries" do
     content = """
     ---

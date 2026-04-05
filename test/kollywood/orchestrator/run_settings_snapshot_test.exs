@@ -46,4 +46,28 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshotTest do
     assert get_in(snapshot, ["resolved", "runtime", "image"]) == "ghcr.io/acme/runtime:2.0.0"
     assert get_in(snapshot, ["sources", "runtime", "image"]) == "workflow"
   end
+
+  test "agent completion and idle timeout sources are captured" do
+    workflow = """
+    ---
+    workspace:
+      root: /tmp
+    agent:
+      kind: pi
+      completion_signals:
+        - TASK_DONE
+      idle_timeout_ms: 12000
+    ---
+    prompt
+    """
+
+    assert {:ok, config, _} = Config.parse(workflow)
+
+    snapshot = RunSettingsSnapshot.build(config)
+
+    assert get_in(snapshot, ["resolved", "agent", "completion_signals"]) == ["TASK_DONE"]
+    assert get_in(snapshot, ["resolved", "agent", "idle_timeout_ms"]) == 12_000
+    assert get_in(snapshot, ["sources", "agent", "completion_signals"]) == "workflow"
+    assert get_in(snapshot, ["sources", "agent", "idle_timeout_ms"]) == "workflow"
+  end
 end

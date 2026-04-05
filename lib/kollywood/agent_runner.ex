@@ -13,6 +13,7 @@ defmodule Kollywood.AgentRunner do
   alias Kollywood.AgentRunner.Result
   alias Kollywood.Config
   alias Kollywood.PromptBuilder
+  alias Kollywood.PromptPipeline
   alias Kollywood.Publisher
   alias Kollywood.Runtime
   alias Kollywood.RuntimeSessions
@@ -56,6 +57,8 @@ defmodule Kollywood.AgentRunner do
          {:ok, attempt} <- parse_attempt(Keyword.get(opts, :attempt)),
          {:ok, issue_meta} <- issue_meta(issue),
          {:ok, config, prompt_template, run_settings_snapshot} <- resolve_workflow(issue, opts),
+         {:ok, run_settings_snapshot} <-
+           enrich_run_settings_with_prompt_pipeline(run_settings_snapshot, prompt_template, issue),
          {:ok, mode} <- parse_mode(Keyword.get(opts, :mode, :single_turn)),
          {:ok, turn_limit} <- parse_turn_limit(config, Keyword.get(opts, :turn_limit)),
          {:ok, session_opts} <-
@@ -353,58 +356,91 @@ defmodule Kollywood.AgentRunner do
   defp resolve_retry_workspace(_workspace), do: {:error, "workspace is required for step retries"}
 
   defp run_with_session(state, config, prompt_template, mode, turn_limit, session_opts, turn_opts) do
+    with_execution_session(state, config, session_opts, fn state_with_session, session ->
+      run_result =
+        run_turns(state_with_session, config, prompt_template, mode, turn_limit, turn_opts)
+
+      {status, reason, run_state} = normalize_run_result(run_result)
+
+      outcome =
+        if is_nil(reason) do
+          case finalize_with_quality_gates(
+                 run_state,
+                 config,
+                 status,
+                 session_opts,
+                 turn_opts,
+                 prompt_template
+               ) do
+            {:ok, qualified_state} ->
+              case run_publish(qualified_state, config) do
+                {:ok, published_state} ->
+                  {:ok, status, published_state}
+
+                {:error, pub_reason, published_state} ->
+                  {:error, pub_reason, published_state}
+              end
+
+            {:error, gate_reason, qualified_state} ->
+              {:error, gate_reason, qualified_state}
+          end
+        else
+          {:error, reason, run_state}
+        end
+
+      emit_execution_session_outcome(outcome, session)
+    end)
+    |> finalize_run_with_runtime(config)
+  end
+
+  defp with_execution_session(state, config, session_opts, fun) when is_function(fun, 2) do
     case Agent.start_session(config, state.workspace, session_opts) do
       {:ok, session} ->
         state =
           state
           |> Map.put(:session, session)
+          |> emit(:execution_session_started, %{session_id: session.id, adapter: session.adapter})
           |> emit(:session_started, %{session_id: session.id, adapter: session.adapter})
 
-        run_result =
-          run_turns(state, config, prompt_template, mode, turn_limit, turn_opts)
-
+        run_result = fun.(state, session)
         {status, reason, run_state} = normalize_run_result(run_result)
 
-        outcome =
-          case stop_session(run_state, session) do
-            {:ok, stopped_state} ->
-              if is_nil(reason) do
-                case finalize_with_quality_gates(
-                       stopped_state,
-                       config,
-                       status,
-                       session_opts,
-                       turn_opts,
-                       prompt_template
-                     ) do
-                  {:ok, qualified_state} ->
-                    case run_publish(qualified_state, config) do
-                      {:ok, published_state} ->
-                        {:ok, status, published_state}
+        case stop_session(run_state, session) do
+          {:ok, stopped_state} ->
+            stopped_state =
+              emit(stopped_state, :execution_session_stopped, %{session_id: session.id})
 
-                      {:error, pub_reason, published_state} ->
-                        {:error, pub_reason, published_state}
-                    end
+            if is_nil(reason) do
+              {:ok, status, stopped_state}
+            else
+              {:error, reason, stopped_state}
+            end
 
-                  {:error, gate_reason, qualified_state} ->
-                    {:error, gate_reason, qualified_state}
-                end
-              else
-                {:error, reason, stopped_state}
-              end
+          {:error, stop_reason, stopped_state} ->
+            stopped_state =
+              emit(stopped_state, :execution_session_stop_failed, %{
+                session_id: session.id,
+                reason: stop_reason
+              })
 
-            {:error, stop_reason, stopped_state} ->
-              combined_reason =
-                combine_errors(reason, "Failed to stop agent session: #{stop_reason}")
+            combined_reason =
+              combine_errors(reason, "Failed to stop agent session: #{stop_reason}")
 
-              {:error, combined_reason, stopped_state}
-          end
-
-        finalize_run_with_runtime(outcome, config)
+            {:error, combined_reason, stopped_state}
+        end
 
       {:error, reason} ->
-        fail(state, "Failed to start agent session: #{reason}")
+        {:error, "Failed to start agent session: #{reason}", state}
     end
+  end
+
+  defp emit_execution_session_outcome({:ok, status, state}, _session) do
+    {:ok, status, emit(state, :execution_session_completed, %{status: status})}
+  end
+
+  defp emit_execution_session_outcome({:error, reason, state}, _session) do
+    {:error, reason,
+     emit(state, :execution_session_completed, %{status: :failed, reason: reason})}
   end
 
   defp finalize_run_with_runtime({:ok, status, state}, config) do
@@ -443,19 +479,23 @@ defmodule Kollywood.AgentRunner do
   defp run_turns(state, config, prompt_template, mode, turn_limit, turn_opts) do
     turn_number = state.turn_count + 1
 
-    with {:ok, prompt} <- build_prompt(state, config, prompt_template, turn_number),
+    with {:ok, prompt, prompt_settings} <-
+           build_prompt(state, config, prompt_template, turn_number),
          :ok <- Workspace.before_run(state.workspace, config.hooks, state.runtime) do
       state =
         state
         |> Map.put(:turn_count, turn_number)
         |> maybe_emit_prompt(turn_number, :agent, prompt)
+        |> maybe_emit_prompt_settings(turn_number, prompt_settings)
         |> emit(:turn_started, %{turn: turn_number})
 
       turn_result =
         Agent.run_turn(
           state.session,
           prompt,
-          with_raw_log(turn_opts, state.log_files, :agent_stdout)
+          turn_opts
+          |> with_raw_log(state.log_files, :agent_stdout)
+          |> with_idle_timeout(config)
         )
 
       Workspace.after_run(state.workspace, config.hooks)
@@ -475,9 +515,26 @@ defmodule Kollywood.AgentRunner do
               args: Map.get(result, :args, [])
             })
 
-          continue_or_finish(state, config, prompt_template, mode, turn_limit, turn_opts)
+          case completion_signal_match(result, config) do
+            nil ->
+              continue_or_finish(state, config, prompt_template, mode, turn_limit, turn_opts)
+
+            signal ->
+              {:ok, :completed,
+               emit(state, :completion_detected, %{
+                 turn: turn_number,
+                 signal: signal
+               })}
+          end
 
         {:error, reason} ->
+          state =
+            if idle_timeout_reason?(reason) do
+              emit(state, :idle_timeout_reached, %{turn: turn_number, reason: reason})
+            else
+              state
+            end
+
           state = emit(state, :turn_failed, %{turn: turn_number, reason: reason})
           {:error, reason, state}
       end
@@ -510,20 +567,33 @@ defmodule Kollywood.AgentRunner do
         do: variables,
         else: Map.put(variables, "resume_context", resume_context)
 
-    case build_task_prompt(prompt_template, variables, config) do
-      {:ok, prompt} -> {:ok, append_context_if_missing(prompt, resume_context)}
-      {:error, reason} -> {:error, "Failed to render initial prompt: #{reason}"}
+    runtime_context = prompt_runtime_context(state)
+
+    case build_task_prompt(prompt_template, variables, config, state.issue, runtime_context) do
+      {:ok, prompt, settings} ->
+        {:ok, append_context_if_missing(prompt, resume_context), settings}
+
+      {:error, reason} ->
+        {:error, "Failed to render initial prompt: #{reason}"}
     end
   end
 
   defp build_prompt(state, _config, _prompt_template, turn_number) do
-    {:ok, ContinuationPrompt.build(state.issue, turn_number)}
+    {:ok, ContinuationPrompt.build(state.issue, turn_number), nil}
   end
 
-  defp build_task_prompt(prompt_template, variables, config) do
-    case PromptBuilder.render(prompt_template, variables) do
-      {:ok, prompt} -> {:ok, prompt <> verification_section(config)}
-      {:error, reason} -> {:error, reason}
+  defp build_task_prompt(prompt_template, variables, config, issue, runtime_context) do
+    prompt_args = issue_prompt_args(issue)
+
+    case PromptPipeline.build(prompt_template, variables,
+           prompt_args: prompt_args,
+           runtime_context: runtime_context
+         ) do
+      {:ok, prompt, settings} ->
+        {:ok, prompt <> verification_section(config), settings}
+
+      {:error, reason, _settings} ->
+        {:error, reason}
     end
   end
 
@@ -599,6 +669,68 @@ defmodule Kollywood.AgentRunner do
   end
 
   defp append_context_if_missing(prompt, _context), do: prompt
+
+  defp enrich_run_settings_with_prompt_pipeline(run_settings_snapshot, prompt_template, issue)
+       when is_map(run_settings_snapshot) do
+    prompt_args = issue_prompt_args(issue)
+
+    prompt_settings =
+      PromptPipeline.settings_snapshot(prompt_template, prompt_args,
+        runtime_context_keys: PromptPipeline.default_reserved_keys()
+      )
+
+    case PromptPipeline.validate_settings(prompt_settings) do
+      :ok ->
+        {:ok, Map.put(run_settings_snapshot, "prompt", prompt_settings)}
+
+      {:error, reason} ->
+        {:error, "invalid prompt settings: #{reason}"}
+    end
+  end
+
+  defp enrich_run_settings_with_prompt_pipeline(run_settings_snapshot, _prompt_template, _issue),
+    do: {:ok, run_settings_snapshot}
+
+  defp prompt_runtime_context(state) when is_map(state) do
+    %{
+      issue_id: state.issue_id,
+      workspace_path: workspace_path(state.workspace),
+      branch: state.workspace && Map.get(state.workspace, :branch),
+      run_attempt: state.attempt
+    }
+  end
+
+  defp issue_prompt_args(issue) when is_map(issue) do
+    issue
+    |> field(:settings)
+    |> case do
+      settings when is_map(settings) ->
+        execution = Map.get(settings, :execution) || Map.get(settings, "execution") || settings
+
+        case execution do
+          value when is_map(value) ->
+            Map.get(value, :prompt_args) ||
+              Map.get(value, "prompt_args") ||
+              Map.get(value, :promptArgs) ||
+              Map.get(value, "promptArgs") ||
+              %{}
+
+          _other ->
+            %{}
+        end
+
+      _other ->
+        %{}
+    end
+  end
+
+  defp issue_prompt_args(_issue), do: %{}
+
+  defp maybe_emit_prompt_settings(state, 1, %{} = settings) do
+    emit(state, :prompt_settings_captured, %{settings: settings})
+  end
+
+  defp maybe_emit_prompt_settings(state, _turn, _settings), do: state
 
   defp maybe_emit_continuation_context(state) when is_map(state) do
     case Map.get(state, :continuation) do
@@ -2283,6 +2415,59 @@ defmodule Kollywood.AgentRunner do
     do: Map.put(opts, :raw_log, path)
 
   defp with_raw_log(opts, _log_files, _key), do: opts
+
+  defp with_idle_timeout(opts, config) when is_map(opts) do
+    case agent_idle_timeout_ms(config) do
+      nil -> opts
+      value -> Map.put(opts, :idle_timeout_ms, value)
+    end
+  end
+
+  defp with_idle_timeout(opts, _config), do: opts
+
+  defp agent_idle_timeout_ms(config) do
+    case get_in(config, [Access.key(:agent, %{}), Access.key(:idle_timeout_ms)]) do
+      value when is_integer(value) and value > 0 -> value
+      _other -> nil
+    end
+  end
+
+  defp completion_signal_match(result, config) when is_map(result) do
+    output =
+      Map.get(result, :raw_output) ||
+        Map.get(result, :output) ||
+        ""
+
+    completion_signal_match(output, config)
+  end
+
+  defp completion_signal_match(output, config) when is_binary(output) do
+    config
+    |> completion_signals()
+    |> Enum.find(fn signal -> String.contains?(output, signal) end)
+  end
+
+  defp completion_signal_match(_output, _config), do: nil
+
+  defp completion_signals(config) do
+    config
+    |> get_in([Access.key(:agent, %{}), Access.key(:completion_signals)])
+    |> case do
+      list when is_list(list) ->
+        list
+        |> Enum.map(&to_string/1)
+        |> Enum.map(&String.trim/1)
+        |> Enum.reject(&(&1 == ""))
+
+      _other ->
+        []
+    end
+  end
+
+  defp idle_timeout_reason?(reason) when is_binary(reason),
+    do: String.contains?(String.downcase(reason), "idle timeout")
+
+  defp idle_timeout_reason?(_reason), do: false
 
   defp normalize_review_turn_result({:ok, result}, :ok) when is_map(result) do
     case Map.get(result, :output) do

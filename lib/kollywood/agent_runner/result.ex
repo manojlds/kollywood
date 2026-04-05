@@ -3,7 +3,7 @@ defmodule Kollywood.AgentRunner.Result do
   Final outcome for one issue run through the agent runner.
   """
 
-  @type status :: :ok | :failed | :max_turns_reached
+  @type status :: :ok | :completed | :failed | :max_turns_reached
 
   @type event :: %{
           required(:type) => atom(),

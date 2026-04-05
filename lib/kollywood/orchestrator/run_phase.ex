@@ -39,6 +39,9 @@ defmodule Kollywood.Orchestrator.RunPhase do
           turn = positive_integer_field(event, [:turn])
           agent_phase(turn, event_type)
 
+        "execution_session_started" ->
+          %{kind: "agent", label: "Agent session started", event_type: event_type}
+
         "session_started" ->
           %{kind: "agent", label: "Agent session started", event_type: event_type}
 
@@ -188,6 +191,13 @@ defmodule Kollywood.Orchestrator.RunPhase do
         "turn_failed" ->
           failed_phase("Agent turn failed", event_type)
 
+        "completion_detected" ->
+          signal = map_get(event, :signal) |> completion_signal_label_suffix()
+          %{kind: "finished", label: "Completed by signal#{signal}", event_type: event_type}
+
+        "idle_timeout_reached" ->
+          failed_phase("Idle timeout reached", event_type)
+
         "run_finished" ->
           status = map_get(event, :status)
 
@@ -197,6 +207,16 @@ defmodule Kollywood.Orchestrator.RunPhase do
                 nil
               else
                 failed_phase("Run failed", event_type)
+              end
+
+            "max_turns_reached" ->
+              %{kind: "finished", label: "Max turns reached", event_type: event_type}
+
+            "completed" ->
+              if is_map(last_phase) and map_get(last_phase, :event_type) == "completion_detected" do
+                nil
+              else
+                %{kind: "finished", label: "Run completed", event_type: event_type}
               end
 
             _other ->
@@ -237,6 +257,12 @@ defmodule Kollywood.Orchestrator.RunPhase do
 
       "ok" ->
         %{kind: "finished", label: "Run finished"}
+
+      "completed" ->
+        %{kind: "finished", label: "Run completed"}
+
+      "max_turns_reached" ->
+        %{kind: "finished", label: "Max turns reached"}
 
       s when s in ["failed", "error"] ->
         if is_map(last_phase) and last_phase[:kind] == "failed",
@@ -388,6 +414,19 @@ defmodule Kollywood.Orchestrator.RunPhase do
     do: value |> Atom.to_string() |> normalize_status()
 
   defp normalize_status(_value), do: ""
+
+  defp completion_signal_label_suffix(value) when is_binary(value) do
+    trimmed = String.trim(value)
+    if trimmed == "", do: "", else: " " <> trimmed
+  end
+
+  defp completion_signal_label_suffix(value) when is_atom(value) do
+    value
+    |> Atom.to_string()
+    |> completion_signal_label_suffix()
+  end
+
+  defp completion_signal_label_suffix(_value), do: ""
 
   defp phase(map) do
     map
