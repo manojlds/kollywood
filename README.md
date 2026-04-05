@@ -94,7 +94,7 @@ Kollywood can run against a local PRD tracker file.
 - Default tracker path is `prd.json`
 - Stories use `status` values such as `draft`, `open`, `in_progress`, `done`, `failed`, `pending_merge`, `merged`, `cancelled`
 - Manual UI/API transitions intentionally block setting `in_progress` directly (that status is orchestrator-managed)
-- Default agent kind in `.kollywood/WORKFLOW.md` is `pi`
+- Default agent kind in `.kollywood/WORKFLOW.md` is `pi` (supported kinds: `amp`, `claude`, `codex`, `cursor`, `opencode`, `pi`)
 
 CLI helpers:
 
@@ -244,6 +244,7 @@ Quality gates are configured in `.kollywood/WORKFLOW.md`:
 - `quality.testing.enabled`: when true, enables tester-agent validation after review
 - `quality.testing.max_cycles`: maximum tester remediation cycles
 - `quality.testing.agent`: optional tester-agent overrides (kind/command/args/env/timeout)
+- when `kind: codex`, Kollywood defaults to `codex exec --ask-for-approval never --sandbox workspace-write` for non-interactive automation-safe runs
 - testing agents are expected to validate only against runtime-injected URLs (no ad-hoc local port fallbacks)
 - `preview.enabled`: enables per-story preview policy metadata for pending-merge flows
 - `preview.ttl_minutes`: default preview time-to-live before automatic shutdown
@@ -287,6 +288,26 @@ Per-story execution overrides can also enable testing/preview:
   }
 }
 ```
+
+Example Codex-first workflow config:
+
+```yaml
+agent:
+  kind: codex
+
+quality:
+  review:
+    enabled: true
+    agent:
+      kind: codex
+  testing:
+    enabled: true
+    agent:
+      kind: codex
+```
+
+Codex execution is always configured for non-interactive behavior in adapter defaults,
+including disabled approval prompts for unattended run/review/testing phases.
 
 Repo-specific agent guidance can live in `.kollywood/AGENTS.md`.
 The default `before_run` hook copies it to `AGENTS.md` in each workspace when present.

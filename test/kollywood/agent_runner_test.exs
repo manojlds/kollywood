@@ -67,7 +67,11 @@ defmodule Kollywood.AgentRunnerTest do
     #!/usr/bin/env bash
     set -eu
 
-    prompt="$(cat)"
+    prompt="$(cat || true)"
+
+    if [ -z "$prompt" ] && [ "$#" -gt 0 ]; then
+      prompt="${@: -1}"
+    fi
 
     if [ -n "${REVIEW_PROMPT_LOG_FILE:-}" ]; then
       printf "REVIEW_PROMPT<<%s>>\n" "$prompt" >> "$REVIEW_PROMPT_LOG_FILE"
@@ -112,12 +116,10 @@ defmodule Kollywood.AgentRunnerTest do
     #!/usr/bin/env bash
     set -eu
 
-    prompt=""
+    prompt="$(cat || true)"
 
-    if [ "$#" -gt 0 ]; then
+    if [ -z "$prompt" ] && [ "$#" -gt 0 ]; then
       prompt="${@: -1}"
-    else
-      prompt="$(cat)"
     fi
 
     if [ -n "${TESTING_PROMPT_LOG_FILE:-}" ]; then
@@ -1156,6 +1158,53 @@ defmodule Kollywood.AgentRunnerTest do
     assert :review_passed in Enum.map(result.events, & &1.type)
   end
 
+  test "emits codex review agent kind when review uses codex", %{
+    root: root,
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    prompt_log: prompt_log
+  } do
+    codex_review_cli_path = write_review_cli_for_argv!(root)
+
+    config =
+      runner_config(workspace_root, cli_path, prompt_log)
+      |> Map.put(:agent, %{
+        kind: :codex,
+        max_concurrent_agents: 2,
+        max_turns: 3,
+        command: cli_path,
+        args: [],
+        env: %{"PROMPT_LOG_FILE" => prompt_log},
+        timeout_ms: 10_000
+      })
+      |> Map.put(:review, %{
+        enabled: true,
+        agent: %{
+          explicit: true,
+          kind: :codex,
+          command: codex_review_cli_path,
+          args: [],
+          env: %{"REVIEW_VERDICT" => "pass"},
+          timeout_ms: 10_000
+        }
+      })
+
+    assert {:ok, result} =
+             AgentRunner.run_issue(@issue,
+               config: config,
+               prompt_template: "Work on {{ issue.identifier }}",
+               mode: :single_turn
+             )
+
+    assert Enum.any?(result.events, fn event ->
+             event.type == :review_started and event.agent_kind == :codex
+           end)
+
+    assert Enum.any?(result.events, fn event ->
+             event.type == :review_passed and event.agent_kind == :codex
+           end)
+  end
+
   test "retries with remediation turn when review fails before max cycles", %{
     root: root,
     workspace_root: workspace_root,
@@ -1454,6 +1503,62 @@ defmodule Kollywood.AgentRunnerTest do
     assert "screenshot" in artifact_kinds
     assert "video" in artifact_kinds
     assert "replay" in artifact_kinds
+  end
+
+  test "emits codex testing agent kind when testing uses codex", %{
+    root: root,
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    testing_cli_path: testing_cli_path,
+    prompt_log: prompt_log
+  } do
+    fake_pitchfork_log = Path.join(root, "fake_pitchfork_testing_codex.log")
+    _fake_pitchfork = write_fake_pitchfork!(root, fake_pitchfork_log)
+
+    config =
+      runner_config(workspace_root, cli_path, prompt_log)
+      |> Map.put(:agent, %{
+        kind: :codex,
+        max_concurrent_agents: 2,
+        max_turns: 3,
+        command: cli_path,
+        args: [],
+        env: %{"PROMPT_LOG_FILE" => prompt_log},
+        timeout_ms: 10_000
+      })
+      |> Map.put(:quality, %{max_cycles: 2})
+      |> Map.put(:runtime, full_stack_runtime(:full_stack, fake_pitchfork_log))
+      |> Map.put(:testing, %{
+        enabled: true,
+        max_cycles: 1,
+        timeout_ms: 10_000,
+        agent: %{
+          explicit: true,
+          kind: :codex,
+          command: testing_cli_path,
+          args: [],
+          env: %{"TESTING_VERDICT" => "pass"},
+          timeout_ms: 10_000
+        }
+      })
+
+    issue_with_testing =
+      Map.put(@issue, :settings, %{"execution" => %{"testing_enabled" => true}})
+
+    assert {:ok, result} =
+             AgentRunner.run_issue(issue_with_testing,
+               config: config,
+               prompt_template: "Work on {{ issue.identifier }}",
+               mode: :single_turn
+             )
+
+    assert Enum.any?(result.events, fn event ->
+             event.type == :testing_started and event.agent_kind == :codex
+           end)
+
+    assert Enum.any?(result.events, fn event ->
+             event.type == :testing_passed and event.agent_kind == :codex
+           end)
   end
 
   test "passes testing_notes only to testing agent prompt", %{
@@ -2141,6 +2246,27 @@ defmodule Kollywood.AgentRunnerTest do
     fi
 
     echo "ok:initial"
+    """)
+
+    File.chmod!(path, 0o755)
+    path
+  end
+
+  defp write_review_cli_for_argv!(root) do
+    path = Path.join(root, "fake_review_cli_argv.sh")
+
+    File.write!(path, """
+    #!/usr/bin/env bash
+    set -eu
+
+    prompt="${@: -1}"
+    review_json_path=$(printf '%s' "$prompt" | grep -oP 'Write your review to `\\K[^`]+' || true)
+
+    if [ -z "$review_json_path" ]; then
+      review_json_path="/tmp/review_fallback.json"
+    fi
+
+    printf '%s' '{"verdict":"pass","summary":"review complete","findings":[]}' > "$review_json_path"
     """)
 
     File.chmod!(path, 0o755)
