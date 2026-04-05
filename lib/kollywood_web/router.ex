@@ -23,6 +23,7 @@ defmodule KollywoodWeb.Router do
     live "/", ProjectsLive, :index
     live "/projects/new", ProjectsLive, :new
     live "/projects/:project_slug", DashboardLive, :overview
+    live "/projects/:project_slug/chat", ChatLive, :index
     live "/projects/:project_slug/stories", DashboardLive, :stories
     live "/projects/:project_slug/stories/:story_id", DashboardLive, :story_detail
     live "/projects/:project_slug/runs", DashboardLive, :runs

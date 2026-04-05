@@ -23,6 +23,7 @@ fn run() -> Result<()> {
 
     match cli.command {
         Commands::Story(story) => run_story_command(&api, story),
+        Commands::Project(project) => run_project_command(&api, project),
     }
 }
 
@@ -72,6 +73,29 @@ fn run_story_command(api: &ApiClient, story: StoryArgs) -> Result<()> {
     }
 }
 
+fn run_project_command(api: &ApiClient, project: ProjectArgs) -> Result<()> {
+    match project.command {
+        ProjectCommand::Resolve(args) => {
+            let path = match clean_optional(args.path.as_deref()) {
+                Some(path) => path,
+                None => {
+                    let cwd =
+                        std::env::current_dir().context("failed to read current working directory")?;
+                    cwd.to_str()
+                        .context("current working directory contains invalid UTF-8")?
+                        .to_string()
+                }
+            };
+
+            let resolved = api
+                .resolve_project(&path)
+                .with_context(|| format!("failed to resolve project from path {path}"))?;
+
+            print_resolved_project(&resolved, args.json)
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "kollywood", version, about = "Kollywood CLI")]
 struct Cli {
@@ -91,6 +115,7 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     Story(StoryArgs),
+    Project(ProjectArgs),
 }
 
 #[derive(Args, Debug)]
@@ -107,6 +132,29 @@ enum StoryCommand {
     Delete(StoryDeleteArgs),
     Export(StoryExportArgs),
     Import(StoryImportArgs),
+}
+
+#[derive(Args, Debug)]
+struct ProjectArgs {
+    #[command(subcommand)]
+    command: ProjectCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum ProjectCommand {
+    Resolve(ProjectResolveArgs),
+}
+
+#[derive(Args, Debug)]
+struct ProjectResolveArgs {
+    #[arg(
+        long,
+        help = "Path to resolve against Kollywood projects (defaults to current directory)"
+    )]
+    path: Option<String>,
+
+    #[arg(long, help = "Output raw JSON")]
+    json: bool,
 }
 
 #[derive(Args, Debug)]
@@ -343,9 +391,17 @@ struct Story {
     extra: BTreeMap<String, Value>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ResolvedProject {
     slug: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    provider: Option<String>,
+    #[serde(default)]
+    local_path: Option<String>,
+    #[serde(default)]
+    repository: Option<String>,
 }
 
 struct ApiClient {
@@ -1116,6 +1172,37 @@ fn print_stories(stories: &[Story], as_json: bool) -> Result<()> {
             status_w = status_w,
             pri_w = pri_w
         );
+    }
+
+    Ok(())
+}
+
+fn print_resolved_project(project: &ResolvedProject, as_json: bool) -> Result<()> {
+    if as_json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(project)
+                .context("failed to render JSON output")?
+        );
+        return Ok(());
+    }
+
+    let slug = fallback(&project.slug, "(no-slug)");
+    let name = fallback(&project.name, "(unnamed)");
+    let provider = project.provider.as_deref().unwrap_or("unknown");
+
+    println!("Resolved project {slug} [{provider}] {name}");
+
+    if let Some(path) = project.local_path.as_deref() {
+        if !path.trim().is_empty() {
+            println!("local_path: {path}");
+        }
+    }
+
+    if let Some(repository) = project.repository.as_deref() {
+        if !repository.trim().is_empty() {
+            println!("repository: {repository}");
+        }
     }
 
     Ok(())

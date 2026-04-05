@@ -799,6 +799,12 @@ defmodule KollywoodWeb.DashboardLive do
               active={@live_action == :settings}
               patch={project_settings_path(@current_project.slug, @stories_view)}
             />
+            <.link
+              navigate={project_chat_path(@current_project.slug)}
+              class="flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap border-transparent text-base-content/70 hover:border-base-300 hover:text-base-content"
+            >
+              <.icon name="hero-chat-bubble-left-right" class="size-4" /> Chat
+            </.link>
           </div>
         </nav>
 
@@ -7592,6 +7598,10 @@ defmodule KollywoodWeb.DashboardLive do
     else
       ~p"/projects/#{project_slug}/settings?#{query}"
     end
+  end
+
+  defp project_chat_path(project_slug) when is_binary(project_slug) do
+    ~p"/projects/#{project_slug}/chat"
   end
 
   defp story_detail_path(project_slug, story_id, stories_view, extra_query \\ [])
