@@ -1907,7 +1907,7 @@ defmodule Kollywood.AgentRunnerTest do
         })
       end)
 
-    assert {:error, result} =
+    assert {:error, %Kollywood.AgentRunner.Result{} = result} =
              AgentRunner.run_issue(@issue, config: config, prompt_template: "Implement")
 
     event_types = Enum.map(result.events, & &1.type)
@@ -1918,6 +1918,26 @@ defmodule Kollywood.AgentRunnerTest do
     refute :publish_succeeded in event_types
     assert result.error =~ "conflict resolution failed"
     assert_prd_status(source, @issue.id, "open")
+  end
+
+  test "push failure includes recovery commands guidance", %{
+    root: root,
+    git_cli_path: git_cli_path
+  } do
+    %{source: source, workspaces_root: workspaces_root} = setup_worktree_repo(root)
+
+    git!(["remote", "set-url", "origin", Path.join(root, "missing-origin.git")], source)
+
+    config =
+      worktree_runner_config(source, workspaces_root, git_cli_path)
+      |> Map.put(:publish, %{mode: :push})
+
+    assert {:error, result} =
+             AgentRunner.run_issue(@issue, config: config, prompt_template: "Implement")
+
+    assert result.error =~ "Recovery commands:"
+    assert result.error =~ "git -C"
+    assert result.error =~ "push -u origin"
   end
 
   test "auto_merge failure does not fail publish", %{

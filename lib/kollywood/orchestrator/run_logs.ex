@@ -84,7 +84,9 @@ defmodule Kollywood.Orchestrator.RunLogs do
     "runtime_healthcheck_failed",
     "runtime_stopping",
     "runtime_stopped",
-    "runtime_stop_failed"
+    "runtime_stop_failed",
+    "workspace_cleanup_deleted",
+    "workspace_cleanup_preserved"
   ]
 
   @agent_log_events [

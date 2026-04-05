@@ -17,6 +17,8 @@ defmodule Kollywood.Workspace do
 
   require Logger
 
+  alias Kollywood.RecoveryGuidance
+
   @type t :: %__MODULE__{
           path: String.t(),
           key: String.t(),
@@ -55,11 +57,26 @@ defmodule Kollywood.Workspace do
         source: source
       }
 
-      if File.dir?(path) do
-        Logger.info("Reusing workspace for #{identifier} at #{path}")
-        {:ok, maybe_set_branch(workspace, config)}
-      else
-        create_new(workspace, identifier, config)
+      cond do
+        File.dir?(path) and strategy == :worktree ->
+          case worktree_reuse_strategy(workspace, config) do
+            :reuse ->
+              Logger.info("Reusing workspace for #{identifier} at #{path}")
+              {:ok, maybe_set_branch(workspace, config)}
+
+            :recreate ->
+              create_new(workspace, identifier, config)
+
+            {:error, reason} ->
+              {:error, reason}
+          end
+
+        File.dir?(path) ->
+          Logger.info("Reusing workspace for #{identifier} at #{path}")
+          {:ok, maybe_set_branch(workspace, config)}
+
+        true ->
+          create_new(workspace, identifier, config)
       end
     end
   end
@@ -247,42 +264,57 @@ defmodule Kollywood.Workspace do
 
     Logger.info("Creating worktree for #{identifier} at #{workspace.path} (branch: #{branch})")
 
-    git(["worktree", "prune"], source)
-    cleanup_stale_branch(source, branch)
+    with :ok <- preflight_worktree_create(source, branch, workspace.path) do
+      case git(["worktree", "add", "-b", branch, workspace.path], source) do
+        {_output, 0} ->
+          workspace = %{workspace | branch: branch}
 
-    case git(["worktree", "add", "-b", branch, workspace.path], source) do
-      {_output, 0} ->
-        workspace = %{workspace | branch: branch}
+          case run_hook(config.hooks.after_create, workspace.path, "after_create") do
+            :ok ->
+              {:ok, workspace}
 
-        case run_hook(config.hooks.after_create, workspace.path, "after_create") do
-          :ok ->
-            {:ok, workspace}
+            {:error, reason} ->
+              git(["worktree", "remove", "--force", workspace.path], source)
+              git(["branch", "-D", branch], source)
+              {:error, "after_create hook failed: #{reason}"}
+          end
 
-          {:error, reason} ->
-            git(["worktree", "remove", "--force", workspace.path], source)
-            git(["branch", "-D", branch], source)
-            {:error, "after_create hook failed: #{reason}"}
-        end
+        {output, _code} ->
+          cond do
+            File.dir?(workspace.path) ->
+              Logger.info(
+                "Worktree creation raced but directory exists; reusing #{workspace.path}"
+              )
 
-      {output, _code} ->
-        cond do
-          File.dir?(workspace.path) ->
-            Logger.info("Worktree creation raced but directory exists; reusing #{workspace.path}")
+              {:ok, %{workspace | branch: branch}}
 
-            {:ok, %{workspace | branch: branch}}
+            branch_exists?(source, branch) ->
+              case git(["worktree", "add", workspace.path, branch], source) do
+                {_output, 0} ->
+                  {:ok, %{workspace | branch: branch}}
 
-          branch_exists?(source, branch) ->
-            case git(["worktree", "add", workspace.path, branch], source) do
-              {_output, 0} ->
-                {:ok, %{workspace | branch: branch}}
+                {fallback_output, _code} ->
+                  {:error,
+                   RecoveryGuidance.workspace_create_failed(
+                     source,
+                     branch,
+                     workspace.path,
+                     String.trim(fallback_output)
+                   )}
+              end
 
-              {_, _} ->
-                {:error, "Failed to create worktree: #{String.trim(output)}"}
-            end
-
-          true ->
-            {:error, "Failed to create worktree: #{String.trim(output)}"}
-        end
+            true ->
+              {:error,
+               RecoveryGuidance.workspace_create_failed(
+                 source,
+                 branch,
+                 workspace.path,
+                 String.trim(output)
+               )}
+          end
+      end
+    else
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -338,6 +370,37 @@ defmodule Kollywood.Workspace do
   end
 
   defp source_from_workspace_config(_workspace_config), do: nil
+
+  defp worktree_reuse_strategy(%__MODULE__{} = workspace, config) do
+    workspace_config = Map.get(config, :workspace, %{})
+    source = workspace.source || expand_root(Map.get(workspace_config, :source) || ".")
+    branch_prefix = Map.get(workspace_config, :branch_prefix, "kollywood/")
+    branch = "#{branch_prefix}#{workspace.key}"
+    path = Path.expand(workspace.path)
+
+    with :ok <- prune_worktree_metadata(source),
+         {:ok, entries} <- list_worktree_entries(source),
+         :ok <- maybe_prune_orphan_workspace_path(path, entries) do
+      tracked_paths = tracked_worktree_paths(entries)
+
+      cond do
+        not File.exists?(path) ->
+          :recreate
+
+        path not in tracked_paths ->
+          {:error, RecoveryGuidance.workspace_path_collision(source, path)}
+
+        true ->
+          ensure_no_branch_collision(source, branch, path, entries)
+          |> case do
+            :ok -> :reuse
+            {:error, reason} -> {:error, reason}
+          end
+      end
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   defp normalize_hooks(hooks) when is_map(hooks), do: Map.merge(@empty_hooks, hooks)
   defp normalize_hooks(_hooks), do: @empty_hooks
@@ -448,20 +511,225 @@ defmodule Kollywood.Workspace do
     end
   end
 
-  defp cleanup_stale_branch(source, branch) do
-    case git(["show-ref", "--verify", "refs/heads/#{branch}"], source) do
-      {_output, 0} ->
-        Logger.info("Removing stale branch #{branch} before worktree creation")
-        git(["branch", "-D", branch], source)
+  defp branch_exists?(source, branch) do
+    match?({_output, 0}, git(["show-ref", "--verify", "refs/heads/#{branch}"], source))
+  end
 
-      _ ->
+  defp preflight_worktree_create(source, branch, workspace_path)
+       when is_binary(source) and is_binary(branch) and is_binary(workspace_path) do
+    with :ok <- prune_worktree_metadata(source),
+         {:ok, entries} <- list_worktree_entries(source),
+         :ok <- maybe_prune_orphan_workspace_path(workspace_path, entries),
+         :ok <- ensure_no_workspace_path_collision(source, workspace_path, entries),
+         :ok <- ensure_no_branch_collision(source, branch, workspace_path, entries) do
+      :ok
+    end
+  end
+
+  defp preflight_worktree_create(_source, _branch, _workspace_path),
+    do: {:error, "invalid worktree preflight inputs"}
+
+  defp prune_worktree_metadata(source) do
+    case git(["worktree", "prune"], source) do
+      {_output, 0} ->
+        :ok
+
+      {output, code} ->
+        {:error, RecoveryGuidance.workspace_prune_failed(source, code, String.trim(output))}
+    end
+  end
+
+  defp list_worktree_entries(source) do
+    case git(["worktree", "list", "--porcelain"], source) do
+      {output, 0} ->
+        {:ok, parse_worktree_list(output)}
+
+      {output, code} ->
+        {:error, RecoveryGuidance.workspace_list_failed(source, code, String.trim(output))}
+    end
+  end
+
+  defp parse_worktree_list(output) when is_binary(output) do
+    {entries, current} =
+      output
+      |> String.split("\n", trim: false)
+      |> Enum.reduce({[], nil}, fn line, {entries, current} ->
+        cond do
+          String.starts_with?(line, "worktree ") ->
+            path =
+              line |> String.replace_prefix("worktree ", "") |> String.trim() |> Path.expand()
+
+            {append_worktree_entry(entries, current), %{path: path, branch: nil}}
+
+          String.starts_with?(line, "branch ") and is_map(current) ->
+            branch = line |> String.replace_prefix("branch ", "") |> String.trim()
+            {entries, Map.put(current, :branch, branch)}
+
+          String.trim(line) == "" ->
+            {append_worktree_entry(entries, current), nil}
+
+          true ->
+            {entries, current}
+        end
+      end)
+
+    append_worktree_entry(entries, current)
+  end
+
+  defp parse_worktree_list(_output), do: []
+
+  defp append_worktree_entry(entries, %{path: path} = entry) when is_binary(path),
+    do: entries ++ [entry]
+
+  defp append_worktree_entry(entries, _entry), do: entries
+
+  defp maybe_prune_orphan_workspace_path(workspace_path, entries)
+       when is_binary(workspace_path) and is_list(entries) do
+    expanded_path = Path.expand(workspace_path)
+
+    tracked_paths = tracked_worktree_paths(entries)
+
+    cond do
+      expanded_path in tracked_paths ->
+        :ok
+
+      not File.exists?(expanded_path) ->
+        :ok
+
+      orphan_worktree_path?(expanded_path) ->
+        case File.rm_rf(expanded_path) do
+          {:ok, _entries} ->
+            Logger.info("Pruned orphaned workspace directory #{expanded_path}")
+            :ok
+
+          {:error, reason, path} ->
+            {:error, "failed to prune orphaned workspace directory #{path}: #{inspect(reason)}"}
+        end
+
+      directory_empty?(expanded_path) ->
+        case File.rm_rf(expanded_path) do
+          {:ok, _entries} ->
+            Logger.info("Pruned empty stale workspace directory #{expanded_path}")
+            :ok
+
+          {:error, reason, path} ->
+            {:error,
+             "failed to prune empty stale workspace directory #{path}: #{inspect(reason)}"}
+        end
+
+      true ->
         :ok
     end
   end
 
-  defp branch_exists?(source, branch) do
-    match?({_output, 0}, git(["show-ref", "--verify", "refs/heads/#{branch}"], source))
+  defp maybe_prune_orphan_workspace_path(_workspace_path, _entries), do: :ok
+
+  defp ensure_no_workspace_path_collision(source, workspace_path, entries)
+       when is_binary(source) and is_binary(workspace_path) and is_list(entries) do
+    expanded_path = Path.expand(workspace_path)
+
+    tracked_paths = tracked_worktree_paths(entries)
+
+    cond do
+      expanded_path in tracked_paths ->
+        :ok
+
+      File.exists?(expanded_path) ->
+        {:error, RecoveryGuidance.workspace_path_collision(source, expanded_path)}
+
+      true ->
+        :ok
+    end
   end
+
+  defp ensure_no_workspace_path_collision(_source, _workspace_path, _entries), do: :ok
+
+  defp tracked_worktree_paths(entries) when is_list(entries) do
+    entries
+    |> Enum.map(&Map.get(&1, :path))
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&Path.expand/1)
+  end
+
+  defp tracked_worktree_paths(_entries), do: []
+
+  defp ensure_no_branch_collision(source, branch, workspace_path, entries)
+       when is_binary(source) and is_binary(branch) and is_binary(workspace_path) and
+              is_list(entries) do
+    branch_ref = "refs/heads/#{branch}"
+    expanded_workspace_path = Path.expand(workspace_path)
+
+    branch_entry =
+      Enum.find(entries, fn entry ->
+        entry
+        |> Map.get(:branch)
+        |> to_string()
+        |> String.trim() == branch_ref
+      end)
+
+    cond do
+      is_map(branch_entry) and
+          Path.expand(Map.get(branch_entry, :path, "")) == expanded_workspace_path ->
+        :ok
+
+      is_map(branch_entry) ->
+        {:error,
+         RecoveryGuidance.workspace_branch_collision(
+           source,
+           branch,
+           expanded_workspace_path,
+           Map.get(branch_entry, :path)
+         )}
+
+      branch_exists?(source, branch) ->
+        {:error,
+         RecoveryGuidance.workspace_branch_collision(
+           source,
+           branch,
+           expanded_workspace_path,
+           nil
+         )}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp ensure_no_branch_collision(_source, _branch, _workspace_path, _entries), do: :ok
+
+  defp orphan_worktree_path?(workspace_path) when is_binary(workspace_path) do
+    git_file = Path.join(workspace_path, ".git")
+
+    case File.read(git_file) do
+      {:ok, content} ->
+        content = String.trim(content)
+
+        if String.starts_with?(content, "gitdir: ") do
+          gitdir =
+            content
+            |> String.replace_prefix("gitdir: ", "")
+            |> Path.expand(workspace_path)
+
+          not File.exists?(gitdir)
+        else
+          false
+        end
+
+      _other ->
+        false
+    end
+  end
+
+  defp orphan_worktree_path?(_workspace_path), do: false
+
+  defp directory_empty?(path) when is_binary(path) do
+    case File.ls(path) do
+      {:ok, entries} -> entries == []
+      _other -> false
+    end
+  end
+
+  defp directory_empty?(_path), do: false
 
   defp git_repo_dir?(path) when is_binary(path) do
     File.dir?(path) and File.exists?(Path.join(path, ".git"))

@@ -255,6 +255,46 @@ defmodule Kollywood.WorkspaceTest do
     refute branches =~ "kw/WT-4"
   end
 
+  test "worktree create fails with actionable guidance when branch already exists", %{root: root} do
+    source = setup_git_repo(root)
+    wt_root = Path.join(root, "worktrees")
+
+    default_branch = run_git!(["rev-parse", "--abbrev-ref", "HEAD"], source) |> String.trim()
+
+    run_git!(["checkout", "-b", "kw/WT-COLLIDE"], source)
+    run_git!(["checkout", default_branch], source)
+
+    config = %{
+      workspace: %{root: wt_root, strategy: :worktree, source: source, branch_prefix: "kw/"},
+      hooks: @no_hooks
+    }
+
+    assert {:error, reason} = Workspace.create_for_issue("WT-COLLIDE", config)
+    assert reason =~ "workspace branch collision"
+    assert reason =~ "Recovery commands:"
+    assert reason =~ "git -C"
+  end
+
+  test "worktree create fails with actionable guidance on stale path collision", %{root: root} do
+    source = setup_git_repo(root)
+    wt_root = Path.join(root, "worktrees")
+    stale_path = Path.join(wt_root, "WT-PATH-COLLIDE")
+
+    File.mkdir_p!(stale_path)
+    File.write!(Path.join(stale_path, ".git"), "this is not a valid worktree gitdir")
+    File.write!(Path.join(stale_path, "marker.txt"), "stale")
+
+    config = %{
+      workspace: %{root: wt_root, strategy: :worktree, source: source, branch_prefix: "kw/"},
+      hooks: @no_hooks
+    }
+
+    assert {:error, reason} = Workspace.create_for_issue("WT-PATH-COLLIDE", config)
+    assert reason =~ "workspace path collision"
+    assert reason =~ "Recovery commands:"
+    assert reason =~ "rm -rf"
+  end
+
   test "removes worktree and branch", %{root: root} do
     source = setup_git_repo(root)
     wt_root = Path.join(root, "worktrees")

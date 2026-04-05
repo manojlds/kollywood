@@ -14,6 +14,7 @@ defmodule Kollywood.AgentRunner do
   alias Kollywood.Config
   alias Kollywood.PromptBuilder
   alias Kollywood.PromptPipeline
+  alias Kollywood.RecoveryGuidance
   alias Kollywood.Publisher
   alias Kollywood.Runtime
   alias Kollywood.RuntimeSessions
@@ -894,6 +895,10 @@ defmodule Kollywood.AgentRunner do
   defp run_publish_push(state, workspace) do
     with {:ok, state} <- push_branch(state, workspace) do
       {:ok, emit(state, :publish_succeeded, %{branch: workspace.branch, pr_url: nil})}
+    else
+      {:error, reason} ->
+        {:error, reason,
+         emit(state, :publish_failed, %{branch: workspace.branch, reason: reason})}
     end
   end
 
@@ -1063,15 +1068,30 @@ defmodule Kollywood.AgentRunner do
 
   defp push_branch(state, workspace) do
     case Workspace.push_branch(workspace) do
-      :ok -> {:ok, emit(state, :publish_push_succeeded, %{branch: workspace.branch})}
-      {:error, reason} -> {:error, "push failed: #{reason}"}
+      :ok ->
+        {:ok, emit(state, :publish_push_succeeded, %{branch: workspace.branch})}
+
+      {:error, reason} ->
+        guidance = RecoveryGuidance.publish_push_failed(workspace.path, workspace.branch, reason)
+        {:error, guidance}
     end
   end
 
   defp merge_branch_to_main(workspace, base_branch) do
     case Workspace.merge_branch_to_main(workspace, base_branch) do
-      :ok -> :ok
-      {:error, reason} -> {:error, {:merge_failed, reason}}
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        guidance =
+          RecoveryGuidance.publish_merge_failed(
+            workspace.source || workspace.path,
+            workspace.branch,
+            base_branch,
+            reason
+          )
+
+        {:error, {:merge_failed, guidance}}
     end
   end
 

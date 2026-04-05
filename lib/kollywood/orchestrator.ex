@@ -25,6 +25,7 @@ defmodule Kollywood.Orchestrator do
   alias Kollywood.Orchestrator.RunLogs
   alias Kollywood.Orchestrator.RunSettingsSnapshot
   alias Kollywood.Publisher
+  alias Kollywood.RecoveryGuidance
   alias Kollywood.RepoSync
   alias Kollywood.StoryExecutionOverrides
   alias Kollywood.RunQueue
@@ -442,16 +443,37 @@ defmodule Kollywood.Orchestrator do
     if repo_sync_pid == state.repo_sync_task_pid do
       state = clear_repo_sync_task_state(state)
 
-      case result do
-        :ok ->
-          :ok
+      state =
+        case result do
+          :ok ->
+            state
 
-        {:error, reason} ->
-          Logger.warning("Managed repo sync failed: #{reason}")
+          {:error, reason} ->
+            Logger.warning("Managed repo sync failed: #{reason}")
 
-        other ->
-          Logger.warning("Managed repo sync returned unexpected result: #{inspect(other)}")
-      end
+            Map.put(
+              state,
+              :last_error,
+              RecoveryGuidance.repo_sync_failed(
+                state.repo_local_path,
+                state.repo_default_branch,
+                to_string(reason)
+              )
+            )
+
+          other ->
+            Logger.warning("Managed repo sync returned unexpected result: #{inspect(other)}")
+
+            Map.put(
+              state,
+              :last_error,
+              RecoveryGuidance.repo_sync_failed(
+                state.repo_local_path,
+                state.repo_default_branch,
+                "unexpected sync result: #{inspect(other)}"
+              )
+            )
+        end
 
       {:noreply, persist_control_status(state)}
     else
@@ -476,7 +498,21 @@ defmodule Kollywood.Orchestrator do
       )
 
       Process.exit(repo_sync_pid, :kill)
-      {:noreply, state |> clear_repo_sync_task_state() |> persist_control_status()}
+
+      state =
+        state
+        |> clear_repo_sync_task_state()
+        |> Map.put(
+          :last_error,
+          RecoveryGuidance.repo_sync_timeout(
+            state.repo_local_path,
+            state.repo_default_branch,
+            duration_ms,
+            state.repo_sync_timeout_ms
+          )
+        )
+
+      {:noreply, persist_control_status(state)}
     else
       {:noreply, persist_control_status(state)}
     end
@@ -4461,10 +4497,14 @@ defmodule Kollywood.Orchestrator do
   defp maybe_cleanup_terminal_workspace(state, run_entry, config) do
     issue_id = run_entry_issue_id(run_entry)
     identifier = run_entry_identifier(run_entry)
-    cleanup_workspace_for_terminal_issue(state, config, issue_id, identifier)
+    cleanup_workspace_for_terminal_issue(state, config, issue_id, identifier, run_entry)
   end
 
   defp cleanup_workspace_for_terminal_issue(state, config, issue_id, identifier) do
+    cleanup_workspace_for_terminal_issue(state, config, issue_id, identifier, nil)
+  end
+
+  defp cleanup_workspace_for_terminal_issue(state, config, issue_id, identifier, run_entry) do
     cleanup_preview_for_issue(config, issue_id)
 
     if non_empty_string?(identifier) do
@@ -4472,14 +4512,14 @@ defmodule Kollywood.Orchestrator do
 
       case Workspace.cleanup_for_issue(identifier, config, hooks) do
         :ok ->
-          state
+          maybe_record_workspace_cleanup(state, identifier, run_entry, :deleted)
 
         {:error, reason} ->
           Logger.warning(
             "Failed to cleanup workspace for terminal issue issue_id=#{issue_id || "-"} identifier=#{identifier}: #{reason}"
           )
 
-          state
+          maybe_record_workspace_cleanup(state, identifier, run_entry, :preserved, reason)
       end
     else
       Logger.warning(
@@ -4489,6 +4529,60 @@ defmodule Kollywood.Orchestrator do
       state
     end
   end
+
+  defp maybe_record_workspace_cleanup(state, identifier, run_entry, action, reason \\ nil) do
+    payload = workspace_cleanup_payload(state, identifier, action, reason)
+
+    event_type =
+      if action == :deleted, do: :workspace_cleanup_deleted, else: :workspace_cleanup_preserved
+
+    maybe_persist_workspace_cleanup_event(run_entry, Map.put(payload, :type, event_type))
+    state
+  end
+
+  defp workspace_cleanup_payload(state, identifier, action, reason) do
+    workspace_config =
+      case fetch_config(state.workflow_store) do
+        {:ok, config} -> Map.get(config, :workspace, %{})
+        _other -> %{}
+      end
+
+    workspace_root =
+      workspace_config
+      |> Map.get(:root, Kollywood.ServiceConfig.workspaces_dir())
+      |> to_string()
+      |> String.replace_prefix("~", System.user_home!())
+      |> Path.expand()
+
+    workspace_path = Path.join(workspace_root, Workspace.sanitize_key(identifier))
+
+    case action do
+      :deleted ->
+        %{workspace_path: workspace_path, action: :deleted, identifier: identifier}
+
+      :preserved ->
+        %{
+          workspace_path: workspace_path,
+          action: :preserved,
+          reason: reason,
+          identifier: identifier
+        }
+    end
+  end
+
+  defp maybe_persist_workspace_cleanup_event(run_entry, event)
+       when is_map(run_entry) and is_map(event) do
+    run_log_context = Map.get(run_entry, :run_log_context)
+
+    persist_run_log_event(
+      run_log_context,
+      event
+      |> Map.put_new(:issue_id, run_entry_issue_id(run_entry))
+      |> Map.put_new(:identifier, run_entry_identifier(run_entry))
+    )
+  end
+
+  defp maybe_persist_workspace_cleanup_event(_run_entry, _event), do: :ok
 
   defp run_entry_issue(run_entry) when is_map(run_entry), do: Map.get(run_entry, :issue)
   defp run_entry_issue(_run_entry), do: nil

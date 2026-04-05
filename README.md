@@ -181,6 +181,9 @@ Run metadata (`run_logs/*/metadata.json`) stores a terminal `status` and event s
   - `completed`: agent output matched a configured completion signal
   - `max_turns_reached`: run stopped after reaching configured turn limit
   - `failed`: run ended on an error (agent, checks, review/testing, runtime, or publish)
+- workspace lifecycle outcomes:
+  - `workspace_cleanup_deleted`: workspace/worktree removed after terminal completion
+  - `workspace_cleanup_preserved`: cleanup failed and workspace path was preserved for manual recovery
 - key terminal events:
   - `completion_detected`: includes the matched `signal`
   - `idle_timeout_reached`: emitted when a turn exceeds `agent.idle_timeout_ms` without output
@@ -190,6 +193,8 @@ Run metadata (`run_logs/*/metadata.json`) stores a terminal `status` and event s
   - legacy `session_started`/`session_stopped` may also appear for backward compatibility
 
 Dashboard run detail surfaces explicit terminal reasons for completion signal, max turns, and idle timeout.
+
+Some workspace/publish/sync failures include a `Recovery commands:` section in the run error so operators can copy-paste remediation steps directly.
 
 Quality gates are configured in `.kollywood/WORKFLOW.md`:
 
