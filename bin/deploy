@@ -36,6 +36,25 @@ DRAIN_ENABLED=1
 log "Pulling latest code"
 git pull origin main --ff-only
 
+SKILLS_SOURCE_DIR="$REPO_DIR/.agents/skills"
+SKILLS_TARGET_DIR="$HOME/.agents/skills"
+
+if [[ -d "$SKILLS_SOURCE_DIR" ]]; then
+  log "Syncing repo skills to $SKILLS_TARGET_DIR"
+  mkdir -p "$SKILLS_TARGET_DIR"
+
+  for skill_path in "$SKILLS_SOURCE_DIR"/*; do
+    [[ -d "$skill_path" ]] || continue
+    skill_name="$(basename "$skill_path")"
+    target_path="$SKILLS_TARGET_DIR/$skill_name"
+
+    rm -rf "$target_path"
+    cp -R "$skill_path" "$target_path"
+  done
+else
+  log "No repo skills found at $SKILLS_SOURCE_DIR (skipping skill sync)"
+fi
+
 log "Installing deps"
 MIX_ENV=prod mix deps.get --only prod
 
