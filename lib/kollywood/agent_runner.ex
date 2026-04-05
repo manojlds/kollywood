@@ -3603,7 +3603,7 @@ defmodule Kollywood.AgentRunner do
     |> review_config()
     |> get_in([Access.key(:agent, %{}), Access.key(:kind)])
     |> case do
-      value when value in [:amp, :claude, :cursor, :opencode, :pi] -> value
+      value when value in [:amp, :claude, :codex, :cursor, :opencode, :pi] -> value
       _other -> Map.get(config.agent, :kind)
     end
   end
@@ -3613,7 +3613,7 @@ defmodule Kollywood.AgentRunner do
     |> testing_config()
     |> get_in([Access.key(:agent, %{}), Access.key(:kind)])
     |> case do
-      value when value in [:amp, :claude, :cursor, :opencode, :pi] -> value
+      value when value in [:amp, :claude, :codex, :cursor, :opencode, :pi] -> value
       _other -> Map.get(config.agent, :kind)
     end
   end

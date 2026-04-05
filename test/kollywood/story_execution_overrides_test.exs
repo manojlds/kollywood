@@ -98,6 +98,21 @@ defmodule Kollywood.StoryExecutionOverridesTest do
     assert reason =~ "positive integer"
   end
 
+  test "accepts codex as execution, review, and testing override kinds" do
+    assert {:ok, normalized} =
+             StoryExecutionOverrides.normalize_settings(%{
+               "execution" => %{
+                 "agent_kind" => "codex",
+                 "review_agent_kind" => "codex",
+                 "testing_agent_kind" => "codex"
+               }
+             })
+
+    assert get_in(normalized, ["execution", "agent_kind"]) == "codex"
+    assert get_in(normalized, ["execution", "review_agent_kind"]) == "codex"
+    assert get_in(normalized, ["execution", "testing_agent_kind"]) == "codex"
+  end
+
   test "rejects invalid testing_enabled override values" do
     issue = %{
       id: "US-125",
