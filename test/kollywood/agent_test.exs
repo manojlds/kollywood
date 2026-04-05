@@ -37,6 +37,7 @@ defmodule Kollywood.AgentTest do
   test "maps agent kind to adapter module" do
     assert Agent.adapter_module(:amp) == Kollywood.Agent.Amp
     assert Agent.adapter_module(:claude) == Kollywood.Agent.Claude
+    assert Agent.adapter_module(:codex) == Kollywood.Agent.Codex
     assert Agent.adapter_module(:cursor) == Kollywood.Agent.Cursor
     assert Agent.adapter_module(:opencode) == Kollywood.Agent.OpenCode
     assert Agent.adapter_module(:pi) == Kollywood.Agent.Pi
@@ -131,6 +132,39 @@ defmodule Kollywood.AgentTest do
              "--stream-partial-output",
              "--force",
              "--trust"
+           ]
+
+    assert :ok = Agent.stop_session(session)
+  end
+
+  test "codex adapter uses non-interactive no-approval default args", %{
+    workspace: workspace,
+    cli_path: cli_path
+  } do
+    config = %Config{
+      tracker: %{},
+      polling: %{},
+      workspace: %{},
+      hooks: %{},
+      raw: %{},
+      agent: %{
+        kind: :codex,
+        command: cli_path,
+        env: %{},
+        timeout_ms: 10_000,
+        args: []
+      }
+    }
+
+    assert {:ok, %Session{} = session} = Agent.start_session(config, workspace)
+    assert session.adapter == Kollywood.Agent.Codex
+
+    assert session.args == [
+             "exec",
+             "--ask-for-approval",
+             "never",
+             "--sandbox",
+             "workspace-write"
            ]
 
     assert :ok = Agent.stop_session(session)

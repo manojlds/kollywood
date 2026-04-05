@@ -15,7 +15,7 @@ defmodule Kollywood.StoryExecutionOverrides do
 
   alias Kollywood.Config
 
-  @valid_agent_kinds ~w(amp claude cursor opencode pi)a
+  @valid_agent_kinds ~w(amp claude codex cursor opencode pi)a
   @valid_agent_kind_strings Enum.map(@valid_agent_kinds, &Atom.to_string/1)
 
   @execution_keys ~w(

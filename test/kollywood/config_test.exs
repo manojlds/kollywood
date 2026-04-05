@@ -51,7 +51,7 @@ defmodule Kollywood.ConfigTest do
   end
 
   test "supports all agent kinds" do
-    for kind <- ~w(amp claude cursor opencode pi) do
+    for kind <- ~w(amp claude codex cursor opencode pi) do
       content = """
       ---
       workspace:
@@ -419,6 +419,32 @@ defmodule Kollywood.ConfigTest do
     assert config.preview.stop_timeout_ms == 25_000
   end
 
+  test "parses codex for primary, review, and testing agent kinds" do
+    content = """
+    ---
+    quality:
+      review:
+        enabled: true
+        agent:
+          kind: codex
+      testing:
+        enabled: true
+        agent:
+          kind: codex
+    workspace:
+      root: /tmp
+    agent:
+      kind: codex
+    ---
+    prompt
+    """
+
+    assert {:ok, config, _} = Config.parse(content)
+    assert config.agent.kind == :codex
+    assert config.review.agent.kind == :codex
+    assert config.testing.agent.kind == :codex
+  end
+
   test "rejects invalid quality.testing.enabled" do
     content = """
     ---
@@ -473,6 +499,7 @@ defmodule Kollywood.ConfigTest do
 
     assert {:error, msg} = Config.parse(content)
     assert msg =~ "quality.testing.agent.kind"
+    assert msg =~ "codex"
   end
 
   test "rejects invalid preview.enabled" do
@@ -892,5 +919,6 @@ defmodule Kollywood.ConfigTest do
 
     assert {:error, msg} = Config.parse(content)
     assert msg =~ "Invalid agent.kind"
+    assert msg =~ "codex"
   end
 end
