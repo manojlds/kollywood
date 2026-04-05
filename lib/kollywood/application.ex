@@ -80,9 +80,12 @@ defmodule Kollywood.Application do
       end
 
     children =
-      if AppMode.web_enabled?(mode),
-        do: children ++ [Kollywood.PreviewSessionManager, KollywoodWeb.Endpoint],
-        else: children ++ [Kollywood.PreviewSessionManager]
+      if AppMode.web_enabled?(mode) do
+        children ++
+          [Kollywood.PreviewSessionManager, Kollywood.Chat.Supervisor, KollywoodWeb.Endpoint]
+      else
+        children ++ [Kollywood.PreviewSessionManager]
+      end
 
     children
   end
