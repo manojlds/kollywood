@@ -213,6 +213,68 @@ defmodule Kollywood.Orchestrator.RunLogsTest do
       assert metadata["status"] == "ok"
       assert Map.get(metadata, "error") == nil
     end
+
+    test "persists recovery guidance in metadata from result events", %{context: context} do
+      now = DateTime.utc_now()
+
+      result = %Result{
+        issue_id: "US-TEST",
+        identifier: "US-TEST",
+        workspace_path: "/tmp/workspace",
+        turn_count: 1,
+        status: :failed,
+        started_at: now,
+        ended_at: now,
+        last_output: nil,
+        events: [
+          %{type: :publish_started, branch: "kw/US-TEST"},
+          %{
+            type: :publish_failed,
+            reason:
+              "push failed\nRecovery commands:\n  git -C '/tmp/work' status --short\n  git -C '/tmp/work' push -u origin 'kw/US-TEST'"
+          }
+        ],
+        error: "publish failed"
+      }
+
+      assert :ok = RunLogs.complete_attempt(context, result)
+
+      metadata = File.read!(context.files.metadata) |> Jason.decode!()
+      assert metadata["recovery_guidance"]["summary"] == "push failed"
+
+      assert metadata["recovery_guidance"]["commands"] == [
+               "git -C '/tmp/work' status --short",
+               "git -C '/tmp/work' push -u origin 'kw/US-TEST'"
+             ]
+    end
+
+    test "persists recovery guidance in metadata from fallback error text", %{context: context} do
+      now = DateTime.utc_now()
+
+      result = %Result{
+        issue_id: "US-TEST",
+        identifier: "US-TEST",
+        workspace_path: "/tmp/workspace",
+        turn_count: 1,
+        status: :failed,
+        started_at: now,
+        ended_at: now,
+        last_output: nil,
+        events: [%{type: :run_finished, status: "failed"}],
+        error:
+          "sync failed\nRecovery commands:\n  git fetch --all --prune\n  git reset --hard origin/main"
+      }
+
+      assert :ok = RunLogs.complete_attempt(context, result)
+
+      metadata = File.read!(context.files.metadata) |> Jason.decode!()
+      assert metadata["recovery_guidance"]["summary"] == "sync failed"
+
+      assert metadata["recovery_guidance"]["commands"] == [
+               "git fetch --all --prune",
+               "git reset --hard origin/main"
+             ]
+    end
   end
 
   describe "append_event/2 with turn_succeeded" do

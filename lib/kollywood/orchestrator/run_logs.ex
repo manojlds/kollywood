@@ -284,13 +284,9 @@ defmodule Kollywood.Orchestrator.RunLogs do
     }
 
     update =
-      case derive_last_successful_turn(result.events) do
-        turn when is_integer(turn) and turn > 0 ->
-          Map.put(base_update, :last_successful_turn, turn)
-
-        _other ->
-          base_update
-      end
+      base_update
+      |> maybe_put_last_successful_turn(result.events)
+      |> maybe_put_recovery_guidance(result.events, result.error)
 
     complete_attempt(context, update)
   end
@@ -1010,6 +1006,51 @@ defmodule Kollywood.Orchestrator.RunLogs do
   end
 
   defp derive_last_successful_turn(_events), do: nil
+
+  defp maybe_put_last_successful_turn(update, events) when is_map(update) do
+    case derive_last_successful_turn(events) do
+      turn when is_integer(turn) and turn > 0 ->
+        Map.put(update, :last_successful_turn, turn)
+
+      _other ->
+        update
+    end
+  end
+
+  defp maybe_put_last_successful_turn(update, _events), do: update
+
+  defp maybe_put_recovery_guidance(update, events, fallback_error) when is_map(update) do
+    guidance =
+      recovery_guidance_from_events(events) ||
+        fallback_error
+        |> optional_string()
+        |> RecoveryGuidance.parse()
+
+    case guidance do
+      %{summary: _summary, commands: _commands} -> Map.put(update, :recovery_guidance, guidance)
+      _other -> update
+    end
+  end
+
+  defp maybe_put_recovery_guidance(update, _events, _fallback_error), do: update
+
+  defp recovery_guidance_from_events(events) when is_list(events) do
+    events
+    |> Enum.reverse()
+    |> Enum.find_value(fn event ->
+      RecoveryGuidance.normalize(field(event, :recovery_guidance)) ||
+        event
+        |> field(:reason)
+        |> optional_string()
+        |> RecoveryGuidance.parse() ||
+        event
+        |> field(:error)
+        |> optional_string()
+        |> RecoveryGuidance.parse()
+    end)
+  end
+
+  defp recovery_guidance_from_events(_events), do: nil
 
   defp run_event_type(event) when is_map(event) do
     case field(event, :type) do
