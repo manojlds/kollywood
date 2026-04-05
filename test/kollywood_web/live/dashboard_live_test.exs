@@ -1963,6 +1963,86 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert run_html =~ "push -u origin"
     end
 
+    test "run detail renders recovery guidance from structured event metadata", %{
+      conn: conn,
+      project: project
+    } do
+      story_id = "US-RECOVERY-STRUCTURED-METADATA"
+
+      _context =
+        prepare_run_logs!(project.slug, story_id,
+          events: [
+            %{type: :publish_started, mode: "push", branch: "kw/US-RECOVERY-STRUCTURED-METADATA"},
+            %{
+              type: :publish_failed,
+              reason: "push failed",
+              recovery_guidance: %{
+                summary: "push failed",
+                commands: [
+                  "git -C '/tmp/work' status --short",
+                  "git -C '/tmp/work' push -u origin 'kw/US-RECOVERY-STRUCTURED-METADATA'"
+                ]
+              }
+            },
+            %{type: :run_finished, status: "failed"}
+          ],
+          status: "failed",
+          completion: %{error: "publish failed"}
+        )
+
+      {:ok, _run_view, run_html} = live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
+
+      assert run_html =~ "Recovery commands:"
+      assert run_html =~ "hero-command-line"
+      assert run_html =~ "push -u origin"
+      assert run_html =~ "status --short"
+    end
+
+    test "story runs panel renders recovery guidance from structured event metadata", %{
+      conn: conn,
+      project: project
+    } do
+      story_id = "US-RECOVERY-STRUCTURED-STORY-RUNS"
+
+      append_story!(project, %{
+        "id" => story_id,
+        "title" => "Structured recovery guidance",
+        "status" => "failed"
+      })
+
+      _context =
+        prepare_run_logs!(project.slug, story_id,
+          events: [
+            %{
+              type: :publish_started,
+              mode: "push",
+              branch: "kw/US-RECOVERY-STRUCTURED-STORY-RUNS"
+            },
+            %{
+              type: :publish_failed,
+              reason: "push failed",
+              recovery_guidance: %{
+                summary: "push failed",
+                commands: [
+                  "git -C '/tmp/work' status --short",
+                  "git -C '/tmp/work' push -u origin 'kw/US-RECOVERY-STRUCTURED-STORY-RUNS'"
+                ]
+              }
+            },
+            %{type: :run_finished, status: "failed"}
+          ],
+          status: "failed",
+          completion: %{error: "publish failed"}
+        )
+
+      {:ok, _view, html} =
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
+
+      assert html =~ "Recovery commands:"
+      assert html =~ "hero-command-line"
+      assert html =~ "push -u origin"
+    end
+
     test "run detail step row marks recovery guidance errors", %{conn: conn, project: project} do
       story_id = "US-STEP-RECOVERY-BADGE"
 

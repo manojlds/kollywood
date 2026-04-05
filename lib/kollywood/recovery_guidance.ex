@@ -1,6 +1,8 @@
 defmodule Kollywood.RecoveryGuidance do
   @moduledoc false
 
+  @type guidance :: %{summary: String.t(), commands: [String.t()]}
+
   @spec workspace_branch_collision(String.t(), String.t(), String.t(), String.t() | nil) ::
           String.t()
   def workspace_branch_collision(source, branch, workspace_path, existing_path \\ nil) do
@@ -160,6 +162,80 @@ defmodule Kollywood.RecoveryGuidance do
         |> Enum.join("\n")
     end
   end
+
+  @spec normalize(term()) :: guidance() | nil
+  def normalize(value) when is_binary(value), do: parse(value)
+
+  def normalize(value) when is_map(value) do
+    summary = normalize_summary(map_field(value, "summary"))
+    commands = normalize_commands(map_field(value, "commands"))
+
+    if non_empty_string?(summary) and commands != [] do
+      %{summary: summary, commands: commands}
+    else
+      nil
+    end
+  end
+
+  def normalize(_value), do: nil
+
+  @spec parse(String.t() | nil) :: guidance() | nil
+  def parse(value) when is_binary(value) do
+    trimmed = String.trim(value)
+
+    with true <- non_empty_string?(trimmed),
+         %{"summary" => summary, "commands" => commands_block} <-
+           Regex.named_captures(
+             ~r/\A(?<summary>.+?)\nRecovery commands:\n(?<commands>.+)\z/s,
+             trimmed
+           ) do
+      normalize(%{
+        "summary" => summary,
+        "commands" => String.split(commands_block, ~r/\r?\n/, trim: true)
+      })
+    else
+      _other -> nil
+    end
+  end
+
+  def parse(_value), do: nil
+
+  @spec text(guidance()) :: String.t()
+  def text(%{summary: summary, commands: commands}) do
+    case normalize(%{summary: summary, commands: commands}) do
+      %{summary: normalized_summary, commands: normalized_commands} ->
+        [normalized_summary, "Recovery commands:"]
+        |> Kernel.++(Enum.map(normalized_commands, &("  " <> &1)))
+        |> Enum.join("\n")
+
+      nil ->
+        summary
+    end
+  end
+
+  defp map_field(map, "summary"), do: Map.get(map, "summary") || Map.get(map, :summary)
+  defp map_field(map, "commands"), do: Map.get(map, "commands") || Map.get(map, :commands)
+  defp map_field(_map, _key), do: nil
+
+  defp normalize_summary(value) when is_binary(value) do
+    trimmed = String.trim(value)
+    if trimmed == "", do: nil, else: trimmed
+  end
+
+  defp normalize_summary(nil), do: nil
+
+  defp normalize_summary(value) when is_atom(value),
+    do: value |> Atom.to_string() |> normalize_summary()
+
+  defp normalize_summary(_value), do: nil
+
+  defp normalize_commands(value) when is_list(value) do
+    value
+    |> Enum.map(&normalize_summary/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp normalize_commands(_value), do: []
 
   defp sh(value) when is_binary(value) do
     "'" <> String.replace(value, "'", "'\"'\"'") <> "'"

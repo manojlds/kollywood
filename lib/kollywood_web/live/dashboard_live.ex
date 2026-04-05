@@ -11,6 +11,7 @@ defmodule KollywoodWeb.DashboardLive do
   alias Kollywood.Orchestrator.RunLogs
   alias Kollywood.Projects
   alias Kollywood.Projects.Project
+  alias Kollywood.RecoveryGuidance
   alias Kollywood.ServiceConfig
   alias Kollywood.StoryExecutionOverrides
   alias Kollywood.StepRetry
@@ -3447,10 +3448,18 @@ defmodule KollywoodWeb.DashboardLive do
           "prompt_captured"
         ]
       end)
+      |> Enum.map(fn step ->
+        Map.put(step, :recovery_guidance, step_recovery_guidance(step))
+      end)
 
     run_error =
       if is_map(assigns.run_detail),
         do: normalize_run_error(get_in(assigns.run_detail, ["metadata", "error"])),
+        else: nil
+
+    run_recovery_guidance =
+      if is_map(assigns.run_detail),
+        do: run_recovery_guidance(assigns.run_detail),
         else: nil
 
     terminal_reason =
@@ -3497,6 +3506,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:steps, visible_steps)
       |> assign(:run_status, run_status)
       |> assign(:run_error, run_error)
+      |> assign(:run_recovery_guidance, run_recovery_guidance)
       |> assign(:terminal_reason, terminal_reason)
       |> assign(:retryable_idx, retryable_idx)
       |> assign(:preview_handoff?, preview_handoff?)
@@ -3532,10 +3542,10 @@ defmodule KollywoodWeb.DashboardLive do
         </div>
       <% end %>
 
-      <%= if is_binary(@run_error) and String.contains?(@run_error, "Recovery commands:") do %>
+      <%= if @run_recovery_guidance do %>
         <div class="alert alert-warning text-xs gap-2 whitespace-pre-wrap font-mono">
           <.icon name="hero-command-line" class="size-4 shrink-0" />
-          <pre class="break-words min-w-0 leading-relaxed">{@run_error}</pre>
+          <pre class="break-words min-w-0 leading-relaxed">{RecoveryGuidance.text(@run_recovery_guidance)}</pre>
         </div>
       <% end %>
 
@@ -3601,7 +3611,7 @@ defmodule KollywoodWeb.DashboardLive do
                     >
                       <.step_status_icon kind={step.kind} status={step.status} />
                       <span class="text-sm font-medium flex-1 truncate">{step.label}</span>
-                      <%= if is_binary(step.error) and String.contains?(step.error, "Recovery commands:") do %>
+                      <%= if step.recovery_guidance do %>
                         <span class="badge badge-warning badge-xs font-mono shrink-0">
                           Recovery commands
                         </span>
@@ -3677,6 +3687,7 @@ defmodule KollywoodWeb.DashboardLive do
     retryable_idx = retryable_step_idx(all_steps, run_status)
 
     step = assigns.step
+    step_recovery_guidance = step_recovery_guidance(step)
     has_prompt = is_binary(step_prompt_content) and String.trim(step_prompt_content) != ""
     has_logs = step_log_content != nil and step_log_content != ""
     has_reports = step && step.kind in ["review", "testing"]
@@ -3719,6 +3730,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:has_logs, has_logs)
       |> assign(:has_prompt, has_prompt)
       |> assign(:step_prompt_content, step_prompt_content)
+      |> assign(:step_recovery_guidance, step_recovery_guidance)
       |> assign(:has_reports, has_reports)
       |> assign(:step_report, step_report)
 
@@ -3766,10 +3778,10 @@ defmodule KollywoodWeb.DashboardLive do
           </div>
         <% end %>
 
-        <%= if is_binary(@step.error) and String.contains?(@step.error, "Recovery commands:") do %>
+        <%= if @step_recovery_guidance do %>
           <div class="alert alert-warning text-xs gap-2 whitespace-pre-wrap font-mono">
             <.icon name="hero-command-line" class="size-4 shrink-0" />
-            <pre class="break-words min-w-0 leading-relaxed">{@step.error}</pre>
+            <pre class="break-words min-w-0 leading-relaxed">{RecoveryGuidance.text(@step_recovery_guidance)}</pre>
           </div>
         <% end %>
 
@@ -4163,6 +4175,11 @@ defmodule KollywoodWeb.DashboardLive do
         do: Map.get(assigns.run_detail, "current_workflow_identity"),
         else: %{}
 
+    run_recovery_guidance =
+      if is_map(assigns.run_detail),
+        do: run_recovery_guidance(assigns.run_detail),
+        else: nil
+
     assigns =
       assigns
       |> assign(:editable, local_provider?(assigns.project))
@@ -4170,6 +4187,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:settings_snapshot, snapshot)
       |> assign(:run_settings, run_settings)
       |> assign(:current_workflow_identity, current_workflow_identity)
+      |> assign(:run_recovery_guidance, run_recovery_guidance)
       |> assign(:agent_kind_options, @agent_kind_options)
       |> assign(
         :workflow_fingerprint_status,
@@ -4447,6 +4465,13 @@ defmodule KollywoodWeb.DashboardLive do
               <div class="alert alert-error text-sm gap-2">
                 <.icon name="hero-exclamation-triangle" class="size-4 shrink-0" />
                 <p class="break-words min-w-0">{run_detail_error(@run_detail)}</p>
+              </div>
+            <% end %>
+
+            <%= if @run_recovery_guidance do %>
+              <div class="alert alert-warning text-xs gap-2 whitespace-pre-wrap font-mono">
+                <.icon name="hero-command-line" class="size-4 shrink-0" />
+                <pre class="break-words min-w-0 leading-relaxed">{RecoveryGuidance.text(@run_recovery_guidance)}</pre>
               </div>
             <% end %>
 
@@ -6649,6 +6674,59 @@ defmodule KollywoodWeb.DashboardLive do
 
   defp normalize_run_error(_value), do: nil
 
+  defp run_recovery_guidance(run_detail) when is_map(run_detail) do
+    top_level = RecoveryGuidance.normalize(map_field(run_detail, :recovery_guidance))
+
+    metadata_guidance =
+      run_detail
+      |> map_field(:metadata)
+      |> run_recovery_guidance_from_metadata()
+
+    top_level || metadata_guidance
+  end
+
+  defp run_recovery_guidance(_run_detail), do: nil
+
+  defp run_recovery_guidance_from_metadata(metadata) when is_map(metadata) do
+    RecoveryGuidance.normalize(map_field(metadata, :recovery_guidance)) ||
+      metadata
+      |> map_field(:error)
+      |> normalize_run_error()
+      |> RecoveryGuidance.parse()
+  end
+
+  defp run_recovery_guidance_from_metadata(_metadata), do: nil
+
+  defp run_recovery_guidance_from_events(events) when is_list(events) do
+    events
+    |> Enum.reverse()
+    |> Enum.find_value(fn event ->
+      RecoveryGuidance.normalize(map_field(event, :recovery_guidance)) ||
+        event
+        |> map_field(:reason)
+        |> normalize_run_error()
+        |> RecoveryGuidance.parse()
+    end)
+  end
+
+  defp run_recovery_guidance_from_events(_events), do: nil
+
+  defp step_recovery_guidance(step) when is_map(step) do
+    detail_guidance =
+      step
+      |> map_field(:detail)
+      |> map_field(:recovery_guidance)
+      |> RecoveryGuidance.normalize()
+
+    detail_guidance ||
+      step
+      |> map_field(:error)
+      |> normalize_run_error()
+      |> RecoveryGuidance.parse()
+  end
+
+  defp step_recovery_guidance(_step), do: nil
+
   defp run_terminal_reason(metadata, events) when is_map(metadata) and is_list(events) do
     status = normalize_run_status(Map.get(metadata, "status"))
     metadata_error = normalize_run_error(Map.get(metadata, "error"))
@@ -8251,10 +8329,12 @@ defmodule KollywoodWeb.DashboardLive do
     review_cycles = review_cycle_summaries(events)
     testing_cycles = testing_cycle_summaries(events)
     prompts = extract_captured_prompts(events)
+    recovery_guidance = run_recovery_guidance_from_events(events)
 
     %{
       "metadata" => Map.put(metadata, "attempt_dir", Path.dirname(files.metadata)),
       "files" => files,
+      "recovery_guidance" => recovery_guidance,
       "settings_snapshot" => RunLogs.settings_snapshot(metadata),
       "current_workflow_identity" => current_workflow_identity(project),
       "phase" => phase,

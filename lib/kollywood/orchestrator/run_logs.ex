@@ -26,6 +26,7 @@ defmodule Kollywood.Orchestrator.RunLogs do
 
   alias Kollywood.AgentRunner.Result
   alias Kollywood.Config
+  alias Kollywood.RecoveryGuidance
   alias Kollywood.ServiceConfig
 
   @base_log_dir ["run_logs"]
@@ -812,6 +813,25 @@ defmodule Kollywood.Orchestrator.RunLogs do
       |> Map.get("timestamp")
       |> normalize_timestamp()
 
+    recovery_guidance =
+      normalized
+      |> Map.get("recovery_guidance")
+      |> RecoveryGuidance.normalize()
+
+    recovery_guidance =
+      recovery_guidance ||
+        normalized
+        |> Map.get("reason")
+        |> optional_string()
+        |> RecoveryGuidance.parse()
+
+    recovery_guidance =
+      recovery_guidance ||
+        normalized
+        |> Map.get("error")
+        |> optional_string()
+        |> RecoveryGuidance.parse()
+
     normalized
     |> Map.put("type", type)
     |> Map.put("timestamp", timestamp)
@@ -819,7 +839,17 @@ defmodule Kollywood.Orchestrator.RunLogs do
     |> Map.put_new("identifier", context.identifier)
     |> Map.put_new("story_id", context.story_id)
     |> Map.put_new("attempt", context.attempt)
+    |> maybe_put_recovery_guidance(recovery_guidance)
   end
+
+  defp maybe_put_recovery_guidance(event, %{summary: _summary, commands: _commands} = guidance) do
+    Map.put(event, "recovery_guidance", %{
+      "summary" => guidance.summary,
+      "commands" => guidance.commands
+    })
+  end
+
+  defp maybe_put_recovery_guidance(event, _guidance), do: event
 
   defp normalize_timestamp(nil), do: now_iso8601()
 

@@ -309,6 +309,52 @@ defmodule Kollywood.Orchestrator.RunLogsTest do
       content = File.read!(context.files.agent)
       assert content == ""
     end
+
+    test "persists structured recovery guidance parsed from reason text", %{context: context} do
+      event = %{
+        type: :publish_failed,
+        reason:
+          "push failed\nRecovery commands:\n  git -C '/tmp/work' status --short\n  git -C '/tmp/work' push -u origin 'kw/US-TEST'"
+      }
+
+      assert :ok = RunLogs.append_event(context, event)
+
+      [line] = context.files.events |> File.read!() |> String.split("\n", trim: true)
+      decoded = Jason.decode!(line)
+
+      assert decoded["recovery_guidance"]["summary"] == "push failed"
+
+      assert decoded["recovery_guidance"]["commands"] == [
+               "git -C '/tmp/work' status --short",
+               "git -C '/tmp/work' push -u origin 'kw/US-TEST'"
+             ]
+    end
+
+    test "preserves provided structured recovery guidance payload", %{context: context} do
+      event = %{
+        type: :publish_failed,
+        reason: "push failed",
+        recovery_guidance: %{
+          summary: "push failed",
+          commands: [
+            "git -C '/tmp/work' remote -v",
+            "git -C '/tmp/work' push -u origin 'kw/US-STRUCTURED'"
+          ]
+        }
+      }
+
+      assert :ok = RunLogs.append_event(context, event)
+
+      [line] = context.files.events |> File.read!() |> String.split("\n", trim: true)
+      decoded = Jason.decode!(line)
+
+      assert decoded["recovery_guidance"]["summary"] == "push failed"
+
+      assert decoded["recovery_guidance"]["commands"] == [
+               "git -C '/tmp/work' remote -v",
+               "git -C '/tmp/work' push -u origin 'kw/US-STRUCTURED'"
+             ]
+    end
   end
 
   describe "settings snapshot compatibility" do
