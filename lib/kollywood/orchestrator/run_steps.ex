@@ -7,6 +7,8 @@ defmodule Kollywood.Orchestrator.RunSteps do
   their own slice of events, timing, status, prompt, and phase metadata.
   """
 
+  alias Kollywood.RecoveryGuidance
+
   @type step :: %{
           idx: non_neg_integer(),
           kind: String.t(),
@@ -377,6 +379,14 @@ defmodule Kollywood.Orchestrator.RunSteps do
     steps = close_step(steps, current, event)
     status = str_field(event, "status") || "finished"
     reason = str_field(event, "reason")
+    guidance = recovery_guidance_from_event(event) || RecoveryGuidance.parse(reason)
+
+    detail =
+      if guidance do
+        %{recovery_guidance: guidance}
+      else
+        %{}
+      end
 
     step = %{
       kind: "run_finished",
@@ -390,7 +400,7 @@ defmodule Kollywood.Orchestrator.RunSteps do
       prompt: nil,
       events: [event],
       error: reason,
-      detail: %{}
+      detail: detail
     }
 
     {steps ++ [step], nil}
@@ -655,6 +665,20 @@ defmodule Kollywood.Orchestrator.RunSteps do
 
   defp finish_step(step, event, status, error \\ nil) do
     ended_at = timestamp(event)
+    final_error = error || step.error
+
+    recovery_guidance =
+      recovery_guidance_from_event(event) ||
+        recovery_guidance_from_step(step) ||
+        RecoveryGuidance.parse(final_error)
+
+    detail =
+      if recovery_guidance do
+        (step.detail || %{})
+        |> Map.put(:recovery_guidance, recovery_guidance)
+      else
+        step.detail || %{}
+      end
 
     duration_ms =
       case {step.started_at, ended_at} do
@@ -667,10 +691,28 @@ defmodule Kollywood.Orchestrator.RunSteps do
       | status: status,
         ended_at: ended_at,
         duration_ms: duration_ms,
-        error: error || step.error,
+        error: final_error,
+        detail: detail,
         events: step.events ++ [event]
     }
   end
+
+  defp recovery_guidance_from_step(step) when is_map(step) do
+    step
+    |> Map.get(:detail, %{})
+    |> map_field(:recovery_guidance)
+    |> RecoveryGuidance.normalize()
+  end
+
+  defp recovery_guidance_from_step(_step), do: nil
+
+  defp recovery_guidance_from_event(event) when is_map(event) do
+    RecoveryGuidance.normalize(map_field(event, :recovery_guidance)) ||
+      RecoveryGuidance.parse(map_field(event, :reason)) ||
+      RecoveryGuidance.parse(map_field(event, :error))
+  end
+
+  defp recovery_guidance_from_event(_event), do: nil
 
   defp update_last_check(detail, event, status) do
     checks =
@@ -697,6 +739,12 @@ defmodule Kollywood.Orchestrator.RunSteps do
   defp event_type(event) do
     to_string(Map.get(event, "type") || Map.get(event, :type) || "")
   end
+
+  defp map_field(map, key) when is_map(map) and is_atom(key) do
+    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  end
+
+  defp map_field(_map, _key), do: nil
 
   defp prompt_step(event) do
     %{

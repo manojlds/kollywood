@@ -98,5 +98,57 @@ defmodule Kollywood.Orchestrator.RunStepsTest do
                  "idle_timeout_reached"
              end)
     end
+
+    test "captures structured recovery guidance on failed publish steps" do
+      steps =
+        RunSteps.from_events([
+          %{type: :publish_started, mode: "push", branch: "kw/US-RECOVERY-STEP"},
+          %{
+            type: :publish_failed,
+            reason:
+              "push failed\nRecovery commands:\n  git -C '/tmp/work' status --short\n  git -C '/tmp/work' push -u origin 'kw/US-RECOVERY-STEP'"
+          },
+          %{type: :run_finished, status: "failed"}
+        ])
+
+      publish_step = Enum.find(steps, &(&1.kind == "publish"))
+      assert publish_step
+
+      assert publish_step.detail.recovery_guidance.summary == "push failed"
+
+      assert publish_step.detail.recovery_guidance.commands == [
+               "git -C '/tmp/work' status --short",
+               "git -C '/tmp/work' push -u origin 'kw/US-RECOVERY-STEP'"
+             ]
+    end
+
+    test "prefers structured recovery guidance payload when present" do
+      steps =
+        RunSteps.from_events([
+          %{type: :publish_started, mode: "push", branch: "kw/US-RECOVERY-STRUCTURED"},
+          %{
+            type: :publish_failed,
+            reason: "publish failed",
+            recovery_guidance: %{
+              summary: "publish failed",
+              commands: [
+                "git -C '/tmp/work' fetch --all --prune",
+                "git -C '/tmp/work' push -u origin 'kw/US-RECOVERY-STRUCTURED'"
+              ]
+            }
+          },
+          %{type: :run_finished, status: "failed"}
+        ])
+
+      publish_step = Enum.find(steps, &(&1.kind == "publish"))
+      assert publish_step
+
+      assert publish_step.detail.recovery_guidance.summary == "publish failed"
+
+      assert publish_step.detail.recovery_guidance.commands == [
+               "git -C '/tmp/work' fetch --all --prune",
+               "git -C '/tmp/work' push -u origin 'kw/US-RECOVERY-STRUCTURED'"
+             ]
+    end
   end
 end
