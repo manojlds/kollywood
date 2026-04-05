@@ -27,7 +27,8 @@ defmodule Kollywood.Chat.Session do
           pending: %{optional(integer()) => atom() | tuple()},
           acp_session_id: String.t() | nil,
           messages: [map()],
-          remote_to_local: %{optional(String.t()) => String.t()}
+          remote_to_local: %{optional(String.t()) => String.t()},
+          queued_prompts: [{String.t(), String.t()}]
         }
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -86,7 +87,8 @@ defmodule Kollywood.Chat.Session do
       pending: %{},
       acp_session_id: nil,
       messages: [],
-      remote_to_local: %{}
+      remote_to_local: %{},
+      queued_prompts: []
     }
 
     case open_acp_port(cwd) do
@@ -125,34 +127,34 @@ defmodule Kollywood.Chat.Session do
       text == "" ->
         {:reply, {:error, "prompt is required"}, state}
 
-      is_nil(state.acp_session_id) ->
-        {:reply, {:error, "chat session is not ready"}, state}
-
-      state.status in [:starting, :cancelling] ->
+      state.status == :cancelling ->
         {:reply, {:error, "chat session is busy (status=#{state.status})"}, state}
 
       is_nil(state.port) ->
         {:reply, {:error, "chat transport is not available"}, state}
 
+      state.status == :error and is_nil(state.acp_session_id) ->
+        {:reply, {:error, state.error || "chat session is not ready"}, state}
+
       true ->
         user_message = new_message("user", text)
 
-        params = %{
-          "sessionId" => state.acp_session_id,
-          "prompt" => [%{"type" => "text", "text" => text}]
-        }
-
-        state =
+        {state, queued?} =
           state
           |> append_message(user_message)
           |> maybe_update_title_from_prompt(text)
-          |> send_request(@session_prompt_method, params, {:prompt, user_message.id})
-          |> Map.put(:status, :running)
-          |> touch()
-          |> clear_error()
-          |> publish_update()
+          |> queue_or_send_prompt(text, user_message.id)
+          |> then(fn {queued_state, queue_status} ->
+            queued_state =
+              queued_state
+              |> touch()
+              |> clear_error()
+              |> publish_update()
 
-        {:reply, {:ok, %{message_id: user_message.id}}, state}
+            {queued_state, queue_status == :queued}
+          end)
+
+        {:reply, {:ok, %{message_id: user_message.id, queued: queued?}}, state}
     end
   end
 
@@ -169,6 +171,7 @@ defmodule Kollywood.Chat.Session do
           state
           |> send_notification(@session_cancel_method, %{"sessionId" => state.acp_session_id})
           |> Map.put(:status, :cancelling)
+          |> Map.put(:queued_prompts, [])
           |> touch()
           |> clear_error()
           |> publish_update()
@@ -357,6 +360,7 @@ defmodule Kollywood.Chat.Session do
               |> Map.put(:status, :ready)
               |> clear_error()
               |> touch()
+              |> maybe_dispatch_next_prompt()
             else
               state
               |> set_error("ACP session/new did not return a sessionId")
@@ -368,6 +372,7 @@ defmodule Kollywood.Chat.Session do
             |> Map.put(:status, :ready)
             |> clear_error()
             |> touch()
+            |> maybe_dispatch_next_prompt()
 
           _other ->
             state
@@ -379,26 +384,52 @@ defmodule Kollywood.Chat.Session do
     update = get_in(payload, ["params", "update"])
 
     case update do
-      %{"sessionUpdate" => "agent_message_chunk"} = chunk ->
-        remote_id =
-          case Map.get(chunk, "messageId") do
-            value when is_binary(value) and value != "" -> value
-            _ -> "assistant-" <> Integer.to_string(System.unique_integer([:positive, :monotonic]))
-          end
-
-        text = get_in(chunk, ["content", "text"])
-
-        if is_binary(text) and text != "" do
-          {state, local_id} = ensure_assistant_message(state, remote_id)
-          state |> append_message_text(local_id, text) |> clear_error() |> touch()
-        else
-          state
-        end
-
       _other ->
-        state
+        case assistant_update(update) do
+          {:ok, remote_id, text} ->
+            {state, local_id} = ensure_assistant_message(state, remote_id)
+            state |> append_message_text(local_id, text) |> clear_error() |> touch()
+
+          :ignore ->
+            state
+        end
     end
   end
+
+  defp assistant_update(update) when is_map(update) do
+    type =
+      update
+      |> Map.get("sessionUpdate", "")
+      |> to_string()
+
+    cond do
+      type in ["agent_message", "agent_message_chunk", "agent_message_delta"] ->
+        remote_id =
+          case Map.get(update, "messageId") do
+            value when is_binary(value) and value != "" ->
+              value
+
+            _other ->
+              "assistant-" <> Integer.to_string(System.unique_integer([:positive, :monotonic]))
+          end
+
+        text =
+          get_in(update, ["content", "text"]) ||
+            Map.get(update, "text") ||
+            get_in(update, ["message", "content", "text"])
+
+        if is_binary(text) and text != "" do
+          {:ok, remote_id, text}
+        else
+          :ignore
+        end
+
+      true ->
+        :ignore
+    end
+  end
+
+  defp assistant_update(_update), do: :ignore
 
   defp ensure_assistant_message(state, remote_id) do
     case Map.get(state.remote_to_local, remote_id) do
@@ -434,6 +465,46 @@ defmodule Kollywood.Chat.Session do
     else
       state
     end
+  end
+
+  defp queue_or_send_prompt(state, text, message_id)
+       when is_binary(text) and is_binary(message_id) do
+    cond do
+      is_nil(state.acp_session_id) or state.status == :starting ->
+        {enqueue_prompt(state, text, message_id), :queued}
+
+      state.status == :running ->
+        {enqueue_prompt(state, text, message_id), :queued}
+
+      true ->
+        {dispatch_prompt_request(state, text, message_id), :sent}
+    end
+  end
+
+  defp maybe_dispatch_next_prompt(
+         %{status: :ready, queued_prompts: [{text, message_id} | rest]} = state
+       )
+       when is_binary(state.acp_session_id) and is_port(state.port) do
+    state
+    |> Map.put(:queued_prompts, rest)
+    |> dispatch_prompt_request(text, message_id)
+  end
+
+  defp maybe_dispatch_next_prompt(state), do: state
+
+  defp enqueue_prompt(state, text, message_id) do
+    Map.put(state, :queued_prompts, state.queued_prompts ++ [{text, message_id}])
+  end
+
+  defp dispatch_prompt_request(state, text, message_id) do
+    params = %{
+      "sessionId" => state.acp_session_id,
+      "prompt" => [%{"type" => "text", "text" => text}]
+    }
+
+    state
+    |> send_request(@session_prompt_method, params, {:prompt, message_id})
+    |> Map.put(:status, :running)
   end
 
   defp send_notification(state, method, params) do
