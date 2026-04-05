@@ -14,6 +14,7 @@ defmodule Mix.Tasks.Kollywood.Orch.Logs do
   alias Kollywood.Config
   alias Kollywood.Orchestrator.RunLogs
   alias Kollywood.Projects
+  alias Kollywood.RecoveryGuidance
   alias Kollywood.ServiceConfig
   alias Mix.Tasks.Kollywood.Orch.Shared
 
@@ -130,6 +131,15 @@ defmodule Mix.Tasks.Kollywood.Orch.Logs do
     Mix.shell().info("- started_at=#{Map.get(metadata, "started_at", "-")}")
     Mix.shell().info("- ended_at=#{Map.get(metadata, "ended_at", "-")}")
     Mix.shell().info("- retry_mode=#{Map.get(metadata, "retry_mode", "full_rerun")}")
+
+    case RecoveryGuidance.normalize(Map.get(metadata, "recovery_guidance")) do
+      %{summary: _summary, commands: _commands} = guidance ->
+        Mix.shell().info("- recovery_guidance:\n#{RecoveryGuidance.text(guidance)}")
+
+      _other ->
+        :ok
+    end
+
     Mix.shell().info("- path=#{attempt.files.run}")
   end
 

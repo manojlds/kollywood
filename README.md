@@ -197,6 +197,38 @@ Dashboard run detail surfaces explicit terminal reasons for completion signal, m
 Some workspace/publish/sync failures include structured `recovery_guidance` metadata in `events.jsonl` (summary + commands).
 Dashboard run and step views render that guidance directly, and legacy string-based `Recovery commands:` errors remain supported for backward compatibility.
 
+### Operator triage runbook
+
+When a run fails, use this quick triage flow before re-running:
+
+1. Confirm the terminal status and last phase in Dashboard run detail (or `mix kollywood.orch.logs STORY_ID --attempt N`).
+2. If recovery guidance is present, run the listed commands exactly as shown first.
+3. Only re-run after the root condition is verified fixed (for example: stale worktree removed, branch collision cleared, push auth fixed).
+
+Common scenarios:
+
+- **Idle timeout**
+  - Symptom: status `failed`, terminal reason says agent output was idle too long.
+  - Triage: inspect the attempt logs and find the last successful phase/turn.
+  - Commands:
+    - `mix kollywood.orch.logs STORY_ID --attempt N`
+  - Resolution: adjust workflow prompt/steps or `agent.idle_timeout_ms` if the task legitimately needs longer silent execution.
+
+- **Completion mismatch (expected signal not observed)**
+  - Symptom: run reaches `max_turns_reached` or another terminal failure instead of `completed`.
+  - Triage: verify the configured `agent.completion_signals` in `.kollywood/WORKFLOW.md` match actual agent output.
+  - Commands:
+    - `mix kollywood.orch.logs STORY_ID --attempt N`
+    - `mix kollywood.orch.logs STORY_ID --attempt N --follow`
+  - Resolution: align completion signals to deterministic output text (or remove overly strict signal requirements).
+
+- **Workspace recovery (collision / stale path / cleanup preserved)**
+  - Symptom: workspace/worktree provisioning or cleanup failure with recovery guidance.
+  - Triage: use the exact `Recovery commands:` block from Dashboard or `mix kollywood.orch.logs`; those commands are generated for the failing path/branch.
+  - Commands:
+    - `mix kollywood.orch.logs STORY_ID --attempt N`
+  - Resolution: prune stale worktree metadata, remove orphan directories only when confirmed stale, then re-run.
+
 Quality gates are configured in `.kollywood/WORKFLOW.md`:
 
 - `quality.max_cycles`: overall maximum quality loop cycles

@@ -202,6 +202,26 @@ defmodule Mix.Tasks.Kollywood.OrchTasksTest do
     assert specific_output =~ "[first] worker output"
   end
 
+  test "kollywood.orch.logs shows recovery guidance from metadata", %{root: root} do
+    _run_log_path =
+      write_attempt_log_fixture(root, "US-902", 1, "[seed] worker output\n", "failed",
+        recovery_guidance: %{
+          "summary" => "workspace cleanup preserved",
+          "commands" => [
+            "ls -la /tmp/kollywood/workspaces/US-902",
+            "git -C /tmp/kollywood/workspaces/US-902 status --short"
+          ]
+        }
+      )
+
+    output = run_task("kollywood.orch.logs", ["US-902"])
+
+    assert output =~ "recovery_guidance:"
+    assert output =~ "workspace cleanup preserved"
+    assert output =~ "Recovery commands:"
+    assert output =~ "git -C /tmp/kollywood/workspaces/US-902 status --short"
+  end
+
   test "kollywood.orch.logs follow mode streams appended lines", %{root: root} do
     run_log_path =
       write_attempt_log_fixture(root, "US-901", 1, "[seed] line\n", "running")
@@ -286,7 +306,7 @@ defmodule Mix.Tasks.Kollywood.OrchTasksTest do
     workflow_path
   end
 
-  defp write_attempt_log_fixture(root, story_id, attempt, run_log_content, status) do
+  defp write_attempt_log_fixture(root, story_id, attempt, run_log_content, status, opts \\ []) do
     project_root =
       root
       |> workflow_config()
@@ -311,13 +331,20 @@ defmodule Mix.Tasks.Kollywood.OrchTasksTest do
     File.write!(Path.join(attempt_dir, "runtime.log"), "")
     File.write!(Path.join(attempt_dir, "events.jsonl"), "")
 
-    metadata = %{
-      "story_id" => story_id,
-      "attempt" => attempt,
-      "status" => status,
-      "started_at" => "2026-03-24T00:00:00Z",
-      "ended_at" => "2026-03-24T00:00:10Z"
-    }
+    metadata =
+      %{
+        "story_id" => story_id,
+        "attempt" => attempt,
+        "status" => status,
+        "started_at" => "2026-03-24T00:00:00Z",
+        "ended_at" => "2026-03-24T00:00:10Z"
+      }
+      |> then(fn base ->
+        case Keyword.get(opts, :recovery_guidance) do
+          guidance when is_map(guidance) -> Map.put(base, "recovery_guidance", guidance)
+          _other -> base
+        end
+      end)
 
     File.write!(Path.join(attempt_dir, "metadata.json"), Jason.encode!(metadata, pretty: true))
 
