@@ -194,7 +194,8 @@ Run metadata (`run_logs/*/metadata.json`) stores a terminal `status` and event s
 
 Dashboard run detail surfaces explicit terminal reasons for completion signal, max turns, and idle timeout.
 
-Some workspace/publish/sync failures include a `Recovery commands:` section in the run error so operators can copy-paste remediation steps directly.
+Some workspace/publish/sync failures include structured `recovery_guidance` metadata in `events.jsonl` (summary + commands).
+Dashboard run and step views render that guidance directly, and legacy string-based `Recovery commands:` errors remain supported for backward compatibility.
 
 Quality gates are configured in `.kollywood/WORKFLOW.md`:
 
