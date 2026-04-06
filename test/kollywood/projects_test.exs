@@ -59,7 +59,7 @@ defmodule Kollywood.ProjectsTest do
     assert errors_on(changeset, :slug) != []
   end
 
-  test "onboarded? is false before workflow/tracker files and true after" do
+  test "onboarded? requires workflow file" do
     assert {:ok, project} =
              Projects.create_project(%{
                name: "Onboard check",
@@ -70,6 +70,12 @@ defmodule Kollywood.ProjectsTest do
                    "onboard-check-#{System.unique_integer([:positive])}"
                  )
              })
+
+    refute Projects.onboarded?(project)
+
+    tracker_path = Projects.tracker_path(project)
+    File.mkdir_p!(Path.dirname(tracker_path))
+    File.write!(tracker_path, ~s({"project":"demo","userStories":[]}))
 
     refute Projects.onboarded?(project)
 

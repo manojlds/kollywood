@@ -82,9 +82,9 @@ defmodule Kollywood.Projects do
 
   @spec onboarded?(Project.t() | map()) :: boolean()
   def onboarded?(project) when is_map(project) do
-    workflow_path(project)
+    project
+    |> workflow_path()
     |> file_exists?()
-    |> Kernel.or(tracker_path(project) |> file_exists?())
   end
 
   def onboarded?(_project), do: false

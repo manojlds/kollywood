@@ -56,6 +56,29 @@ defmodule KollywoodWeb.DashboardLiveTest do
     File.mkdir_p!(Path.dirname(tracker_path))
     File.write!(tracker_path, Jason.encode!(%{"userStories" => @test_stories}, pretty: true))
 
+    workflow_path = Projects.workflow_path(project)
+    File.mkdir_p!(Path.dirname(workflow_path))
+
+    File.write!(
+      workflow_path,
+      """
+      ---
+      tracker:
+        kind: prd_json
+      workspace:
+        strategy: clone
+      agent:
+        kind: opencode
+      publish:
+        mode: push
+      git:
+        base_branch: main
+      ---
+
+      Work on {{ issue.identifier }}.
+      """
+    )
+
     on_exit(fn ->
       case previous_home do
         nil -> System.delete_env("KOLLYWOOD_HOME")
@@ -111,7 +134,11 @@ defmodule KollywoodWeb.DashboardLiveTest do
       tracker_path = Projects.tracker_path(project)
 
       if is_binary(workflow_path), do: File.rm(workflow_path)
-      if is_binary(tracker_path), do: File.rm(tracker_path)
+
+      if is_binary(tracker_path) do
+        File.mkdir_p!(Path.dirname(tracker_path))
+        File.write!(tracker_path, ~s({"project":"demo","userStories":[]}))
+      end
 
       {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}")
 
