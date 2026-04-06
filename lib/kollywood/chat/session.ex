@@ -64,6 +64,11 @@ defmodule Kollywood.Chat.Session do
     :exit, _ -> {:error, "chat session is unavailable"}
   end
 
+  if Mix.env() == :test do
+    @doc false
+    def __test_acp_env__, do: acp_env()
+  end
+
   @impl true
   def init(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
@@ -243,6 +248,8 @@ defmodule Kollywood.Chat.Session do
 
       true ->
         try do
+          env = acp_env()
+
           port =
             Port.open({:spawn_executable, String.to_charlist(executable)}, [
               :binary,
@@ -250,7 +257,8 @@ defmodule Kollywood.Chat.Session do
               :use_stdio,
               :stderr_to_stdout,
               {:args, Enum.map(args, &String.to_charlist/1)},
-              {:cd, String.to_charlist(cwd)}
+              {:cd, String.to_charlist(cwd)},
+              {:env, Enum.map(env, &to_char_env/1)}
             ])
 
           {:ok, port}
@@ -259,6 +267,35 @@ defmodule Kollywood.Chat.Session do
             {:error, "failed to start ACP process: #{Exception.message(error)}"}
         end
     end
+  end
+
+  defp acp_env do
+    current_path = System.get_env("PATH") || ""
+    home = System.user_home()
+
+    preferred_bin_dirs =
+      [Path.join(home, ".local/bin"), Path.join(home, ".cargo/bin")]
+      |> Enum.filter(&File.dir?/1)
+
+    merged_path =
+      preferred_bin_dirs
+      |> Kernel.++(String.split(current_path, ":", trim: true))
+      |> Enum.uniq()
+      |> Enum.join(":")
+
+    cli_path = Path.join(home, ".local/bin/kollywood")
+
+    env = [{"PATH", merged_path}]
+
+    if File.exists?(cli_path) do
+      [{"KOLLYWOOD_CLI", cli_path} | env]
+    else
+      env
+    end
+  end
+
+  defp to_char_env({key, value}) when is_binary(key) and is_binary(value) do
+    {String.to_charlist(key), String.to_charlist(value)}
   end
 
   defp consume_chunk(state, chunk) do

@@ -93,6 +93,8 @@ curl -s http://127.0.0.1:4000/api/workflow/schema | jq
 kollywood workflow schema --json
 ```
 
+When ACP chat starts agent sessions, Kollywood injects `KOLLYWOOD_CLI` (pointing to `~/.local/bin/kollywood` when present) and prepends `~/.local/bin`/`~/.cargo/bin` to `PATH` so skills can reliably call the expected global CLI binary.
+
 ```bash
 mix kollywood.projects list
 mix kollywood.projects add-local --name "Kollywood" --path ~/projects/kollywood

@@ -23,6 +23,10 @@ Use Rust CLI to read project settings first:
 - `kollywood project resolve --json`
 - `kollywood workflow schema --json`
 
+Use `KOLLYWOOD_CLI` if provided by environment as the CLI binary path:
+- `"${KOLLYWOOD_CLI:-kollywood}" project resolve --json`
+- `"${KOLLYWOOD_CLI:-kollywood}" workflow schema --json`
+
 If lookup fails because the project is not mapped, stop and ask the user to onboard the project in Kollywood first.
 
 If the project is mapped but tracker files are missing, continue onboarding and generate WORKFLOW/AGENTS first.
@@ -36,8 +40,8 @@ Treat resolved metadata as source of truth:
 
 ## Workflow
 
-1. Resolve project settings via `kollywood project resolve --json`.
-2. Fetch machine-readable workflow schema via `kollywood workflow schema --json` and treat it as the authoritative shape/version.
+1. Resolve project settings via `"${KOLLYWOOD_CLI:-kollywood}" project resolve --json`.
+2. Fetch machine-readable workflow schema via `"${KOLLYWOOD_CLI:-kollywood}" workflow schema --json` and treat it as the authoritative shape/version.
 3. Analyze repository context:
    - read `README*`, manifests, existing runtime files, existing `.kollywood/*` files
    - infer test/lint/build/typecheck commands and runtime process model
