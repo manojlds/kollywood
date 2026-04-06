@@ -250,6 +250,8 @@ defmodule KollywoodWeb.DashboardLiveTest do
       refute html =~ "Local Path"
       refute html =~ Projects.local_path(project)
       assert html =~ "WORKFLOW.md"
+      assert html =~ "Workflow"
+      assert html =~ "Runtime"
       assert html =~ "value=\"cursor\""
       assert html =~ "When enabled, checks stop at the first failure."
 
@@ -450,6 +452,77 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       {:ok, config, _prompt} = Projects.workflow_path(project) |> File.read!() |> Config.parse()
       assert config.checks.fail_fast == false
+    end
+
+    test "runtime tab shows runtime fields including processes", %{conn: conn, project: project} do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/settings")
+
+      html =
+        view
+        |> element("button[phx-click='set_project_settings_tab'][phx-value-tab='runtime']")
+        |> render_click()
+
+      assert html =~ "Runtime process and environment settings"
+      assert html =~ "Processes"
+      assert html =~ "Environment variables"
+      assert html =~ "Ports"
+      assert html =~ "Save Runtime"
+    end
+
+    test "save runtime settings persists runtime processes and env", %{
+      conn: conn,
+      project: project
+    } do
+      write_workflow!(project, """
+      ---
+      agent:
+        kind: cursor
+      workspace:
+        strategy: clone
+      runtime:
+        kind: host
+        processes:
+          - mix phx.server
+      publish:
+        mode: push
+      git:
+        base_branch: main
+      ---
+
+      Body here.
+      """)
+
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/settings")
+
+      view
+      |> element("button[phx-click='set_project_settings_tab'][phx-value-tab='runtime']")
+      |> render_click()
+
+      view
+      |> element("form[phx-submit='save_runtime_settings']")
+      |> render_submit(%{
+        runtime: %{
+          "kind" => "host",
+          "start_timeout_ms" => "90000",
+          "stop_timeout_ms" => "30000",
+          "port_offset_mod" => "1500",
+          "image" => "",
+          "processes" => "mix phx.server\nmix test --listen-on-stdin",
+          "env" => "PHX_SERVER=true\nMIX_ENV=dev",
+          "ports" => "web=4000\napi=4001"
+        }
+      })
+
+      {:ok, config, _prompt} = Projects.workflow_path(project) |> File.read!() |> Config.parse()
+
+      assert config.runtime.processes == ["mix phx.server", "mix test --listen-on-stdin"]
+      assert config.runtime.env["PHX_SERVER"] == "true"
+      assert config.runtime.env["MIX_ENV"] == "dev"
+      assert config.runtime.ports["web"] == 4000
+      assert config.runtime.ports["api"] == 4001
+      assert config.runtime.start_timeout_ms == 90_000
+      assert config.runtime.stop_timeout_ms == 30_000
+      assert config.runtime.port_offset_mod == 1_500
     end
   end
 

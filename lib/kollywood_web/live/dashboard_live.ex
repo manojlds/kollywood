@@ -48,6 +48,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:selected_story, nil)
       |> assign(:story_detail_tab, "details")
       |> assign(:settings_edit_mode, false)
+      |> assign(:project_settings_tab, "workflow")
       |> assign(:run_detail_panel_tab, "logs")
       |> assign(:run_view_tab, "steps")
       |> assign(:step_detail_tab, "logs")
@@ -92,6 +93,11 @@ defmodule KollywoodWeb.DashboardLive do
     stories_view = resolve_stories_view(params["view"], socket.assigns[:stories_view])
     active_log_tab = resolve_active_log_tab(params["log_tab"], socket.assigns[:active_log_tab])
 
+    project_settings_tab =
+      normalize_project_settings_tab(
+        params["settings_tab"] || socket.assigns[:project_settings_tab]
+      )
+
     requested_action = socket.assigns[:live_action]
 
     effective_action =
@@ -110,6 +116,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:live_action, effective_action)
       |> assign(:page_title, if(current_project, do: current_project.name, else: "Dashboard"))
       |> assign(:active_log_tab, active_log_tab)
+      |> assign(:project_settings_tab, project_settings_tab)
       |> assign(:artifact_preview, nil)
       |> assign(:action_confirmation, nil)
       |> assign(:settings_edit_mode, false)
@@ -367,6 +374,10 @@ defmodule KollywoodWeb.DashboardLive do
 
   def handle_event("set_story_tab", %{"tab" => tab}, socket) do
     {:noreply, socket |> assign(:story_detail_tab, tab) |> assign(:settings_edit_mode, false)}
+  end
+
+  def handle_event("set_project_settings_tab", %{"tab" => tab}, socket) do
+    {:noreply, assign(socket, :project_settings_tab, normalize_project_settings_tab(tab))}
   end
 
   def handle_event("toggle_settings_edit", _params, socket) do
@@ -736,6 +747,46 @@ defmodule KollywoodWeb.DashboardLive do
     {:noreply, socket}
   end
 
+  def handle_event("save_runtime_settings", %{"runtime" => runtime_params}, socket) do
+    project = socket.assigns.current_project
+
+    socket =
+      case workflow_path(project) do
+        nil ->
+          socket
+
+        path ->
+          workflow = socket.assigns.workflow
+
+          case apply_runtime_settings(workflow.parsed, runtime_params) do
+            {:ok, new_parsed} ->
+              new_yaml = to_workflow_yaml(new_parsed)
+              content = "---\n#{new_yaml}\n---\n\n#{workflow.body}\n"
+
+              case File.write(path, content) do
+                :ok ->
+                  git_commit_workflow(path)
+
+                  socket
+                  |> assign(:workflow, load_workflow(project))
+                  |> put_flash(:info, "Runtime settings saved.")
+
+                {:error, reason} ->
+                  assign(
+                    socket,
+                    :workflow,
+                    Map.put(workflow, :error, "Save failed: #{inspect(reason)}")
+                  )
+              end
+
+            {:error, reason} ->
+              put_flash(socket, :error, reason)
+          end
+      end
+
+    {:noreply, socket}
+  end
+
   @impl true
   def render(assigns) do
     ~H"""
@@ -904,6 +955,7 @@ defmodule KollywoodWeb.DashboardLive do
                   workflow={@workflow}
                   orchestrator_status={@orchestrator_status}
                   workflow_editable={local_provider?(@current_project)}
+                  project_settings_tab={@project_settings_tab}
                 />
               <% _ -> %>
                 <.overview_section
@@ -4806,8 +4858,43 @@ defmodule KollywoodWeb.DashboardLive do
   attr :workflow, :map, required: true
   attr :orchestrator_status, :map, default: nil
   attr :workflow_editable, :boolean, default: false
+  attr :project_settings_tab, :string, default: "workflow"
 
   defp settings_section(assigns) do
+    runtime_processes_text =
+      case get_in(assigns.workflow.parsed, ["runtime", "processes"]) do
+        processes when is_list(processes) -> Enum.join(processes, "\n")
+        _other -> ""
+      end
+
+    runtime_env_text =
+      case get_in(assigns.workflow.parsed, ["runtime", "env"]) do
+        env when is_map(env) and map_size(env) > 0 ->
+          env
+          |> Enum.sort_by(fn {key, _value} -> to_string(key) end)
+          |> Enum.map_join("\n", fn {key, value} -> "#{key}=#{value}" end)
+
+        _other ->
+          ""
+      end
+
+    runtime_ports_text =
+      case get_in(assigns.workflow.parsed, ["runtime", "ports"]) do
+        ports when is_map(ports) and map_size(ports) > 0 ->
+          ports
+          |> Enum.sort_by(fn {key, _value} -> to_string(key) end)
+          |> Enum.map_join("\n", fn {key, value} -> "#{key}=#{value}" end)
+
+        _other ->
+          ""
+      end
+
+    assigns =
+      assigns
+      |> assign(:runtime_processes_text, runtime_processes_text)
+      |> assign(:runtime_env_text, runtime_env_text)
+      |> assign(:runtime_ports_text, runtime_ports_text)
+
     ~H"""
     <div class="space-y-6">
       <h2 class="text-2xl font-bold">Project Settings</h2>
@@ -4844,184 +4931,177 @@ defmodule KollywoodWeb.DashboardLive do
       </div>
 
       <%= if @workflow.path do %>
-        <%!-- Workflow settings form --%>
-        <div class="card bg-base-200 border border-base-300">
-          <div class="card-body gap-4">
-            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
-              <h3 class="card-title text-lg shrink-0">WORKFLOW.md</h3>
-              <span class="font-mono text-xs text-base-content/50 break-all">
-                {@workflow.path}
-              </span>
-            </div>
+        <div class="tabs tabs-box bg-base-200 inline-flex p-1">
+          <button
+            type="button"
+            phx-click="set_project_settings_tab"
+            phx-value-tab="workflow"
+            class={["tab tab-sm", @project_settings_tab == "workflow" && "tab-active"]}
+          >
+            Workflow
+          </button>
+          <button
+            type="button"
+            phx-click="set_project_settings_tab"
+            phx-value-tab="runtime"
+            class={["tab tab-sm", @project_settings_tab == "runtime" && "tab-active"]}
+          >
+            Runtime
+          </button>
+        </div>
 
-            <%= if @workflow.error do %>
-              <div class="alert alert-error text-sm">{@workflow.error}</div>
-            <% end %>
-
-            <form phx-submit="save_settings" class="space-y-6">
-              <%!-- Workspace --%>
-              <div>
-                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
-                  Workspace
-                </p>
-                <div class="grid sm:grid-cols-2 gap-4">
-                  <div class="sm:col-span-2">
-                    <span class="text-xs text-base-content/50">Workspaces directory</span>
-                    <p class="font-mono text-sm mt-0.5 text-base-content/70 break-all">
-                      {Kollywood.ServiceConfig.project_workspace_root(@project.slug)}/<em class="not-italic text-base-content/40">issue-id</em>
-                    </p>
-                    <p class="text-xs text-base-content/40 mt-1">
-                      Configured via
-                      <code class="font-mono bg-base-100 px-1 rounded">KOLLYWOOD_HOME</code>
-                      (default: <code class="font-mono bg-base-100 px-1 rounded">~/.kollywood</code>)
-                    </p>
-                  </div>
-                  <div class="min-w-0">
-                    <label class="label pb-1"><span class="label-text text-sm">Strategy</span></label>
-                    <select
-                      name="settings[workspace][strategy]"
-                      class="select select-bordered select-sm w-full max-w-full"
-                    >
-                      <%= for s <- ["clone", "worktree"] do %>
-                        <option
-                          value={s}
-                          selected={get_in(@workflow.parsed, ["workspace", "strategy"]) == s}
-                        >
-                          {s}
-                        </option>
-                      <% end %>
-                    </select>
-                  </div>
-                </div>
+        <%= if @project_settings_tab == "workflow" do %>
+          <%!-- Workflow settings form --%>
+          <div class="card bg-base-200 border border-base-300">
+            <div class="card-body gap-4">
+              <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
+                <h3 class="card-title text-lg shrink-0">WORKFLOW.md</h3>
+                <span class="font-mono text-xs text-base-content/50 break-all">
+                  {@workflow.path}
+                </span>
               </div>
 
-              <div class="divider my-0"></div>
+              <%= if @workflow.error do %>
+                <div class="alert alert-error text-sm">{@workflow.error}</div>
+              <% end %>
 
-              <%!-- Agent --%>
-              <div>
-                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
-                  Agent
-                </p>
-                <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                  <div>
-                    <label class="label pb-1"><span class="label-text text-sm">Kind</span></label>
-                    <select
-                      name="settings[agent][kind]"
-                      class="select select-bordered select-sm w-full"
-                    >
-                      <%= for k <- ["amp", "claude", "cursor", "opencode", "pi"] do %>
-                        <option value={k} selected={get_in(@workflow.parsed, ["agent", "kind"]) == k}>
-                          {k}
-                        </option>
-                      <% end %>
-                    </select>
-                  </div>
-                  <div>
-                    <label class="label pb-1">
-                      <span class="label-text text-sm">Max Turns</span>
-                    </label>
-                    <input
-                      type="number"
-                      min="1"
-                      name="settings[agent][max_turns]"
-                      value={get_in(@workflow.parsed, ["agent", "max_turns"]) || 20}
-                      class="input input-bordered input-sm w-full"
-                    />
-                  </div>
-                  <div>
-                    <label class="label pb-1">
-                      <span class="label-text text-sm">Max Agents</span>
-                    </label>
-                    <input
-                      type="number"
-                      min="1"
-                      name="settings[agent][max_concurrent_agents]"
-                      value={get_in(@workflow.parsed, ["agent", "max_concurrent_agents"]) || 1}
-                      class="input input-bordered input-sm w-full"
-                    />
-                  </div>
-                  <div>
-                    <label class="label pb-1">
-                      <span class="label-text text-sm">Timeout (ms)</span>
-                    </label>
-                    <input
-                      type="number"
-                      min="1000"
-                      step="1000"
-                      name="settings[agent][timeout_ms]"
-                      value={get_in(@workflow.parsed, ["agent", "timeout_ms"]) || 7_200_000}
-                      class="input input-bordered input-sm w-full"
-                    />
-                  </div>
-                  <div class="sm:col-span-2 lg:col-span-3 flex items-center gap-2">
-                    <input type="hidden" name="settings[agent][retries_enabled]" value="false" />
-                    <input
-                      type="checkbox"
-                      name="settings[agent][retries_enabled]"
-                      value="true"
-                      checked={get_in(@workflow.parsed, ["agent", "retries_enabled"]) == true}
-                      class="toggle toggle-sm"
-                    />
-                    <span class="text-sm">Enable retries</span>
-                  </div>
-                  <div class="sm:col-span-2 lg:col-span-3">
-                    <label class="label pb-1">
-                      <span class="label-text text-sm">
-                        Custom command
-                        <span class="text-base-content/40 text-xs">(optional override)</span>
-                      </span>
-                    </label>
-                    <input
-                      type="text"
-                      name="settings[agent][command]"
-                      value={get_in(@workflow.parsed, ["agent", "command"]) || ""}
-                      placeholder="e.g. /usr/local/bin/amp"
-                      class="input input-bordered input-sm w-full font-mono"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <div class="divider my-0"></div>
-
-              <%!-- Quality --%>
-              <div>
-                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
-                  Quality
-                </p>
-                <div class="grid sm:grid-cols-2 gap-4 mb-4">
-                  <div>
-                    <label class="label pb-1">
-                      <span class="label-text text-sm">Max Cycles</span>
-                    </label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="10"
-                      name="settings[quality][max_cycles]"
-                      value={get_in(@workflow.parsed, ["quality", "max_cycles"]) || 1}
-                      class="input input-bordered input-sm w-full"
-                    />
+              <form phx-submit="save_settings" class="space-y-6">
+                <%!-- Workspace --%>
+                <div>
+                  <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
+                    Workspace
+                  </p>
+                  <div class="grid sm:grid-cols-2 gap-4">
+                    <div class="sm:col-span-2">
+                      <span class="text-xs text-base-content/50">Workspaces directory</span>
+                      <p class="font-mono text-sm mt-0.5 text-base-content/70 break-all">
+                        {Kollywood.ServiceConfig.project_workspace_root(@project.slug)}/<em class="not-italic text-base-content/40">issue-id</em>
+                      </p>
+                      <p class="text-xs text-base-content/40 mt-1">
+                        Configured via
+                        <code class="font-mono bg-base-100 px-1 rounded">KOLLYWOOD_HOME</code>
+                        (default: <code class="font-mono bg-base-100 px-1 rounded">~/.kollywood</code>)
+                      </p>
+                    </div>
+                    <div class="min-w-0">
+                      <label class="label pb-1">
+                        <span class="label-text text-sm">Strategy</span>
+                      </label>
+                      <select
+                        name="settings[workspace][strategy]"
+                        class="select select-bordered select-sm w-full max-w-full"
+                      >
+                        <%= for s <- ["clone", "worktree"] do %>
+                          <option
+                            value={s}
+                            selected={get_in(@workflow.parsed, ["workspace", "strategy"]) == s}
+                          >
+                            {s}
+                          </option>
+                        <% end %>
+                      </select>
+                    </div>
                   </div>
                 </div>
 
-                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
-                  Checks
-                </p>
-                <div class="space-y-4">
-                  <div>
-                    <label class="label pb-1">
-                      <span class="label-text text-sm">Required checks</span>
-                      <span class="label-text-alt text-base-content/40">one per line</span>
-                    </label>
-                    <textarea
-                      name="settings[quality][checks][required]"
-                      rows="4"
-                      spellcheck="false"
-                      class="textarea textarea-bordered textarea-sm w-full font-mono text-xs"
-                    >{(get_in(@workflow.parsed, ["quality", "checks", "required"]) || []) |> Enum.join("\n")}</textarea>
+                <div class="divider my-0"></div>
+
+                <%!-- Agent --%>
+                <div>
+                  <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
+                    Agent
+                  </p>
+                  <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <div>
+                      <label class="label pb-1"><span class="label-text text-sm">Kind</span></label>
+                      <select
+                        name="settings[agent][kind]"
+                        class="select select-bordered select-sm w-full"
+                      >
+                        <%= for k <- ["amp", "claude", "cursor", "opencode", "pi"] do %>
+                          <option
+                            value={k}
+                            selected={get_in(@workflow.parsed, ["agent", "kind"]) == k}
+                          >
+                            {k}
+                          </option>
+                        <% end %>
+                      </select>
+                    </div>
+                    <div>
+                      <label class="label pb-1">
+                        <span class="label-text text-sm">Max Turns</span>
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        name="settings[agent][max_turns]"
+                        value={get_in(@workflow.parsed, ["agent", "max_turns"]) || 20}
+                        class="input input-bordered input-sm w-full"
+                      />
+                    </div>
+                    <div>
+                      <label class="label pb-1">
+                        <span class="label-text text-sm">Max Agents</span>
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        name="settings[agent][max_concurrent_agents]"
+                        value={get_in(@workflow.parsed, ["agent", "max_concurrent_agents"]) || 1}
+                        class="input input-bordered input-sm w-full"
+                      />
+                    </div>
+                    <div>
+                      <label class="label pb-1">
+                        <span class="label-text text-sm">Timeout (ms)</span>
+                      </label>
+                      <input
+                        type="number"
+                        min="1000"
+                        step="1000"
+                        name="settings[agent][timeout_ms]"
+                        value={get_in(@workflow.parsed, ["agent", "timeout_ms"]) || 7_200_000}
+                        class="input input-bordered input-sm w-full"
+                      />
+                    </div>
+                    <div class="sm:col-span-2 lg:col-span-3 flex items-center gap-2">
+                      <input type="hidden" name="settings[agent][retries_enabled]" value="false" />
+                      <input
+                        type="checkbox"
+                        name="settings[agent][retries_enabled]"
+                        value="true"
+                        checked={get_in(@workflow.parsed, ["agent", "retries_enabled"]) == true}
+                        class="toggle toggle-sm"
+                      />
+                      <span class="text-sm">Enable retries</span>
+                    </div>
+                    <div class="sm:col-span-2 lg:col-span-3">
+                      <label class="label pb-1">
+                        <span class="label-text text-sm">
+                          Custom command
+                          <span class="text-base-content/40 text-xs">(optional override)</span>
+                        </span>
+                      </label>
+                      <input
+                        type="text"
+                        name="settings[agent][command]"
+                        value={get_in(@workflow.parsed, ["agent", "command"]) || ""}
+                        placeholder="e.g. /usr/local/bin/amp"
+                        class="input input-bordered input-sm w-full font-mono"
+                      />
+                    </div>
                   </div>
-                  <div class="grid sm:grid-cols-3 gap-4">
+                </div>
+
+                <div class="divider my-0"></div>
+
+                <%!-- Quality --%>
+                <div>
+                  <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
+                    Quality
+                  </p>
+                  <div class="grid sm:grid-cols-2 gap-4 mb-4">
                     <div>
                       <label class="label pb-1">
                         <span class="label-text text-sm">Max Cycles</span>
@@ -5030,9 +5110,244 @@ defmodule KollywoodWeb.DashboardLive do
                         type="number"
                         min="1"
                         max="10"
-                        name="settings[quality][checks][max_cycles]"
+                        name="settings[quality][max_cycles]"
+                        value={get_in(@workflow.parsed, ["quality", "max_cycles"]) || 1}
+                        class="input input-bordered input-sm w-full"
+                      />
+                    </div>
+                  </div>
+
+                  <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
+                    Checks
+                  </p>
+                  <div class="space-y-4">
+                    <div>
+                      <label class="label pb-1">
+                        <span class="label-text text-sm">Required checks</span>
+                        <span class="label-text-alt text-base-content/40">one per line</span>
+                      </label>
+                      <textarea
+                        name="settings[quality][checks][required]"
+                        rows="4"
+                        spellcheck="false"
+                        class="textarea textarea-bordered textarea-sm w-full font-mono text-xs"
+                      >{(get_in(@workflow.parsed, ["quality", "checks", "required"]) || []) |> Enum.join("\n")}</textarea>
+                    </div>
+                    <div class="grid sm:grid-cols-3 gap-4">
+                      <div>
+                        <label class="label pb-1">
+                          <span class="label-text text-sm">Max Cycles</span>
+                        </label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="10"
+                          name="settings[quality][checks][max_cycles]"
+                          value={
+                            get_in(@workflow.parsed, ["quality", "checks", "max_cycles"]) ||
+                              get_in(@workflow.parsed, ["quality", "max_cycles"]) || 1
+                          }
+                          class="input input-bordered input-sm w-full"
+                        />
+                      </div>
+                      <div>
+                        <label class="label pb-1">
+                          <span class="label-text text-sm">Timeout (ms)</span>
+                        </label>
+                        <input
+                          type="number"
+                          min="1000"
+                          step="1000"
+                          name="settings[quality][checks][timeout_ms]"
+                          value={
+                            get_in(@workflow.parsed, ["quality", "checks", "timeout_ms"]) ||
+                              7_200_000
+                          }
+                          class="input input-bordered input-sm w-full"
+                        />
+                      </div>
+                      <div class="pt-5">
+                        <div class="flex items-center gap-2">
+                          <input
+                            type="hidden"
+                            name="settings[quality][checks][fail_fast]"
+                            value="false"
+                          />
+                          <input
+                            type="checkbox"
+                            name="settings[quality][checks][fail_fast]"
+                            value="true"
+                            checked={
+                              get_in(@workflow.parsed, ["quality", "checks", "fail_fast"]) != false
+                            }
+                            class="toggle toggle-sm"
+                            aria-describedby="checks-fail-fast-help"
+                          />
+                          <span class="text-sm">Fail fast</span>
+                        </div>
+                        <p id="checks-fail-fast-help" class="text-xs text-base-content/60 mt-1">
+                          When enabled, checks stop at the first failure. When disabled, all
+                          configured checks run so every failure is reported in one cycle.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="divider my-0"></div>
+
+                <%!-- Review --%>
+                <div>
+                  <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
+                    Review
+                  </p>
+                  <div class="grid sm:grid-cols-2 gap-4">
+                    <div class="sm:col-span-2 flex items-center gap-2">
+                      <input type="hidden" name="settings[quality][review][enabled]" value="false" />
+                      <input
+                        type="checkbox"
+                        name="settings[quality][review][enabled]"
+                        value="true"
+                        checked={get_in(@workflow.parsed, ["quality", "review", "enabled"]) == true}
+                        class="toggle toggle-sm toggle-primary"
+                      />
+                      <span class="text-sm">Enable review</span>
+                    </div>
+                    <div>
+                      <label class="label pb-1">
+                        <span class="label-text text-sm">Max Cycles</span>
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="10"
+                        name="settings[quality][review][max_cycles]"
                         value={
-                          get_in(@workflow.parsed, ["quality", "checks", "max_cycles"]) ||
+                          get_in(@workflow.parsed, ["quality", "review", "max_cycles"]) ||
+                            get_in(@workflow.parsed, ["quality", "max_cycles"]) || 1
+                        }
+                        class="input input-bordered input-sm w-full"
+                      />
+                    </div>
+                    <div></div>
+
+                    <%!-- Reviewer Agent --%>
+                    <div class="sm:col-span-2 pt-2">
+                      <p class="text-xs font-medium text-base-content/50 mb-3">
+                        Reviewer Agent
+                      </p>
+                      <div class="space-y-4">
+                        <div class="flex items-center gap-2">
+                          <input
+                            type="hidden"
+                            name="settings[quality][review][agent_custom]"
+                            value="false"
+                          />
+                          <input
+                            type="checkbox"
+                            name="settings[quality][review][agent_custom]"
+                            value="true"
+                            checked={get_in(@workflow.parsed, ["quality", "review", "agent"]) != nil}
+                            class="toggle toggle-sm"
+                          />
+                          <span class="text-sm">Use a different agent for reviews</span>
+                        </div>
+                        <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                          <div>
+                            <label class="label pb-1">
+                              <span class="label-text text-sm">Kind</span>
+                            </label>
+                            <select
+                              name="settings[quality][review][agent][kind]"
+                              class="select select-bordered select-sm w-full"
+                            >
+                              <%= for k <- ["amp", "claude", "cursor", "opencode", "pi"] do %>
+                                <option
+                                  value={k}
+                                  selected={
+                                    (get_in(@workflow.parsed, ["quality", "review", "agent", "kind"]) ||
+                                       get_in(@workflow.parsed, ["agent", "kind"])) == k
+                                  }
+                                >
+                                  {k}
+                                </option>
+                              <% end %>
+                            </select>
+                          </div>
+                          <div>
+                            <label class="label pb-1">
+                              <span class="label-text text-sm">Timeout (ms)</span>
+                            </label>
+                            <input
+                              type="number"
+                              min="1000"
+                              step="1000"
+                              name="settings[quality][review][agent][timeout_ms]"
+                              value={
+                                get_in(@workflow.parsed, ["quality", "review", "agent", "timeout_ms"]) ||
+                                  7_200_000
+                              }
+                              class="input input-bordered input-sm w-full"
+                            />
+                          </div>
+                          <div class="sm:col-span-2 lg:col-span-3">
+                            <label class="label pb-1">
+                              <span class="label-text text-sm">
+                                Custom command
+                                <span class="text-base-content/40 text-xs">(optional override)</span>
+                              </span>
+                            </label>
+                            <input
+                              type="text"
+                              name="settings[quality][review][agent][command]"
+                              value={
+                                get_in(@workflow.parsed, ["quality", "review", "agent", "command"]) ||
+                                  ""
+                              }
+                              placeholder="e.g. /usr/local/bin/amp"
+                              class="input input-bordered input-sm w-full font-mono"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="divider my-0"></div>
+
+                <%!-- Testing --%>
+                <div>
+                  <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
+                    Testing
+                  </p>
+                  <div class="grid sm:grid-cols-2 gap-4">
+                    <div class="sm:col-span-2 flex items-center gap-2">
+                      <input
+                        type="hidden"
+                        name="settings[quality][testing][enabled]"
+                        value="false"
+                      />
+                      <input
+                        type="checkbox"
+                        name="settings[quality][testing][enabled]"
+                        value="true"
+                        checked={get_in(@workflow.parsed, ["quality", "testing", "enabled"]) == true}
+                        class="toggle toggle-sm toggle-primary"
+                      />
+                      <span class="text-sm">Enable testing</span>
+                    </div>
+                    <div>
+                      <label class="label pb-1">
+                        <span class="label-text text-sm">Max Cycles</span>
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="10"
+                        name="settings[quality][testing][max_cycles]"
+                        value={
+                          get_in(@workflow.parsed, ["quality", "testing", "max_cycles"]) ||
                             get_in(@workflow.parsed, ["quality", "max_cycles"]) || 1
                         }
                         class="input input-bordered input-sm w-full"
@@ -5046,363 +5361,304 @@ defmodule KollywoodWeb.DashboardLive do
                         type="number"
                         min="1000"
                         step="1000"
-                        name="settings[quality][checks][timeout_ms]"
+                        name="settings[quality][testing][timeout_ms]"
                         value={
-                          get_in(@workflow.parsed, ["quality", "checks", "timeout_ms"]) ||
+                          get_in(@workflow.parsed, ["quality", "testing", "timeout_ms"]) ||
                             7_200_000
                         }
                         class="input input-bordered input-sm w-full"
                       />
                     </div>
-                    <div class="pt-5">
-                      <div class="flex items-center gap-2">
-                        <input
-                          type="hidden"
-                          name="settings[quality][checks][fail_fast]"
-                          value="false"
-                        />
-                        <input
-                          type="checkbox"
-                          name="settings[quality][checks][fail_fast]"
-                          value="true"
-                          checked={
-                            get_in(@workflow.parsed, ["quality", "checks", "fail_fast"]) != false
-                          }
-                          class="toggle toggle-sm"
-                          aria-describedby="checks-fail-fast-help"
-                        />
-                        <span class="text-sm">Fail fast</span>
-                      </div>
-                      <p id="checks-fail-fast-help" class="text-xs text-base-content/60 mt-1">
-                        When enabled, checks stop at the first failure. When disabled, all
-                        configured checks run so every failure is reported in one cycle.
+
+                    <%!-- Testing Agent --%>
+                    <div class="sm:col-span-2 pt-2">
+                      <p class="text-xs font-medium text-base-content/50 mb-3">
+                        Testing Agent
                       </p>
+                      <div class="space-y-4">
+                        <div class="flex items-center gap-2">
+                          <input
+                            type="hidden"
+                            name="settings[quality][testing][agent_custom]"
+                            value="false"
+                          />
+                          <input
+                            type="checkbox"
+                            name="settings[quality][testing][agent_custom]"
+                            value="true"
+                            checked={get_in(@workflow.parsed, ["quality", "testing", "agent"]) != nil}
+                            class="toggle toggle-sm"
+                          />
+                          <span class="text-sm">Use a different agent for testing</span>
+                        </div>
+                        <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                          <div>
+                            <label class="label pb-1">
+                              <span class="label-text text-sm">Kind</span>
+                            </label>
+                            <select
+                              name="settings[quality][testing][agent][kind]"
+                              class="select select-bordered select-sm w-full"
+                            >
+                              <%= for k <- ["amp", "claude", "cursor", "opencode", "pi"] do %>
+                                <option
+                                  value={k}
+                                  selected={
+                                    (get_in(@workflow.parsed, [
+                                       "quality",
+                                       "testing",
+                                       "agent",
+                                       "kind"
+                                     ]) ||
+                                       get_in(@workflow.parsed, ["agent", "kind"])) == k
+                                  }
+                                >
+                                  {k}
+                                </option>
+                              <% end %>
+                            </select>
+                          </div>
+                          <div>
+                            <label class="label pb-1">
+                              <span class="label-text text-sm">Timeout (ms)</span>
+                            </label>
+                            <input
+                              type="number"
+                              min="1000"
+                              step="1000"
+                              name="settings[quality][testing][agent][timeout_ms]"
+                              value={
+                                get_in(@workflow.parsed, [
+                                  "quality",
+                                  "testing",
+                                  "agent",
+                                  "timeout_ms"
+                                ]) ||
+                                  7_200_000
+                              }
+                              class="input input-bordered input-sm w-full"
+                            />
+                          </div>
+                          <div class="sm:col-span-2 lg:col-span-3">
+                            <label class="label pb-1">
+                              <span class="label-text text-sm">
+                                Custom command
+                                <span class="text-base-content/40 text-xs">(optional override)</span>
+                              </span>
+                            </label>
+                            <input
+                              type="text"
+                              name="settings[quality][testing][agent][command]"
+                              value={
+                                get_in(@workflow.parsed, [
+                                  "quality",
+                                  "testing",
+                                  "agent",
+                                  "command"
+                                ]) || ""
+                              }
+                              placeholder="e.g. /usr/local/bin/amp"
+                              class="input input-bordered input-sm w-full font-mono"
+                            />
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
 
-              <div class="divider my-0"></div>
+                <div class="divider my-0"></div>
 
-              <%!-- Review --%>
-              <div>
-                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
-                  Review
-                </p>
-                <div class="grid sm:grid-cols-2 gap-4">
-                  <div class="sm:col-span-2 flex items-center gap-2">
-                    <input type="hidden" name="settings[quality][review][enabled]" value="false" />
-                    <input
-                      type="checkbox"
-                      name="settings[quality][review][enabled]"
-                      value="true"
-                      checked={get_in(@workflow.parsed, ["quality", "review", "enabled"]) == true}
-                      class="toggle toggle-sm toggle-primary"
-                    />
-                    <span class="text-sm">Enable review</span>
+                <%!-- Preview --%>
+                <div>
+                  <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
+                    Preview
+                  </p>
+                  <div class="grid sm:grid-cols-2 gap-4">
+                    <div class="sm:col-span-2 flex items-center gap-2">
+                      <input type="hidden" name="settings[preview][enabled]" value="false" />
+                      <input
+                        type="checkbox"
+                        name="settings[preview][enabled]"
+                        value="true"
+                        checked={get_in(@workflow.parsed, ["preview", "enabled"]) == true}
+                        class="toggle toggle-sm toggle-primary"
+                      />
+                      <span class="text-sm">Enable preview</span>
+                    </div>
+                    <div>
+                      <label class="label pb-1">
+                        <span class="label-text text-sm">TTL (minutes)</span>
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        name="settings[preview][ttl_minutes]"
+                        value={get_in(@workflow.parsed, ["preview", "ttl_minutes"]) || 120}
+                        class="input input-bordered input-sm w-full"
+                      />
+                    </div>
                   </div>
-                  <div>
-                    <label class="label pb-1">
-                      <span class="label-text text-sm">Max Cycles</span>
-                    </label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="10"
-                      name="settings[quality][review][max_cycles]"
-                      value={
-                        get_in(@workflow.parsed, ["quality", "review", "max_cycles"]) ||
-                          get_in(@workflow.parsed, ["quality", "max_cycles"]) || 1
-                      }
-                      class="input input-bordered input-sm w-full"
-                    />
-                  </div>
-                  <div></div>
+                </div>
 
-                  <%!-- Reviewer Agent --%>
-                  <div class="sm:col-span-2 pt-2">
-                    <p class="text-xs font-medium text-base-content/50 mb-3">
-                      Reviewer Agent
-                    </p>
-                    <div class="space-y-4">
-                      <div class="flex items-center gap-2">
-                        <input
-                          type="hidden"
-                          name="settings[quality][review][agent_custom]"
-                          value="false"
-                        />
-                        <input
-                          type="checkbox"
-                          name="settings[quality][review][agent_custom]"
-                          value="true"
-                          checked={get_in(@workflow.parsed, ["quality", "review", "agent"]) != nil}
-                          class="toggle toggle-sm"
-                        />
-                        <span class="text-sm">Use a different agent for reviews</span>
-                      </div>
-                      <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                        <div>
-                          <label class="label pb-1">
-                            <span class="label-text text-sm">Kind</span>
-                          </label>
-                          <select
-                            name="settings[quality][review][agent][kind]"
-                            class="select select-bordered select-sm w-full"
+                <div class="divider my-0"></div>
+
+                <%!-- Runtime --%>
+                <div>
+                  <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
+                    Runtime
+                  </p>
+                  <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <div>
+                      <label class="label pb-1"><span class="label-text text-sm">Kind</span></label>
+                      <select
+                        name="settings[runtime][kind]"
+                        class="select select-bordered select-sm w-full"
+                      >
+                        <%= for k <- ["host", "docker"] do %>
+                          <option
+                            value={k}
+                            selected={(get_in(@workflow.parsed, ["runtime", "kind"]) || "host") == k}
                           >
-                            <%= for k <- ["amp", "claude", "cursor", "opencode", "pi"] do %>
-                              <option
-                                value={k}
-                                selected={
-                                  (get_in(@workflow.parsed, ["quality", "review", "agent", "kind"]) ||
-                                     get_in(@workflow.parsed, ["agent", "kind"])) == k
-                                }
-                              >
-                                {k}
-                              </option>
-                            <% end %>
-                          </select>
-                        </div>
-                        <div>
-                          <label class="label pb-1">
-                            <span class="label-text text-sm">Timeout (ms)</span>
-                          </label>
-                          <input
-                            type="number"
-                            min="1000"
-                            step="1000"
-                            name="settings[quality][review][agent][timeout_ms]"
-                            value={
-                              get_in(@workflow.parsed, ["quality", "review", "agent", "timeout_ms"]) ||
-                                7_200_000
-                            }
-                            class="input input-bordered input-sm w-full"
-                          />
-                        </div>
-                        <div class="sm:col-span-2 lg:col-span-3">
-                          <label class="label pb-1">
-                            <span class="label-text text-sm">
-                              Custom command
-                              <span class="text-base-content/40 text-xs">(optional override)</span>
-                            </span>
-                          </label>
-                          <input
-                            type="text"
-                            name="settings[quality][review][agent][command]"
-                            value={
-                              get_in(@workflow.parsed, ["quality", "review", "agent", "command"]) ||
-                                ""
-                            }
-                            placeholder="e.g. /usr/local/bin/amp"
-                            class="input input-bordered input-sm w-full font-mono"
-                          />
-                        </div>
-                      </div>
+                            {k}
+                          </option>
+                        <% end %>
+                      </select>
                     </div>
                   </div>
                 </div>
-              </div>
 
-              <div class="divider my-0"></div>
+                <div class="divider my-0"></div>
 
-              <%!-- Testing --%>
-              <div>
-                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
-                  Testing
-                </p>
-                <div class="grid sm:grid-cols-2 gap-4">
-                  <div class="sm:col-span-2 flex items-center gap-2">
-                    <input
-                      type="hidden"
-                      name="settings[quality][testing][enabled]"
-                      value="false"
-                    />
-                    <input
-                      type="checkbox"
-                      name="settings[quality][testing][enabled]"
-                      value="true"
-                      checked={get_in(@workflow.parsed, ["quality", "testing", "enabled"]) == true}
-                      class="toggle toggle-sm toggle-primary"
-                    />
-                    <span class="text-sm">Enable testing</span>
-                  </div>
-                  <div>
-                    <label class="label pb-1">
-                      <span class="label-text text-sm">Max Cycles</span>
-                    </label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="10"
-                      name="settings[quality][testing][max_cycles]"
-                      value={
-                        get_in(@workflow.parsed, ["quality", "testing", "max_cycles"]) ||
-                          get_in(@workflow.parsed, ["quality", "max_cycles"]) || 1
-                      }
-                      class="input input-bordered input-sm w-full"
-                    />
-                  </div>
-                  <div>
-                    <label class="label pb-1">
-                      <span class="label-text text-sm">Timeout (ms)</span>
-                    </label>
-                    <input
-                      type="number"
-                      min="1000"
-                      step="1000"
-                      name="settings[quality][testing][timeout_ms]"
-                      value={
-                        get_in(@workflow.parsed, ["quality", "testing", "timeout_ms"]) ||
-                          7_200_000
-                      }
-                      class="input input-bordered input-sm w-full"
-                    />
-                  </div>
-
-                  <%!-- Testing Agent --%>
-                  <div class="sm:col-span-2 pt-2">
-                    <p class="text-xs font-medium text-base-content/50 mb-3">
-                      Testing Agent
-                    </p>
-                    <div class="space-y-4">
-                      <div class="flex items-center gap-2">
-                        <input
-                          type="hidden"
-                          name="settings[quality][testing][agent_custom]"
-                          value="false"
-                        />
-                        <input
-                          type="checkbox"
-                          name="settings[quality][testing][agent_custom]"
-                          value="true"
-                          checked={get_in(@workflow.parsed, ["quality", "testing", "agent"]) != nil}
-                          class="toggle toggle-sm"
-                        />
-                        <span class="text-sm">Use a different agent for testing</span>
-                      </div>
-                      <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                        <div>
-                          <label class="label pb-1">
-                            <span class="label-text text-sm">Kind</span>
-                          </label>
-                          <select
-                            name="settings[quality][testing][agent][kind]"
-                            class="select select-bordered select-sm w-full"
+                <%!-- Publish --%>
+                <div>
+                  <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
+                    Publish
+                  </p>
+                  <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <div>
+                      <label class="label pb-1">
+                        <span class="label-text text-sm">Provider</span>
+                      </label>
+                      <select
+                        name="settings[publish][provider]"
+                        class="select select-bordered select-sm w-full"
+                      >
+                        <option
+                          value=""
+                          selected={is_nil(get_in(@workflow.parsed, ["publish", "provider"]))}
+                        >
+                          Auto (from project)
+                        </option>
+                        <%= for v <- ["github", "gitlab"] do %>
+                          <option
+                            value={v}
+                            selected={get_in(@workflow.parsed, ["publish", "provider"]) == v}
                           >
-                            <%= for k <- ["amp", "claude", "cursor", "opencode", "pi"] do %>
-                              <option
-                                value={k}
-                                selected={
-                                  (get_in(@workflow.parsed, [
-                                     "quality",
-                                     "testing",
-                                     "agent",
-                                     "kind"
-                                   ]) ||
-                                     get_in(@workflow.parsed, ["agent", "kind"])) == k
-                                }
-                              >
-                                {k}
-                              </option>
-                            <% end %>
-                          </select>
-                        </div>
-                        <div>
-                          <label class="label pb-1">
-                            <span class="label-text text-sm">Timeout (ms)</span>
-                          </label>
-                          <input
-                            type="number"
-                            min="1000"
-                            step="1000"
-                            name="settings[quality][testing][agent][timeout_ms]"
-                            value={
-                              get_in(@workflow.parsed, [
-                                "quality",
-                                "testing",
-                                "agent",
-                                "timeout_ms"
-                              ]) ||
-                                7_200_000
+                            {v}
+                          </option>
+                        <% end %>
+                      </select>
+                    </div>
+                    <div>
+                      <label class="label pb-1">
+                        <span class="label-text text-sm">Mode</span>
+                      </label>
+                      <select
+                        name="settings[publish][mode]"
+                        class="select select-bordered select-sm w-full"
+                      >
+                        <option
+                          value=""
+                          selected={
+                            is_nil(get_in(@workflow.parsed, ["publish", "mode"])) or
+                              get_in(@workflow.parsed, ["publish", "mode"]) == ""
+                          }
+                        >
+                          Auto (from provider)
+                        </option>
+                        <%= for v <- ["push", "merge", "pr"] do %>
+                          <option
+                            value={v}
+                            selected={to_string(get_in(@workflow.parsed, ["publish", "mode"])) == v}
+                          >
+                            {v}
+                          </option>
+                        <% end %>
+                      </select>
+                    </div>
+                    <div>
+                      <label class="label pb-1">
+                        <span class="label-text text-sm">PR Type</span>
+                      </label>
+                      <select
+                        name="settings[publish][pr_type]"
+                        class="select select-bordered select-sm w-full"
+                      >
+                        <%= for v <- ["ready", "draft"] do %>
+                          <option
+                            value={v}
+                            selected={
+                              if(
+                                to_string(get_in(@workflow.parsed, ["publish", "auto_create_pr"])) ==
+                                  "draft",
+                                do: v == "draft",
+                                else: v == "ready"
+                              )
                             }
-                            class="input input-bordered input-sm w-full"
-                          />
-                        </div>
-                        <div class="sm:col-span-2 lg:col-span-3">
-                          <label class="label pb-1">
-                            <span class="label-text text-sm">
-                              Custom command
-                              <span class="text-base-content/40 text-xs">(optional override)</span>
-                            </span>
-                          </label>
-                          <input
-                            type="text"
-                            name="settings[quality][testing][agent][command]"
-                            value={
-                              get_in(@workflow.parsed, [
-                                "quality",
-                                "testing",
-                                "agent",
-                                "command"
-                              ]) || ""
-                            }
-                            placeholder="e.g. /usr/local/bin/amp"
-                            class="input input-bordered input-sm w-full font-mono"
-                          />
-                        </div>
-                      </div>
+                          >
+                            {v}
+                          </option>
+                        <% end %>
+                      </select>
                     </div>
                   </div>
                 </div>
-              </div>
 
-              <div class="divider my-0"></div>
+                <div class="divider my-0"></div>
 
-              <%!-- Preview --%>
-              <div>
-                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
-                  Preview
-                </p>
-                <div class="grid sm:grid-cols-2 gap-4">
-                  <div class="sm:col-span-2 flex items-center gap-2">
-                    <input type="hidden" name="settings[preview][enabled]" value="false" />
-                    <input
-                      type="checkbox"
-                      name="settings[preview][enabled]"
-                      value="true"
-                      checked={get_in(@workflow.parsed, ["preview", "enabled"]) == true}
-                      class="toggle toggle-sm toggle-primary"
-                    />
-                    <span class="text-sm">Enable preview</span>
-                  </div>
-                  <div>
-                    <label class="label pb-1">
-                      <span class="label-text text-sm">TTL (minutes)</span>
-                    </label>
-                    <input
-                      type="number"
-                      min="1"
-                      name="settings[preview][ttl_minutes]"
-                      value={get_in(@workflow.parsed, ["preview", "ttl_minutes"]) || 120}
-                      class="input input-bordered input-sm w-full"
-                    />
+                <%!-- Git --%>
+                <div>
+                  <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
+                    Git
+                  </p>
+                  <div class="grid sm:grid-cols-2 gap-4">
+                    <div>
+                      <label class="label pb-1">
+                        <span class="label-text text-sm">Base Branch</span>
+                      </label>
+                      <input
+                        type="text"
+                        name="settings[git][base_branch]"
+                        value={get_in(@workflow.parsed, ["git", "base_branch"]) || "main"}
+                        class="input input-bordered input-sm w-full font-mono"
+                      />
+                    </div>
+                    <div></div>
                   </div>
                 </div>
+
+                <div class="pt-2 flex justify-end">
+                  <button type="submit" class="btn btn-primary btn-sm">Save Settings</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        <% else %>
+          <div class="card bg-base-200 border border-base-300">
+            <div class="card-body gap-4">
+              <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
+                <h3 class="card-title text-lg shrink-0">Runtime</h3>
+                <span class="text-xs text-base-content/60">
+                  Runtime process and environment settings used during execution/testing.
+                </span>
               </div>
 
-              <div class="divider my-0"></div>
-
-              <%!-- Runtime --%>
-              <div>
-                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
-                  Runtime
-                </p>
+              <form phx-submit="save_runtime_settings" class="space-y-6">
                 <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
                   <div>
                     <label class="label pb-1"><span class="label-text text-sm">Kind</span></label>
-                    <select
-                      name="settings[runtime][kind]"
-                      class="select select-bordered select-sm w-full"
-                    >
+                    <select name="runtime[kind]" class="select select-bordered select-sm w-full">
                       <%= for k <- ["host", "docker"] do %>
                         <option
                           value={k}
@@ -5413,123 +5669,111 @@ defmodule KollywoodWeb.DashboardLive do
                       <% end %>
                     </select>
                   </div>
-                </div>
-              </div>
 
-              <div class="divider my-0"></div>
-
-              <%!-- Publish --%>
-              <div>
-                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
-                  Publish
-                </p>
-                <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                  <div>
-                    <label class="label pb-1"><span class="label-text text-sm">Provider</span></label>
-                    <select
-                      name="settings[publish][provider]"
-                      class="select select-bordered select-sm w-full"
-                    >
-                      <option
-                        value=""
-                        selected={is_nil(get_in(@workflow.parsed, ["publish", "provider"]))}
-                      >
-                        Auto (from project)
-                      </option>
-                      <%= for v <- ["github", "gitlab"] do %>
-                        <option
-                          value={v}
-                          selected={get_in(@workflow.parsed, ["publish", "provider"]) == v}
-                        >
-                          {v}
-                        </option>
-                      <% end %>
-                    </select>
-                  </div>
                   <div>
                     <label class="label pb-1">
-                      <span class="label-text text-sm">Mode</span>
+                      <span class="label-text text-sm">Start timeout (ms)</span>
                     </label>
-                    <select
-                      name="settings[publish][mode]"
-                      class="select select-bordered select-sm w-full"
-                    >
-                      <option
-                        value=""
-                        selected={
-                          is_nil(get_in(@workflow.parsed, ["publish", "mode"])) or
-                            get_in(@workflow.parsed, ["publish", "mode"]) == ""
-                        }
-                      >
-                        Auto (from provider)
-                      </option>
-                      <%= for v <- ["push", "merge", "pr"] do %>
-                        <option
-                          value={v}
-                          selected={to_string(get_in(@workflow.parsed, ["publish", "mode"])) == v}
-                        >
-                          {v}
-                        </option>
-                      <% end %>
-                    </select>
+                    <input
+                      type="number"
+                      min="1000"
+                      step="1000"
+                      name="runtime[start_timeout_ms]"
+                      value={get_in(@workflow.parsed, ["runtime", "start_timeout_ms"]) || 120_000}
+                      class="input input-bordered input-sm w-full"
+                    />
                   </div>
+
                   <div>
                     <label class="label pb-1">
-                      <span class="label-text text-sm">PR Type</span>
+                      <span class="label-text text-sm">Stop timeout (ms)</span>
                     </label>
-                    <select
-                      name="settings[publish][pr_type]"
-                      class="select select-bordered select-sm w-full"
-                    >
-                      <%= for v <- ["ready", "draft"] do %>
-                        <option
-                          value={v}
-                          selected={
-                            if(
-                              to_string(get_in(@workflow.parsed, ["publish", "auto_create_pr"])) ==
-                                "draft",
-                              do: v == "draft",
-                              else: v == "ready"
-                            )
-                          }
-                        >
-                          {v}
-                        </option>
-                      <% end %>
-                    </select>
+                    <input
+                      type="number"
+                      min="1000"
+                      step="1000"
+                      name="runtime[stop_timeout_ms]"
+                      value={get_in(@workflow.parsed, ["runtime", "stop_timeout_ms"]) || 60_000}
+                      class="input input-bordered input-sm w-full"
+                    />
                   </div>
-                </div>
-              </div>
 
-              <div class="divider my-0"></div>
-
-              <%!-- Git --%>
-              <div>
-                <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wide mb-3">
-                  Git
-                </p>
-                <div class="grid sm:grid-cols-2 gap-4">
                   <div>
                     <label class="label pb-1">
-                      <span class="label-text text-sm">Base Branch</span>
+                      <span class="label-text text-sm">Port offset mod</span>
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      name="runtime[port_offset_mod]"
+                      value={get_in(@workflow.parsed, ["runtime", "port_offset_mod"]) || 1000}
+                      class="input input-bordered input-sm w-full"
+                    />
+                  </div>
+
+                  <div class="sm:col-span-2">
+                    <label class="label pb-1">
+                      <span class="label-text text-sm">Docker image</span>
+                      <span class="label-text-alt text-base-content/40">optional</span>
                     </label>
                     <input
                       type="text"
-                      name="settings[git][base_branch]"
-                      value={get_in(@workflow.parsed, ["git", "base_branch"]) || "main"}
+                      name="runtime[image]"
+                      value={get_in(@workflow.parsed, ["runtime", "image"]) || ""}
+                      placeholder="e.g. ghcr.io/acme/my-app:latest"
                       class="input input-bordered input-sm w-full font-mono"
                     />
                   </div>
-                  <div></div>
                 </div>
-              </div>
 
-              <div class="pt-2 flex justify-end">
-                <button type="submit" class="btn btn-primary btn-sm">Save Settings</button>
-              </div>
-            </form>
+                <div>
+                  <label class="label pb-1">
+                    <span class="label-text text-sm">Processes</span>
+                    <span class="label-text-alt text-base-content/40">one command per line</span>
+                  </label>
+                  <textarea
+                    name="runtime[processes]"
+                    rows="5"
+                    spellcheck="false"
+                    class="textarea textarea-bordered textarea-sm w-full font-mono text-xs"
+                  >{@runtime_processes_text}</textarea>
+                </div>
+
+                <div class="grid sm:grid-cols-2 gap-4">
+                  <div>
+                    <label class="label pb-1">
+                      <span class="label-text text-sm">Environment variables</span>
+                      <span class="label-text-alt text-base-content/40">KEY=VALUE per line</span>
+                    </label>
+                    <textarea
+                      name="runtime[env]"
+                      rows="6"
+                      spellcheck="false"
+                      class="textarea textarea-bordered textarea-sm w-full font-mono text-xs"
+                    >{@runtime_env_text}</textarea>
+                  </div>
+
+                  <div>
+                    <label class="label pb-1">
+                      <span class="label-text text-sm">Ports</span>
+                      <span class="label-text-alt text-base-content/40">name=port per line</span>
+                    </label>
+                    <textarea
+                      name="runtime[ports]"
+                      rows="6"
+                      spellcheck="false"
+                      class="textarea textarea-bordered textarea-sm w-full font-mono text-xs"
+                    >{@runtime_ports_text}</textarea>
+                  </div>
+                </div>
+
+                <div class="pt-2 flex justify-end">
+                  <button type="submit" class="btn btn-primary btn-sm">Save Runtime</button>
+                </div>
+              </form>
+            </div>
           </div>
-        </div>
+        <% end %>
 
         <%!-- Prompt template editor --%>
         <div class="card bg-base-200 border border-base-300">
@@ -7279,6 +7523,115 @@ defmodule KollywoodWeb.DashboardLive do
       _other ->
         false
     end
+  end
+
+  defp normalize_project_settings_tab(tab) when tab in ["workflow", "runtime"], do: tab
+  defp normalize_project_settings_tab(_tab), do: "workflow"
+
+  defp apply_runtime_settings(parsed, runtime_params)
+       when is_map(parsed) and is_map(runtime_params) do
+    existing_runtime = Map.get(parsed, "runtime", %{})
+
+    with {:ok, env_map} <-
+           parse_runtime_key_value_lines(Map.get(runtime_params, "env", ""), :string),
+         {:ok, ports_map} <-
+           parse_runtime_key_value_lines(Map.get(runtime_params, "ports", ""), :integer) do
+      processes =
+        runtime_params
+        |> Map.get("processes", "")
+        |> split_non_empty_lines()
+
+      image =
+        runtime_params
+        |> Map.get("image", "")
+        |> to_string()
+        |> String.trim()
+
+      runtime =
+        existing_runtime
+        |> Map.delete("profile")
+        |> Map.delete("full_stack")
+        |> Map.put(
+          "kind",
+          Map.get(runtime_params, "kind", Map.get(existing_runtime, "kind", "host"))
+        )
+        |> Map.put(
+          "start_timeout_ms",
+          parse_form_int(
+            runtime_params,
+            "start_timeout_ms",
+            Map.get(existing_runtime, "start_timeout_ms", 120_000)
+          )
+        )
+        |> Map.put(
+          "stop_timeout_ms",
+          parse_form_int(
+            runtime_params,
+            "stop_timeout_ms",
+            Map.get(existing_runtime, "stop_timeout_ms", 60_000)
+          )
+        )
+        |> Map.put(
+          "port_offset_mod",
+          parse_form_int(
+            runtime_params,
+            "port_offset_mod",
+            Map.get(existing_runtime, "port_offset_mod", 1000)
+          )
+        )
+        |> Map.put("processes", processes)
+        |> Map.put("env", env_map)
+        |> Map.put("ports", ports_map)
+        |> then(fn runtime ->
+          if image == "", do: Map.delete(runtime, "image"), else: Map.put(runtime, "image", image)
+        end)
+
+      {:ok, Map.put(parsed, "runtime", runtime)}
+    end
+  end
+
+  defp apply_runtime_settings(_parsed, _runtime_params),
+    do: {:error, "Invalid runtime settings payload."}
+
+  defp split_non_empty_lines(value) when is_binary(value) do
+    value
+    |> String.split("\n")
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp split_non_empty_lines(_value), do: []
+
+  defp parse_runtime_key_value_lines(value, value_kind) when value_kind in [:string, :integer] do
+    split_non_empty_lines(to_string(value || ""))
+    |> Enum.reduce_while({:ok, %{}}, fn line, {:ok, acc} ->
+      case String.split(line, "=", parts: 2) do
+        [raw_key, raw_value] ->
+          key = String.trim(raw_key)
+          trimmed_value = String.trim(raw_value)
+
+          cond do
+            key == "" ->
+              {:halt, {:error, "Runtime entries must use non-empty keys (line: #{line})."}}
+
+            value_kind == :string ->
+              {:cont, {:ok, Map.put(acc, key, trimmed_value)}}
+
+            value_kind == :integer ->
+              case Integer.parse(trimmed_value) do
+                {port, ""} when port > 0 ->
+                  {:cont, {:ok, Map.put(acc, key, port)}}
+
+                _other ->
+                  {:halt,
+                   {:error, "Runtime port '#{key}' must be a positive integer (line: #{line})."}}
+              end
+          end
+
+        _other ->
+          {:halt, {:error, "Runtime entries must use KEY=VALUE format (line: #{line})."}}
+      end
+    end)
   end
 
   defp local_provider?(%{provider: "local"}), do: true
