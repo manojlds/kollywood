@@ -72,13 +72,18 @@ defmodule KollywoodWeb.ChatLive do
   end
 
   def handle_event("new_chat", _params, socket) do
-    case create_chat_session(socket) do
-      {:ok, socket, session_id} ->
-        project = socket.assigns.current_project
-        {:noreply, push_patch(socket, to: chat_path(project.slug, session_id, :chat))}
+    if project_not_onboarded?(socket.assigns[:current_project]) do
+      reason = "Project is not onboarded yet. Click Onboard Project to start onboarding chat."
+      {:noreply, socket |> assign(:chat_error, reason) |> put_flash(:error, reason)}
+    else
+      case create_chat_session(socket) do
+        {:ok, socket, session_id} ->
+          project = socket.assigns.current_project
+          {:noreply, push_patch(socket, to: chat_path(project.slug, session_id, :chat))}
 
-      {:error, socket, reason} ->
-        {:noreply, socket |> assign(:chat_error, reason) |> put_flash(:error, reason)}
+        {:error, socket, reason} ->
+          {:noreply, socket |> assign(:chat_error, reason) |> put_flash(:error, reason)}
+      end
     end
   end
 
@@ -186,6 +191,11 @@ defmodule KollywoodWeb.ChatLive do
       prompt == "" ->
         {:noreply, socket}
 
+      project_not_onboarded?(socket.assigns[:current_project]) and
+          is_nil(socket.assigns[:chat_selected_session_id]) ->
+        reason = "Click Onboard Project to start the onboarding chat first."
+        {:noreply, socket |> assign(:chat_error, reason) |> put_flash(:error, reason)}
+
       true ->
         with {:ok, socket, session_id} <- ensure_selected_session(socket),
              {:ok, _result} <- Chat.send_prompt(session_id, prompt) do
@@ -231,9 +241,6 @@ defmodule KollywoodWeb.ChatLive do
 
         :error ->
           get_in(assigns, [:chat_selected_snapshot, :error]) || "Chat session error"
-
-        _other when onboarding.show_cta? ->
-          "This project is not fully onboarded yet. Use 'Onboard Project' to bootstrap WORKFLOW and AGENTS files."
 
         _ ->
           nil
@@ -366,7 +373,12 @@ defmodule KollywoodWeb.ChatLive do
                   <div class="space-y-4 max-w-3xl">
                     <div class="flex items-center justify-between gap-3">
                       <h2 class="text-lg font-semibold">Sessions</h2>
-                      <button type="button" phx-click="new_chat" class="btn btn-primary btn-sm">
+                      <button
+                        type="button"
+                        phx-click="new_chat"
+                        class="btn btn-primary btn-sm"
+                        disabled={@chat_onboarding.show_cta?}
+                      >
                         <.icon name="hero-plus" class="size-4" /> New Chat
                       </button>
                     </div>
@@ -469,18 +481,10 @@ defmodule KollywoodWeb.ChatLive do
                         ]}>
                           {@chat_status_meta.label}
                         </span>
-                        <button
-                          type="button"
-                          phx-click="set_panel"
-                          phx-value-panel="sessions"
-                          class="btn btn-outline btn-xs"
-                        >
-                          Sessions
-                        </button>
                       </div>
                     </div>
 
-                    <%= if @chat_status_help do %>
+                    <%= if @chat_status_help && !@chat_onboarding.show_cta? do %>
                       <div class="alert alert-info py-2 text-xs">
                         {@chat_status_help}
                       </div>
@@ -500,7 +504,11 @@ defmodule KollywoodWeb.ChatLive do
                             class="size-10 text-base-content/30 mb-3"
                           />
                           <p class="text-sm text-base-content/70">
-                            Start a new chat and ask the agent to plan work, break features into stories, or refine requirements.
+                            <%= if @chat_onboarding.show_cta? do %>
+                              Click Onboard Project to start the onboarding conversation.
+                            <% else %>
+                              Start a new chat and ask the agent to plan work, break features into stories, or refine requirements.
+                            <% end %>
                           </p>
                         </div>
                       <% else %>
@@ -531,7 +539,13 @@ defmodule KollywoodWeb.ChatLive do
                       <textarea
                         name="message"
                         class="textarea textarea-bordered w-full h-24"
-                        placeholder="Ask the agent to plan a feature, break it into stories, or refine requirements..."
+                        placeholder={
+                          if @chat_onboarding.show_cta? do
+                            "Click Onboard Project to start onboarding chat."
+                          else
+                            "Ask the agent to plan a feature, break it into stories, or refine requirements..."
+                          end
+                        }
                         disabled={@chat_input_disabled}
                       ><%= @chat_input %></textarea>
 
@@ -561,6 +575,7 @@ defmodule KollywoodWeb.ChatLive do
                           type="button"
                           phx-click="new_chat"
                           class="btn btn-ghost btn-sm"
+                          disabled={@chat_onboarding.show_cta?}
                         >
                           <.icon name="hero-plus" class="size-4" /> New Chat
                         </button>
@@ -777,6 +792,11 @@ defmodule KollywoodWeb.ChatLive do
   defp onboarding_prompt_text do
     "I need to onboard this project to Kollywood."
   end
+
+  defp project_not_onboarded?(%Project{} = project),
+    do: not file_exists?(Projects.workflow_path(project))
+
+  defp project_not_onboarded?(_project), do: false
 
   defp file_exists?(path) when is_binary(path), do: File.exists?(path)
   defp file_exists?(_path), do: false
