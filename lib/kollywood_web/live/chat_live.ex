@@ -611,13 +611,13 @@ defmodule KollywoodWeb.ChatLive do
     <.link
       navigate={@navigate}
       class={[
-        "flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap",
+        "flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap leading-none overflow-hidden",
         "hover:text-base-content",
         @active && "border-primary text-primary",
         !@active && "border-transparent text-base-content/70 hover:border-base-300"
       ]}
     >
-      <.icon name={@icon} class="size-4" />
+      <.icon name={@icon} class="size-4 shrink-0" />
       {@label}
     </.link>
     """

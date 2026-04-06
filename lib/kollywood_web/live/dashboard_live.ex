@@ -818,7 +818,7 @@ defmodule KollywoodWeb.DashboardLive do
             <.link
               navigate={project_chat_path(@current_project.slug)}
               class={[
-                "flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap",
+                "flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap leading-none overflow-hidden",
                 if(@live_action in [:chat],
                   do: "border-primary text-primary",
                   else:
@@ -826,7 +826,7 @@ defmodule KollywoodWeb.DashboardLive do
                 )
               ]}
             >
-              <.icon name="hero-chat-bubble-left-right" class="size-4" /> Chat
+              <.icon name="hero-chat-bubble-left-right" class="size-4 shrink-0" /> Chat
             </.link>
           </div>
         </nav>
@@ -1092,13 +1092,13 @@ defmodule KollywoodWeb.DashboardLive do
     <.link
       patch={@patch}
       class={[
-        "flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap",
+        "flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap leading-none overflow-hidden",
         "hover:text-base-content",
         @active && "border-primary text-primary",
         !@active && "border-transparent text-base-content/70 hover:border-base-300"
       ]}
     >
-      <.icon name={@icon} class="size-4" />
+      <.icon name={@icon} class="size-4 shrink-0" />
       {@label}
     </.link>
     """
