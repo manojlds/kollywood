@@ -157,6 +157,28 @@ defmodule KollywoodWeb.ChatLive do
     end
   end
 
+  def handle_event("onboard_project", _params, socket) do
+    prompt = onboarding_prompt_text()
+
+    with {:ok, socket, session_id} <- ensure_selected_session(socket),
+         {:ok, _result} <- Chat.send_prompt(session_id, prompt) do
+      project = socket.assigns.current_project
+
+      socket =
+        socket
+        |> assign(:chat_error, nil)
+        |> load_chat_assigns(project, session_id)
+
+      {:noreply, socket}
+    else
+      {:error, socket, reason} ->
+        {:noreply, socket |> assign(:chat_error, reason) |> put_flash(:error, reason)}
+
+      {:error, reason} ->
+        {:noreply, socket |> assign(:chat_error, reason) |> put_flash(:error, reason)}
+    end
+  end
+
   def handle_event("send_chat", %{"message" => message}, socket) when is_binary(message) do
     prompt = String.trim(message)
 
@@ -191,16 +213,30 @@ defmodule KollywoodWeb.ChatLive do
     status = get_in(assigns, [:chat_selected_snapshot, :status]) || :idle
     messages = get_in(assigns, [:chat_selected_snapshot, :messages]) || []
     selected_title = get_in(assigns, [:chat_selected_snapshot, :title]) || "Project Chat"
+    onboarding = onboarding_state(assigns.current_project)
+    onboarded? = onboarding.onboarded?
 
     status_meta = status_meta(status)
 
     status_help =
       case status do
-        :starting -> "Starting ACP session... your first prompt will be queued."
-        :running -> "Agent is responding..."
-        :cancelling -> "Cancelling current response..."
-        :error -> get_in(assigns, [:chat_selected_snapshot, :error]) || "Chat session error"
-        _ -> nil
+        :starting ->
+          "Starting ACP session... your first prompt will be queued."
+
+        :running ->
+          "Agent is responding..."
+
+        :cancelling ->
+          "Cancelling current response..."
+
+        :error ->
+          get_in(assigns, [:chat_selected_snapshot, :error]) || "Chat session error"
+
+        _other when onboarding.show_cta? ->
+          "This project is not fully onboarded yet. Use 'Onboard Project' to bootstrap WORKFLOW and AGENTS files."
+
+        _ ->
+          nil
       end
 
     input_disabled = status in [:cancelling] or is_nil(assigns.chat_selected_session_id)
@@ -217,6 +253,8 @@ defmodule KollywoodWeb.ChatLive do
       |> assign(:chat_status, status)
       |> assign(:chat_messages, messages)
       |> assign(:chat_selected_title, selected_title)
+      |> assign(:chat_onboarding, onboarding)
+      |> assign(:chat_onboarded?, onboarded?)
       |> assign(:chat_status_meta, status_meta)
       |> assign(:chat_status_help, status_help)
       |> assign(:chat_input_disabled, input_disabled)
@@ -268,26 +306,28 @@ defmodule KollywoodWeb.ChatLive do
       <%= if @current_project do %>
         <nav class="bg-base-100 border-b border-base-300 px-4 sm:px-6 lg:px-8">
           <div class="flex gap-1 overflow-x-auto">
-            <.nav_tab
-              label="Overview"
-              icon="hero-squares-2x2"
-              navigate={~p"/projects/#{@current_project.slug}"}
-            />
-            <.nav_tab
-              label="Stories"
-              icon="hero-list-bullet"
-              navigate={~p"/projects/#{@current_project.slug}/stories"}
-            />
-            <.nav_tab
-              label="Runs"
-              icon="hero-play"
-              navigate={~p"/projects/#{@current_project.slug}/runs"}
-            />
-            <.nav_tab
-              label="Settings"
-              icon="hero-cog-6-tooth"
-              navigate={~p"/projects/#{@current_project.slug}/settings"}
-            />
+            <%= if @chat_onboarded? do %>
+              <.nav_tab
+                label="Overview"
+                icon="hero-squares-2x2"
+                navigate={~p"/projects/#{@current_project.slug}"}
+              />
+              <.nav_tab
+                label="Stories"
+                icon="hero-list-bullet"
+                navigate={~p"/projects/#{@current_project.slug}/stories"}
+              />
+              <.nav_tab
+                label="Runs"
+                icon="hero-play"
+                navigate={~p"/projects/#{@current_project.slug}/runs"}
+              />
+              <.nav_tab
+                label="Settings"
+                icon="hero-cog-6-tooth"
+                navigate={~p"/projects/#{@current_project.slug}/settings"}
+              />
+            <% end %>
             <.nav_tab
               label="Chat"
               icon="hero-chat-bubble-left-right"
@@ -388,6 +428,26 @@ defmodule KollywoodWeb.ChatLive do
                   </div>
                 <% else %>
                   <div class="flex flex-col gap-4 h-[66vh]">
+                    <%= if @chat_onboarding.show_cta? do %>
+                      <div class="card bg-base-200 border border-base-300">
+                        <div class="card-body p-4 gap-3">
+                          <h3 class="font-semibold">Set up this project for Kollywood</h3>
+                          <p class="text-sm text-base-content/70">
+                            This project is mapped but not onboarded. Start onboarding to create `.kollywood/WORKFLOW.md` and `.kollywood/AGENTS.md` first.
+                          </p>
+                          <div class="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              phx-click="onboard_project"
+                              class="btn btn-primary btn-sm"
+                            >
+                              Onboard Project
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    <% end %>
+
                     <div class="flex items-center justify-between gap-3">
                       <div>
                         <h2 class="text-lg font-semibold truncate max-w-[72vw] sm:max-w-[40rem]">
@@ -696,6 +756,31 @@ defmodule KollywoodWeb.ChatLive do
 
   defp parse_panel_tab("sessions"), do: :sessions
   defp parse_panel_tab(_value), do: :chat
+
+  defp onboarding_state(nil) do
+    %{
+      onboarded?: false,
+      show_cta?: false
+    }
+  end
+
+  defp onboarding_state(%Project{} = project) do
+    workflow_exists? = file_exists?(Projects.workflow_path(project))
+    tracker_exists? = file_exists?(Projects.tracker_path(project))
+    onboarded? = workflow_exists? or tracker_exists?
+
+    %{
+      onboarded?: onboarded?,
+      show_cta?: not onboarded?
+    }
+  end
+
+  defp onboarding_prompt_text do
+    "I need to onboard this project to Kollywood."
+  end
+
+  defp file_exists?(path) when is_binary(path), do: File.exists?(path)
+  defp file_exists?(_path), do: false
 
   defp status_meta(:starting), do: %{label: "starting", badge_class: "badge-warning"}
 

@@ -69,4 +69,24 @@ defmodule KollywoodWeb.ChatLiveTest do
     refute html =~ "Sessions ("
     assert html =~ "No chat sessions yet"
   end
+
+  test "non-onboarded project shows chat-only tabs and onboarding CTA", %{
+    conn: conn,
+    project: project
+  } do
+    workflow_path = Projects.workflow_path(project)
+    tracker_path = Projects.tracker_path(project)
+
+    if is_binary(workflow_path), do: File.rm(workflow_path)
+    if is_binary(tracker_path), do: File.rm(tracker_path)
+
+    {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/chat")
+
+    assert html =~ "Chat"
+    assert html =~ "Set up this project for Kollywood"
+    assert html =~ "Onboard Project"
+    refute html =~ "Stories"
+    refute html =~ "Runs"
+    refute html =~ "Settings"
+  end
 end

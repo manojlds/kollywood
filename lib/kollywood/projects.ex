@@ -80,6 +80,15 @@ defmodule Kollywood.Projects do
 
   def tracker_path(_project), do: nil
 
+  @spec onboarded?(Project.t() | map()) :: boolean()
+  def onboarded?(project) when is_map(project) do
+    workflow_path(project)
+    |> file_exists?()
+    |> Kernel.or(tracker_path(project) |> file_exists?())
+  end
+
+  def onboarded?(_project), do: false
+
   @spec create_project(create_attrs()) :: {:ok, Project.t()} | {:error, Ecto.Changeset.t()}
   def create_project(attrs) do
     attrs =
@@ -185,6 +194,9 @@ defmodule Kollywood.Projects do
   end
 
   defp tracker_path_from_slug(_slug), do: nil
+
+  defp file_exists?(path) when is_binary(path), do: File.exists?(path)
+  defp file_exists?(_path), do: false
 
   defp field(map, key) when is_map(map) do
     case Map.fetch(map, key) do

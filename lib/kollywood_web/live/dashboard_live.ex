@@ -773,35 +773,45 @@ defmodule KollywoodWeb.DashboardLive do
       </header>
 
       <%= if @current_project do %>
+        <% project_onboarded = Projects.onboarded?(@current_project) %>
         <nav class="bg-base-100 border-b border-base-300 px-4 sm:px-6 lg:px-8">
           <div class="flex gap-1 overflow-x-auto">
-            <.nav_tab
-              label="Overview"
-              icon="hero-squares-2x2"
-              active={@live_action == :overview}
-              patch={project_overview_path(@current_project.slug, @stories_view)}
-            />
-            <.nav_tab
-              label="Stories"
-              icon="hero-list-bullet"
-              active={@live_action in [:stories, :story_detail]}
-              patch={stories_index_path(@current_project.slug, @stories_view)}
-            />
-            <.nav_tab
-              label="Runs"
-              icon="hero-play"
-              active={@live_action in [:runs, :run_detail, :step_detail]}
-              patch={project_runs_path(@current_project.slug, @stories_view)}
-            />
-            <.nav_tab
-              label="Settings"
-              icon="hero-cog-6-tooth"
-              active={@live_action == :settings}
-              patch={project_settings_path(@current_project.slug, @stories_view)}
-            />
+            <%= if project_onboarded do %>
+              <.nav_tab
+                label="Overview"
+                icon="hero-squares-2x2"
+                active={@live_action == :overview}
+                patch={project_overview_path(@current_project.slug, @stories_view)}
+              />
+              <.nav_tab
+                label="Stories"
+                icon="hero-list-bullet"
+                active={@live_action in [:stories, :story_detail]}
+                patch={stories_index_path(@current_project.slug, @stories_view)}
+              />
+              <.nav_tab
+                label="Runs"
+                icon="hero-play"
+                active={@live_action in [:runs, :run_detail, :step_detail]}
+                patch={project_runs_path(@current_project.slug, @stories_view)}
+              />
+              <.nav_tab
+                label="Settings"
+                icon="hero-cog-6-tooth"
+                active={@live_action == :settings}
+                patch={project_settings_path(@current_project.slug, @stories_view)}
+              />
+            <% end %>
             <.link
               navigate={project_chat_path(@current_project.slug)}
-              class="flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap border-transparent text-base-content/70 hover:border-base-300 hover:text-base-content"
+              class={[
+                "flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap",
+                if(@live_action in [:chat],
+                  do: "border-primary text-primary",
+                  else:
+                    "border-transparent text-base-content/70 hover:border-base-300 hover:text-base-content"
+                )
+              ]}
             >
               <.icon name="hero-chat-bubble-left-right" class="size-4" /> Chat
             </.link>

@@ -58,6 +58,207 @@ defmodule Kollywood.Config do
     project_provider: nil
   ]
 
+  @workflow_schema_version "2026-04-06.1"
+
+  @doc """
+  Returns the versioned WORKFLOW front-matter schema used by `Kollywood.Config`.
+
+  This payload is intended for machine consumers (CLI/skills) and interactive
+  onboarding flows.
+  """
+  @spec workflow_schema() :: map()
+  def workflow_schema do
+    %{
+      schema_version: @workflow_schema_version,
+      workflow_front_matter: %{
+        format: "yaml_front_matter",
+        file: ".kollywood/WORKFLOW.md",
+        required_sections: ["agent", "workspace"]
+      },
+      sections: %{
+        "tracker" => %{
+          required: false,
+          fields: %{
+            "kind" => %{type: "string", default: "linear"},
+            "path" => %{type: ["string", "null"], default: nil},
+            "project_slug" => %{type: ["string", "null"], default: nil},
+            "active_states" => %{type: "list[string]", default: ["Todo", "In Progress"]},
+            "terminal_states" => %{type: "list[string]", default: ["Done", "Cancelled"]}
+          }
+        },
+        "polling" => %{
+          required: false,
+          fields: %{
+            "interval_ms" => %{type: "positive_integer", default: 5000},
+            "stale_threshold_multiplier" => %{type: "positive_integer", default: 3},
+            "watchdog_check_interval_ms" => %{type: "positive_integer", default: 5000}
+          }
+        },
+        "workspace" => %{
+          required: true,
+          fields: %{
+            "strategy" => %{type: "enum", allowed: ["clone", "worktree"], default: "clone"},
+            "root" => %{type: ["string", "null"], default: nil},
+            "source" => %{type: ["string", "null"], default: nil},
+            "branch_prefix" => %{type: "string", default: "kollywood/"}
+          }
+        },
+        "hooks" => %{
+          required: false,
+          fields: %{
+            "after_create" => %{type: ["string", "null"], default: nil},
+            "before_run" => %{type: ["string", "null"], default: nil},
+            "after_run" => %{type: ["string", "null"], default: nil},
+            "before_remove" => %{type: ["string", "null"], default: nil}
+          }
+        },
+        "quality" => %{
+          required: false,
+          fields: %{
+            "max_cycles" => %{type: "positive_integer", default: 1},
+            "checks" => %{
+              type: "map",
+              fields: %{
+                "required" => %{type: "list[string]", default: []},
+                "timeout_ms" => %{type: "positive_integer", default: @default_timeout_ms},
+                "fail_fast" => %{type: "boolean", default: true},
+                "max_cycles" => %{type: "positive_integer", default: 1}
+              }
+            },
+            "review" => %{
+              type: "map",
+              fields: %{
+                "enabled" => %{type: "boolean", default: false},
+                "max_cycles" => %{type: "positive_integer", default: 1},
+                "prompt_template" => %{type: ["string", "null"], default: nil},
+                "agent" => %{
+                  type: "map",
+                  fields: %{
+                    "kind" => %{
+                      type: ["enum", "null"],
+                      allowed: enum_values(@valid_agent_kinds),
+                      default: nil
+                    },
+                    "command" => %{type: ["string", "null"], default: nil},
+                    "args" => %{type: "list[string]", default: []},
+                    "env" => %{type: "map[string]string", default: %{}},
+                    "timeout_ms" => %{type: "positive_integer", default: @default_timeout_ms}
+                  }
+                }
+              }
+            },
+            "testing" => %{
+              type: "map",
+              fields: %{
+                "enabled" => %{type: "boolean", default: false},
+                "max_cycles" => %{type: "positive_integer", default: 1},
+                "timeout_ms" => %{type: "positive_integer", default: @default_timeout_ms},
+                "prompt_template" => %{type: ["string", "null"], default: nil},
+                "agent" => %{
+                  type: "map",
+                  fields: %{
+                    "kind" => %{
+                      type: ["enum", "null"],
+                      allowed: enum_values(@valid_agent_kinds),
+                      default: nil
+                    },
+                    "command" => %{type: ["string", "null"], default: nil},
+                    "args" => %{type: "list[string]", default: []},
+                    "env" => %{type: "map[string]string", default: %{}},
+                    "timeout_ms" => %{type: "positive_integer", default: @default_timeout_ms}
+                  }
+                }
+              }
+            }
+          }
+        },
+        "runtime" => %{
+          required: false,
+          fields: %{
+            "kind" => %{type: "enum", allowed: ["host", "docker"], default: "host"},
+            "processes" => %{type: "list[string]", default: []},
+            "env" => %{type: "map[string]string", default: %{}},
+            "ports" => %{type: "map[string]positive_integer", default: %{}},
+            "port_offset_mod" => %{type: "positive_integer", default: 1000},
+            "start_timeout_ms" => %{type: "positive_integer", default: 120_000},
+            "stop_timeout_ms" => %{type: "positive_integer", default: 60_000},
+            "image" => %{type: ["string", "null"], default: nil}
+          }
+        },
+        "preview" => %{
+          required: false,
+          fields: %{
+            "enabled" => %{type: "boolean", default: false},
+            "ttl_minutes" => %{type: "positive_integer", default: 120},
+            "reuse_testing_runtime" => %{type: "boolean", default: true},
+            "allow_on_demand_from_pending_merge" => %{type: "boolean", default: true},
+            "start_timeout_ms" => %{type: "positive_integer", default: 120_000},
+            "stop_timeout_ms" => %{type: "positive_integer", default: 60_000}
+          }
+        },
+        "agent" => %{
+          required: true,
+          fields: %{
+            "kind" => %{type: "enum", allowed: enum_values(@valid_agent_kinds), required: true},
+            "max_concurrent_agents" => %{type: "positive_integer", default: 1},
+            "project_max_concurrent_agents" => %{
+              type: "map[string]positive_integer",
+              default: %{}
+            },
+            "max_turns" => %{type: "positive_integer", default: 20},
+            "retries_enabled" => %{type: "boolean", default: false},
+            "max_attempts" => %{type: "positive_integer", default: 1},
+            "max_retry_backoff_ms" => %{type: "positive_integer", default: 300_000},
+            "command" => %{type: ["string", "null"], default: nil},
+            "args" => %{type: "list[string]", default: []},
+            "completion_signals" => %{type: "list[string]", default: []},
+            "idle_timeout_ms" => %{type: ["positive_integer", "null"], default: nil},
+            "env" => %{type: "map[string]string", default: %{}},
+            "timeout_ms" => %{type: "positive_integer", default: @default_timeout_ms}
+          }
+        },
+        "publish" => %{
+          required: false,
+          fields: %{
+            "provider" => %{
+              type: ["enum", "null"],
+              allowed: enum_values(@valid_publish_providers),
+              default: nil
+            },
+            "mode" => %{type: ["enum", "null"], allowed: ["push", "pr", "merge"], default: nil},
+            "auto_push" => %{
+              type: "enum",
+              allowed: enum_values(@valid_auto_push_policies),
+              default: "never"
+            },
+            "auto_merge" => %{
+              type: "enum",
+              allowed: enum_values(@valid_auto_merge_policies),
+              default: "never"
+            },
+            "auto_create_pr" => %{
+              type: "enum",
+              allowed: enum_values(@valid_auto_create_pr_policies),
+              default: "never"
+            }
+          },
+          notes: [
+            "publish.mode supports legacy alias auto_merge in parsing, normalized to merge",
+            "publish.auto_* fields are deprecated and only used for backward-compatible mode derivation"
+          ]
+        },
+        "git" => %{
+          required: false,
+          fields: %{
+            "base_branch" => %{type: "string", default: "main"}
+          }
+        }
+      }
+    }
+  end
+
+  defp enum_values(values) when is_list(values), do: Enum.map(values, &Atom.to_string/1)
+
   @doc """
   Reconstructs a Config struct from a JSON-decoded string-keyed map.
 

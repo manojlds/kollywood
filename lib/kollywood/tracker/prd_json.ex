@@ -217,9 +217,22 @@ defmodule Kollywood.Tracker.PrdJson do
   def list_stories(tracker_path) when is_binary(tracker_path) do
     config = tracker_config(tracker_path)
 
-    with {:ok, prd} <- read_prd(config),
-         {:ok, stories} <- user_stories(prd) do
-      {:ok, stories}
+    case read_prd(config) do
+      {:ok, prd} ->
+        user_stories(prd)
+
+      {:error, reason} ->
+        path = tracker_path(config)
+
+        if not File.exists?(path) do
+          with :ok <- write_prd(config, new_prd_doc()),
+               {:ok, prd} <- read_prd(config),
+               {:ok, stories} <- user_stories(prd) do
+            {:ok, stories}
+          end
+        else
+          {:error, reason}
+        end
     end
   end
 
@@ -229,9 +242,9 @@ defmodule Kollywood.Tracker.PrdJson do
   def create_story(tracker_path, attrs) when is_binary(tracker_path) and is_map(attrs) do
     config = tracker_config(tracker_path)
 
-    with {:ok, prd} <- read_prd(config),
-         {:ok, stories} <- user_stories(prd),
+    with {:ok, stories} <- list_stories(tracker_path),
          {:ok, new_story} <- build_new_story(stories, attrs),
+         {:ok, prd} <- read_prd(config),
          :ok <- write_prd(config, Map.put(prd, "userStories", stories ++ [new_story])) do
       {:ok, new_story}
     end
@@ -786,6 +799,15 @@ defmodule Kollywood.Tracker.PrdJson do
 
   defp tracker_config(tracker_path) do
     %Config{tracker: %{path: tracker_path}}
+  end
+
+  defp new_prd_doc do
+    %{
+      "project" => "kollywood",
+      "branchName" => "main",
+      "description" => "Kollywood local story tracker",
+      "userStories" => []
+    }
   end
 
   defp update_story_record(config, issue_id, update_fun) do

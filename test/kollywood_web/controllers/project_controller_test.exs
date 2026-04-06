@@ -66,4 +66,15 @@ defmodule KollywoodWeb.ProjectControllerTest do
     assert %{"error" => error} = json_response(conn, 422)
     assert error =~ "path must be a non-empty string"
   end
+
+  test "resolve payload remains project-metadata only", %{conn: conn, nested: nested, root: root} do
+    target_path = Path.join([root, "one", "nested"])
+
+    conn = get(conn, ~p"/api/projects/resolve", %{path: target_path})
+
+    assert %{"data" => data} = json_response(conn, 200)
+    assert data["slug"] == nested.slug
+    refute Map.has_key?(data, "workflow_schema")
+    refute Map.has_key?(data, "workflow")
+  end
 end

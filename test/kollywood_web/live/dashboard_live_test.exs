@@ -106,6 +106,22 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert_patch(view, ~p"/projects/#{project.slug}/settings")
     end
 
+    test "non-onboarded project shows only chat tab", %{conn: conn, project: project} do
+      workflow_path = Projects.workflow_path(project)
+      tracker_path = Projects.tracker_path(project)
+
+      if is_binary(workflow_path), do: File.rm(workflow_path)
+      if is_binary(tracker_path), do: File.rm(tracker_path)
+
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}")
+
+      assert html =~ "Chat"
+      refute html =~ "Stories"
+      refute html =~ "Runs"
+      refute html =~ "Settings"
+      refute html =~ "Overview"
+    end
+
     test "shows not found for nonexistent project", %{conn: conn} do
       {:ok, _view, html} = live(conn, ~p"/projects/nonexistent")
 
