@@ -316,7 +316,7 @@ defmodule KollywoodWeb.ChatLive do
                     phx-click="set_panel"
                     phx-value-panel="sessions"
                   >
-                    Sessions ({length(@chat_sessions)})
+                    Sessions
                   </button>
                 </div>
               </div>
@@ -455,7 +455,13 @@ defmodule KollywoodWeb.ChatLive do
                             <p class="text-xs font-semibold uppercase tracking-wide text-base-content/60 mb-1">
                               {message.role}
                             </p>
-                            <pre class="whitespace-pre-wrap break-words text-sm font-sans leading-6">{message.content}</pre>
+                            <%= if message.role == "assistant" do %>
+                              <div class="prose prose-sm max-w-none break-words text-base-content [&_pre]:whitespace-pre-wrap [&_code]:break-words">
+                                {raw(markdown_to_html(message.content))}
+                              </div>
+                            <% else %>
+                              <pre class="whitespace-pre-wrap break-words text-sm font-sans leading-6">{message.content}</pre>
+                            <% end %>
                           </div>
                         <% end %>
                       <% end %>
@@ -712,4 +718,14 @@ defmodule KollywoodWeb.ChatLive do
   end
 
   defp format_timestamp(_value), do: "just now"
+
+  defp markdown_to_html(nil), do: ""
+
+  defp markdown_to_html(text) when is_binary(text) do
+    text
+    |> String.trim_trailing()
+    |> MDEx.to_html!()
+  end
+
+  defp markdown_to_html(_), do: ""
 end
