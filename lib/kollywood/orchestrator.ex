@@ -20,6 +20,7 @@ defmodule Kollywood.Orchestrator do
   alias Kollywood.Config
   alias Kollywood.Orchestrator.ControlState
   alias Kollywood.Orchestrator.EphemeralStore
+  alias Kollywood.Orchestrator.RunState
   alias Kollywood.Orchestrator.RunPhase
   alias Kollywood.Orchestrator.RetryStore
   alias Kollywood.Orchestrator.RunLogs
@@ -351,6 +352,7 @@ defmodule Kollywood.Orchestrator do
 
   def handle_call(:status, _from, state) do
     state = refresh_maintenance_mode(state)
+    state = reconcile_running_run_states(state)
     snapshot = status_snapshot(state)
     {:reply, snapshot, persist_control_status(state)}
   end
@@ -392,6 +394,7 @@ defmodule Kollywood.Orchestrator do
   def handle_info(:watchdog_tick, state) do
     state = %{state | watchdog_timer_ref: nil}
     state = refresh_maintenance_mode(state)
+    state = reconcile_running_run_states(state)
     state = run_poll_watchdog(state)
 
     state =
@@ -407,6 +410,7 @@ defmodule Kollywood.Orchestrator do
   def handle_info(:status_tick, state) do
     state = %{state | status_tick_timer_ref: nil}
     state = refresh_maintenance_mode(state)
+    state = reconcile_running_run_states(state)
 
     state =
       state
@@ -1448,6 +1452,8 @@ defmodule Kollywood.Orchestrator do
         run_ref = Process.monitor(run_pid)
         run_timeout_timer_ref = schedule_run_timeout_timer(issue_id, run_pid, run_ref, state)
         runtime_profile = runtime_profile(config)
+        started_at = DateTime.utc_now()
+        run_state = RunState.from_status(:running)
 
         run_entry = %{
           issue: issue,
@@ -1455,11 +1461,14 @@ defmodule Kollywood.Orchestrator do
           run_ref: run_ref,
           run_pid: run_pid,
           run_timeout_timer_ref: run_timeout_timer_ref,
-          started_at: DateTime.utc_now(),
+          started_at: started_at,
           runtime_profile: runtime_profile,
           runtime_process_state: initial_runtime_process_state(runtime_profile),
           runtime_last_event: nil,
           run_phase: RunPhase.from_status(:running),
+          run_state: run_state,
+          last_event_at: started_at,
+          last_activity_event_at: started_at,
           run_log_context: run_log_context,
           retry_mode: retry_mode,
           retry_provenance: retry_provenance
@@ -1508,6 +1517,8 @@ defmodule Kollywood.Orchestrator do
     serializable_run_opts = serialize_run_opts_for_queue(run_opts)
     issue_snapshot = serialize_issue_for_queue(issue)
     runtime_profile = runtime_profile(config)
+    started_at = DateTime.utc_now()
+    run_state = RunState.from_status(:running)
 
     queue_attrs = %{
       issue_id: issue_id,
@@ -1526,11 +1537,14 @@ defmodule Kollywood.Orchestrator do
           run_ref: nil,
           run_pid: nil,
           run_timeout_timer_ref: schedule_queue_run_timeout_timer(issue_id, state),
-          started_at: DateTime.utc_now(),
+          started_at: started_at,
           runtime_profile: runtime_profile,
           runtime_process_state: initial_runtime_process_state(runtime_profile),
           runtime_last_event: nil,
           run_phase: RunPhase.from_status(:running),
+          run_state: run_state,
+          last_event_at: started_at,
+          last_activity_event_at: started_at,
           run_log_context: run_log_context,
           retry_mode: retry_mode,
           retry_provenance: retry_provenance,
@@ -2941,6 +2955,21 @@ defmodule Kollywood.Orchestrator do
         run_entry ->
           current_phase = Map.get(run_entry, :run_phase)
           next_phase = RunPhase.from_event(event, current_phase)
+          current_run_state = Map.get(run_entry, :run_state, RunState.from_status(:running))
+          next_run_state = RunState.from_event(event, current_run_state)
+
+          event_timestamp =
+            case normalized_event_timestamp(event) do
+              %DateTime{} = dt -> dt
+              _other -> DateTime.utc_now()
+            end
+
+          last_activity_event_at =
+            if RunState.progress_event?(event) do
+              event_timestamp
+            else
+              Map.get(run_entry, :last_activity_event_at, event_timestamp)
+            end
 
           {runtime_process_state, runtime_last_event} =
             runtime_state_from_event(run_entry, event)
@@ -2951,11 +2980,34 @@ defmodule Kollywood.Orchestrator do
             |> Map.put(:runtime_last_event, runtime_last_event)
             |> Map.put(:previous_run_phase, current_phase)
             |> Map.put(:run_phase, next_phase)
+            |> Map.put(:run_state, next_run_state)
+            |> Map.put(:last_event_at, event_timestamp)
+            |> Map.put(:last_activity_event_at, last_activity_event_at)
 
           put_running(state, issue_id, updated_entry)
       end
     end
   end
+
+  defp normalized_event_timestamp(event) when is_map(event) do
+    value = Map.get(event, :timestamp) || Map.get(event, "timestamp")
+
+    cond do
+      match?(%DateTime{}, value) ->
+        value
+
+      is_binary(value) ->
+        case DateTime.from_iso8601(value) do
+          {:ok, dt, _offset} -> dt
+          _other -> nil
+        end
+
+      true ->
+        nil
+    end
+  end
+
+  defp normalized_event_timestamp(_event), do: nil
 
   defp runtime_state_from_event(run_entry, event) do
     event_type = Map.get(event, :type) || Map.get(event, "type")
@@ -3685,6 +3737,17 @@ defmodule Kollywood.Orchestrator do
         :ok
 
       run_log_context ->
+        run_state =
+          completion
+          |> completion_status()
+          |> RunState.from_status(Map.get(run_entry, :run_state, RunState.from_status(:running)))
+          |> RunState.to_storage_map()
+
+        completion =
+          completion
+          |> completion_to_map()
+          |> Map.put("run_state", run_state)
+
         case RunLogs.complete_attempt(run_log_context, completion) do
           :ok ->
             :ok
@@ -3700,6 +3763,26 @@ defmodule Kollywood.Orchestrator do
   end
 
   defp maybe_complete_run_logs(_run_entry, _completion), do: :ok
+
+  defp completion_to_map(%Result{} = result) do
+    %{
+      "status" => result.status,
+      "ended_at" => result.ended_at,
+      "turn_count" => result.turn_count,
+      "workspace_path" => result.workspace_path,
+      "error" => result.error
+    }
+  end
+
+  defp completion_to_map(completion) when is_map(completion), do: completion
+  defp completion_to_map(_completion), do: %{}
+
+  defp completion_status(%Result{} = result), do: result.status
+
+  defp completion_status(%{} = completion),
+    do: Map.get(completion, :status) || Map.get(completion, "status")
+
+  defp completion_status(_completion), do: nil
 
   defp runtime_profile(config) do
     runtime = get_in(config, [Access.key(:runtime, %{})]) || %{}
@@ -4160,6 +4243,7 @@ defmodule Kollywood.Orchestrator do
   end
 
   defp persist_control_status(state) do
+    state = reconcile_running_run_states(state)
     status = status_snapshot(state)
 
     case ControlState.write_status(status) do
@@ -4257,6 +4341,103 @@ defmodule Kollywood.Orchestrator do
     end
   end
 
+  defp reconcile_running_run_states(state) do
+    now = DateTime.utc_now()
+    threshold_ms = stale_threshold_ms(state)
+    offline_threshold_ms = max(threshold_ms * 2, threshold_ms + state.poll_interval_ms)
+
+    running =
+      Enum.reduce(state.running, %{}, fn {issue_id, run_entry}, acc ->
+        current_state = Map.get(run_entry, :run_state, RunState.from_status(:running))
+        last_event_at = run_last_event_at(run_entry)
+        last_activity_event_at = run_last_activity_event_at(run_entry, last_event_at)
+
+        next_state =
+          cond do
+            run_entry_finished?(run_entry) and RunState.running?(current_state) ->
+              RunState.from_status(:completed, current_state)
+
+            stale_activity?(last_activity_event_at, now, offline_threshold_ms) and
+              run_entry_active_process?(run_entry) and
+                RunState.eligible_for_health_downgrade?(current_state) ->
+              RunState.from_status(:offline, current_state)
+
+            stale_activity?(last_activity_event_at, now, threshold_ms) and
+              run_entry_active_process?(run_entry) and
+                RunState.eligible_for_health_downgrade?(current_state) ->
+              RunState.from_status(:stalled, current_state)
+
+            true ->
+              current_state
+          end
+
+        updated_entry =
+          run_entry
+          |> Map.put(:run_state, next_state)
+          |> Map.put(:last_event_at, last_event_at)
+          |> Map.put(:last_activity_event_at, last_activity_event_at)
+
+        Map.put(acc, issue_id, updated_entry)
+      end)
+
+    %{state | running: running}
+  end
+
+  defp run_entry_active_process?(run_entry) when is_map(run_entry) do
+    cond do
+      is_pid(Map.get(run_entry, :run_pid)) ->
+        true
+
+      is_integer(Map.get(run_entry, :queue_entry_id)) ->
+        true
+
+      true ->
+        false
+    end
+  end
+
+  defp run_entry_active_process?(_run_entry), do: false
+
+  defp run_entry_finished?(run_entry) when is_map(run_entry) do
+    case Map.get(run_entry, :run_phase) do
+      phase when is_map(phase) -> RunPhase.terminal?(phase)
+      _other -> false
+    end
+  end
+
+  defp run_entry_finished?(_run_entry), do: false
+
+  defp run_last_event_at(run_entry) when is_map(run_entry) do
+    cond do
+      match?(%DateTime{}, Map.get(run_entry, :last_event_at)) ->
+        Map.get(run_entry, :last_event_at)
+
+      match?(%DateTime{}, Map.get(run_entry, :started_at)) ->
+        Map.get(run_entry, :started_at)
+
+      true ->
+        DateTime.utc_now()
+    end
+  end
+
+  defp run_last_event_at(_run_entry), do: DateTime.utc_now()
+
+  defp run_last_activity_event_at(run_entry, fallback) when is_map(run_entry) do
+    case Map.get(run_entry, :last_activity_event_at) do
+      %DateTime{} = value -> value
+      _other -> fallback
+    end
+  end
+
+  defp run_last_activity_event_at(_run_entry, fallback), do: fallback
+
+  defp stale_activity?(%DateTime{} = last_activity_at, %DateTime{} = now, threshold_ms)
+       when is_integer(threshold_ms) and threshold_ms > 0 do
+    DateTime.diff(now, last_activity_at, :millisecond) >= threshold_ms
+  end
+
+  defp stale_activity?(_last_activity_at, _now, _threshold_ms), do: false
+
   defp maybe_clear_stale_state(state, age_ms, threshold_ms) do
     if state.poll_stale do
       Logger.info(
@@ -4307,6 +4488,24 @@ defmodule Kollywood.Orchestrator do
           retry_provenance: normalize_retry_provenance(Map.get(entry, :retry_provenance, %{})),
           run_phase: Map.get(entry, :run_phase, RunPhase.unknown()),
           run_phase_label: entry |> Map.get(:run_phase) |> RunPhase.label(),
+          run_state:
+            entry
+            |> Map.get(:run_state, RunState.from_status(:running))
+            |> RunState.to_storage_map(),
+          run_state_phase:
+            entry
+            |> Map.get(:run_state, RunState.from_status(:running))
+            |> RunState.phase(),
+          run_state_activity:
+            entry
+            |> Map.get(:run_state, RunState.from_status(:running))
+            |> RunState.activity(),
+          run_state_label:
+            entry
+            |> Map.get(:run_state, RunState.from_status(:running))
+            |> RunState.label(),
+          last_event_at: Map.get(entry, :last_event_at),
+          last_activity_event_at: Map.get(entry, :last_activity_event_at),
           runtime_profile: Map.get(entry, :runtime_profile, :checks_only),
           runtime_process_state: Map.get(entry, :runtime_process_state, :unknown),
           runtime_last_event_type: runtime_last_event_type(runtime_last_event),
