@@ -30,7 +30,9 @@ defmodule KollywoodWeb.DashboardLive do
   @story_status_order Enum.map(@story_status_columns, fn {status, _label} -> status end)
   @agent_kind_options StoryExecutionOverrides.valid_agent_kind_strings()
   @log_tabs ["agent", "review_agent", "testing_agent", "worker"]
+  @run_detail_panel_tabs ["logs", "reports", "prompts", "settings"]
   @reports_tabs ["review", "testing"]
+  @prompt_tabs ["agent", "review", "testing"]
   @interaction_surfaces [:story_editor, :workflow_editor, :story_overrides_editor]
 
   @impl true
@@ -95,6 +97,14 @@ defmodule KollywoodWeb.DashboardLive do
     run_view_tab = normalize_run_view_tab(params["run_tab"])
     step_detail_tab = normalize_step_detail_tab(params["step_tab"])
 
+    run_detail_panel_tab =
+      resolve_run_detail_panel_tab(params["run_panel"], socket.assigns[:run_detail_panel_tab])
+
+    reports_tab = resolve_reports_tab(params["reports_tab"], socket.assigns[:reports_tab])
+
+    active_prompt_tab =
+      resolve_prompt_tab(params["prompt_tab"], socket.assigns[:active_prompt_tab])
+
     project_settings_tab =
       normalize_project_settings_tab(
         params["settings_tab"] || socket.assigns[:project_settings_tab]
@@ -120,6 +130,9 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:active_log_tab, active_log_tab)
       |> assign(:run_view_tab, run_view_tab)
       |> assign(:step_detail_tab, step_detail_tab)
+      |> assign(:run_detail_panel_tab, run_detail_panel_tab)
+      |> assign(:reports_tab, reports_tab)
+      |> assign(:active_prompt_tab, active_prompt_tab)
       |> assign(:project_settings_tab, project_settings_tab)
       |> assign(:artifact_preview, nil)
       |> assign(:action_confirmation, nil)
@@ -265,12 +278,13 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   def handle_event("set_run_detail_panel_tab", %{"tab" => tab}, socket) do
-    next_tab = if tab in ["logs", "reports", "prompts", "settings"], do: tab, else: "logs"
+    next_tab = resolve_run_detail_panel_tab(tab, socket.assigns[:run_detail_panel_tab])
 
     socket =
       socket
       |> assign(:run_detail_panel_tab, next_tab)
       |> assign(:artifact_preview, nil)
+      |> maybe_patch_run_detail_panel_tab(next_tab)
 
     {:noreply, socket}
   end
@@ -282,13 +296,20 @@ defmodule KollywoodWeb.DashboardLive do
       socket
       |> assign(:reports_tab, next_tab)
       |> assign(:artifact_preview, nil)
+      |> maybe_patch_reports_tab(next_tab)
 
     {:noreply, socket}
   end
 
   def handle_event("set_prompt_tab", %{"tab" => tab}, socket) do
-    next_tab = if tab in ["agent", "review", "testing"], do: tab, else: "agent"
-    {:noreply, assign(socket, :active_prompt_tab, next_tab)}
+    next_tab = resolve_prompt_tab(tab, socket.assigns[:active_prompt_tab])
+
+    socket =
+      socket
+      |> assign(:active_prompt_tab, next_tab)
+      |> maybe_patch_prompt_tab(next_tab)
+
+    {:noreply, socket}
   end
 
   def handle_event("start_preview", %{"story_id" => story_id}, socket) do
@@ -8133,6 +8154,17 @@ defmodule KollywoodWeb.DashboardLive do
   defp valid_log_tab?(tab) when is_binary(tab), do: tab in @log_tabs
   defp valid_log_tab?(_tab), do: false
 
+  defp resolve_run_detail_panel_tab(param, current) do
+    cond do
+      valid_run_detail_panel_tab?(param) -> param
+      valid_run_detail_panel_tab?(current) -> current
+      true -> "logs"
+    end
+  end
+
+  defp valid_run_detail_panel_tab?(tab) when is_binary(tab), do: tab in @run_detail_panel_tabs
+  defp valid_run_detail_panel_tab?(_tab), do: false
+
   defp resolve_reports_tab(param, current) do
     cond do
       valid_reports_tab?(param) -> param
@@ -8143,6 +8175,17 @@ defmodule KollywoodWeb.DashboardLive do
 
   defp valid_reports_tab?(tab) when is_binary(tab), do: tab in @reports_tabs
   defp valid_reports_tab?(_tab), do: false
+
+  defp resolve_prompt_tab(param, current) do
+    cond do
+      valid_prompt_tab?(param) -> param
+      valid_prompt_tab?(current) -> current
+      true -> "agent"
+    end
+  end
+
+  defp valid_prompt_tab?(tab) when is_binary(tab), do: tab in @prompt_tabs
+  defp valid_prompt_tab?(_tab), do: false
 
   defp maybe_patch_stories_view(socket, stories_view) do
     case socket.assigns do
@@ -8233,6 +8276,155 @@ defmodule KollywoodWeb.DashboardLive do
   defp step_tab_query("prompt"), do: [step_tab: "prompt"]
   defp step_tab_query("reports"), do: [step_tab: "reports"]
   defp step_tab_query(_tab), do: []
+
+  defp maybe_patch_run_detail_panel_tab(socket, tab) when is_binary(tab) do
+    case socket.assigns do
+      %{
+        current_project: %Project{slug: slug},
+        live_action: :story_detail,
+        story_detail_tab: "runs",
+        run_detail_story_id: story_id,
+        run_detail_attempt: attempt,
+        stories_view: stories_view,
+        active_log_tab: active_log_tab,
+        reports_tab: reports_tab,
+        active_prompt_tab: active_prompt_tab
+      }
+      when is_binary(story_id) and not is_nil(attempt) ->
+        push_patch(
+          socket,
+          to:
+            story_runs_tab_path(
+              slug,
+              story_id,
+              stories_view,
+              run_panel_query(tab,
+                attempt: attempt,
+                log_tab: active_log_tab,
+                reports_tab: reports_tab,
+                prompt_tab: active_prompt_tab
+              )
+            ),
+          replace: true
+        )
+
+      _other ->
+        socket
+    end
+  end
+
+  defp maybe_patch_run_detail_panel_tab(socket, _tab), do: socket
+
+  defp maybe_patch_reports_tab(socket, tab) when is_binary(tab) do
+    case socket.assigns do
+      %{
+        current_project: %Project{slug: slug},
+        live_action: :story_detail,
+        story_detail_tab: "runs",
+        run_detail_story_id: story_id,
+        run_detail_attempt: attempt,
+        stories_view: stories_view,
+        run_detail_panel_tab: "reports",
+        active_log_tab: active_log_tab,
+        active_prompt_tab: active_prompt_tab
+      }
+      when is_binary(story_id) and not is_nil(attempt) ->
+        push_patch(
+          socket,
+          to:
+            story_runs_tab_path(
+              slug,
+              story_id,
+              stories_view,
+              run_panel_query("reports",
+                attempt: attempt,
+                log_tab: active_log_tab,
+                reports_tab: tab,
+                prompt_tab: active_prompt_tab
+              )
+            ),
+          replace: true
+        )
+
+      _other ->
+        socket
+    end
+  end
+
+  defp maybe_patch_reports_tab(socket, _tab), do: socket
+
+  defp maybe_patch_prompt_tab(socket, tab) when is_binary(tab) do
+    case socket.assigns do
+      %{
+        current_project: %Project{slug: slug},
+        live_action: :story_detail,
+        story_detail_tab: "runs",
+        run_detail_story_id: story_id,
+        run_detail_attempt: attempt,
+        stories_view: stories_view,
+        run_detail_panel_tab: "prompts",
+        active_log_tab: active_log_tab,
+        reports_tab: reports_tab
+      }
+      when is_binary(story_id) and not is_nil(attempt) ->
+        push_patch(
+          socket,
+          to:
+            story_runs_tab_path(
+              slug,
+              story_id,
+              stories_view,
+              run_panel_query("prompts",
+                attempt: attempt,
+                log_tab: active_log_tab,
+                reports_tab: reports_tab,
+                prompt_tab: tab
+              )
+            ),
+          replace: true
+        )
+
+      _other ->
+        socket
+    end
+  end
+
+  defp maybe_patch_prompt_tab(socket, _tab), do: socket
+
+  defp run_panel_query(tab, opts) when is_list(opts) do
+    attempt = Keyword.get(opts, :attempt)
+    log_tab = Keyword.get(opts, :log_tab)
+    reports_tab = Keyword.get(opts, :reports_tab)
+    prompt_tab = Keyword.get(opts, :prompt_tab)
+
+    [
+      {:attempt, attempt},
+      {:run_panel, run_panel_query_value(tab)},
+      {:log_tab, log_tab_query_value(log_tab)},
+      {:reports_tab, reports_tab_query_value(tab, reports_tab)},
+      {:prompt_tab, prompt_tab_query_value(tab, prompt_tab)}
+    ]
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+  end
+
+  defp run_panel_query_value("logs"), do: nil
+  defp run_panel_query_value(tab) when is_binary(tab), do: tab
+  defp run_panel_query_value(_tab), do: nil
+
+  defp log_tab_query_value("agent"), do: nil
+  defp log_tab_query_value(tab) when is_binary(tab) and tab in @log_tabs, do: tab
+  defp log_tab_query_value(_tab), do: nil
+
+  defp reports_tab_query_value("reports", "review"), do: nil
+
+  defp reports_tab_query_value("reports", tab) when is_binary(tab) and tab in @reports_tabs,
+    do: tab
+
+  defp reports_tab_query_value(_panel, _tab), do: nil
+
+  defp prompt_tab_query_value("prompts", "agent"), do: nil
+  defp prompt_tab_query_value("prompts", tab) when is_binary(tab) and tab in @prompt_tabs, do: tab
+  defp prompt_tab_query_value(_panel, _tab), do: nil
 
   defp confirmed_action?(params) when is_map(params) do
     case Map.get(params, "confirmed") do
@@ -8750,6 +8942,27 @@ defmodule KollywoodWeb.DashboardLive do
     project = socket.assigns.current_project
     story_tab = if attempt, do: params["tab"] || "runs", else: params["tab"] || "details"
 
+    run_detail_panel_tab =
+      if story_tab == "runs" and not is_nil(attempt) do
+        resolve_run_detail_panel_tab(params["run_panel"], socket.assigns[:run_detail_panel_tab])
+      else
+        "logs"
+      end
+
+    reports_tab =
+      if story_tab == "runs" and not is_nil(attempt) and run_detail_panel_tab == "reports" do
+        resolve_reports_tab(params["reports_tab"], socket.assigns[:reports_tab])
+      else
+        "review"
+      end
+
+    active_prompt_tab =
+      if story_tab == "runs" and not is_nil(attempt) and run_detail_panel_tab == "prompts" do
+        resolve_prompt_tab(params["prompt_tab"], socket.assigns[:active_prompt_tab])
+      else
+        "agent"
+      end
+
     run_detail =
       if attempt do
         load_run_detail_for_attempt(project, story_id, attempt, tab)
@@ -8762,6 +8975,9 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:selected_story, story)
       |> assign(:run_detail, run_detail)
       |> assign(:story_detail_tab, story_tab)
+      |> assign(:run_detail_panel_tab, run_detail_panel_tab)
+      |> assign(:reports_tab, reports_tab)
+      |> assign(:active_prompt_tab, active_prompt_tab)
       |> assign(:preview_starting_story_id, socket.assigns[:preview_starting_story_id])
       |> assign(:preview_panel_error, socket.assigns[:preview_panel_error])
       |> sync_story_detail_selection()
