@@ -92,9 +92,22 @@ defmodule KollywoodWeb.DashboardLive do
     stories_view = resolve_stories_view(params["view"], socket.assigns[:stories_view])
     active_log_tab = resolve_active_log_tab(params["log_tab"], socket.assigns[:active_log_tab])
 
+    requested_action = socket.assigns[:live_action]
+
+    effective_action =
+      resolve_live_action_for_onboarding(requested_action, current_project)
+
+    socket =
+      if requested_action == :overview and effective_action == :chat and is_binary(project_slug) do
+        push_navigate(socket, to: project_chat_path(project_slug))
+      else
+        socket
+      end
+
     socket =
       socket
       |> assign(:current_project, current_project)
+      |> assign(:live_action, effective_action)
       |> assign(:page_title, if(current_project, do: current_project.name, else: "Dashboard"))
       |> assign(:active_log_tab, active_log_tab)
       |> assign(:artifact_preview, nil)
@@ -109,7 +122,7 @@ defmodule KollywoodWeb.DashboardLive do
         Map.get(socket.assigns, :collapsed_story_groups, MapSet.new())
       )
       |> load_project_data(current_project)
-      |> handle_live_action(socket.assigns[:live_action], params)
+      |> handle_live_action(effective_action, params)
 
     {:noreply, socket}
   end
@@ -7271,6 +7284,16 @@ defmodule KollywoodWeb.DashboardLive do
   defp local_provider?(%{provider: "local"}), do: true
   defp local_provider?(%{provider: :local}), do: true
   defp local_provider?(_), do: false
+
+  defp resolve_live_action_for_onboarding(action, %Project{} = project) do
+    if Projects.onboarded?(project) do
+      action
+    else
+      :chat
+    end
+  end
+
+  defp resolve_live_action_for_onboarding(action, _project), do: action
 
   defp git_commit_workflow(workflow_path) when is_binary(workflow_path) do
     repo_dir = Path.dirname(workflow_path)
