@@ -21,8 +21,12 @@ Do not run story planning or story CRUD during init unless the user explicitly a
 
 Use Rust CLI to read project settings first:
 - `kollywood project resolve --json`
+- `kollywood workflow schema --json`
 
 If lookup fails because the project is not mapped, stop and ask the user to onboard the project in Kollywood first.
+
+If the project is mapped but tracker files are missing, continue onboarding and generate WORKFLOW/AGENTS first.
+Do not block onboarding on missing `~/.kollywood/projects/<slug>/prd.json`.
 
 Treat resolved metadata as source of truth:
 - `slug`
@@ -33,17 +37,24 @@ Treat resolved metadata as source of truth:
 ## Workflow
 
 1. Resolve project settings via `kollywood project resolve --json`.
-2. Analyze repository context:
+2. Fetch machine-readable workflow schema via `kollywood workflow schema --json` and treat it as the authoritative shape/version.
+3. Analyze repository context:
    - read `README*`, manifests, existing runtime files, existing `.kollywood/*` files
    - infer test/lint/build/typecheck commands and runtime process model
-3. Ask confirmation questions for unresolved workflow fields:
+4. Ask confirmation questions for unresolved workflow fields:
    - runtime kind
    - runtime process names and ports
    - quality/check commands
    - default agent kind
    - project constraints for `.kollywood/AGENTS.md`
-4. Generate/update onboarding files using resolved settings + confirmed answers.
-5. Report what changed and what assumptions were applied.
+5. Generate/update onboarding files using resolved settings + confirmed answers.
+6. Report what changed and what assumptions were applied.
+
+## Invocation behavior
+
+The triggering user prompt may be minimal (for example: `I need to onboard this project to Kollywood.`).
+Treat that as sufficient to run the full init workflow in this skill.
+Do not require a verbose user message that restates this skill's internal checklist.
 
 ## `.kollywood/WORKFLOW.md` Requirements
 
@@ -55,6 +66,7 @@ Build workflow config from resolved project settings and confirmations:
 - include runtime kind/process/ports
 - include safe `hooks.before_run` to copy `.kollywood/AGENTS.md` into workspace when present
 - keep `git.base_branch` explicit (fallback `main`)
+- when `tracker.kind` resolves to `prd_json`, note that `prd.json` can be created lazily when story CRUD begins
 
 Do not invent commands that are not validated for the repo.
 

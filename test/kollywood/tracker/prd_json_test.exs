@@ -289,6 +289,34 @@ defmodule Kollywood.Tracker.PrdJsonTest do
     refute Enum.any?(stories, &(Map.get(&1, "id") == created_id))
   end
 
+  test "list_stories auto-creates missing prd.json with empty userStories", %{root: root} do
+    path = Path.join(root, "missing-prd.json")
+
+    refute File.exists?(path)
+
+    assert {:ok, stories} = PrdJson.list_stories(path)
+    assert stories == []
+    assert File.exists?(path)
+
+    {:ok, decoded} = path |> File.read!() |> Jason.decode()
+    assert decoded["userStories"] == []
+  end
+
+  test "create_story auto-creates missing prd.json before append", %{root: root} do
+    path = Path.join(root, "missing-create-prd.json")
+
+    assert {:ok, story} =
+             PrdJson.create_story(path, %{
+               "title" => "Bootstrapped story",
+               "status" => "draft"
+             })
+
+    assert story["title"] == "Bootstrapped story"
+
+    assert {:ok, stories} = PrdJson.list_stories(path)
+    assert Enum.any?(stories, &(&1["id"] == story["id"]))
+  end
+
   test "rejects invalid execution overrides on story update", %{root: root} do
     path = Path.join(root, "prd.json")
 

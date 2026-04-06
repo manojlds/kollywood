@@ -46,6 +46,7 @@ defmodule KollywoodWeb.Router do
     pipe_through :api
 
     get "/health", HealthController, :show
+    get "/workflow/schema", WorkflowSchemaController, :show
     get "/projects/resolve", ProjectController, :resolve
     get "/projects/:project_slug/stories", StoryController, :index
     post "/projects/:project_slug/stories", StoryController, :create

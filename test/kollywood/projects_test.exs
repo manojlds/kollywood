@@ -59,6 +59,31 @@ defmodule Kollywood.ProjectsTest do
     assert errors_on(changeset, :slug) != []
   end
 
+  test "onboarded? is false before workflow/tracker files and true after" do
+    assert {:ok, project} =
+             Projects.create_project(%{
+               name: "Onboard check",
+               provider: :local,
+               repository:
+                 Path.join(
+                   System.tmp_dir!(),
+                   "onboard-check-#{System.unique_integer([:positive])}"
+                 )
+             })
+
+    refute Projects.onboarded?(project)
+
+    workflow_path = Projects.workflow_path(project)
+    File.mkdir_p!(Path.dirname(workflow_path))
+
+    File.write!(
+      workflow_path,
+      "---\nagent:\n  kind: opencode\nworkspace:\n  strategy: clone\n---\n"
+    )
+
+    assert Projects.onboarded?(project)
+  end
+
   defp errors_on(changeset, field),
     do: Enum.filter(changeset.errors, fn {k, _} -> k == field end)
 end

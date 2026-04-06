@@ -55,6 +55,32 @@ else
   log "No repo skills found at $SKILLS_SOURCE_DIR (skipping skill sync)"
 fi
 
+CLI_MANIFEST_PATH="$REPO_DIR/tools/kollywood-cli/Cargo.toml"
+CLI_INSTALL_ROOT="${KOLLYWOOD_CLI_INSTALL_ROOT:-$HOME/.local}"
+CLI_BIN_PATH="$CLI_INSTALL_ROOT/bin/kollywood"
+
+[[ -f "$CLI_MANIFEST_PATH" ]] || err "Kollywood CLI manifest not found at $CLI_MANIFEST_PATH"
+
+if ! command -v cargo >/dev/null 2>&1; then
+  err "cargo is required to install the Kollywood CLI (missing from PATH)"
+fi
+
+log "Installing kollywood CLI to $CLI_INSTALL_ROOT/bin"
+CLI_GIT_SHA=$(git rev-parse --short=8 HEAD)
+KOLLYWOOD_CLI_GIT_SHA="$CLI_GIT_SHA" \
+  cargo install --path "$REPO_DIR/tools/kollywood-cli" --locked --force --root "$CLI_INSTALL_ROOT"
+
+[[ -x "$CLI_BIN_PATH" ]] || err "Kollywood CLI install failed: $CLI_BIN_PATH not found"
+
+CLI_VERSION=$($CLI_BIN_PATH --version 2>/dev/null || true)
+[[ -n "$CLI_VERSION" ]] || err "Installed Kollywood CLI did not start correctly"
+
+if [[ "$CLI_VERSION" != *"+$CLI_GIT_SHA"* ]]; then
+  err "Installed Kollywood CLI version mismatch (expected +$CLI_GIT_SHA, got: $CLI_VERSION)"
+fi
+
+log "Kollywood CLI installed: $CLI_VERSION"
+
 log "Installing deps"
 MIX_ENV=prod mix deps.get --only prod
 

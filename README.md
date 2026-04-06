@@ -79,6 +79,20 @@ Kollywood now tracks onboarded projects in a SQLite control store.
 
 No project is auto-seeded; onboard projects explicitly.
 
+For newly added projects that do not yet have onboarding files, use the Chat page first and run onboarding to generate `.kollywood/WORKFLOW.md` and `.kollywood/AGENTS.md`.
+`prd.json` for local tracker mode is created lazily when local story operations begin.
+
+Deploys also install the latest global `kollywood` CLI from this repo (`tools/kollywood-cli`) into `$HOME/.local/bin` by default, so agents and skills can rely on `kollywood project resolve` and related commands.
+The deploy script stamps CLI version as `0.1.0+<git_sha>` and verifies it matches the deployed app commit SHA.
+Set `KOLLYWOOD_CLI_INSTALL_ROOT` to override the install root if needed.
+
+Workflow schema is available over API/CLI for machine consumers:
+
+```bash
+curl -s http://127.0.0.1:4000/api/workflow/schema | jq
+kollywood workflow schema --json
+```
+
 ```bash
 mix kollywood.projects list
 mix kollywood.projects add-local --name "Kollywood" --path ~/projects/kollywood

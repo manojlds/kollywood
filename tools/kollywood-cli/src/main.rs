@@ -24,8 +24,15 @@ fn run() -> Result<()> {
     match cli.command {
         Commands::Story(story) => run_story_command(&api, story),
         Commands::Project(project) => run_project_command(&api, project),
+        Commands::Workflow(workflow) => run_workflow_command(&api, workflow),
     }
 }
+
+const VERSION_FULL: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    "+",
+    env!("KOLLYWOOD_CLI_GIT_SHA")
+);
 
 fn run_story_command(api: &ApiClient, story: StoryArgs) -> Result<()> {
     match story.command {
@@ -79,8 +86,8 @@ fn run_project_command(api: &ApiClient, project: ProjectArgs) -> Result<()> {
             let path = match clean_optional(args.path.as_deref()) {
                 Some(path) => path,
                 None => {
-                    let cwd =
-                        std::env::current_dir().context("failed to read current working directory")?;
+                    let cwd = std::env::current_dir()
+                        .context("failed to read current working directory")?;
                     cwd.to_str()
                         .context("current working directory contains invalid UTF-8")?
                         .to_string()
@@ -96,8 +103,21 @@ fn run_project_command(api: &ApiClient, project: ProjectArgs) -> Result<()> {
     }
 }
 
+fn run_workflow_command(api: &ApiClient, workflow: WorkflowArgs) -> Result<()> {
+    match workflow.command {
+        WorkflowCommand::Schema(args) => {
+            let schema = api.fetch_workflow_schema()?;
+            print_workflow_schema(&schema, args.json)
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
-#[command(name = "kollywood", version, about = "Kollywood CLI")]
+#[command(
+    name = "kollywood",
+    version = VERSION_FULL,
+    about = "Kollywood CLI"
+)]
 struct Cli {
     #[arg(
         long = "api",
@@ -116,6 +136,7 @@ struct Cli {
 enum Commands {
     Story(StoryArgs),
     Project(ProjectArgs),
+    Workflow(WorkflowArgs),
 }
 
 #[derive(Args, Debug)]
@@ -143,6 +164,23 @@ struct ProjectArgs {
 #[derive(Subcommand, Debug)]
 enum ProjectCommand {
     Resolve(ProjectResolveArgs),
+}
+
+#[derive(Args, Debug)]
+struct WorkflowArgs {
+    #[command(subcommand)]
+    command: WorkflowCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum WorkflowCommand {
+    Schema(WorkflowSchemaArgs),
+}
+
+#[derive(Args, Debug)]
+struct WorkflowSchemaArgs {
+    #[arg(long, help = "Output raw JSON")]
+    json: bool,
 }
 
 #[derive(Args, Debug)]
@@ -404,6 +442,16 @@ struct ResolvedProject {
     repository: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WorkflowSchema {
+    #[serde(default)]
+    schema_version: String,
+    #[serde(default)]
+    workflow_front_matter: Value,
+    #[serde(default)]
+    sections: Map<String, Value>,
+}
+
 struct ApiClient {
     base_url: String,
     http: Client,
@@ -461,6 +509,17 @@ impl ApiClient {
         Ok(envelope.data)
     }
 
+    fn fetch_workflow_schema(&self) -> Result<WorkflowSchema> {
+        let response = self
+            .http
+            .get(self.workflow_schema_url())
+            .send()
+            .context("failed to call workflow schema endpoint")?;
+
+        let envelope: DataEnvelope<WorkflowSchema> = parse_json_response(response)?;
+        Ok(envelope.data)
+    }
+
     fn update_story(&self, project: &str, story_id: &str, payload: Value) -> Result<Story> {
         let response = self
             .http
@@ -506,6 +565,10 @@ impl ApiClient {
             self.base_url,
             encode(path.trim())
         )
+    }
+
+    fn workflow_schema_url(&self) -> String {
+        format!("{}/api/workflow/schema", self.base_url)
     }
 }
 
@@ -1181,8 +1244,7 @@ fn print_resolved_project(project: &ResolvedProject, as_json: bool) -> Result<()
     if as_json {
         println!(
             "{}",
-            serde_json::to_string_pretty(project)
-                .context("failed to render JSON output")?
+            serde_json::to_string_pretty(project).context("failed to render JSON output")?
         );
         return Ok(());
     }
@@ -1205,6 +1267,42 @@ fn print_resolved_project(project: &ResolvedProject, as_json: bool) -> Result<()
         }
     }
 
+    Ok(())
+}
+
+fn print_workflow_schema(schema: &WorkflowSchema, as_json: bool) -> Result<()> {
+    if as_json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(schema).context("failed to render JSON output")?
+        );
+        return Ok(());
+    }
+
+    let section_count = schema.sections.len();
+    let required_sections = schema
+        .workflow_front_matter
+        .get("required_sections")
+        .and_then(|value| value.as_array())
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str().map(|item| item.to_string()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    println!(
+        "Workflow schema version {} ({} sections)",
+        fallback(&schema.schema_version, "unknown"),
+        section_count
+    );
+
+    if !required_sections.is_empty() {
+        println!("Required sections: {}", required_sections.join(", "));
+    }
+
+    println!("Use --json for full machine-readable schema.");
     Ok(())
 }
 
@@ -1254,7 +1352,8 @@ fn fallback<'a>(value: &'a str, default: &'a str) -> &'a str {
 mod tests {
     use super::{
         build_add_payload, build_edit_payload, normalize_list_values, parse_import_records,
-        plan_delete_missing, ImportMode, StoryAddArgs, StoryEditArgs,
+        plan_delete_missing, print_workflow_schema, ImportMode, StoryAddArgs, StoryEditArgs,
+        WorkflowSchema,
     };
     use serde_json::{Map, Value};
 
@@ -1508,5 +1607,26 @@ mod tests {
                 "Retest checkout with promo code".to_string()
             ))
         );
+    }
+
+    #[test]
+    fn print_workflow_schema_plain_text_succeeds() {
+        let schema = WorkflowSchema {
+            schema_version: "2026-04-06.1".to_string(),
+            workflow_front_matter: serde_json::json!({
+                "required_sections": ["agent", "workspace"]
+            }),
+            sections: {
+                let mut map = Map::<String, Value>::new();
+                map.insert("agent".to_string(), serde_json::json!({"required": true}));
+                map.insert(
+                    "workspace".to_string(),
+                    serde_json::json!({"required": true}),
+                );
+                map
+            },
+        };
+
+        print_workflow_schema(&schema, false).expect("should print plain schema summary");
     }
 }
