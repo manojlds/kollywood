@@ -9,6 +9,7 @@ defmodule Kollywood.AgentRunner do
   require Logger
 
   alias Kollywood.Agent
+  alias Kollywood.AgentHarness
   alias Kollywood.AgentRunner.ContinuationPrompt
   alias Kollywood.AgentRunner.Result
   alias Kollywood.Config
@@ -1586,7 +1587,8 @@ defmodule Kollywood.AgentRunner do
 
   defp run_review_if_enabled(state, config, cycle) do
     if review_enabled?(config) do
-      review_agent_kind = review_agent_kind(config)
+      review_profile = AgentHarness.resolve(config, :review)
+      review_agent_kind = get_in(review_profile, [:role, :kind])
       state = emit(state, :review_started, %{agent_kind: review_agent_kind, cycle: cycle})
 
       # Write review.json inside the workspace worktree — the reviewer agent
@@ -1597,7 +1599,7 @@ defmodule Kollywood.AgentRunner do
       with :ok <- reset_review_json(workspace_rjp),
            {:ok, prompt} <- build_review_prompt(state, config, cycle, workspace_rjp),
            state = maybe_emit_prompt(state, cycle, :review, prompt),
-           {:ok, _output} <- run_review_turn(state, config, prompt, state.log_files) do
+           {:ok, _output} <- run_review_turn(state, review_profile, prompt, state.log_files) do
         persist_review_json(workspace_rjp, state.log_files)
         persist_review_cycle_json(workspace_rjp, state.log_files, cycle)
 
@@ -1645,7 +1647,10 @@ defmodule Kollywood.AgentRunner do
 
   defp run_testing_if_enabled(state, config, cycle) do
     if testing_enabled?(config) do
-      testing_agent_kind = testing_agent_kind(config)
+      testing_profile =
+        AgentHarness.resolve(config, :testing, runtime_env: testing_runtime_env(state.runtime))
+
+      testing_agent_kind = get_in(testing_profile, [:role, :kind])
 
       state =
         emit(state, :testing_started, %{
@@ -1659,7 +1664,7 @@ defmodule Kollywood.AgentRunner do
       with :ok <- reset_testing_json(workspace_tjp),
            {:ok, prompt} <- build_testing_prompt(state, config, cycle, workspace_tjp),
            state = maybe_emit_prompt(state, cycle, :testing, prompt),
-           {:ok, testing_run} <- run_testing_turn(state, config, prompt, state.log_files) do
+           {:ok, testing_run} <- run_testing_turn(state, testing_profile, prompt, state.log_files) do
         persist_testing_json(workspace_tjp, state.log_files)
         persist_testing_cycle_json(workspace_tjp, state.log_files, cycle)
 
@@ -2395,8 +2400,8 @@ defmodule Kollywood.AgentRunner do
     get_in(config, [Access.key(:tracker, %{}), Access.key(:project_slug)]) || "default"
   end
 
-  defp run_review_turn(state, config, prompt, log_files) do
-    review_config = reviewer_config(config)
+  defp run_review_turn(state, review_profile, prompt, log_files) do
+    review_config = Map.get(review_profile, :session_config)
     reviewer_opts = with_raw_log(%{}, log_files, :reviewer_stdout)
 
     case Agent.start_session(review_config, state.workspace, %{}) do
@@ -2410,8 +2415,8 @@ defmodule Kollywood.AgentRunner do
     end
   end
 
-  defp run_testing_turn(state, config, prompt, log_files) do
-    testing_config = tester_config(config, state.runtime)
+  defp run_testing_turn(state, testing_profile, prompt, log_files) do
+    testing_config = Map.get(testing_profile, :session_config)
     tester_opts = with_raw_log(%{}, log_files, :tester_stdout)
 
     case Agent.start_session(testing_config, state.workspace, %{}) do
@@ -3306,118 +3311,6 @@ defmodule Kollywood.AgentRunner do
     end
   end
 
-  defp reviewer_config(config) do
-    review_agent =
-      config
-      |> review_config()
-      |> Map.get(:agent, %{})
-
-    base_agent = Map.get(config, :agent, %{})
-
-    merged_agent =
-      if Map.get(review_agent, :explicit, false) do
-        # review.agent explicitly configured — start from base agent, apply overrides
-        base_agent
-        |> Map.put(:kind, Map.get(review_agent, :kind, Map.get(base_agent, :kind)))
-        |> Map.put(:max_turns, 1)
-        |> then(fn a ->
-          case Map.get(review_agent, :command) do
-            nil -> a
-            cmd -> Map.put(a, :command, cmd)
-          end
-        end)
-        |> then(fn a ->
-          case Map.get(review_agent, :args) do
-            [] -> a
-            args -> Map.put(a, :args, args)
-          end
-        end)
-        |> Map.put(
-          :env,
-          Map.merge(Map.get(base_agent, :env, %{}), Map.get(review_agent, :env, %{}))
-        )
-        |> Map.put(
-          :timeout_ms,
-          positive_integer(
-            Map.get(review_agent, :timeout_ms, Map.get(base_agent, :timeout_ms, 7_200_000)),
-            7_200_000
-          )
-        )
-      else
-        # No review.agent configured — use main agent config as-is, just cap max_turns to 1
-        Map.put(base_agent, :max_turns, 1)
-      end
-
-    %Config{config | agent: merged_agent}
-  end
-
-  defp tester_config(config, runtime) do
-    testing_agent =
-      config
-      |> testing_config()
-      |> Map.get(:agent, %{})
-
-    base_agent = Map.get(config, :agent, %{})
-    runtime_env = testing_runtime_env(runtime)
-    default_timeout = testing_timeout_ms(config)
-
-    merged_agent =
-      if Map.get(testing_agent, :explicit, false) do
-        # testing.agent explicitly configured — start from base agent, apply overrides
-        base_agent
-        |> Map.put(:kind, Map.get(testing_agent, :kind, Map.get(base_agent, :kind)))
-        |> Map.put(:max_turns, 1)
-        |> then(fn a ->
-          case Map.get(testing_agent, :command) do
-            nil -> a
-            cmd -> Map.put(a, :command, cmd)
-          end
-        end)
-        |> then(fn a ->
-          case Map.get(testing_agent, :args) do
-            [] -> a
-            args -> Map.put(a, :args, args)
-          end
-        end)
-        |> Map.put(
-          :env,
-          base_agent
-          |> Map.get(:env, %{})
-          |> map_or_empty()
-          |> Map.merge(Map.get(testing_agent, :env, %{}) |> map_or_empty())
-          |> Map.merge(runtime_env)
-        )
-        |> Map.put(
-          :timeout_ms,
-          positive_integer(
-            Map.get(
-              testing_agent,
-              :timeout_ms,
-              Map.get(base_agent, :timeout_ms, default_timeout)
-            ),
-            default_timeout
-          )
-        )
-      else
-        # No testing.agent configured — use main agent config with runtime env and cap max_turns.
-        base_agent
-        |> Map.put(:max_turns, 1)
-        |> Map.put(
-          :env,
-          base_agent
-          |> Map.get(:env, %{})
-          |> map_or_empty()
-          |> Map.merge(runtime_env)
-        )
-        |> Map.put(
-          :timeout_ms,
-          positive_integer(Map.get(base_agent, :timeout_ms), default_timeout)
-        )
-      end
-
-    %Config{config | agent: merged_agent}
-  end
-
   defp with_agent_browser_defaults(%Config{} = config, workspace) do
     agent = Map.get(config, :agent, %{})
 
@@ -3589,33 +3482,6 @@ defmodule Kollywood.AgentRunner do
     |> testing_config()
     |> Map.get(:max_cycles, default_limit)
     |> positive_integer(default_limit)
-  end
-
-  defp testing_timeout_ms(config) do
-    config
-    |> testing_config()
-    |> Map.get(:timeout_ms, 7_200_000)
-    |> positive_integer(7_200_000)
-  end
-
-  defp review_agent_kind(config) do
-    config
-    |> review_config()
-    |> get_in([Access.key(:agent, %{}), Access.key(:kind)])
-    |> case do
-      value when value in [:amp, :claude, :codex, :cursor, :opencode, :pi] -> value
-      _other -> Map.get(config.agent, :kind)
-    end
-  end
-
-  defp testing_agent_kind(config) do
-    config
-    |> testing_config()
-    |> get_in([Access.key(:agent, %{}), Access.key(:kind)])
-    |> case do
-      value when value in [:amp, :claude, :codex, :cursor, :opencode, :pi] -> value
-      _other -> Map.get(config.agent, :kind)
-    end
   end
 
   @default_review_prompt_template """

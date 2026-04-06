@@ -9,6 +9,7 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshot do
   - lightweight source markers indicating where values came from
   """
 
+  alias Kollywood.AgentHarness
   alias Kollywood.Config
   alias Kollywood.WorkflowStore
 
@@ -112,49 +113,18 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshot do
   end
 
   defp resolved_review_settings(%Config{} = config) do
-    review = review_config(config)
-    review_agent = map_or_empty(Map.get(review, :agent))
-    review_agent_explicit = truthy?(Map.get(review_agent, :explicit, false))
-    quality_limit = quality_max_cycles(config)
+    profile = AgentHarness.resolve(config, :review)
+    role = map_or_empty(Map.get(profile, :role))
+    harness = map_or_empty(Map.get(profile, :harness))
+    review_agent_explicit = truthy?(Map.get(role, :explicit, false))
 
     %{
-      enabled: truthy?(Map.get(review, :enabled, false)),
-      max_cycles: positive_integer(Map.get(review, :max_cycles), quality_limit),
-      prompt_template: optional_string(Map.get(review, :prompt_template)),
+      enabled: truthy?(Map.get(role, :enabled, false)),
+      max_cycles: positive_integer(Map.get(role, :max_cycles), quality_max_cycles(config)),
+      prompt_template: optional_string(Map.get(role, :prompt_template)),
       agent_explicit: review_agent_explicit,
-      agent: resolved_review_agent(config, review_agent, review_agent_explicit)
+      agent: resolved_phase_agent(config, role, harness)
     }
-  end
-
-  defp resolved_review_agent(%Config{} = config, review_agent, true) do
-    base_agent = map_or_empty(Map.get(config, :agent))
-
-    base_agent
-    |> Map.put(:kind, Map.get(review_agent, :kind, Map.get(base_agent, :kind)))
-    |> Map.put(:max_turns, 1)
-    |> maybe_put(:command, Map.get(review_agent, :command))
-    |> maybe_put_list(:args, Map.get(review_agent, :args))
-    |> Map.put(
-      :env,
-      Map.merge(
-        map_or_empty(Map.get(base_agent, :env)),
-        map_or_empty(Map.get(review_agent, :env))
-      )
-    )
-    |> Map.put(
-      :timeout_ms,
-      positive_integer(
-        Map.get(review_agent, :timeout_ms, Map.get(base_agent, :timeout_ms, @default_timeout_ms)),
-        @default_timeout_ms
-      )
-    )
-  end
-
-  defp resolved_review_agent(%Config{} = config, _review_agent, false) do
-    config
-    |> Map.get(:agent)
-    |> map_or_empty()
-    |> Map.put(:max_turns, 1)
   end
 
   defp resolved_checks_settings(%Config{} = config) do
@@ -170,54 +140,37 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshot do
   end
 
   defp resolved_testing_settings(%Config{} = config) do
-    testing = testing_config(config)
-    testing_agent = map_or_empty(Map.get(testing, :agent))
-    testing_agent_explicit = truthy?(Map.get(testing_agent, :explicit, false))
-    quality_limit = quality_max_cycles(config)
+    profile = AgentHarness.resolve(config, :testing)
+    role = map_or_empty(Map.get(profile, :role))
+    harness = map_or_empty(Map.get(profile, :harness))
+    testing_agent_explicit = truthy?(Map.get(role, :explicit, false))
 
     %{
-      enabled: truthy?(Map.get(testing, :enabled, false)),
-      max_cycles: positive_integer(Map.get(testing, :max_cycles), quality_limit),
-      timeout_ms: positive_integer(Map.get(testing, :timeout_ms), @default_timeout_ms),
-      prompt_template: optional_string(Map.get(testing, :prompt_template)),
+      enabled: truthy?(Map.get(role, :enabled, false)),
+      max_cycles: positive_integer(Map.get(role, :max_cycles), quality_max_cycles(config)),
+      timeout_ms: positive_integer(Map.get(role, :timeout_ms), @default_timeout_ms),
+      prompt_template: optional_string(Map.get(role, :prompt_template)),
       agent_explicit: testing_agent_explicit,
-      agent: resolved_testing_agent(config, testing_agent, testing_agent_explicit)
+      agent: resolved_phase_agent(config, role, harness)
     }
   end
 
-  defp resolved_testing_agent(%Config{} = config, testing_agent, true) do
+  defp resolved_phase_agent(%Config{} = config, role, harness) do
     base_agent = map_or_empty(Map.get(config, :agent))
 
     base_agent
-    |> Map.put(:kind, Map.get(testing_agent, :kind, Map.get(base_agent, :kind)))
-    |> Map.put(:max_turns, 1)
-    |> maybe_put(:command, Map.get(testing_agent, :command))
-    |> maybe_put_list(:args, Map.get(testing_agent, :args))
-    |> Map.put(
-      :env,
-      Map.merge(
-        map_or_empty(Map.get(base_agent, :env)),
-        map_or_empty(Map.get(testing_agent, :env))
-      )
-    )
+    |> Map.put(:kind, Map.get(role, :kind, Map.get(base_agent, :kind)))
+    |> Map.put(:max_turns, positive_integer(Map.get(role, :max_turns), 1))
+    |> maybe_put(:command, Map.get(harness, :command))
+    |> maybe_put_list(:args, Map.get(harness, :args))
+    |> Map.put(:env, map_or_empty(Map.get(harness, :env)))
     |> Map.put(
       :timeout_ms,
       positive_integer(
-        Map.get(
-          testing_agent,
-          :timeout_ms,
-          Map.get(base_agent, :timeout_ms, @default_timeout_ms)
-        ),
+        Map.get(harness, :timeout_ms, Map.get(base_agent, :timeout_ms, @default_timeout_ms)),
         @default_timeout_ms
       )
     )
-  end
-
-  defp resolved_testing_agent(%Config{} = config, _testing_agent, false) do
-    config
-    |> Map.get(:agent)
-    |> map_or_empty()
-    |> Map.put(:max_turns, 1)
   end
 
   defp resolved_publish_settings(%Config{} = config) do
@@ -496,32 +449,6 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshot do
         config
         |> quality_config()
         |> Map.get(:checks)
-        |> map_or_empty()
-    end
-  end
-
-  defp review_config(%Config{} = config) do
-    case Map.get(config, :review) do
-      review when is_map(review) ->
-        review
-
-      _other ->
-        config
-        |> quality_config()
-        |> Map.get(:review)
-        |> map_or_empty()
-    end
-  end
-
-  defp testing_config(%Config{} = config) do
-    case Map.get(config, :testing) do
-      testing when is_map(testing) ->
-        testing
-
-      _other ->
-        config
-        |> quality_config()
-        |> Map.get(:testing)
         |> map_or_empty()
     end
   end
