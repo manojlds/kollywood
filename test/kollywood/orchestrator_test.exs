@@ -962,6 +962,156 @@ defmodule Kollywood.OrchestratorTest do
     assert reason in [:normal, :noproc]
   end
 
+  test "status includes canonical run_state derived from runner events", %{root: root} do
+    %{store: workflow_store} = start_workflow_store!(root, %{runtime_processes: []})
+    issue = issue("ISS-RUN-STATE", "ABC-RUN-STATE", 1)
+    test_pid = self()
+    issues_agent = start_agent!(fn -> [issue] end)
+
+    tracker = fn _config -> {:ok, Agent.get(issues_agent, & &1)} end
+
+    runner = fn issue, opts ->
+      issue_id = issue.id
+      on_event = Keyword.fetch!(opts, :on_event)
+      send(test_pid, {:runner_started, issue_id, self(), Keyword.get(opts, :attempt)})
+
+      on_event.(%{type: :check_started, check_index: 1, check_count: 1, command: "mix test"})
+      send(test_pid, {:runner_events_sent, issue_id})
+
+      receive do
+        {:complete_runner, ^issue_id, result} ->
+          result
+      after
+        5_000 -> {:error, failed_result(issue, "test timed out waiting for completion")}
+      end
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: tracker,
+         runner: runner,
+         auto_poll: false,
+         continuation_delay_ms: 60_000,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_started, "ISS-RUN-STATE", runner_pid, nil}
+    assert_receive {:runner_events_sent, "ISS-RUN-STATE"}
+
+    _ = :sys.get_state(orchestrator)
+
+    status = Orchestrator.status(orchestrator)
+    assert status.running_count == 1
+
+    [running_entry] = status.running
+    assert running_entry.run_state["phase"] == "running"
+    assert running_entry.run_state["activity"] == "executing"
+    assert running_entry.run_state_label == "Executing"
+    assert running_entry.run_state["detail"]["last_event_type"] == "check_started"
+
+    runner_ref = Process.monitor(runner_pid)
+    send(runner_pid, {:complete_runner, "ISS-RUN-STATE", {:ok, success_result(issue)}})
+    assert_receive {:DOWN, ^runner_ref, :process, ^runner_pid, reason}
+    assert reason in [:normal, :noproc]
+  end
+
+  test "status marks stale running entries as stalled and offline", %{root: root} do
+    %{store: workflow_store} =
+      start_workflow_store!(root, %{
+        poll_interval_ms: 10,
+        stale_threshold_multiplier: 2,
+        watchdog_check_interval_ms: 10,
+        runtime_processes: []
+      })
+
+    issue = issue("ISS-RUN-HEALTH", "ABC-RUN-HEALTH", 1)
+    test_pid = self()
+    issues_agent = start_agent!(fn -> [issue] end)
+
+    tracker = fn _config -> {:ok, Agent.get(issues_agent, & &1)} end
+
+    runner = fn issue, opts ->
+      issue_id = issue.id
+      on_event = Keyword.fetch!(opts, :on_event)
+      send(test_pid, {:runner_started, issue_id, self(), Keyword.get(opts, :attempt)})
+      on_event.(%{type: :turn_started, turn: 1})
+      send(test_pid, {:runner_events_sent, issue_id})
+
+      receive do
+        {:complete_runner, ^issue_id, result} ->
+          result
+      after
+        5_000 -> {:error, failed_result(issue, "test timed out waiting for completion")}
+      end
+    end
+
+    orchestrator =
+      start_supervised!(
+        {Orchestrator,
+         name: unique_name(:orchestrator),
+         workflow_store: workflow_store,
+         tracker: tracker,
+         runner: runner,
+         auto_poll: false,
+         continuation_delay_ms: 60_000,
+         retry_base_delay_ms: 20}
+      )
+
+    assert :ok = Orchestrator.poll_now(orchestrator)
+    assert_receive {:runner_started, "ISS-RUN-HEALTH", runner_pid, nil}
+    assert_receive {:runner_events_sent, "ISS-RUN-HEALTH"}
+
+    :sys.replace_state(orchestrator, fn state ->
+      threshold_ms = state.poll_interval_ms * state.stale_threshold_multiplier
+      offline_threshold_ms = max(threshold_ms * 2, threshold_ms + state.poll_interval_ms)
+      stale_delta_ms = min(threshold_ms + 1, offline_threshold_ms - 1)
+      stale_at = DateTime.add(DateTime.utc_now(), -stale_delta_ms, :millisecond)
+
+      running =
+        Map.new(state.running, fn {id, entry} ->
+          {id,
+           entry
+           |> Map.put(:last_event_at, stale_at)
+           |> Map.put(:last_activity_event_at, stale_at)}
+        end)
+
+      %{state | running: running}
+    end)
+
+    stalled = Orchestrator.status(orchestrator)
+    [stalled_entry] = stalled.running
+    assert stalled_entry.run_state["activity"] == "stalled"
+
+    :sys.replace_state(orchestrator, fn state ->
+      threshold_ms = state.poll_interval_ms * state.stale_threshold_multiplier
+      offline_threshold_ms = max(threshold_ms * 2, threshold_ms + state.poll_interval_ms)
+      very_stale = DateTime.add(DateTime.utc_now(), -(offline_threshold_ms + 500), :millisecond)
+
+      running =
+        Map.new(state.running, fn {id, entry} ->
+          {id,
+           entry
+           |> Map.put(:last_event_at, very_stale)
+           |> Map.put(:last_activity_event_at, very_stale)}
+        end)
+
+      %{state | running: running}
+    end)
+
+    offline = Orchestrator.status(orchestrator)
+    [offline_entry] = offline.running
+    assert offline_entry.run_state["activity"] == "offline"
+
+    runner_ref = Process.monitor(runner_pid)
+    send(runner_pid, {:complete_runner, "ISS-RUN-HEALTH", {:ok, success_result(issue)}})
+    assert_receive {:DOWN, ^runner_ref, :process, ^runner_pid, reason}
+    assert reason in [:normal, :noproc]
+  end
+
   test "startup reconciliation skips redispatch for in_progress issues", %{root: root} do
     %{store: workflow_store} =
       start_workflow_store!(root, %{

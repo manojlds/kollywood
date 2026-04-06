@@ -26,6 +26,7 @@ defmodule Kollywood.Orchestrator.RunLogs do
 
   alias Kollywood.AgentRunner.Result
   alias Kollywood.Config
+  alias Kollywood.Orchestrator.RunState
   alias Kollywood.RecoveryGuidance
   alias Kollywood.ServiceConfig
 
@@ -303,6 +304,7 @@ defmodule Kollywood.Orchestrator.RunLogs do
       files.metadata
       |> read_json_file()
       |> Map.merge(update)
+      |> Map.put("run_state", completion_run_state(update, files))
       |> Map.merge(testing_report_metadata(files))
 
     with :ok <- write_json(files.metadata, metadata),
@@ -701,6 +703,7 @@ defmodule Kollywood.Orchestrator.RunLogs do
       "retry_mode" => normalize_retry_mode(retry_mode),
       "retry_provenance" => normalize_retry_provenance(retry_provenance),
       "status" => "running",
+      "run_state" => RunState.to_storage_map(RunState.from_status(:running)),
       "started_at" => now_iso8601(),
       "ended_at" => nil,
       "project_root" => project_root,
@@ -831,6 +834,7 @@ defmodule Kollywood.Orchestrator.RunLogs do
     normalized
     |> Map.put("type", type)
     |> Map.put("timestamp", timestamp)
+    |> Map.put("run_state", RunState.to_storage_map(RunState.from_event(normalized, nil)))
     |> Map.put_new("issue_id", context.issue_id)
     |> Map.put_new("identifier", context.identifier)
     |> Map.put_new("story_id", context.story_id)
@@ -996,6 +1000,21 @@ defmodule Kollywood.Orchestrator.RunLogs do
   defp normalize_status_value(value) when is_binary(value), do: value
   defp normalize_status_value(value) when is_atom(value), do: Atom.to_string(value)
   defp normalize_status_value(value), do: to_string(value)
+
+  defp completion_run_state(update, files) when is_map(update) and is_map(files) do
+    status = Map.get(update, "status")
+
+    prior_state =
+      files.metadata
+      |> read_json_file()
+      |> Map.get("run_state")
+
+    status
+    |> RunState.from_status(prior_state)
+    |> RunState.to_storage_map()
+  end
+
+  defp completion_run_state(_update, _files), do: RunState.to_storage_map(RunState.unknown())
 
   defp derive_last_successful_turn(events) when is_list(events) do
     events

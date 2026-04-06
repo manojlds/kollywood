@@ -212,6 +212,8 @@ defmodule Kollywood.Orchestrator.RunLogsTest do
       metadata = File.read!(context.files.metadata) |> Jason.decode!()
       assert metadata["status"] == "ok"
       assert Map.get(metadata, "error") == nil
+      assert metadata["run_state"]["phase"] == "finished"
+      assert metadata["run_state"]["activity"] == "completed"
     end
 
     test "persists recovery guidance in metadata from result events", %{context: context} do
@@ -390,6 +392,9 @@ defmodule Kollywood.Orchestrator.RunLogsTest do
                "git -C '/tmp/work' status --short",
                "git -C '/tmp/work' push -u origin 'kw/US-TEST'"
              ]
+
+      assert decoded["run_state"]["phase"] == "running"
+      assert decoded["run_state"]["activity"] == "blocked"
     end
 
     test "preserves provided structured recovery guidance payload", %{context: context} do
