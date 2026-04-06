@@ -23,6 +23,7 @@ defmodule KollywoodWeb.ChatLive do
       |> assign(:chat_selected_snapshot, nil)
       |> assign(:chat_input, "")
       |> assign(:chat_error, nil)
+      |> assign(:chat_panel_tab, :chat)
       |> assign(:chat_subscription_project_slug, nil)
       |> assign(:page_title, page_title(current_project))
 
@@ -34,11 +35,13 @@ defmodule KollywoodWeb.ChatLive do
     project_slug = params["project_slug"]
     current_project = find_project_by_slug(socket.assigns.projects, project_slug)
     selected_session_id = params["session"]
+    panel_tab = parse_panel_tab(params["panel"])
 
     socket =
       socket
       |> assign(:current_project, current_project)
       |> assign(:page_title, page_title(current_project))
+      |> assign(:chat_panel_tab, panel_tab)
       |> ensure_chat_subscription(current_project)
       |> load_chat_assigns(current_project, selected_session_id)
 
@@ -72,7 +75,7 @@ defmodule KollywoodWeb.ChatLive do
     case create_chat_session(socket) do
       {:ok, socket, session_id} ->
         project = socket.assigns.current_project
-        {:noreply, push_patch(socket, to: chat_path(project.slug, session_id))}
+        {:noreply, push_patch(socket, to: chat_path(project.slug, session_id, :chat))}
 
       {:error, socket, reason} ->
         {:noreply, socket |> assign(:chat_error, reason) |> put_flash(:error, reason)}
@@ -80,9 +83,13 @@ defmodule KollywoodWeb.ChatLive do
   end
 
   def handle_event("select_chat", %{"id" => session_id}, socket) when is_binary(session_id) do
+    panel_tab =
+      socket.assigns
+      |> Map.get(:chat_panel_tab, :chat)
+
     case socket.assigns[:current_project] do
       %Project{slug: slug} ->
-        {:noreply, push_patch(socket, to: chat_path(slug, session_id))}
+        {:noreply, push_patch(socket, to: chat_path(slug, session_id, panel_tab))}
 
       _other ->
         {:noreply, socket}
@@ -100,7 +107,15 @@ defmodule KollywoodWeb.ChatLive do
         |> load_chat_assigns(project, nil)
 
       {:noreply,
-       push_patch(socket, to: chat_path(slug, socket.assigns[:chat_selected_session_id]))}
+       push_patch(
+         socket,
+         to:
+           chat_path(
+             slug,
+             socket.assigns[:chat_selected_session_id],
+             socket.assigns[:chat_panel_tab]
+           )
+       )}
     else
       {:error, reason} ->
         {:noreply, socket |> assign(:chat_error, reason) |> put_flash(:error, reason)}
@@ -123,6 +138,22 @@ defmodule KollywoodWeb.ChatLive do
 
       _other ->
         {:noreply, socket}
+    end
+  end
+
+  def handle_event("set_panel", %{"panel" => panel}, socket) do
+    panel_tab = parse_panel_tab(panel)
+
+    case socket.assigns[:current_project] do
+      %Project{slug: slug} ->
+        {:noreply,
+         push_patch(
+           socket,
+           to: chat_path(slug, socket.assigns[:chat_selected_session_id], panel_tab)
+         )}
+
+      _other ->
+        {:noreply, assign(socket, :chat_panel_tab, panel_tab)}
     end
   end
 
@@ -192,22 +223,18 @@ defmodule KollywoodWeb.ChatLive do
       |> assign(:chat_send_label, send_label)
 
     ~H"""
-    <div class="min-h-screen bg-gradient-to-b from-slate-50 via-white to-teal-50/30">
-      <header class="navbar bg-white/90 backdrop-blur border-b border-slate-200 px-4 sm:px-6 lg:px-8">
+    <div class="min-h-screen bg-base-100">
+      <header class="navbar bg-base-200 border-b border-base-300 px-4 sm:px-6 lg:px-8">
         <div class="flex-1 flex items-center gap-4">
           <.link navigate={~p"/"} class="flex items-center gap-2">
-            <.icon name="hero-rocket-launch" class="size-6 text-teal-600" />
-            <span class="text-xl font-semibold tracking-tight text-slate-900">Kollywood</span>
+            <.icon name="hero-rocket-launch" class="size-6 text-primary" />
+            <span class="text-xl font-bold">Kollywood</span>
           </.link>
         </div>
 
         <div class="flex-none flex items-center gap-4">
           <div class="dropdown dropdown-end">
-            <div
-              tabindex="0"
-              role="button"
-              class="btn btn-outline btn-sm gap-2 border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
-            >
+            <div tabindex="0" role="button" class="btn btn-outline btn-sm gap-2">
               <.icon name="hero-folder" class="size-4" />
               <%= if @current_project do %>
                 {@current_project.name}
@@ -218,21 +245,17 @@ defmodule KollywoodWeb.ChatLive do
             </div>
             <ul
               tabindex="0"
-              class="dropdown-content menu menu-sm bg-white rounded-box z-[1] w-72 p-2 shadow-xl border border-slate-200 mt-2"
+              class="dropdown-content menu menu-sm bg-base-100 rounded-box z-[1] w-64 p-2 shadow-lg border border-base-300 mt-2"
             >
               <%= for project <- @projects do %>
                 <li>
                   <.link
                     navigate={chat_path(project.slug, nil)}
-                    class={[
-                      "rounded-md",
-                      @current_project && @current_project.id == project.id &&
-                        "bg-teal-50 text-teal-700"
-                    ]}
+                    class={[@current_project && @current_project.id == project.id && "bg-base-200"]}
                   >
                     <span class="truncate">{project.name}</span>
                     <%= if @current_project && @current_project.id == project.id do %>
-                      <.icon name="hero-check" class="size-4 text-teal-600" />
+                      <.icon name="hero-check" class="size-4 text-success" />
                     <% end %>
                   </.link>
                 </li>
@@ -243,7 +266,7 @@ defmodule KollywoodWeb.ChatLive do
       </header>
 
       <%= if @current_project do %>
-        <nav class="bg-white border-b border-slate-200 px-4 sm:px-6 lg:px-8">
+        <nav class="bg-base-100 border-b border-base-300 px-4 sm:px-6 lg:px-8">
           <div class="flex gap-1 overflow-x-auto">
             <.nav_tab
               label="Overview"
@@ -268,146 +291,220 @@ defmodule KollywoodWeb.ChatLive do
             <.nav_tab
               label="Chat"
               icon="hero-chat-bubble-left-right"
-              navigate={chat_path(@current_project.slug, @chat_selected_session_id)}
+              navigate={chat_path(@current_project.slug, @chat_selected_session_id, @chat_panel_tab)}
               active={true}
             />
           </div>
         </nav>
 
         <main class="px-4 sm:px-6 lg:px-8 py-6">
-          <div class="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-[19rem_1fr] gap-4 lg:gap-5">
-            <aside class="card bg-white border border-slate-200 shadow-sm">
-              <div class="card-body p-4 gap-3">
-                <button
-                  type="button"
-                  phx-click="new_chat"
-                  class="btn btn-sm bg-teal-600 hover:bg-teal-700 text-white border-0"
-                >
-                  <.icon name="hero-plus" class="size-4" /> New Chat
-                </button>
-
-                <div class="space-y-2 max-h-[68vh] overflow-y-auto pr-1">
-                  <%= if @chat_sessions == [] do %>
-                    <p class="text-sm text-slate-500">No chats yet.</p>
-                  <% else %>
-                    <%= for session <- @chat_sessions do %>
-                      <div class={[
-                        "rounded-xl border p-2.5 transition",
-                        @chat_selected_session_id == session.id &&
-                          "border-teal-500 bg-teal-50/60",
-                        @chat_selected_session_id != session.id &&
-                          "border-slate-200 bg-white hover:bg-slate-50"
-                      ]}>
-                        <button
-                          type="button"
-                          phx-click="select_chat"
-                          phx-value-id={session.id}
-                          class="w-full text-left"
-                        >
-                          <p class="text-sm font-medium truncate text-slate-900">
-                            {session.title || session.id}
-                          </p>
-                          <p class="text-xs text-slate-500">
-                            {session.status} • {format_timestamp(
-                              session.updated_at || session.inserted_at
-                            )}
-                          </p>
-                        </button>
-
-                        <button
-                          type="button"
-                          phx-click="delete_chat"
-                          phx-value-id={session.id}
-                          class="btn btn-ghost btn-xs text-rose-600 mt-2 hover:bg-rose-50"
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    <% end %>
-                  <% end %>
+          <section class="card bg-base-100 border border-base-300 min-h-[72vh]">
+            <div class="card-body p-0 gap-0">
+              <div class="border-b border-base-300 px-4 sm:px-6 pt-4">
+                <div class="tabs tabs-box bg-base-200 inline-flex p-1">
+                  <button
+                    type="button"
+                    class={["tab tab-sm", @chat_panel_tab == :chat && "tab-active"]}
+                    phx-click="set_panel"
+                    phx-value-panel="chat"
+                  >
+                    Chat
+                  </button>
+                  <button
+                    type="button"
+                    class={["tab tab-sm", @chat_panel_tab == :sessions && "tab-active"]}
+                    phx-click="set_panel"
+                    phx-value-panel="sessions"
+                  >
+                    Sessions ({length(@chat_sessions)})
+                  </button>
                 </div>
               </div>
-            </aside>
 
-            <section class="card bg-white border border-slate-200 shadow-sm min-h-[70vh]">
-              <div class="card-body p-4 gap-4">
-                <div class="flex items-center justify-between">
-                  <h2 class="text-lg font-semibold text-slate-900">
-                    {@chat_selected_title}
-                  </h2>
-                  <span class={[
-                    @chat_status_meta.badge_class,
-                    "badge border-0 text-xs uppercase tracking-wide"
-                  ]}>
-                    {@chat_status_meta.label}
-                  </span>
-                </div>
+              <div class="p-4 sm:p-6">
+                <%= if @chat_panel_tab == :sessions do %>
+                  <div class="space-y-4 max-w-3xl">
+                    <div class="flex items-center justify-between gap-3">
+                      <h2 class="text-lg font-semibold">Sessions</h2>
+                      <button type="button" phx-click="new_chat" class="btn btn-primary btn-sm">
+                        <.icon name="hero-plus" class="size-4" /> New Chat
+                      </button>
+                    </div>
 
-                <%= if @chat_status_help do %>
-                  <div class="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-                    {@chat_status_help}
+                    <div class="space-y-2 max-h-[56vh] overflow-y-auto pr-1">
+                      <%= if @chat_sessions == [] do %>
+                        <div class="alert">
+                          <span class="text-sm text-base-content/70">
+                            No chat sessions yet. Create one to get started.
+                          </span>
+                        </div>
+                      <% else %>
+                        <%= for session <- @chat_sessions do %>
+                          <div class={[
+                            "rounded-lg border p-3",
+                            @chat_selected_session_id == session.id && "border-primary bg-primary/5",
+                            @chat_selected_session_id != session.id && "border-base-300"
+                          ]}>
+                            <div class="flex items-start justify-between gap-3">
+                              <button
+                                type="button"
+                                phx-click="select_chat"
+                                phx-value-id={session.id}
+                                class="text-left flex-1"
+                              >
+                                <p class="text-sm font-medium truncate">
+                                  {session.title || session.id}
+                                </p>
+                                <p class="text-xs text-base-content/60 mt-1">
+                                  {session.status} • {format_timestamp(
+                                    session.updated_at || session.inserted_at
+                                  )}
+                                </p>
+                              </button>
+
+                              <div class="flex items-center gap-2 shrink-0">
+                                <button
+                                  type="button"
+                                  phx-click="select_chat"
+                                  phx-value-id={session.id}
+                                  class="btn btn-ghost btn-xs"
+                                >
+                                  Open
+                                </button>
+                                <button
+                                  type="button"
+                                  phx-click="delete_chat"
+                                  phx-value-id={session.id}
+                                  class="btn btn-ghost btn-xs text-error"
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        <% end %>
+                      <% end %>
+                    </div>
                   </div>
-                <% end %>
-
-                <%= if @chat_error do %>
-                  <div class="alert alert-error">
-                    <span>{@chat_error}</span>
-                  </div>
-                <% end %>
-
-                <div class="flex-1 overflow-y-auto border border-slate-200 rounded-xl p-3 space-y-3 bg-white min-h-[22rem]">
-                  <%= if @chat_messages == [] do %>
-                    <p class="text-sm text-slate-500">
-                      Start a new chat and ask the agent to plan work or create stories.
-                    </p>
-                  <% else %>
-                    <%= for message <- @chat_messages do %>
-                      <div class={[
-                        "rounded-xl border p-3",
-                        message.role == "user" && "border-sky-200 bg-sky-50/60",
-                        message.role == "assistant" && "border-emerald-200 bg-emerald-50/60"
-                      ]}>
-                        <p class="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">
-                          {message.role}
+                <% else %>
+                  <div class="flex flex-col gap-4 h-[66vh]">
+                    <div class="flex items-center justify-between gap-3">
+                      <div>
+                        <h2 class="text-lg font-semibold truncate max-w-[72vw] sm:max-w-[40rem]">
+                          {@chat_selected_title}
+                        </h2>
+                        <p class="text-xs text-base-content/60 mt-1">
+                          <%= if @chat_selected_snapshot do %>
+                            Session {Map.get(@chat_selected_snapshot, :id)}
+                          <% else %>
+                            No session selected
+                          <% end %>
                         </p>
-                        <pre class="whitespace-pre-wrap break-words text-sm font-sans text-slate-800">{message.content}</pre>
+                      </div>
+
+                      <div class="flex items-center gap-2">
+                        <span class={[
+                          @chat_status_meta.badge_class,
+                          "badge border-0 text-xs uppercase tracking-wide"
+                        ]}>
+                          {@chat_status_meta.label}
+                        </span>
+                        <button
+                          type="button"
+                          phx-click="set_panel"
+                          phx-value-panel="sessions"
+                          class="btn btn-outline btn-xs"
+                        >
+                          Sessions
+                        </button>
+                      </div>
+                    </div>
+
+                    <%= if @chat_status_help do %>
+                      <div class="alert alert-info py-2 text-xs">
+                        {@chat_status_help}
                       </div>
                     <% end %>
-                  <% end %>
-                </div>
 
-                <form phx-submit="send_chat" phx-change="change_chat_input" class="space-y-2">
-                  <textarea
-                    name="message"
-                    class="textarea textarea-bordered w-full h-24 border-slate-300 bg-white text-slate-900"
-                    placeholder="Ask the agent to plan a feature, break it into stories, or refine requirements..."
-                    disabled={@chat_input_disabled}
-                  ><%= @chat_input %></textarea>
+                    <%= if @chat_error do %>
+                      <div class="alert alert-error">
+                        <span>{@chat_error}</span>
+                      </div>
+                    <% end %>
 
-                  <div class="flex items-center gap-2">
-                    <button
-                      type="submit"
-                      class="btn btn-sm bg-teal-600 hover:bg-teal-700 text-white border-0"
-                      disabled={@chat_input_disabled}
-                    >
-                      {@chat_send_label}
-                    </button>
-                    <button
-                      type="button"
-                      phx-click="cancel_chat"
-                      class="btn btn-outline btn-sm border-slate-300 text-slate-700"
-                      disabled={
-                        @chat_selected_session_id == nil or
-                          @chat_status not in [:running, :cancelling]
-                      }
-                    >
-                      Cancel
-                    </button>
+                    <div class="flex-1 overflow-y-auto border border-base-300 rounded-lg p-3 space-y-3 bg-base-100/50">
+                      <%= if @chat_messages == [] do %>
+                        <div class="h-full flex flex-col items-center justify-center text-center px-4">
+                          <.icon
+                            name="hero-chat-bubble-left-right"
+                            class="size-10 text-base-content/30 mb-3"
+                          />
+                          <p class="text-sm text-base-content/70">
+                            Start a new chat and ask the agent to plan work, break features into stories, or refine requirements.
+                          </p>
+                        </div>
+                      <% else %>
+                        <%= for message <- @chat_messages do %>
+                          <div class={[
+                            "rounded-lg border p-3",
+                            message.role == "user" &&
+                              "border-info/40 bg-info/5 ml-auto max-w-[95%] sm:max-w-[88%]",
+                            message.role == "assistant" &&
+                              "border-success/40 bg-success/5 mr-auto max-w-[95%] sm:max-w-[88%]"
+                          ]}>
+                            <p class="text-xs font-semibold uppercase tracking-wide text-base-content/60 mb-1">
+                              {message.role}
+                            </p>
+                            <pre class="whitespace-pre-wrap break-words text-sm font-sans leading-6">{message.content}</pre>
+                          </div>
+                        <% end %>
+                      <% end %>
+                    </div>
+
+                    <form phx-submit="send_chat" phx-change="change_chat_input" class="space-y-2">
+                      <textarea
+                        name="message"
+                        class="textarea textarea-bordered w-full h-24"
+                        placeholder="Ask the agent to plan a feature, break it into stories, or refine requirements..."
+                        disabled={@chat_input_disabled}
+                      ><%= @chat_input %></textarea>
+
+                      <div class="flex items-center justify-between gap-2">
+                        <div class="flex items-center gap-2">
+                          <button
+                            type="submit"
+                            class="btn btn-primary btn-sm"
+                            disabled={@chat_input_disabled}
+                          >
+                            {@chat_send_label}
+                          </button>
+                          <button
+                            type="button"
+                            phx-click="cancel_chat"
+                            class="btn btn-outline btn-sm"
+                            disabled={
+                              @chat_selected_session_id == nil or
+                                @chat_status not in [:running, :cancelling]
+                            }
+                          >
+                            Cancel
+                          </button>
+                        </div>
+
+                        <button
+                          type="button"
+                          phx-click="new_chat"
+                          class="btn btn-ghost btn-sm"
+                        >
+                          <.icon name="hero-plus" class="size-4" /> New Chat
+                        </button>
+                      </div>
+                    </form>
                   </div>
-                </form>
+                <% end %>
               </div>
-            </section>
-          </div>
+            </div>
+          </section>
         </main>
       <% else %>
         <main class="flex items-center justify-center px-4 py-32">
@@ -578,31 +675,35 @@ defmodule KollywoodWeb.ChatLive do
   defp page_title(nil), do: "Project Chat"
   defp page_title(%Project{name: name}), do: "#{name} • Chat"
 
-  defp chat_path(project_slug, nil), do: ~p"/projects/#{project_slug}/chat"
+  defp chat_path(project_slug, nil, :chat), do: ~p"/projects/#{project_slug}/chat"
 
-  defp chat_path(project_slug, session_id),
+  defp chat_path(project_slug, nil, :sessions),
+    do: ~p"/projects/#{project_slug}/chat?panel=sessions"
+
+  defp chat_path(project_slug, session_id, :chat),
     do: ~p"/projects/#{project_slug}/chat?session=#{session_id}"
 
-  defp status_meta(:starting),
-    do: %{label: "starting", badge_class: "badge-warning text-amber-800 bg-amber-100"}
+  defp chat_path(project_slug, session_id, :sessions),
+    do: ~p"/projects/#{project_slug}/chat?session=#{session_id}&panel=sessions"
 
-  defp status_meta(:running),
-    do: %{label: "running", badge_class: "badge-info text-sky-800 bg-sky-100"}
+  defp chat_path(project_slug, session_id), do: chat_path(project_slug, session_id, :chat)
 
-  defp status_meta(:ready),
-    do: %{label: "ready", badge_class: "badge-success text-emerald-800 bg-emerald-100"}
+  defp parse_panel_tab("sessions"), do: :sessions
+  defp parse_panel_tab(_value), do: :chat
 
-  defp status_meta(:cancelling),
-    do: %{label: "cancelling", badge_class: "badge-warning text-amber-800 bg-amber-100"}
+  defp status_meta(:starting), do: %{label: "starting", badge_class: "badge-warning"}
 
-  defp status_meta(:error),
-    do: %{label: "error", badge_class: "badge-error text-rose-800 bg-rose-100"}
+  defp status_meta(:running), do: %{label: "running", badge_class: "badge-info"}
 
-  defp status_meta(:stopped),
-    do: %{label: "stopped", badge_class: "badge-neutral text-slate-800 bg-slate-200"}
+  defp status_meta(:ready), do: %{label: "ready", badge_class: "badge-success"}
 
-  defp status_meta(_other),
-    do: %{label: "idle", badge_class: "badge-neutral text-slate-800 bg-slate-200"}
+  defp status_meta(:cancelling), do: %{label: "cancelling", badge_class: "badge-warning"}
+
+  defp status_meta(:error), do: %{label: "error", badge_class: "badge-error"}
+
+  defp status_meta(:stopped), do: %{label: "stopped", badge_class: "badge-neutral"}
+
+  defp status_meta(_other), do: %{label: "idle", badge_class: "badge-neutral"}
 
   defp format_timestamp(nil), do: "just now"
 

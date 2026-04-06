@@ -53,4 +53,19 @@ defmodule KollywoodWeb.ChatLiveTest do
     assert html =~ "Start a new chat and ask the agent"
     assert html =~ "Send"
   end
+
+  test "sessions panel is available as a separate tab", %{conn: conn, project: project} do
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/chat")
+
+    assert has_element?(view, "button[phx-click='set_panel'][phx-value-panel='chat']")
+    assert has_element?(view, "button[phx-click='set_panel'][phx-value-panel='sessions']")
+
+    html =
+      view
+      |> element(".tabs button[phx-click='set_panel'][phx-value-panel='sessions']")
+      |> render_click()
+
+    assert html =~ "Sessions"
+    assert html =~ "No chat sessions yet"
+  end
 end
