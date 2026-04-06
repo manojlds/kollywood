@@ -92,6 +92,8 @@ defmodule KollywoodWeb.DashboardLive do
     current_project = find_project_by_slug(socket.assigns.projects, project_slug)
     stories_view = resolve_stories_view(params["view"], socket.assigns[:stories_view])
     active_log_tab = resolve_active_log_tab(params["log_tab"], socket.assigns[:active_log_tab])
+    run_view_tab = normalize_run_view_tab(params["run_tab"])
+    step_detail_tab = normalize_step_detail_tab(params["step_tab"])
 
     project_settings_tab =
       normalize_project_settings_tab(
@@ -116,6 +118,8 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:live_action, effective_action)
       |> assign(:page_title, if(current_project, do: current_project.name, else: "Dashboard"))
       |> assign(:active_log_tab, active_log_tab)
+      |> assign(:run_view_tab, run_view_tab)
+      |> assign(:step_detail_tab, step_detail_tab)
       |> assign(:project_settings_tab, project_settings_tab)
       |> assign(:artifact_preview, nil)
       |> assign(:action_confirmation, nil)
@@ -239,13 +243,25 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   def handle_event("set_run_view_tab", %{"tab" => tab}, socket) do
-    next_tab = if tab in ["steps", "settings"], do: tab, else: "steps"
-    {:noreply, assign(socket, :run_view_tab, next_tab)}
+    next_tab = normalize_run_view_tab(tab)
+
+    socket =
+      socket
+      |> assign(:run_view_tab, next_tab)
+      |> maybe_patch_run_view_tab(next_tab)
+
+    {:noreply, socket}
   end
 
   def handle_event("set_step_detail_tab", %{"tab" => tab}, socket) do
-    next_tab = if tab in ["logs", "prompt", "reports"], do: tab, else: "logs"
-    {:noreply, assign(socket, :step_detail_tab, next_tab)}
+    next_tab = normalize_step_detail_tab(tab)
+
+    socket =
+      socket
+      |> assign(:step_detail_tab, next_tab)
+      |> maybe_patch_step_detail_tab(next_tab)
+
+    {:noreply, socket}
   end
 
   def handle_event("set_run_detail_panel_tab", %{"tab" => tab}, socket) do
@@ -377,7 +393,14 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   def handle_event("set_project_settings_tab", %{"tab" => tab}, socket) do
-    {:noreply, assign(socket, :project_settings_tab, normalize_project_settings_tab(tab))}
+    next_tab = normalize_project_settings_tab(tab)
+
+    socket =
+      socket
+      |> assign(:project_settings_tab, next_tab)
+      |> maybe_patch_project_settings_tab(next_tab)
+
+    {:noreply, socket}
   end
 
   def handle_event("toggle_settings_edit", _params, socket) do
@@ -947,6 +970,7 @@ defmodule KollywoodWeb.DashboardLive do
                   step={@current_step}
                   project={@current_project}
                   stories_view={@stories_view}
+                  run_view_tab={@run_view_tab}
                   step_detail_tab={@step_detail_tab}
                 />
               <% :settings -> %>
@@ -3686,7 +3710,14 @@ defmodule KollywoodWeb.DashboardLive do
                   <div class="flex items-center gap-2">
                     <.link
                       navigate={
-                        step_detail_path(@project.slug, @story_id, @attempt, step.idx, @stories_view)
+                        step_detail_path(
+                          @project.slug,
+                          @story_id,
+                          @attempt,
+                          step.idx,
+                          @stories_view,
+                          run_tab_query(@run_view_tab)
+                        )
                       }
                       class="flex items-center gap-3 p-3 bg-base-100 rounded-lg hover:bg-base-300 transition-colors flex-1 min-w-0"
                     >
@@ -3744,6 +3775,7 @@ defmodule KollywoodWeb.DashboardLive do
   attr :step, :map, default: nil
   attr :project, Project, required: true
   attr :stories_view, :string, default: @default_stories_view
+  attr :run_view_tab, :string, default: "steps"
   attr :step_detail_tab, :string, default: "logs"
 
   defp step_detail_section(assigns) do
@@ -3820,7 +3852,15 @@ defmodule KollywoodWeb.DashboardLive do
       <div class="flex flex-wrap items-center justify-between gap-2 sm:gap-3">
         <div class="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3">
           <.link
-            navigate={run_detail_path(@project.slug, @story_id, @attempt, @stories_view)}
+            navigate={
+              run_detail_path(
+                @project.slug,
+                @story_id,
+                @attempt,
+                @stories_view,
+                run_tab_query(@run_view_tab)
+              )
+            }
             class="btn btn-ghost btn-sm gap-2"
           >
             <.icon name="hero-arrow-left" class="size-4" /> Back to Steps
@@ -4043,9 +4083,15 @@ defmodule KollywoodWeb.DashboardLive do
     if is_binary(ts), do: String.slice(ts, 11, 8), else: ""
   end
 
-  defp step_detail_path(project_slug, story_id, attempt, step_idx, stories_view) do
-    base = "/projects/#{project_slug}/runs/#{story_id}/#{attempt}/step/#{step_idx}"
-    if stories_view, do: base <> "?view=#{stories_view}", else: base
+  defp step_detail_path(project_slug, story_id, attempt, step_idx, stories_view, extra_query)
+       when is_binary(project_slug) and is_binary(story_id) and is_list(extra_query) do
+    query = merge_view_query(stories_view, extra_query)
+
+    if query == [] do
+      ~p"/projects/#{project_slug}/runs/#{story_id}/#{attempt}/step/#{step_idx}"
+    else
+      ~p"/projects/#{project_slug}/runs/#{story_id}/#{attempt}/step/#{step_idx}?#{query}"
+    end
   end
 
   @retryable_step_kinds ~w(checks review testing publish runtime)
@@ -7528,6 +7574,12 @@ defmodule KollywoodWeb.DashboardLive do
   defp normalize_project_settings_tab(tab) when tab in ["workflow", "runtime"], do: tab
   defp normalize_project_settings_tab(_tab), do: "workflow"
 
+  defp normalize_run_view_tab(tab) when tab in ["steps", "settings"], do: tab
+  defp normalize_run_view_tab(_tab), do: "steps"
+
+  defp normalize_step_detail_tab(tab) when tab in ["logs", "prompt", "reports"], do: tab
+  defp normalize_step_detail_tab(_tab), do: "logs"
+
   defp apply_runtime_settings(parsed, runtime_params)
        when is_map(parsed) and is_map(runtime_params) do
     existing_runtime = Map.get(parsed, "runtime", %{})
@@ -7976,8 +8028,9 @@ defmodule KollywoodWeb.DashboardLive do
     end
   end
 
-  defp project_settings_path(project_slug, stories_view) when is_binary(project_slug) do
-    query = stories_view_query(stories_view)
+  defp project_settings_path(project_slug, stories_view, settings_tab \\ "workflow")
+       when is_binary(project_slug) do
+    query = merge_view_query(stories_view, project_settings_tab_query(settings_tab))
 
     if query == [] do
       ~p"/projects/#{project_slug}/settings"
@@ -8100,6 +8153,86 @@ defmodule KollywoodWeb.DashboardLive do
         socket
     end
   end
+
+  defp maybe_patch_project_settings_tab(socket, tab) when is_binary(tab) do
+    case socket.assigns do
+      %{current_project: %Project{slug: slug}, live_action: :settings, stories_view: stories_view} ->
+        push_patch(socket, to: project_settings_path(slug, stories_view, tab), replace: true)
+
+      _other ->
+        socket
+    end
+  end
+
+  defp maybe_patch_project_settings_tab(socket, _tab), do: socket
+
+  defp project_settings_tab_query("workflow"), do: []
+  defp project_settings_tab_query("runtime"), do: [settings_tab: "runtime"]
+  defp project_settings_tab_query(_tab), do: []
+
+  defp maybe_patch_run_view_tab(socket, tab) when is_binary(tab) do
+    case socket.assigns do
+      %{
+        current_project: %Project{slug: slug},
+        live_action: :run_detail,
+        run_detail_story_id: story_id,
+        run_detail_attempt: attempt,
+        stories_view: stories_view
+      }
+      when is_binary(story_id) and not is_nil(attempt) ->
+        push_patch(
+          socket,
+          to: run_detail_path(slug, story_id, attempt, stories_view, run_tab_query(tab)),
+          replace: true
+        )
+
+      _other ->
+        socket
+    end
+  end
+
+  defp maybe_patch_run_view_tab(socket, _tab), do: socket
+
+  defp run_tab_query("steps"), do: []
+  defp run_tab_query("settings"), do: [run_tab: "settings"]
+  defp run_tab_query(_tab), do: []
+
+  defp maybe_patch_step_detail_tab(socket, tab) when is_binary(tab) do
+    case socket.assigns do
+      %{
+        current_project: %Project{slug: slug},
+        live_action: :step_detail,
+        run_detail_story_id: story_id,
+        run_detail_attempt: attempt,
+        step_idx: step_idx,
+        stories_view: stories_view
+      }
+      when is_binary(story_id) and is_binary(step_idx) and not is_nil(attempt) ->
+        push_patch(
+          socket,
+          to:
+            step_detail_path(
+              slug,
+              story_id,
+              attempt,
+              step_idx,
+              stories_view,
+              step_tab_query(tab)
+            ),
+          replace: true
+        )
+
+      _other ->
+        socket
+    end
+  end
+
+  defp maybe_patch_step_detail_tab(socket, _tab), do: socket
+
+  defp step_tab_query("logs"), do: []
+  defp step_tab_query("prompt"), do: [step_tab: "prompt"]
+  defp step_tab_query("reports"), do: [step_tab: "reports"]
+  defp step_tab_query(_tab), do: []
 
   defp confirmed_action?(params) when is_map(params) do
     case Map.get(params, "confirmed") do
@@ -8597,19 +8730,16 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:run_detail, run_detail)
       |> assign(:step_idx, step_idx)
       |> assign(:current_step, current_step)
-      |> assign(:step_detail_tab, "logs")
     else
       socket
       |> assign(:step_idx, nil)
       |> assign(:current_step, nil)
-      |> assign(:step_detail_tab, "logs")
     end
   rescue
     _ ->
       socket
       |> assign(:step_idx, nil)
       |> assign(:current_step, nil)
-      |> assign(:step_detail_tab, "logs")
   end
 
   defp handle_live_action(socket, :story_detail, params) do

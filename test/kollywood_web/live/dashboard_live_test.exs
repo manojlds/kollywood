@@ -469,6 +469,29 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "Save Runtime"
     end
 
+    test "settings tab click persists runtime tab in URL", %{conn: conn, project: project} do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.slug}/settings")
+
+      view
+      |> element("button[phx-click='set_project_settings_tab'][phx-value-tab='runtime']")
+      |> render_click()
+
+      assert_patch(view, ~p"/projects/#{project.slug}/settings?#{[settings_tab: "runtime"]}")
+    end
+
+    test "settings runtime tab is restored from URL param", %{conn: conn, project: project} do
+      {:ok, view, html} =
+        live(conn, ~p"/projects/#{project.slug}/settings?#{[settings_tab: "runtime"]}")
+
+      assert html =~ "Runtime process and environment settings"
+      assert html =~ "Save Runtime"
+
+      assert has_element?(
+               view,
+               "button[phx-click='set_project_settings_tab'][phx-value-tab='runtime'].tab-active"
+             )
+    end
+
     test "save runtime settings persists runtime processes and env", %{
       conn: conn,
       project: project
@@ -1252,6 +1275,96 @@ defmodule KollywoodWeb.DashboardLiveTest do
         live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
 
       assert html =~ "/projects/#{project.slug}/stories/#{story_id}?tab=runs"
+    end
+
+    test "run detail tab click persists settings tab in URL", %{conn: conn, project: project} do
+      story_id = "US-RUN-TAB-URL"
+      prepare_run_logs!(project.slug, story_id)
+
+      {:ok, view, _html} =
+        live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
+
+      view
+      |> element("button[phx-click='set_run_view_tab'][phx-value-tab='settings']")
+      |> render_click()
+
+      assert_patch(
+        view,
+        ~p"/projects/#{project.slug}/runs/#{story_id}/1?#{[run_tab: "settings"]}"
+      )
+    end
+
+    test "run detail restores tab selection from URL param", %{conn: conn, project: project} do
+      story_id = "US-RUN-TAB-RESTORE"
+
+      _ =
+        prepare_run_logs!(project.slug, story_id,
+          metadata_overrides: %{"settings_snapshot" => settings_snapshot_fixture()},
+          events: [
+            %{type: :turn_started, turn: 1},
+            %{type: :turn_succeeded, turn: 1, output: "ok"}
+          ]
+        )
+
+      {:ok, _view, html} =
+        live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1?#{[run_tab: "settings"]}")
+
+      assert html =~ "Settings used"
+      refute html =~ "Pipeline Steps"
+    end
+
+    test "step detail tab click persists prompt tab in URL", %{conn: conn, project: project} do
+      story_id = "US-STEP-TAB-URL"
+
+      prepare_run_logs!(project.slug, story_id,
+        events: [
+          %{type: :quality_cycle_started, cycle: 1},
+          %{type: :prompt_captured, phase: :agent, prompt: "URL prompt tab"},
+          %{type: :turn_started, turn: 1},
+          %{type: :turn_succeeded, turn: 1, output: "ok"}
+        ],
+        status: "ok"
+      )
+
+      {:ok, _run_view, run_html} = live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
+
+      [step_path | _rest] =
+        Regex.scan(~r|/projects/#{project.slug}/runs/#{story_id}/1/step/\d+|, run_html)
+        |> List.flatten()
+        |> Enum.uniq()
+
+      {:ok, view, _html} = live(conn, step_path)
+
+      view
+      |> element("button[phx-click='set_step_detail_tab'][phx-value-tab='prompt']")
+      |> render_click()
+
+      assert_patch(view, step_path <> "?step_tab=prompt")
+    end
+
+    test "step detail restores prompt tab from URL param", %{conn: conn, project: project} do
+      story_id = "US-STEP-TAB-RESTORE"
+
+      prepare_run_logs!(project.slug, story_id,
+        events: [
+          %{type: :quality_cycle_started, cycle: 1},
+          %{type: :prompt_captured, phase: :agent, prompt: "Restored prompt tab content"},
+          %{type: :turn_started, turn: 1},
+          %{type: :turn_succeeded, turn: 1, output: "ok"}
+        ],
+        status: "ok"
+      )
+
+      {:ok, _run_view, run_html} = live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
+
+      [step_path | _rest] =
+        Regex.scan(~r|/projects/#{project.slug}/runs/#{story_id}/1/step/\d+|, run_html)
+        |> List.flatten()
+        |> Enum.uniq()
+
+      {:ok, _view, html} = live(conn, step_path <> "?step_tab=prompt")
+
+      assert html =~ "Restored prompt tab content"
     end
 
     test "pending merge story shows preview panel above tabs when preview is enabled", %{
