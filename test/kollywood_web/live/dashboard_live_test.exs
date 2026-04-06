@@ -140,13 +140,36 @@ defmodule KollywoodWeb.DashboardLiveTest do
         File.write!(tracker_path, ~s({"project":"demo","userStories":[]}))
       end
 
-      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}")
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/chat")
 
       assert html =~ "Chat"
       refute html =~ "Stories"
       refute html =~ "Runs"
       refute html =~ "Settings"
       refute html =~ "Overview"
+    end
+
+    test "non-onboarded project redirects root dashboard action to chat view", %{
+      conn: conn,
+      project: project
+    } do
+      workflow_path = Projects.workflow_path(project)
+      tracker_path = Projects.tracker_path(project)
+
+      if is_binary(workflow_path), do: File.rm(workflow_path)
+
+      if is_binary(tracker_path) do
+        File.mkdir_p!(Path.dirname(tracker_path))
+        File.write!(tracker_path, ~s({"project":"demo","userStories":[]}))
+      end
+
+      assert {:error, {:live_redirect, %{to: to}}} = live(conn, ~p"/projects/#{project.slug}")
+      assert to == ~p"/projects/#{project.slug}/chat"
+
+      {:ok, _view, html} = live(conn, to)
+
+      assert html =~ "Set up this project for Kollywood"
+      assert html =~ "Onboard Project"
     end
 
     test "shows not found for nonexistent project", %{conn: conn} do
@@ -1316,6 +1339,23 @@ defmodule KollywoodWeb.DashboardLiveTest do
           provider: :github,
           repository: Path.join(tmp_dir, "remote-preview-repo")
         })
+
+      write_workflow!(remote_project, """
+      ---
+      tracker:
+        kind: prd_json
+      workspace:
+        strategy: clone
+      agent:
+        kind: opencode
+      publish:
+        mode: pr
+      git:
+        base_branch: main
+      ---
+
+      Work on {{ issue.identifier }}.
+      """)
 
       tracker_path = Projects.tracker_path(remote_project)
       File.mkdir_p!(Path.dirname(tracker_path))
