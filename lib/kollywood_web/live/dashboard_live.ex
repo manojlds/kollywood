@@ -98,7 +98,7 @@ defmodule KollywoodWeb.DashboardLive do
     step_detail_tab = normalize_step_detail_tab(params["step_tab"])
 
     run_detail_panel_tab =
-      resolve_run_detail_panel_tab(params["run_panel"], socket.assigns[:run_detail_panel_tab])
+      resolve_run_detail_panel_tab(params["run_panel_tab"], socket.assigns[:run_detail_panel_tab])
 
     reports_tab = resolve_reports_tab(params["reports_tab"], socket.assigns[:reports_tab])
 
@@ -8077,7 +8077,7 @@ defmodule KollywoodWeb.DashboardLive do
 
   defp story_runs_tab_path(project_slug, story_id, stories_view, extra_query \\ [])
        when is_binary(project_slug) and is_binary(story_id) and is_list(extra_query) do
-    query = merge_view_query(stories_view, [{:tab, "runs"} | extra_query])
+    query = merge_view_query(stories_view, [{:story_tab, "runs"} | extra_query])
     ~p"/projects/#{project_slug}/stories/#{story_id}?#{query}"
   end
 
@@ -8399,7 +8399,7 @@ defmodule KollywoodWeb.DashboardLive do
 
     [
       {:attempt, attempt},
-      {:run_panel, run_panel_query_value(tab)},
+      {:run_panel_tab, run_panel_query_value(tab)},
       {:log_tab, log_tab_query_value(log_tab)},
       {:reports_tab, reports_tab_query_value(tab, reports_tab)},
       {:prompt_tab, prompt_tab_query_value(tab, prompt_tab)}
@@ -8940,11 +8940,16 @@ defmodule KollywoodWeb.DashboardLive do
     story = Enum.find(socket.assigns.stories, &(&1["id"] == story_id))
     tab = socket.assigns.active_log_tab
     project = socket.assigns.current_project
-    story_tab = if attempt, do: params["tab"] || "runs", else: params["tab"] || "details"
+
+    story_tab =
+      if attempt, do: params["story_tab"] || "runs", else: params["story_tab"] || "details"
 
     run_detail_panel_tab =
       if story_tab == "runs" and not is_nil(attempt) do
-        resolve_run_detail_panel_tab(params["run_panel"], socket.assigns[:run_detail_panel_tab])
+        resolve_run_detail_panel_tab(
+          params["run_panel_tab"],
+          socket.assigns[:run_detail_panel_tab]
+        )
       else
         "logs"
       end
