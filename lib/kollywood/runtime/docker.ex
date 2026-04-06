@@ -38,6 +38,9 @@ defmodule Kollywood.Runtime.Docker do
   @healthcheck_poll_interval_ms 250
   @healthcheck_connect_timeout_ms 250
   @healthcheck_skip_env "KOLLYWOOD_RUNTIME_SKIP_HEALTHCHECK"
+  @runtime_managed_dir ".kollywood/runtime"
+  @runtime_managed_pitchfork_local "pitchfork.local.toml"
+  @runtime_managed_artifacts "artifacts"
 
   # ── Callbacks ──────────────────────────────────────────────────────
 
@@ -163,6 +166,7 @@ defmodule Kollywood.Runtime.Docker do
 
   def ensure_exec_ready(state) do
     with {:ok, state} <- ensure_isolation(state),
+         :ok <- ensure_runtime_managed_dir(state),
          :ok <- write_pitchfork_local_toml(state),
          {:ok, state} <- create_container(state),
          {:ok, state} <- start_container(state) do
@@ -436,7 +440,7 @@ defmodule Kollywood.Runtime.Docker do
   end
 
   defp write_pitchfork_local_toml(state) do
-    path = Path.join(state.workspace_path || "", "pitchfork.local.toml")
+    path = runtime_managed_pitchfork_local_path(state.workspace_path)
 
     with {:ok, daemon_runs} <- daemon_run_map(state.workspace_path, state.processes),
          :ok <- File.rm(path) |> ignore_enoent(),
@@ -445,6 +449,86 @@ defmodule Kollywood.Runtime.Docker do
     else
       {:error, reason} -> {:error, "failed to prepare pitchfork.local.toml: #{inspect(reason)}"}
     end
+  end
+
+  defp ensure_runtime_managed_dir(%{workspace_path: workspace_path})
+       when is_binary(workspace_path) and workspace_path != "" do
+    runtime_managed_dir = runtime_managed_dir_path(workspace_path)
+    runtime_artifacts_dir = Path.join(runtime_managed_dir, @runtime_managed_artifacts)
+
+    with :ok <- File.mkdir_p(runtime_artifacts_dir),
+         :ok <- symlink_runtime_managed_pitchfork_local(workspace_path) do
+      :ok
+    else
+      {:error, reason} ->
+        {:error, "failed to prepare runtime managed directory: #{inspect(reason)}"}
+    end
+  end
+
+  defp ensure_runtime_managed_dir(_state), do: :ok
+
+  defp symlink_runtime_managed_pitchfork_local(workspace_path)
+       when is_binary(workspace_path) and workspace_path != "" do
+    workspace_pitchfork_local = Path.join(workspace_path, @runtime_managed_pitchfork_local)
+    runtime_target = runtime_managed_pitchfork_local_link_target()
+    expected_target = runtime_managed_pitchfork_local_path(workspace_path)
+
+    case File.ln_s(runtime_target, workspace_pitchfork_local) do
+      :ok ->
+        :ok
+
+      {:error, :eexist} ->
+        case File.read_link(workspace_pitchfork_local) do
+          {:ok, existing_target} ->
+            existing_expanded =
+              Path.expand(existing_target, Path.dirname(workspace_pitchfork_local))
+
+            if existing_expanded == expected_target do
+              :ok
+            else
+              replace_runtime_managed_symlink(workspace_pitchfork_local, runtime_target)
+            end
+
+          _ ->
+            replace_runtime_managed_symlink(workspace_pitchfork_local, runtime_target)
+        end
+
+      {:error, :enoent} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp symlink_runtime_managed_pitchfork_local(_workspace_path), do: :ok
+
+  defp replace_runtime_managed_symlink(workspace_pitchfork_local, runtime_target) do
+    with :ok <- File.rm(workspace_pitchfork_local),
+         :ok <- File.ln_s(runtime_target, workspace_pitchfork_local) do
+      :ok
+    end
+  end
+
+  defp runtime_managed_dir_path(workspace_path)
+       when is_binary(workspace_path) and workspace_path != "" do
+    Path.join(workspace_path, @runtime_managed_dir)
+  end
+
+  defp runtime_managed_dir_path(_workspace_path), do: nil
+
+  defp runtime_managed_pitchfork_local_path(workspace_path)
+       when is_binary(workspace_path) and workspace_path != "" do
+    workspace_path
+    |> runtime_managed_dir_path()
+    |> Path.join(@runtime_managed_pitchfork_local)
+  end
+
+  defp runtime_managed_pitchfork_local_path(_workspace_path),
+    do: @runtime_managed_pitchfork_local
+
+  defp runtime_managed_pitchfork_local_link_target do
+    Path.join(@runtime_managed_dir, @runtime_managed_pitchfork_local)
   end
 
   defp daemon_run_map(workspace_path, daemons) do

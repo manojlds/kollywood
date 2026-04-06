@@ -172,6 +172,28 @@ defmodule Kollywood.Runtime.DockerTest do
       assert stopped.started? == false
       assert stopped.container_id == nil
     end
+
+    test "ensure_exec_ready creates managed pitchfork.local symlink", %{workspace_path: ws} do
+      config =
+        docker_config(
+          processes: ["test_server"],
+          ports: %{"TEST_HTTP_PORT" => available_port()},
+          port_offset_mod: 1
+        )
+
+      state = Runtime.init(:docker, config, %{path: ws, key: "docker-managed-local"})
+
+      assert {:ok, prepared} = Runtime.ensure_exec_ready(state)
+
+      managed_local = Path.join(ws, ".kollywood/runtime/pitchfork.local.toml")
+      workspace_local = Path.join(ws, "pitchfork.local.toml")
+
+      assert File.exists?(managed_local)
+      assert {:ok, link_target} = File.read_link(workspace_local)
+      assert link_target == ".kollywood/runtime/pitchfork.local.toml"
+
+      assert {:ok, _stopped} = Runtime.stop(prepared)
+    end
   end
 
   # ── Helpers ──────────────────────────────────────────────────────────
