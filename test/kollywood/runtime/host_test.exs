@@ -141,6 +141,46 @@ defmodule Kollywood.Runtime.HostTest do
 
       assert {:ok, _stopped} = Runtime.stop(started)
     end
+
+    test "start writes runtime-managed pitchfork.local.toml and workspace symlink", %{
+      workspace_path: ws
+    } do
+      port = available_port()
+      state = init_runtime(ws, "managed-local", port)
+
+      assert {:ok, started} = Runtime.start(state)
+      assert :ok = Runtime.healthcheck(started)
+
+      managed_local = Path.join(ws, ".kollywood/runtime/pitchfork.local.toml")
+      workspace_local = Path.join(ws, "pitchfork.local.toml")
+
+      assert File.exists?(managed_local)
+      assert {:ok, link_target} = File.read_link(workspace_local)
+      assert link_target == ".kollywood/runtime/pitchfork.local.toml"
+
+      managed_content = File.read!(managed_local)
+      assert managed_content =~ "TEST_HTTP_PORT = \"#{port}\""
+
+      assert {:ok, _stopped} = Runtime.stop(started)
+    end
+
+    test "start replaces existing pitchfork.local.toml with managed symlink", %{
+      workspace_path: ws
+    } do
+      stale_local = Path.join(ws, "pitchfork.local.toml")
+      File.write!(stale_local, "[daemons.test_server.env]\nTEST_HTTP_PORT = \"49999\"\n")
+
+      port = available_port()
+      state = init_runtime(ws, "managed-replace", port)
+
+      assert {:ok, started} = Runtime.start(state)
+      assert :ok = Runtime.healthcheck(started)
+
+      assert {:ok, link_target} = File.read_link(stale_local)
+      assert link_target == ".kollywood/runtime/pitchfork.local.toml"
+
+      assert {:ok, _stopped} = Runtime.stop(started)
+    end
   end
 
   describe "port isolation" do
