@@ -32,6 +32,23 @@ defmodule KollywoodWeb.ChatLiveTest do
   end
 
   test "renders chat page and allows creating a new chat session", %{conn: conn, project: project} do
+    workflow_path = Projects.workflow_path(project)
+    File.mkdir_p!(Path.dirname(workflow_path))
+
+    File.write!(
+      workflow_path,
+      """
+      ---
+      workspace:
+        strategy: clone
+      agent:
+        kind: opencode
+      ---
+
+      Work on {{ issue.identifier }}.
+      """
+    )
+
     {:ok, view, html} = live(conn, ~p"/projects/#{project.slug}/chat")
 
     assert html =~ "Project Chat"
@@ -50,7 +67,7 @@ defmodule KollywoodWeb.ChatLiveTest do
   } do
     {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/chat")
 
-    assert html =~ "Start a new chat and ask the agent"
+    assert html =~ "Click Onboard Project to start onboarding chat."
     assert html =~ "Send"
   end
 
@@ -92,5 +109,22 @@ defmodule KollywoodWeb.ChatLiveTest do
     refute html =~ "Stories"
     refute html =~ "Runs"
     refute html =~ "Settings"
+    refute html =~ "This project is not fully onboarded yet"
+  end
+
+  test "non-onboarded project disables new chat and requires onboarding button", %{
+    conn: conn,
+    project: project
+  } do
+    workflow_path = Projects.workflow_path(project)
+    if is_binary(workflow_path), do: File.rm(workflow_path)
+
+    {:ok, view, html} = live(conn, ~p"/projects/#{project.slug}/chat")
+
+    assert has_element?(view, "button[phx-click='new_chat'][disabled]")
+    assert has_element?(view, ".tabs button[phx-click='set_panel'][phx-value-panel='sessions']")
+    assert html =~ "Click Onboard Project to start onboarding chat."
+
+    assert render(view) =~ "Click Onboard Project to start onboarding chat."
   end
 end
