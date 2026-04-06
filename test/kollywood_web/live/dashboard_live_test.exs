@@ -2721,6 +2721,132 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "worker log content"
     end
 
+    test "run panel tab switching persists panel query param", %{conn: conn, project: project} do
+      story_id = "US-RUN-PANEL-URL"
+      _context = prepare_run_logs!(project.slug, story_id)
+
+      {:ok, view, _html} =
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
+
+      view
+      |> element("button[phx-click='set_run_detail_panel_tab'][phx-value-tab='reports']")
+      |> render_click()
+
+      assert_patch(
+        view,
+        ~p"/projects/#{project.slug}/stories/#{story_id}?#{[attempt: "1", tab: "runs", run_panel: "reports"]}"
+      )
+    end
+
+    test "reports sub-tab switching persists reports_tab query param", %{
+      conn: conn,
+      project: project
+    } do
+      story_id = "US-REPORTS-SUBTAB-URL"
+      context = prepare_run_logs!(project.slug, story_id)
+
+      report = %{"verdict" => "pass", "summary" => "ok"}
+      File.write!(context.files.testing_report, Jason.encode!(report, pretty: true))
+
+      {:ok, view, _html} =
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
+
+      view
+      |> element("button[phx-click='set_run_detail_panel_tab'][phx-value-tab='reports']")
+      |> render_click()
+
+      view
+      |> element("button[phx-click='set_reports_tab'][phx-value-tab='testing']")
+      |> render_click()
+
+      assert_patch(
+        view,
+        ~p"/projects/#{project.slug}/stories/#{story_id}?#{[attempt: "1", tab: "runs", run_panel: "reports", reports_tab: "testing"]}"
+      )
+    end
+
+    test "prompt tab switching persists prompt_tab query param", %{conn: conn, project: project} do
+      story_id = "US-PROMPT-SUBTAB-URL"
+
+      prepare_run_logs!(project.slug, story_id,
+        events: [
+          %{type: :prompt_captured, phase: :agent, prompt: "Agent prompt"},
+          %{type: :prompt_captured, phase: :review, prompt: "Review prompt"}
+        ],
+        status: "ok"
+      )
+
+      {:ok, view, _html} =
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
+
+      view
+      |> element("button[phx-click='set_run_detail_panel_tab'][phx-value-tab='prompts']")
+      |> render_click()
+
+      view
+      |> element("button[phx-click='set_prompt_tab'][phx-value-tab='review']")
+      |> render_click()
+
+      assert_patch(
+        view,
+        ~p"/projects/#{project.slug}/stories/#{story_id}?#{[attempt: "1", tab: "runs", run_panel: "prompts", prompt_tab: "review"]}"
+      )
+    end
+
+    test "log tab patch keeps active run panel context", %{conn: conn, project: project} do
+      story_id = "US-LOG-WITH-PANEL"
+      context = prepare_run_logs!(project.slug, story_id)
+      File.write!(context.files.reviewer_stdout, "review log")
+
+      {:ok, view, _html} =
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
+
+      view
+      |> element("button[phx-click='set_run_detail_panel_tab'][phx-value-tab='logs']")
+      |> render_click()
+
+      view
+      |> element("button[phx-click='set_log_tab'][phx-value-tab='review_agent']")
+      |> render_click()
+
+      assert_patch(
+        view,
+        ~p"/projects/#{project.slug}/stories/#{story_id}?#{[attempt: "1", tab: "runs", log_tab: "review_agent"]}"
+      )
+    end
+
+    test "run panel and sub-tabs restore from URL params", %{conn: conn, project: project} do
+      story_id = "US-RUN-PANEL-RESTORE"
+
+      context =
+        prepare_run_logs!(project.slug, story_id,
+          events: [
+            %{type: :prompt_captured, phase: :review, prompt: "Persisted review prompt"}
+          ],
+          status: "ok"
+        )
+
+      report = %{"verdict" => "pass", "summary" => "testing pass"}
+      File.write!(context.files.testing_report, Jason.encode!(report, pretty: true))
+
+      {:ok, _view, html} =
+        live(
+          conn,
+          ~p"/projects/#{project.slug}/stories/#{story_id}?#{[attempt: "1", tab: "runs", run_panel: "prompts", prompt_tab: "review"]}"
+        )
+
+      assert html =~ "Persisted review prompt"
+
+      {:ok, _view, reports_html} =
+        live(
+          conn,
+          ~p"/projects/#{project.slug}/stories/#{story_id}?#{[attempt: "1", tab: "runs", run_panel: "reports", reports_tab: "testing"]}"
+        )
+
+      assert reports_html =~ "Testing report"
+      refute reports_html =~ "Review report"
+    end
+
     test "renders ANSI colors and intensity across agent/review/worker tabs", %{
       conn: conn,
       project: project
