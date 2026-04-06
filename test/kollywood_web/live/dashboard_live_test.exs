@@ -1252,14 +1252,14 @@ defmodule KollywoodWeb.DashboardLiveTest do
       {:error, {:live_redirect, %{to: redirected_to}}} =
         live(conn, ~p"/projects/#{project.slug}/runs/US-002")
 
-      assert redirected_to == ~p"/projects/#{project.slug}/stories/US-002?tab=runs"
+      assert redirected_to == ~p"/projects/#{project.slug}/stories/US-002?story_tab=runs"
     end
 
     test "redirected story detail page shows runs tab content", %{
       conn: conn,
       project: project
     } do
-      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/stories/US-002?tab=runs")
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/stories/US-002?story_tab=runs")
 
       assert html =~ "No runs yet for this story."
     end
@@ -1274,7 +1274,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       {:ok, _view, html} =
         live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
 
-      assert html =~ "/projects/#{project.slug}/stories/#{story_id}?tab=runs"
+      assert html =~ "/projects/#{project.slug}/stories/#{story_id}?story_tab=runs"
     end
 
     test "run detail tab click persists settings tab in URL", %{conn: conn, project: project} do
@@ -1641,7 +1641,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       })
 
       {:ok, view, _html} =
-        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&story_tab=runs")
 
       html =
         view
@@ -1691,7 +1691,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       })
 
       {:ok, view, _html} =
-        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&story_tab=runs")
 
       html =
         view
@@ -1919,7 +1919,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       })
 
       {:ok, view2, _html} =
-        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&story_tab=runs")
 
       html =
         view2
@@ -2005,7 +2005,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       refute html =~ "set_run_detail_panel_tab"
 
       {:ok, view, html} =
-        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&story_tab=runs")
 
       assert html =~ "Actions"
       assert has_element?(view, "button[phx-click='trigger_run'][phx-value-step='checks']")
@@ -2102,7 +2102,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert has_element?(run_view, "button[phx-click='trigger_run'][phx-value-step='testing']")
 
       {:ok, story_view, html} =
-        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&story_tab=runs")
 
       assert html =~ "Actions"
       assert html =~ "Retry testing"
@@ -2305,7 +2305,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
         )
 
       {:ok, _view, html} =
-        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&story_tab=runs")
 
       assert html =~ "Recovery commands:"
       assert html =~ "hero-command-line"
@@ -2438,7 +2438,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "Checks"
 
       {:ok, view, html} =
-        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&story_tab=runs")
 
       assert html =~ "Actions"
       assert has_element?(view, "button[phx-click='trigger_run'][phx-value-step='checks']")
@@ -2452,8 +2452,8 @@ defmodule KollywoodWeb.DashboardLiveTest do
     test "story cards do not show inline Runs links", %{conn: conn, project: project} do
       {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/stories")
 
-      refute html =~ "/projects/#{project.slug}/stories/US-001?tab=runs"
-      refute html =~ "/projects/#{project.slug}/stories/US-002?tab=runs"
+      refute html =~ "/projects/#{project.slug}/stories/US-001?story_tab=runs"
+      refute html =~ "/projects/#{project.slug}/stories/US-002?story_tab=runs"
     end
 
     test "story cards use compact actions menu with reset action", %{
@@ -2639,7 +2639,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       })
 
       {:ok, _view, html} =
-        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&story_tab=runs")
 
       assert html =~ "from run #2, turn 4 (agent-phase timeout)"
     end
@@ -2653,7 +2653,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       File.write!(context.files.agent_stdout, "agent output here")
 
       {:ok, _view, html} =
-        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&story_tab=runs")
 
       assert html =~ "Agent"
       assert html =~ "Review Agent"
@@ -2669,7 +2669,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       File.write!(context.files.agent_stdout, "agent log content")
 
       {:ok, _view, html} =
-        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&story_tab=runs")
 
       assert html =~ "agent log content"
     end
@@ -2693,7 +2693,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       )
 
       {:ok, _view, html} =
-        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&story_tab=runs")
 
       assert html =~ "Working on it"
       assert html =~ "[tool started] shell: mix test"
@@ -2711,7 +2711,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       File.write!(context.files.run, "worker log content")
 
       {:ok, view, _html} =
-        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&story_tab=runs")
 
       html =
         view
@@ -2726,7 +2726,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       _context = prepare_run_logs!(project.slug, story_id)
 
       {:ok, view, _html} =
-        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&story_tab=runs")
 
       view
       |> element("button[phx-click='set_run_detail_panel_tab'][phx-value-tab='reports']")
@@ -2734,7 +2734,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       assert_patch(
         view,
-        ~p"/projects/#{project.slug}/stories/#{story_id}?#{[attempt: "1", tab: "runs", run_panel: "reports"]}"
+        ~p"/projects/#{project.slug}/stories/#{story_id}?#{[attempt: "1", story_tab: "runs", run_panel_tab: "reports"]}"
       )
     end
 
@@ -2749,7 +2749,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       File.write!(context.files.testing_report, Jason.encode!(report, pretty: true))
 
       {:ok, view, _html} =
-        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&story_tab=runs")
 
       view
       |> element("button[phx-click='set_run_detail_panel_tab'][phx-value-tab='reports']")
@@ -2761,7 +2761,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       assert_patch(
         view,
-        ~p"/projects/#{project.slug}/stories/#{story_id}?#{[attempt: "1", tab: "runs", run_panel: "reports", reports_tab: "testing"]}"
+        ~p"/projects/#{project.slug}/stories/#{story_id}?#{[attempt: "1", story_tab: "runs", run_panel_tab: "reports", reports_tab: "testing"]}"
       )
     end
 
@@ -2777,7 +2777,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       )
 
       {:ok, view, _html} =
-        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&story_tab=runs")
 
       view
       |> element("button[phx-click='set_run_detail_panel_tab'][phx-value-tab='prompts']")
@@ -2789,7 +2789,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       assert_patch(
         view,
-        ~p"/projects/#{project.slug}/stories/#{story_id}?#{[attempt: "1", tab: "runs", run_panel: "prompts", prompt_tab: "review"]}"
+        ~p"/projects/#{project.slug}/stories/#{story_id}?#{[attempt: "1", story_tab: "runs", run_panel_tab: "prompts", prompt_tab: "review"]}"
       )
     end
 
@@ -2799,7 +2799,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       File.write!(context.files.reviewer_stdout, "review log")
 
       {:ok, view, _html} =
-        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&story_tab=runs")
 
       view
       |> element("button[phx-click='set_run_detail_panel_tab'][phx-value-tab='logs']")
@@ -2811,7 +2811,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       assert_patch(
         view,
-        ~p"/projects/#{project.slug}/stories/#{story_id}?#{[attempt: "1", tab: "runs", log_tab: "review_agent"]}"
+        ~p"/projects/#{project.slug}/stories/#{story_id}?#{[attempt: "1", story_tab: "runs", log_tab: "review_agent"]}"
       )
     end
 
@@ -2832,7 +2832,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       {:ok, _view, html} =
         live(
           conn,
-          ~p"/projects/#{project.slug}/stories/#{story_id}?#{[attempt: "1", tab: "runs", run_panel: "prompts", prompt_tab: "review"]}"
+          ~p"/projects/#{project.slug}/stories/#{story_id}?#{[attempt: "1", story_tab: "runs", run_panel_tab: "prompts", prompt_tab: "review"]}"
         )
 
       assert html =~ "Persisted review prompt"
@@ -2840,7 +2840,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       {:ok, _view, reports_html} =
         live(
           conn,
-          ~p"/projects/#{project.slug}/stories/#{story_id}?#{[attempt: "1", tab: "runs", run_panel: "reports", reports_tab: "testing"]}"
+          ~p"/projects/#{project.slug}/stories/#{story_id}?#{[attempt: "1", story_tab: "runs", run_panel_tab: "reports", reports_tab: "testing"]}"
         )
 
       assert reports_html =~ "Testing report"
@@ -2859,7 +2859,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       File.write!(context.files.run, "\e[30;42mworker ok\e[0m")
 
       {:ok, view, html} =
-        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&story_tab=runs")
 
       assert html =~ "<span style=\"color: #dc2626\">agent error</span>"
 
@@ -2893,7 +2893,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       )
 
       {:ok, _view, html} =
-        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&story_tab=runs")
 
       assert html =~ "&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt;"
       refute html =~ "<script>alert('x')</script>"
@@ -2910,7 +2910,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       _context = prepare_run_logs!(project.slug, story_id)
 
       {:ok, _view, html} =
-        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&story_tab=runs")
 
       assert html =~ "No output yet."
     end
@@ -2923,7 +2923,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       context = prepare_run_logs!(project.slug, story_id, status: "running")
 
       {:ok, view, _html} =
-        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs")
+        live(conn, ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&story_tab=runs")
 
       File.write!(context.files.agent_stdout, "new content after poll")
 
@@ -2946,7 +2946,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       {:ok, view, html} =
         live(
           conn,
-          ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&tab=runs&log_tab=testing_agent"
+          ~p"/projects/#{project.slug}/stories/#{story_id}?attempt=1&story_tab=runs&log_tab=testing_agent"
         )
 
       assert html =~ "testing content"
