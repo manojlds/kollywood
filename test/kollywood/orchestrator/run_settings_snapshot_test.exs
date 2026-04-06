@@ -70,4 +70,55 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshotTest do
     assert get_in(snapshot, ["sources", "agent", "completion_signals"]) == "workflow"
     assert get_in(snapshot, ["sources", "agent", "idle_timeout_ms"]) == "workflow"
   end
+
+  test "resolved phase agent keeps explicit role with harness defaults" do
+    workflow = """
+    ---
+    workspace:
+      root: /tmp
+    agent:
+      kind: opencode
+      command: /usr/local/bin/opencode
+      args:
+        - --json
+      env:
+        BASE_ENV: base
+      timeout_ms: 90000
+    quality:
+      review:
+        enabled: true
+        max_cycles: 2
+        agent:
+          explicit: true
+          kind: codex
+      testing:
+        enabled: true
+        max_cycles: 2
+        timeout_ms: 120000
+        agent:
+          explicit: true
+          kind: cursor
+    ---
+    prompt
+    """
+
+    assert {:ok, config, _} = Config.parse(workflow)
+
+    snapshot = RunSettingsSnapshot.build(config)
+
+    assert get_in(snapshot, ["resolved", "review", "agent", "kind"]) == "codex"
+
+    assert get_in(snapshot, ["resolved", "review", "agent", "command"]) ==
+             "/usr/local/bin/opencode"
+
+    assert get_in(snapshot, ["resolved", "review", "agent", "args"]) == ["--json"]
+    assert get_in(snapshot, ["resolved", "review", "agent", "env", "BASE_ENV"]) == "base"
+
+    assert get_in(snapshot, ["resolved", "testing", "agent", "kind"]) == "cursor"
+
+    assert get_in(snapshot, ["resolved", "testing", "agent", "command"]) ==
+             "/usr/local/bin/opencode"
+
+    assert get_in(snapshot, ["resolved", "testing", "agent", "timeout_ms"]) == 7_200_000
+  end
 end
