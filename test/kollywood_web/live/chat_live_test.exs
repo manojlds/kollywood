@@ -66,6 +66,7 @@ defmodule KollywoodWeb.ChatLiveTest do
       |> render_click()
 
     assert html =~ "Sessions"
+    refute html =~ "Sessions ("
     assert html =~ "No chat sessions yet"
   end
 end
