@@ -78,7 +78,11 @@ defmodule KollywoodWeb.ChatLiveTest do
     tracker_path = Projects.tracker_path(project)
 
     if is_binary(workflow_path), do: File.rm(workflow_path)
-    if is_binary(tracker_path), do: File.rm(tracker_path)
+
+    if is_binary(tracker_path) do
+      File.mkdir_p!(Path.dirname(tracker_path))
+      File.write!(tracker_path, ~s({"project":"demo","userStories":[]}))
+    end
 
     {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/chat")
 

@@ -766,8 +766,7 @@ defmodule KollywoodWeb.ChatLive do
 
   defp onboarding_state(%Project{} = project) do
     workflow_exists? = file_exists?(Projects.workflow_path(project))
-    tracker_exists? = file_exists?(Projects.tracker_path(project))
-    onboarded? = workflow_exists? or tracker_exists?
+    onboarded? = workflow_exists?
 
     %{
       onboarded?: onboarded?,
