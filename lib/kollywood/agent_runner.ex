@@ -18,7 +18,7 @@ defmodule Kollywood.AgentRunner do
   alias Kollywood.RecoveryGuidance
   alias Kollywood.Publisher
   alias Kollywood.Runtime
-  alias Kollywood.RuntimeSessions
+  alias Kollywood.Runtime.Broker
   alias Kollywood.StoryExecutionOverrides
   alias Kollywood.Tracker
   alias Kollywood.WorkflowStore
@@ -2136,172 +2136,99 @@ defmodule Kollywood.AgentRunner do
   end
 
   defp ensure_runtime_started_for_testing(state, runtime) do
-    cond do
-      runtime.started? ->
-        {:ok, state}
-
-      not runtime_processes_configured?(runtime) ->
-        {:error, "testing requires runtime.processes to be configured", state}
-
-      true ->
-        start_runtime(state)
+    if runtime.started? do
+      {:ok, state}
+    else
+      start_runtime(state)
     end
   end
 
   defp ensure_runtime_healthcheck(state) do
-    runtime = state.runtime
+    context = runtime_context(state)
 
-    state =
-      emit(state, :runtime_healthcheck_started, %{
-        runtime_profile: runtime.profile,
-        workspace_path: runtime.workspace_path,
-        command: runtime.command,
-        timeout_ms: runtime.start_timeout_ms,
-        resolved_ports: runtime.resolved_ports
-      })
+    case Broker.healthcheck(state.runtime, context) do
+      {:ok, runtime, events} ->
+        state =
+          state
+          |> Map.put(:runtime, runtime)
+          |> emit_runtime_events(events)
 
-    case Runtime.healthcheck(runtime) do
-      :ok ->
-        {:ok,
-         emit(state, :runtime_healthcheck_passed, %{
-           runtime_profile: runtime.profile,
-           workspace_path: runtime.workspace_path,
-           command: runtime.command,
-           resolved_ports: runtime.resolved_ports
-         })}
+        {:ok, state}
 
-      {:error, reason} ->
-        {:error, "runtime healthcheck failed: #{reason}",
-         emit(state, :runtime_healthcheck_failed, %{
-           runtime_profile: runtime.profile,
-           workspace_path: runtime.workspace_path,
-           command: runtime.command,
-           reason: reason,
-           resolved_ports: runtime.resolved_ports
-         })}
+      {:error, reason, runtime, events} ->
+        state =
+          state
+          |> Map.put(:runtime, runtime)
+          |> emit_runtime_events(events)
+
+        {:error, reason, state}
     end
   end
 
   defp start_runtime(state) do
-    runtime = state.runtime
+    context = runtime_context(state)
 
-    state =
-      emit(state, :runtime_starting, %{
-        runtime_profile: runtime.profile,
-        command: runtime.command,
-        workspace_path: runtime.workspace_path,
-        process_count: length(runtime.processes)
-      })
-
-    case Runtime.start(runtime) do
-      {:ok, runtime} ->
+    case Broker.ensure_started(state.runtime, context) do
+      {:ok, runtime, events} ->
         state =
           state
           |> Map.put(:runtime, runtime)
-          |> emit(:runtime_started, %{
-            runtime_profile: runtime.profile,
-            workspace_path: runtime.workspace_path,
-            command: runtime.command,
-            process_count: length(runtime.processes),
-            port_offset: runtime.port_offset,
-            resolved_ports: runtime.resolved_ports
-          })
+          |> emit_runtime_events(events)
 
+        persist_testing_runtime(state)
         {:ok, state}
 
-      {:error, reason, runtime} ->
+      {:error, reason, runtime, events} ->
         state =
           state
           |> Map.put(:runtime, runtime)
-          |> emit(:runtime_start_failed, %{
-            runtime_profile: runtime.profile,
-            workspace_path: runtime.workspace_path,
-            command: runtime.command,
-            reason: reason
-          })
+          |> emit_runtime_events(events)
 
         {:error, reason, state}
     end
-    |> tap(fn
-      {:ok, started_state} -> persist_testing_runtime(started_state)
-      _other -> :ok
-    end)
   end
 
   defp maybe_stop_runtime(state) do
-    runtime = state.runtime
+    context = runtime_context(state)
 
-    if runtime.profile == :checks_only or not runtime_needs_stop?(runtime) do
-      runtime = Runtime.release(runtime)
-      state = Map.put(state, :runtime, runtime)
-      clear_persisted_runtime(state)
-      {:ok, state}
-    else
-      state =
-        emit(state, :runtime_stopping, %{
-          runtime_profile: runtime.profile,
-          command: runtime.command,
-          workspace_path: runtime.workspace_path
-        })
+    case Broker.stop(state.runtime, context) do
+      {:ok, runtime, events} ->
+        state =
+          state
+          |> Map.put(:runtime, runtime)
+          |> emit_runtime_events(events)
 
-      case Runtime.stop(runtime) do
-        {:ok, runtime} ->
-          state =
-            state
-            |> Map.put(:runtime, runtime)
-            |> emit(:runtime_stopped, %{
-              runtime_profile: runtime.profile,
-              workspace_path: runtime.workspace_path,
-              command: runtime.command
-            })
+        clear_persisted_runtime(state)
+        {:ok, state}
 
-          clear_persisted_runtime(state)
-          {:ok, state}
+      {:error, reason, runtime, events} ->
+        state =
+          state
+          |> Map.put(:runtime, runtime)
+          |> emit_runtime_events(events)
 
-        {:error, reason, runtime} ->
-          state =
-            state
-            |> Map.put(:runtime, runtime)
-            |> emit(:runtime_stop_failed, %{
-              runtime_profile: runtime.profile,
-              workspace_path: runtime.workspace_path,
-              command: runtime.command,
-              reason: reason
-            })
-
-          clear_persisted_runtime(state)
-          {:error, reason, state}
-      end
+        clear_persisted_runtime(state)
+        {:error, reason, state}
     end
   end
 
   defp persist_testing_runtime(%{runtime: runtime} = state) when is_map(runtime) do
-    project_slug = state[:project_slug] || "default"
-    story_id = to_string(state[:issue_id] || "")
+    context = runtime_context(state)
 
-    if story_id != "" and runtime_needs_stop?(runtime) do
-      _ =
-        RuntimeSessions.upsert(project_slug, story_id, runtime,
-          status: :running,
-          session_type: :testing,
-          started_at: DateTime.utc_now()
-        )
+    _ =
+      Broker.persist_runtime_session(runtime, context,
+        status: :running,
+        session_type: :testing,
+        started_at: DateTime.utc_now()
+      )
 
-      :ok
-    else
-      :ok
-    end
+    :ok
   end
 
   defp persist_testing_runtime(_state), do: :ok
 
   defp clear_persisted_runtime(state) do
-    project_slug = state[:project_slug] || "default"
-    story_id = to_string(state[:issue_id] || "")
-
-    if story_id != "" do
-      _ = RuntimeSessions.delete(project_slug, story_id)
-    end
+    _ = Broker.clear_runtime_session(runtime_context(state))
 
     :ok
   end
@@ -2314,15 +2241,6 @@ defmodule Kollywood.AgentRunner do
     state
     |> Map.get(:runtime, %{})
     |> Map.get(:profile, :full_stack)
-  end
-
-  defp runtime_processes_configured?(runtime) do
-    runtime
-    |> Map.get(:processes, [])
-    |> case do
-      processes when is_list(processes) -> processes != []
-      _other -> false
-    end
   end
 
   defp runtime_kind(config) do
@@ -2362,39 +2280,45 @@ defmodule Kollywood.AgentRunner do
   end
 
   defp handoff_runtime_to_preview(state, config) do
-    alias Kollywood.PreviewSessionManager
+    context = runtime_context(state, config, session_type: :preview)
 
-    project_slug = tracker_project_slug(config)
-    story_id = state.issue_id
+    case Broker.handoff_to_preview(state.runtime, config, context) do
+      {:ok, runtime, events} ->
+        {:ok,
+         state
+         |> Map.put(:runtime, runtime)
+         |> emit_runtime_events(events)}
 
-    ttl_minutes =
-      get_in(config, [Access.key(:preview, %{}), Access.key(:ttl_minutes, 120)]) || 120
-
-    state_with_event =
-      emit(state, :preview_runtime_handoff, %{
-        story_id: story_id,
-        project: project_slug,
-        runtime_kind: state.runtime.kind
-      })
-
-    case PreviewSessionManager.handoff_runtime(project_slug, story_id, state.runtime,
-           ttl_minutes: ttl_minutes
-         ) do
-      {:ok, _session} ->
-        runtime = %{
-          state.runtime
-          | offset_lease_name: nil,
-            started?: false,
-            process_state: :handed_off
-        }
-
-        {:ok, Map.put(state_with_event, :runtime, runtime)}
-
-      {:error, reason} ->
-        Logger.warning("Preview handoff failed for #{story_id}: #{reason}")
+      {:error, reason, events} ->
+        Logger.warning("Preview handoff failed for #{state.issue_id}: #{reason}")
+        _ = emit_runtime_events(state, events)
         {:error, reason}
     end
   end
+
+  defp runtime_context(state, config \\ nil, opts \\ []) do
+    runtime = Map.get(state, :runtime, %{})
+    project_slug = state[:project_slug] || tracker_project_slug(config || %{})
+    story_id = state[:issue_id]
+
+    Broker.context(project_slug, story_id, runtime,
+      session_type: Keyword.get(opts, :session_type, :testing)
+    )
+  end
+
+  defp emit_runtime_events(state, events) when is_list(events) do
+    Enum.reduce(events, state, fn event, acc ->
+      type = Map.get(event, :type)
+
+      if is_atom(type) do
+        emit(acc, type, Map.delete(event, :type))
+      else
+        acc
+      end
+    end)
+  end
+
+  defp emit_runtime_events(state, _events), do: state
 
   defp tracker_project_slug(config) do
     get_in(config, [Access.key(:tracker, %{}), Access.key(:project_slug)]) || "default"
