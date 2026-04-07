@@ -41,7 +41,8 @@ defmodule Kollywood.Runtime.Broker do
         {:ok, runtime, []}
 
       not runtime_processes_configured?(runtime) ->
-        {:error, "testing requires runtime.processes to be configured", runtime, []}
+        {:error, "#{context.session_type} requires runtime.processes to be configured", runtime,
+         []}
 
       true ->
         events = [runtime_starting_event(runtime, context)]

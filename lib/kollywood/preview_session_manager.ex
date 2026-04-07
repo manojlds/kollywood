@@ -27,6 +27,7 @@ defmodule Kollywood.PreviewSessionManager do
   require Logger
 
   alias Kollywood.Runtime
+  alias Kollywood.Runtime.Broker
   alias Kollywood.RuntimeSessions
 
   @ttl_check_interval_ms 30_000
@@ -166,7 +167,7 @@ defmodule Kollywood.PreviewSessionManager do
         {:reply, {:error, "no active preview session"}, state}
 
       session ->
-        do_stop_session(session)
+        do_stop_session(session, key)
         persist_delete(key)
 
         state =
@@ -276,7 +277,7 @@ defmodule Kollywood.PreviewSessionManager do
             acc
 
           session ->
-            do_stop_session(session)
+            do_stop_session(session, key)
             persist_delete(key)
         end
 
@@ -386,10 +387,9 @@ defmodule Kollywood.PreviewSessionManager do
     }
   end
 
-  defp cleanup_stale_start_result(_key, {:ok, session}) do
-    session
-    |> Map.get(:runtime_state)
-    |> safe_stop_and_release()
+  defp cleanup_stale_start_result(key, {:ok, session}) do
+    runtime_state = Map.get(session, :runtime_state)
+    safe_stop_and_release(runtime_state, runtime_context(key, runtime_state))
   end
 
   defp cleanup_stale_start_result(_key, _result), do: :ok
@@ -406,9 +406,10 @@ defmodule Kollywood.PreviewSessionManager do
 
     workspace = %{path: workspace_path, key: workspace_key}
     runtime_state = Runtime.init(runtime_kind, config, workspace)
+    context = runtime_context({project_slug, story_id}, runtime_state)
 
-    with {:ok, runtime_state} <- Runtime.start(runtime_state),
-         :ok <- Runtime.healthcheck(runtime_state) do
+    with {:ok, started_runtime, _events} <- Broker.ensure_started(runtime_state, context),
+         {:ok, runtime_state, _events} <- Broker.healthcheck(started_runtime, context) do
       now = DateTime.utc_now()
 
       session = %{
@@ -427,49 +428,25 @@ defmodule Kollywood.PreviewSessionManager do
       persist_upsert({project_slug, story_id}, session, :preview)
       {:ok, session}
     else
-      {:error, reason, failed_state} ->
+      {:error, reason, failed_state, _events} ->
         Logger.warning(
           "Preview session failed to start project=#{project_slug} story=#{story_id} reason=#{reason}"
         )
 
-        Runtime.stop(failed_state)
-        Runtime.release(failed_state)
+        safe_stop_and_release(failed_state, context)
         persist_delete({project_slug, story_id})
-        {:error, "preview start failed: #{reason}"}
-
-      {:error, reason} ->
-        Logger.warning(
-          "Preview session failed to start project=#{project_slug} story=#{story_id} reason=#{reason}"
-        )
-
-        persist_delete({project_slug, story_id})
-
         {:error, "preview start failed: #{reason}"}
     end
   end
 
-  defp do_stop_session(%{runtime_state: runtime_state, status: status})
+  defp do_stop_session(%{runtime_state: runtime_state, status: status}, key)
        when status in [:running, :starting] do
-    if is_map(runtime_state) and is_atom(runtime_state[:module]) do
-      try do
-        Runtime.stop(runtime_state)
-      rescue
-        error ->
-          Logger.warning("Error stopping preview runtime: #{Exception.message(error)}")
-      end
-
-      try do
-        Runtime.release(runtime_state)
-      rescue
-        error ->
-          Logger.warning("Error releasing preview runtime: #{Exception.message(error)}")
-      end
-    end
+    safe_stop_and_release(runtime_state, runtime_context(key, runtime_state))
 
     :ok
   end
 
-  defp do_stop_session(_session), do: :ok
+  defp do_stop_session(_session, _key), do: :ok
 
   defp reacquire_lease(runtime_state) do
     old_lease = Map.get(runtime_state, :offset_lease_name)
@@ -540,16 +517,17 @@ defmodule Kollywood.PreviewSessionManager do
 
           true ->
             runtime_state = reacquire_lease(runtime_state)
+            context = runtime_context({project_slug, story_id}, runtime_state)
 
-            case Runtime.healthcheck(runtime_state) do
-              :ok ->
+            case Broker.healthcheck(runtime_state, context) do
+              {:ok, healthy_runtime, _events} ->
                 now = DateTime.utc_now()
 
                 session = %{
-                  runtime_state: runtime_state,
-                  runtime_kind: Map.get(runtime_state, :kind, persisted.runtime_kind || :host),
-                  preview_url: build_preview_url(runtime_state),
-                  resolved_ports: Map.get(runtime_state, :resolved_ports, %{}),
+                  runtime_state: healthy_runtime,
+                  runtime_kind: Map.get(healthy_runtime, :kind, persisted.runtime_kind || :host),
+                  preview_url: build_preview_url(healthy_runtime),
+                  resolved_ports: Map.get(healthy_runtime, :resolved_ports, %{}),
                   started_at: persisted.started_at || now,
                   expires_at: DateTime.add(now, ttl_minutes * 60, :second),
                   last_error: nil,
@@ -560,12 +538,12 @@ defmodule Kollywood.PreviewSessionManager do
                 persist_upsert({project_slug, story_id}, session, :preview)
                 {:ok, session}
 
-              {:error, reason} ->
+              {:error, reason, failed_runtime, _events} ->
                 Logger.warning(
                   "Persisted runtime not healthy project=#{project_slug} story=#{story_id} reason=#{reason}"
                 )
 
-                safe_stop_and_release(runtime_state)
+                safe_stop_and_release(failed_runtime, context)
                 persist_delete({project_slug, story_id})
                 :none
             end
@@ -669,22 +647,25 @@ defmodule Kollywood.PreviewSessionManager do
 
         Enum.reduce(entries, %{}, fn entry, acc ->
           key = {entry.project_slug, entry.story_id}
+          runtime_state = entry.runtime_state
+          context = runtime_context(key, runtime_state)
 
           if is_struct(entry.expires_at, DateTime) and
                DateTime.compare(now, entry.expires_at) == :gt do
-            safe_stop_and_release(entry.runtime_state)
+            safe_stop_and_release(runtime_state, context)
             persist_delete(key)
             acc
           else
-            runtime_state = reacquire_lease(entry.runtime_state)
+            runtime_state = reacquire_lease(runtime_state)
+            context = runtime_context(key, runtime_state)
 
-            case Runtime.healthcheck(runtime_state) do
-              :ok ->
+            case Broker.healthcheck(runtime_state, context) do
+              {:ok, healthy_runtime, _events} ->
                 session = %{
-                  runtime_state: runtime_state,
-                  runtime_kind: Map.get(runtime_state, :kind, entry.runtime_kind || :host),
-                  preview_url: build_preview_url(runtime_state),
-                  resolved_ports: Map.get(runtime_state, :resolved_ports, %{}),
+                  runtime_state: healthy_runtime,
+                  runtime_kind: Map.get(healthy_runtime, :kind, entry.runtime_kind || :host),
+                  preview_url: build_preview_url(healthy_runtime),
+                  resolved_ports: Map.get(healthy_runtime, :resolved_ports, %{}),
                   started_at: entry.started_at || now,
                   expires_at:
                     entry.expires_at || DateTime.add(now, @default_ttl_minutes * 60, :second),
@@ -695,8 +676,8 @@ defmodule Kollywood.PreviewSessionManager do
 
                 Map.put(acc, key, session)
 
-              {:error, _reason} ->
-                safe_stop_and_release(runtime_state)
+              {:error, _reason, failed_runtime, _events} ->
+                safe_stop_and_release(failed_runtime, context)
                 persist_delete(key)
                 acc
             end
@@ -709,20 +690,40 @@ defmodule Kollywood.PreviewSessionManager do
     end
   end
 
-  defp safe_stop_and_release(runtime_state) do
-    try do
-      Runtime.stop(runtime_state)
-    rescue
-      _ -> :ok
-    end
+  defp safe_stop_and_release(runtime_state, context)
 
+  defp safe_stop_and_release(runtime_state, nil) do
+    safe_stop_and_release(runtime_state, runtime_context({nil, nil}, runtime_state))
+  end
+
+  defp safe_stop_and_release(runtime_state, context) do
     try do
-      Runtime.release(runtime_state)
+      case Broker.stop(runtime_state, context) do
+        {:ok, _stopped_runtime, _events} ->
+          :ok
+
+        {:error, "invalid runtime context", _runtime, _events} ->
+          :ok
+
+        {:error, reason, _runtime, _events} ->
+          Logger.warning("Error stopping preview runtime: #{reason}")
+          :ok
+      end
     rescue
-      _ -> :ok
+      error ->
+        Logger.warning("Error stopping preview runtime: #{Exception.message(error)}")
+        :ok
     end
 
     :ok
+  end
+
+  defp runtime_context({project_slug, story_id}, runtime_state) do
+    Broker.context(project_slug, story_id, runtime_state, session_type: :preview)
+  end
+
+  defp runtime_context(_key, runtime_state) do
+    Broker.context(nil, nil, runtime_state, session_type: :preview)
   end
 
   defp normalize_stop_result(:ok), do: :ok
