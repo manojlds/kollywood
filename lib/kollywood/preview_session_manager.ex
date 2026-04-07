@@ -28,7 +28,6 @@ defmodule Kollywood.PreviewSessionManager do
 
   alias Kollywood.Runtime
   alias Kollywood.Runtime.Broker
-  alias Kollywood.RuntimeSessions
 
   @ttl_check_interval_ms 30_000
   @default_ttl_minutes 120
@@ -220,7 +219,7 @@ defmodule Kollywood.PreviewSessionManager do
 
   def handle_call(:list_sessions, _from, state) do
     list =
-      case RuntimeSessions.list(session_type: :preview) do
+      case Broker.list_runtime_sessions(session_type: :preview) do
         {:ok, entries} ->
           Enum.map(entries, fn entry ->
             %{
@@ -501,7 +500,9 @@ defmodule Kollywood.PreviewSessionManager do
   end
 
   defp maybe_reuse_persisted_runtime({project_slug, story_id}, workspace_path, ttl_minutes) do
-    case RuntimeSessions.get(project_slug, story_id) do
+    context = runtime_context({project_slug, story_id}, %{})
+
+    case Broker.get_runtime_session(context) do
       {:ok, persisted}
       when persisted.status in [:running, :starting] and
              persisted.session_type in [:testing, :preview] ->
@@ -565,26 +566,31 @@ defmodule Kollywood.PreviewSessionManager do
   end
 
   defp persist_upsert({project_slug, story_id}, session, session_type) do
+    context = runtime_context({project_slug, story_id}, session.runtime_state)
+
     _ =
-      RuntimeSessions.upsert(project_slug, story_id, session.runtime_state,
+      Broker.persist_runtime_session(session.runtime_state, context,
         status: session.status,
         session_type: session_type,
         preview_url: session.preview_url,
         started_at: session.started_at,
         expires_at: session.expires_at,
-        last_error: session.last_error
+        last_error: session.last_error,
+        force: true
       )
 
     :ok
   end
 
   defp persist_delete({project_slug, story_id}) do
-    _ = RuntimeSessions.delete(project_slug, story_id)
+    _ = Broker.clear_runtime_session(runtime_context({project_slug, story_id}, %{}))
     :ok
   end
 
   defp load_preview_session_from_db(project_slug, story_id) do
-    case RuntimeSessions.get(project_slug, story_id) do
+    context = runtime_context({project_slug, story_id}, %{})
+
+    case Broker.get_runtime_session(context, session_type: :preview) do
       {:ok, %{session_type: :preview} = entry} ->
         session_from_persisted(entry)
 
@@ -604,7 +610,9 @@ defmodule Kollywood.PreviewSessionManager do
   end
 
   defp load_runtime_session_from_db(project_slug, story_id) do
-    case RuntimeSessions.get(project_slug, story_id) do
+    context = runtime_context({project_slug, story_id}, %{})
+
+    case Broker.get_runtime_session(context) do
       {:ok, entry} -> session_from_persisted(entry)
       _other -> nil
     end
@@ -626,7 +634,7 @@ defmodule Kollywood.PreviewSessionManager do
   end
 
   defp expired_preview_keys(now) do
-    case RuntimeSessions.list(session_type: :preview, status: :running) do
+    case Broker.list_runtime_sessions(session_type: :preview, status: :running) do
       {:ok, entries} ->
         entries
         |> Enum.filter(fn entry ->
@@ -641,7 +649,7 @@ defmodule Kollywood.PreviewSessionManager do
   end
 
   defp restore_sessions_from_db do
-    case RuntimeSessions.list(status: :running, session_type: :preview) do
+    case Broker.list_runtime_sessions(status: :running, session_type: :preview) do
       {:ok, entries} ->
         now = DateTime.utc_now()
 
