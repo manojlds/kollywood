@@ -109,11 +109,16 @@ defmodule Kollywood.Runtime.Broker do
   def persist_runtime_session(runtime, context, opts \\ [])
 
   def persist_runtime_session(runtime, context, opts) when is_map(runtime) and is_map(context) do
-    if context.story_id != "" and runtime_needs_stop?(runtime) do
+    force? = truthy?(Keyword.get(opts, :force, false))
+
+    if context.story_id != "" and (force? or runtime_needs_stop?(runtime)) do
       RuntimeSessions.upsert(context.project_slug, context.story_id, runtime,
         status: Keyword.get(opts, :status, :running),
         session_type: Keyword.get(opts, :session_type, context.session_type),
-        started_at: Keyword.get(opts, :started_at)
+        preview_url: Keyword.get(opts, :preview_url),
+        started_at: Keyword.get(opts, :started_at),
+        expires_at: Keyword.get(opts, :expires_at),
+        last_error: Keyword.get(opts, :last_error)
       )
     else
       :ok
@@ -132,6 +137,36 @@ defmodule Kollywood.Runtime.Broker do
   end
 
   def clear_runtime_session(_context), do: {:error, "invalid runtime context"}
+
+  @spec get_runtime_session(context(), keyword()) :: {:ok, map()} | {:error, String.t()} | nil
+  def get_runtime_session(context, opts \\ [])
+
+  def get_runtime_session(context, opts) when is_map(context) and is_list(opts) do
+    desired_type = requested_session_type(Keyword.get(opts, :session_type, :any))
+
+    case RuntimeSessions.get(context.project_slug, context.story_id) do
+      {:ok, session} = ok ->
+        if session_type_matches?(session, desired_type), do: ok, else: nil
+
+      other ->
+        other
+    end
+  end
+
+  def get_runtime_session(_context, _opts), do: {:error, "invalid runtime context"}
+
+  @spec list_runtime_sessions(keyword()) :: {:ok, [map()]} | {:error, String.t()}
+  def list_runtime_sessions(opts \\ []) when is_list(opts) do
+    status = Keyword.get(opts, :status)
+    session_type = requested_session_type(Keyword.get(opts, :session_type, :any))
+
+    runtime_session_opts =
+      []
+      |> maybe_put_option(:status, status)
+      |> maybe_put_option(:session_type, session_type)
+
+    RuntimeSessions.list(runtime_session_opts)
+  end
 
   @spec handoff_to_preview(map(), map(), context(), keyword()) ::
           {:ok, map(), [status_event()]} | {:error, String.t(), [status_event()]}
@@ -306,6 +341,22 @@ defmodule Kollywood.Runtime.Broker do
   defp normalize_session_type("preview"), do: :preview
   defp normalize_session_type(_), do: :testing
 
+  defp requested_session_type(:any), do: nil
+  defp requested_session_type("any"), do: nil
+  defp requested_session_type(nil), do: nil
+  defp requested_session_type(value), do: normalize_session_type(value)
+
+  defp session_type_matches?(session, nil) when is_map(session), do: true
+
+  defp session_type_matches?(session, desired_type) when is_map(session) do
+    Map.get(session, :session_type) == desired_type
+  end
+
+  defp session_type_matches?(_session, _desired_type), do: false
+
+  defp maybe_put_option(opts, _key, nil), do: opts
+  defp maybe_put_option(opts, key, value), do: Keyword.put(opts, key, value)
+
   defp normalize_runtime_kind(:docker), do: :docker
   defp normalize_runtime_kind("docker"), do: :docker
   defp normalize_runtime_kind(_), do: :host
@@ -321,4 +372,6 @@ defmodule Kollywood.Runtime.Broker do
 
   defp map_or_empty(value) when is_map(value), do: value
   defp map_or_empty(_value), do: %{}
+
+  defp truthy?(value), do: value in [true, 1, "1", "true", "TRUE", "yes", "on"]
 end
