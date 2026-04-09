@@ -52,6 +52,7 @@ defmodule KollywoodWeb.Router do
     post "/projects/:project_slug/stories", StoryController, :create
     patch "/projects/:project_slug/stories/:story_id", StoryController, :update
     delete "/projects/:project_slug/stories/:story_id", StoryController, :delete
+    get "/projects/:project_slug/runs/:story_id/:attempt/events", RunEventsController, :index
     post "/projects/:project_slug/stories/:story_id/retries", StoryController, :retry_step
   end
 end

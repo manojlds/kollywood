@@ -230,10 +230,10 @@ defmodule KollywoodWeb.DashboardLive do
 
   def handle_info(:poll_logs, socket) do
     tab = socket.assigns.active_log_tab
-    run_detail = load_selected_run_detail(socket, tab)
+    run_detail = refresh_selected_run_detail(socket, tab)
     socket = assign(socket, :run_detail, run_detail)
 
-    if run_detail && get_in(run_detail, ["metadata", "status"]) == "running" do
+    if running_run_detail?(run_detail) do
       {:noreply, socket}
     else
       {:noreply, cancel_poll_timer(socket)}
@@ -4270,18 +4270,24 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp run_detail_events(run_detail) when is_map(run_detail) do
-    attempt_dir =
-      case get_in(run_detail, ["metadata", "attempt_dir"]) do
-        dir when is_binary(dir) -> dir
-        _ -> nil
-      end
+    case Map.get(run_detail, "events") do
+      events when is_list(events) ->
+        events
 
-    if attempt_dir do
-      attempt_dir
-      |> Path.join("events.jsonl")
-      |> read_events_jsonl()
-    else
-      []
+      _other ->
+        attempt_dir =
+          case get_in(run_detail, ["metadata", "attempt_dir"]) do
+            dir when is_binary(dir) -> dir
+            _ -> nil
+          end
+
+        if attempt_dir do
+          attempt_dir
+          |> Path.join("events.jsonl")
+          |> read_events_jsonl()
+        else
+          []
+        end
     end
   end
 
@@ -8878,7 +8884,7 @@ defmodule KollywoodWeb.DashboardLive do
           socket
           |> assign(:run_detail, run_detail)
 
-        if run_detail && get_in(run_detail, ["metadata", "status"]) == "running" do
+        if running_run_detail?(run_detail) do
           {:ok, timer} = :timer.send_interval(1000, self(), :poll_logs)
           assign(socket, :log_poll_timer, timer)
         else
@@ -8987,7 +8993,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> assign(:preview_panel_error, socket.assigns[:preview_panel_error])
       |> sync_story_detail_selection()
 
-    if run_detail && get_in(run_detail, ["metadata", "status"]) == "running" do
+    if running_run_detail?(run_detail) do
       {:ok, timer} = :timer.send_interval(1000, self(), :poll_logs)
       assign(socket, :log_poll_timer, timer)
     else
@@ -9042,6 +9048,87 @@ defmodule KollywoodWeb.DashboardLive do
     end
   end
 
+  defp refresh_selected_run_detail(socket, tab) do
+    project = socket.assigns.current_project
+    story_id = socket.assigns.run_detail_story_id
+    attempt = socket.assigns.run_detail_attempt
+    current_run_detail = socket.assigns[:run_detail]
+
+    cond do
+      project == nil or not is_binary(story_id) ->
+        nil
+
+      is_binary(attempt) and String.trim(attempt) != "" ->
+        refresh_run_detail_for_attempt(project, story_id, attempt, tab, current_run_detail) ||
+          load_run_detail_for_attempt(project, story_id, attempt, tab)
+
+      true ->
+        load_run_detail_latest(project, story_id, tab)
+    end
+  end
+
+  defp running_run_detail?(run_detail) when is_map(run_detail) do
+    get_in(run_detail, ["metadata", "status"]) == "running"
+  end
+
+  defp running_run_detail?(_run_detail), do: false
+
+  defp refresh_run_detail_for_attempt(project, story_id, attempt, tab, current_run_detail)
+       when is_map(current_run_detail) do
+    parsed_attempt = parse_attempt(attempt)
+
+    if is_integer(parsed_attempt) and parsed_attempt > 0 and
+         run_detail_matches_attempt?(current_run_detail, story_id, parsed_attempt) do
+      current_events = Map.get(current_run_detail, "events", [])
+      current_cursor = Map.get(current_run_detail, "events_cursor") || length(current_events)
+
+      if is_list(current_events) and is_integer(current_cursor) and current_cursor >= 0 do
+        project
+        |> derive_project_roots()
+        |> Enum.find_value(fn project_root ->
+          case RunLogs.list_events(project_root, story_id, parsed_attempt, since: current_cursor) do
+            {:ok,
+             %{metadata: metadata, files: files, events: new_events, next_cursor: next_cursor}} ->
+              merged_events =
+                if new_events == [] do
+                  current_events
+                else
+                  current_events ++ new_events
+                end
+
+              build_run_detail_from_events(
+                project,
+                story_id,
+                metadata,
+                files,
+                tab,
+                merged_events,
+                next_cursor
+              )
+
+            {:error, _} ->
+              nil
+          end
+        end)
+      end
+    end
+  end
+
+  defp refresh_run_detail_for_attempt(_project, _story_id, _attempt, _tab, _current_run_detail),
+    do: nil
+
+  defp run_detail_matches_attempt?(run_detail, story_id, attempt)
+       when is_map(run_detail) and is_binary(story_id) and is_integer(attempt) do
+    metadata = Map.get(run_detail, "metadata", %{})
+
+    metadata_story_id = Map.get(metadata, "story_id") || Map.get(metadata, "identifier")
+    metadata_attempt = parse_attempt(Map.get(metadata, "attempt"))
+
+    metadata_story_id == story_id and metadata_attempt == attempt
+  end
+
+  defp run_detail_matches_attempt?(_run_detail, _story_id, _attempt), do: false
+
   defp load_run_detail_for_attempt(nil, _story_id, _attempt, _tab), do: nil
   defp load_run_detail_for_attempt(_project, nil, _attempt, _tab), do: nil
 
@@ -9064,11 +9151,27 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp build_run_detail(project, story_id, metadata, files, tab) do
+    events = read_events_jsonl(files.events)
+    build_run_detail_from_events(project, story_id, metadata, files, tab, events, length(events))
+  end
+
+  defp build_run_detail_from_events(
+         project,
+         story_id,
+         metadata,
+         files,
+         tab,
+         events,
+         events_cursor
+       )
+       when is_list(events) and is_integer(events_cursor) and events_cursor >= 0 do
     content = read_log_tab_content(files, tab)
-    phase = derive_phase_map(Path.dirname(files.metadata), metadata)
+
+    status_phase = RunPhase.from_status(Map.get(metadata, "status"))
+    phase = RunPhase.from_events(events, initial_phase: status_phase)
+
     retry_mode = normalize_retry_mode(Map.get(metadata, "retry_mode"))
     retry_provenance = normalize_retry_provenance(Map.get(metadata, "retry_provenance"))
-    events = read_events_jsonl(files.events)
     review_report = load_review_report(metadata, files)
     review_cycle_reports = load_review_cycle_reports(files)
     testing_report = load_testing_report(metadata, files)
@@ -9081,6 +9184,8 @@ defmodule KollywoodWeb.DashboardLive do
     %{
       "metadata" => Map.put(metadata, "attempt_dir", Path.dirname(files.metadata)),
       "files" => files,
+      "events" => events,
+      "events_cursor" => events_cursor,
       "recovery_guidance" => recovery_guidance,
       "settings_snapshot" => RunLogs.settings_snapshot(metadata),
       "current_workflow_identity" => current_workflow_identity(project),
@@ -9100,6 +9205,19 @@ defmodule KollywoodWeb.DashboardLive do
       "prompts" => prompts,
       "active_log_content" => content
     }
+  end
+
+  defp build_run_detail_from_events(
+         project,
+         story_id,
+         metadata,
+         files,
+         tab,
+         events,
+         _events_cursor
+       )
+       when is_list(events) do
+    build_run_detail_from_events(project, story_id, metadata, files, tab, events, length(events))
   end
 
   defp load_review_report(metadata, files) when is_map(metadata) and is_map(files) do

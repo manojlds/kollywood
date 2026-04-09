@@ -451,6 +451,31 @@ defmodule Kollywood.Orchestrator.RunLogs do
     {:error, "invalid attempt selector: #{inspect(attempt)}"}
   end
 
+  @doc "Lists events for one attempt after a cursor (1-based line index)."
+  @spec list_events(String.t(), String.t(), pos_integer(), keyword()) ::
+          {:ok, %{events: [map()], next_cursor: non_neg_integer(), metadata: map(), files: map()}}
+          | {:error, String.t()}
+  def list_events(project_root, story_id, attempt, opts \\ [])
+
+  def list_events(project_root, story_id, attempt, opts)
+      when is_binary(project_root) and is_binary(story_id) and is_integer(attempt) and attempt > 0 do
+    with {:ok, %{metadata: metadata, files: files}} <-
+           resolve_attempt(project_root, story_id, attempt),
+         {:ok, events, next_cursor} <- read_events_slice(files.events, opts) do
+      {:ok,
+       %{
+         events: events,
+         next_cursor: next_cursor,
+         metadata: metadata,
+         files: files
+       }}
+    end
+  end
+
+  def list_events(_project_root, _story_id, _attempt, _opts) do
+    {:error, "invalid event selector"}
+  end
+
   @doc "Marks interrupted step-retry attempts that were left in running state as failed."
   @spec reconcile_orphaned_step_retries(String.t(), keyword()) ::
           {:ok, non_neg_integer()} | {:error, String.t()}
@@ -1081,6 +1106,49 @@ defmodule Kollywood.Orchestrator.RunLogs do
 
   defp run_event_type(_event), do: nil
 
+  @default_event_slice_limit 2_000
+  @max_event_slice_limit 2_000
+
+  defp read_events_slice(path, opts) when is_binary(path) and is_list(opts) do
+    since = non_negative_integer(Keyword.get(opts, :since), 0)
+
+    limit =
+      Keyword.get(opts, :limit)
+      |> positive_integer(@default_event_slice_limit)
+      |> min(@max_event_slice_limit)
+
+    if File.exists?(path) and File.regular?(path) do
+      path
+      |> File.stream!([], :line)
+      |> Stream.with_index(1)
+      |> Stream.drop_while(fn {_line, idx} -> idx <= since end)
+      |> Enum.reduce_while({[], 0, since}, fn {line, idx}, {events_rev, count, _last_idx} ->
+        next_events_rev =
+          case Jason.decode(String.trim(line)) do
+            {:ok, event} when is_map(event) -> [event | events_rev]
+            _other -> events_rev
+          end
+
+        next_count = count + 1
+
+        if next_count >= limit do
+          {:halt, {next_events_rev, next_count, idx}}
+        else
+          {:cont, {next_events_rev, next_count, idx}}
+        end
+      end)
+      |> then(fn {events_rev, _count, last_idx} ->
+        {:ok, Enum.reverse(events_rev), last_idx}
+      end)
+    else
+      {:ok, [], since}
+    end
+  rescue
+    error -> {:error, "failed to read events: #{Exception.message(error)}"}
+  end
+
+  defp read_events_slice(_path, _opts), do: {:error, "invalid events path"}
+
   defp positive_integer(value, _fallback) when is_integer(value) and value > 0, do: value
 
   defp positive_integer(value, fallback) when is_binary(value) do
@@ -1091,6 +1159,17 @@ defmodule Kollywood.Orchestrator.RunLogs do
   end
 
   defp positive_integer(_value, fallback), do: fallback
+
+  defp non_negative_integer(value, _fallback) when is_integer(value) and value >= 0, do: value
+
+  defp non_negative_integer(value, fallback) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {int, ""} when int >= 0 -> int
+      _other -> fallback
+    end
+  end
+
+  defp non_negative_integer(_value, fallback), do: fallback
 
   defp stringify_map(map) when is_map(map) do
     Map.new(map, fn {key, value} ->
