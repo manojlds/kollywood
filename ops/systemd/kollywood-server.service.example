@@ -1,0 +1,22 @@
+[Unit]
+Description=Kollywood Server (release)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+WorkingDirectory=__REPO_DIR__
+EnvironmentFile=__ENV_FILE__
+ExecStart=__REPO_DIR__/_build/prod/rel/kollywood/bin/kollywood start
+ExecStartPost=/bin/sh -lc 'for i in 1 2 3 4 5 6 7 8 9 10; do curl -sf http://127.0.0.1:${PORT:-4000}/api/health && exit 0; sleep 1; done; exit 1'
+ExecStartPost=__REPO_DIR__/bin/tailscale-serve-helper start
+ExecStop=__REPO_DIR__/_build/prod/rel/kollywood/bin/kollywood stop
+ExecStopPost=__REPO_DIR__/bin/tailscale-serve-helper stop
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Environment=PATH=__PATH__
+
+[Install]
+WantedBy=default.target

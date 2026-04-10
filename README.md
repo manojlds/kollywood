@@ -29,9 +29,9 @@ pitchfork stop server
 On first start, pitchfork runs the setup task via mise which bootstraps
 deps and the database.
 
-`server_postgres` assumes a local Postgres server is already running and uses
-`DATABASE_URL=ecto://postgres:postgres@127.0.0.1:5432/kollywood_dev` by default.
-Override `DATABASE_URL` in the shell or `pitchfork.local.toml` if needed.
+`server_postgres` assumes a local Postgres server is already running.
+Set `DATABASE_URL` in the shell when your local role/password differs from the
+runtime default.
 
 `vaibhav` auto-discovers process ports from pitchfork and live
 process checks, so no per-project metadata file is required.
@@ -102,6 +102,9 @@ Adapter selection is compile-time:
 - dev uses SQLite by default, or Postgres when `KOLLYWOOD_DB_ADAPTER=postgres` or `DATABASE_URL` is set before compile/start
 
 If you switch adapters in development, run `mix clean` before recompiling.
+
+Production-style Linux setup is documented in `docs/deployment/systemd-postgres.md`.
+That doc also includes a macOS/Postgres path for laptop use.
 
 ## Projects
 

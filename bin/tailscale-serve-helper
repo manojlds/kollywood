@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ACTION="${1:-}"
+HTTPS_PORT="${KOLLYWOOD_TAILSCALE_SERVE_HTTPS_PORT:-}"
+APP_PORT="${PORT:-4000}"
+
+if [[ -z "$HTTPS_PORT" ]]; then
+  exit 0
+fi
+
+if ! command -v tailscale >/dev/null 2>&1; then
+  printf 'tailscale not found; skipping tailscale serve helper\n' >&2
+  exit 0
+fi
+
+case "$ACTION" in
+  start)
+    tailscale serve --bg --yes --https "$HTTPS_PORT" "http://127.0.0.1:$APP_PORT"
+    ;;
+  stop)
+    tailscale serve --https "$HTTPS_PORT" off || true
+    ;;
+  *)
+    printf 'usage: %s <start|stop>\n' "$0" >&2
+    exit 64
+    ;;
+esac

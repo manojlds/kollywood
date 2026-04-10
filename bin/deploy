@@ -5,16 +5,31 @@ REPO_DIR="${KOLLYWOOD_SERVER_DIR:-$HOME/projects/kollywood-server}"
 RELEASE_DIR="$REPO_DIR/_build/prod/rel/kollywood"
 SERVICE_NAME="kollywood-server.service"
 DRAIN_TIMEOUT_SECONDS="${KOLLYWOOD_DRAIN_TIMEOUT_SECONDS:-900}"
+ENV_FILE="${KOLLYWOOD_ENV_FILE:-$HOME/.config/kollywood-server/kollywood-server.env}"
 
 DEPLOY_SUCCESS=0
 DRAIN_ENABLED=0
 
 log() { printf '\033[1;34m==> %s\033[0m\n' "$*"; }
 err() { printf '\033[1;31m==> ERROR: %s\033[0m\n' "$*" >&2; exit 1; }
+require_env() {
+  local name="$1"
+  [[ -n "${!name:-}" ]] || err "Required environment variable $name is missing (source: $ENV_FILE)"
+}
 
 [[ -d "$REPO_DIR" ]] || err "Server repo not found at $REPO_DIR"
 
+[[ -f "$ENV_FILE" ]] || err "Env file not found at $ENV_FILE"
+
 cd "$REPO_DIR"
+
+set -a
+source "$ENV_FILE"
+set +a
+
+require_env DATABASE_URL
+require_env SECRET_KEY_BASE
+require_env PHX_HOST
 
 on_exit() {
   exit_code=$?
@@ -96,10 +111,6 @@ MIX_ENV=prod mix assets.deploy
 log "Building release"
 MIX_ENV=prod mix release --overwrite
 
-ENV_FILE="$HOME/.config/kollywood-server/kollywood-server.env"
-if [[ -f "$ENV_FILE" ]]; then
-  set -a; source "$ENV_FILE"; set +a
-fi
 VERSION=$("$RELEASE_DIR/bin/kollywood" eval 'IO.puts(Kollywood.Version.full())' 2>/dev/null)
 log "Release built: $VERSION"
 
