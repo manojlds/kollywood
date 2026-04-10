@@ -58,6 +58,7 @@ defmodule Kollywood.RunQueueTest do
       assert claimed.issue_id == "a"
       assert claimed.status == "claimed"
       assert claimed.claimed_by_node == "node-1"
+      assert is_binary(claimed.lease_token)
       assert claimed.claimed_at != nil
     end
 
@@ -99,8 +100,9 @@ defmodule Kollywood.RunQueueTest do
   end
 
   describe "mark_running/1" do
-    test "sets status to running" do
+    test "sets claimed entries to running" do
       {:ok, entry} = RunQueue.enqueue(%{issue_id: "x", identifier: "US-X"})
+      assert {:ok, _claimed} = RunQueue.claim("node-1")
       assert {:ok, updated} = RunQueue.mark_running(entry.id)
       assert updated.status == "running"
       assert updated.started_at != nil
@@ -112,7 +114,9 @@ defmodule Kollywood.RunQueueTest do
       {:ok, _entry} = RunQueue.enqueue(%{issue_id: "owned", identifier: "US-OWNED"})
       assert {:ok, claimed} = RunQueue.claim("worker-1")
 
-      assert {:ok, running} = RunQueue.mark_running_for_worker(claimed.id, "worker-1")
+      assert {:ok, running} =
+               RunQueue.mark_running_for_worker(claimed.id, "worker-1", claimed.lease_token)
+
       assert running.status == "running"
       assert running.claimed_by_node == "worker-1"
       assert running.last_heartbeat_at != nil
@@ -123,15 +127,25 @@ defmodule Kollywood.RunQueueTest do
       assert {:ok, claimed} = RunQueue.claim("worker-1")
 
       assert {:error, :conflict} =
-               RunQueue.complete_for_worker(claimed.id, "worker-2", %{
+               RunQueue.complete_for_worker(claimed.id, "worker-2", claimed.lease_token, %{
                  result_payload: %{status: "ok"}
                })
+    end
+
+    test "same worker cannot advance a run with the wrong lease token" do
+      {:ok, _entry} = RunQueue.enqueue(%{issue_id: "wrong-token", identifier: "US-WRONG"})
+      assert {:ok, claimed} = RunQueue.claim("worker-1")
+
+      assert {:error, :conflict} =
+               RunQueue.mark_running_for_worker(claimed.id, "worker-1", Ecto.UUID.generate())
     end
   end
 
   describe "complete/2" do
-    test "marks entry as completed with payload" do
+    test "marks active entry as completed with payload" do
       {:ok, entry} = RunQueue.enqueue(%{issue_id: "x", identifier: "US-X"})
+      assert {:ok, _claimed} = RunQueue.claim("node-1")
+      assert {:ok, _running} = RunQueue.mark_running(entry.id)
       assert {:ok, updated} = RunQueue.complete(entry.id, %{result_payload: %{"status" => "ok"}})
       assert updated.status == "completed"
       assert updated.completed_at != nil
@@ -139,8 +153,10 @@ defmodule Kollywood.RunQueueTest do
   end
 
   describe "fail/2" do
-    test "marks entry as failed" do
+    test "marks active entry as failed" do
       {:ok, entry} = RunQueue.enqueue(%{issue_id: "x", identifier: "US-X"})
+      assert {:ok, _claimed} = RunQueue.claim("node-1")
+      assert {:ok, _running} = RunQueue.mark_running(entry.id)
       assert {:ok, updated} = RunQueue.fail(entry.id, "something broke")
       assert updated.status == "failed"
       assert updated.error == "something broke"
@@ -192,6 +208,9 @@ defmodule Kollywood.RunQueueTest do
     test "list_by_status filters correctly" do
       {:ok, _} = RunQueue.enqueue(%{issue_id: "a", identifier: "US-A"})
       {:ok, e2} = RunQueue.enqueue(%{issue_id: "b", identifier: "US-B"})
+      RunQueue.claim("node-1")
+      RunQueue.claim("node-2")
+      RunQueue.mark_running(e2.id)
       RunQueue.fail(e2.id, "error")
 
       failed = RunQueue.list_by_status("failed")
@@ -213,6 +232,8 @@ defmodule Kollywood.RunQueueTest do
 
     test "get_by_issue returns nil for completed issues" do
       {:ok, e} = RunQueue.enqueue(%{issue_id: "x", identifier: "US-X"})
+      RunQueue.claim("node-1")
+      RunQueue.mark_running(e.id)
       RunQueue.complete(e.id)
       assert RunQueue.get_by_issue("x") == nil
     end
@@ -242,7 +263,9 @@ defmodule Kollywood.RunQueueTest do
     test "reclaims running entries with stale heartbeats" do
       {:ok, _entry} = RunQueue.enqueue(%{issue_id: "running-stale", identifier: "US-RUN-ST"})
       assert {:ok, claimed} = RunQueue.claim("worker-1")
-      assert {:ok, _running} = RunQueue.mark_running_for_worker(claimed.id, "worker-1")
+
+      assert {:ok, _running} =
+               RunQueue.mark_running_for_worker(claimed.id, "worker-1", claimed.lease_token)
 
       old_time = DateTime.add(DateTime.utc_now(), -700, :second)
 
@@ -264,6 +287,8 @@ defmodule Kollywood.RunQueueTest do
   describe "prune_completed/1" do
     test "removes old completed entries" do
       {:ok, e} = RunQueue.enqueue(%{issue_id: "old", identifier: "US-O"})
+      RunQueue.claim("node-1")
+      RunQueue.mark_running(e.id)
       RunQueue.complete(e.id)
 
       old_time = DateTime.add(DateTime.utc_now(), -100_000, :second)

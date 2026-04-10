@@ -143,10 +143,10 @@ defmodule Kollywood.WorkerNode do
     state = touch_seen(state)
 
     case Map.pop(state.active_workers, entry_id) do
-      {%{worker_pid: ^worker_pid, monitor_ref: ref}, active_workers} ->
+      {%{worker_pid: ^worker_pid, monitor_ref: ref} = worker, active_workers} ->
         Process.demonitor(ref, [:flush])
         state = %{state | active_workers: active_workers}
-        {:noreply, handle_worker_result(state, entry_id, result)}
+        {:noreply, handle_worker_result(state, entry_id, worker, result)}
 
       _ ->
         {:noreply, state}
@@ -157,11 +157,11 @@ defmodule Kollywood.WorkerNode do
     state = touch_seen(state)
 
     case find_worker_by_ref(state, ref) do
-      {entry_id, %{worker_pid: ^pid}} ->
+      {entry_id, %{worker_pid: ^pid} = worker} ->
         active_workers = Map.delete(state.active_workers, entry_id)
         state = %{state | active_workers: active_workers}
         error_msg = "Worker process exited: #{inspect(reason)}"
-        maybe_fail_remote_run(state, entry_id, error_msg)
+        maybe_fail_remote_run(state, entry_id, worker.lease_token, error_msg)
         {:noreply, lease_and_run(state)}
 
       _ ->
@@ -193,12 +193,13 @@ defmodule Kollywood.WorkerNode do
     entry_id = entry_field(entry, :id)
     issue_id = entry_field(entry, :issue_id)
     identifier = entry_field(entry, :identifier) || issue_id
+    lease_token = entry_field(entry, :lease_token)
     consumer_pid = self()
     control_plane = state.control_plane
     worker_id = state.worker_id
 
     run_fun = fn ->
-      case ControlPlaneClient.start_run(control_plane, entry_id, worker_id) do
+      case ControlPlaneClient.start_run(control_plane, entry_id, worker_id, lease_token) do
         :ok ->
           run_opts = decode_run_opts(entry)
           issue = decode_issue_from_entry(entry)
@@ -210,6 +211,7 @@ defmodule Kollywood.WorkerNode do
               control_plane,
               entry_id,
               worker_id,
+              lease_token,
               issue_id,
               attempt,
               identifier
@@ -244,6 +246,7 @@ defmodule Kollywood.WorkerNode do
           queue_entry_id: entry_id,
           issue_id: issue_id,
           identifier: identifier,
+          lease_token: lease_token,
           attempt: entry_field(entry, :attempt),
           project_slug: entry_field(entry, :project_slug),
           worker_pid: worker_pid,
@@ -260,6 +263,7 @@ defmodule Kollywood.WorkerNode do
           queue_entry_id: entry_id,
           issue_id: issue_id,
           identifier: identifier,
+          lease_token: lease_token,
           attempt: entry_field(entry, :attempt),
           project_slug: entry_field(entry, :project_slug),
           worker_pid: worker_pid,
@@ -271,18 +275,26 @@ defmodule Kollywood.WorkerNode do
 
       error ->
         Logger.error("WorkerNode failed to start worker for entry #{entry_id}: #{inspect(error)}")
-        maybe_fail_remote_run(state, entry_id, "failed to start worker: #{inspect(error)}")
+
+        maybe_fail_remote_run(
+          state,
+          entry_id,
+          lease_token,
+          "failed to start worker: #{inspect(error)}"
+        )
+
         state
     end
   end
 
-  defp handle_worker_result(state, entry_id, {:ok, result}) do
+  defp handle_worker_result(state, entry_id, worker, {:ok, result}) do
     result_payload = serialize_result(result)
 
     case ControlPlaneClient.complete_run(
            state.control_plane,
            entry_id,
            state.worker_id,
+           worker.lease_token,
            result_payload
          ) do
       :ok ->
@@ -297,7 +309,7 @@ defmodule Kollywood.WorkerNode do
     lease_and_run(state)
   end
 
-  defp handle_worker_result(state, entry_id, {:error, result}) do
+  defp handle_worker_result(state, entry_id, worker, {:error, result}) do
     error_msg =
       cond do
         is_map(result) and Map.has_key?(result, :error) -> to_string(result.error)
@@ -306,12 +318,19 @@ defmodule Kollywood.WorkerNode do
         true -> inspect(result)
       end
 
-    maybe_fail_remote_run(state, entry_id, error_msg)
+    maybe_fail_remote_run(state, entry_id, worker.lease_token, error_msg)
     lease_and_run(state)
   end
 
-  defp maybe_fail_remote_run(state, entry_id, error_msg) do
-    case ControlPlaneClient.fail_run(state.control_plane, entry_id, state.worker_id, error_msg) do
+  defp maybe_fail_remote_run(state, entry_id, lease_token, error_msg)
+       when is_binary(lease_token) and lease_token != "" do
+    case ControlPlaneClient.fail_run(
+           state.control_plane,
+           entry_id,
+           state.worker_id,
+           lease_token,
+           error_msg
+         ) do
       :ok ->
         :ok
 
@@ -324,9 +343,16 @@ defmodule Kollywood.WorkerNode do
     end
   end
 
+  defp maybe_fail_remote_run(_state, _entry_id, _lease_token, _error_msg), do: :ok
+
   defp heartbeat_active_runs(state) do
     Enum.reduce(state.active_workers, touch_seen(state), fn {entry_id, worker}, acc ->
-      case ControlPlaneClient.heartbeat_run(acc.control_plane, entry_id, acc.worker_id) do
+      case ControlPlaneClient.heartbeat_run(
+             acc.control_plane,
+             entry_id,
+             acc.worker_id,
+             worker.lease_token
+           ) do
         :ok ->
           acc
 
@@ -424,6 +450,7 @@ defmodule Kollywood.WorkerNode do
          control_plane,
          entry_id,
          worker_id,
+         lease_token,
          issue_id,
          attempt,
          identifier
@@ -465,7 +492,14 @@ defmodule Kollywood.WorkerNode do
         RunLogs.append_event(run_log_context, event)
       end
 
-      case ControlPlaneClient.report_event(control_plane, entry_id, worker_id, issue_id, event) do
+      case ControlPlaneClient.report_event(
+             control_plane,
+             entry_id,
+             worker_id,
+             lease_token,
+             issue_id,
+             event
+           ) do
         :ok ->
           :ok
 
