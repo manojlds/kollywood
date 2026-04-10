@@ -6,6 +6,7 @@ RELEASE_DIR="$REPO_DIR/_build/prod/rel/kollywood"
 SERVICE_NAME="kollywood-server.service"
 DRAIN_TIMEOUT_SECONDS="${KOLLYWOOD_DRAIN_TIMEOUT_SECONDS:-900}"
 ENV_FILE="${KOLLYWOOD_ENV_FILE:-$HOME/.config/kollywood-server/kollywood-server.env}"
+POSTGRES_SERVICE_NAME="${KOLLYWOOD_POSTGRES_SERVICE_NAME:-kollywood-postgres.service}"
 
 DEPLOY_SUCCESS=0
 DRAIN_ENABLED=0
@@ -30,6 +31,11 @@ set +a
 require_env DATABASE_URL
 require_env SECRET_KEY_BASE
 require_env PHX_HOST
+
+if systemctl --user cat "$POSTGRES_SERVICE_NAME" >/dev/null 2>&1; then
+  log "Starting $POSTGRES_SERVICE_NAME"
+  systemctl --user start "$POSTGRES_SERVICE_NAME"
+fi
 
 on_exit() {
   exit_code=$?

@@ -1,0 +1,19 @@
+[Unit]
+Description=Kollywood Postgres (Docker)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=__REPO_DIR__
+EnvironmentFile=__ENV_FILE__
+ExecStart=__REPO_DIR__/bin/postgres-docker-service start
+ExecStop=__REPO_DIR__/bin/postgres-docker-service stop
+ExecReload=__REPO_DIR__/bin/postgres-docker-service restart
+TimeoutStartSec=120
+TimeoutStopSec=60
+Environment=PATH=__PATH__
+
+[Install]
+WantedBy=default.target
