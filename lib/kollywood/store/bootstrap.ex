@@ -1,6 +1,6 @@
 defmodule Kollywood.Store.Bootstrap do
   @moduledoc """
-  Boots the SQLite-backed control store by running migrations.
+  Boots the control store by running migrations.
   """
 
   use GenServer
@@ -23,10 +23,12 @@ defmodule Kollywood.Store.Bootstrap do
   end
 
   defp run_bootstrap! do
-    db_path = Application.get_env(:kollywood, Repo)[:database]
+    if Repo.__adapter__() == Ecto.Adapters.SQLite3 do
+      db_path = Application.get_env(:kollywood, Repo)[:database]
 
-    if is_binary(db_path) and db_path != ":memory:" do
-      File.mkdir_p!(Path.dirname(Path.expand(db_path)))
+      if is_binary(db_path) and db_path != ":memory:" do
+        File.mkdir_p!(Path.dirname(Path.expand(db_path)))
+      end
     end
 
     migrations_path = Application.app_dir(:kollywood, "priv/repo/migrations")

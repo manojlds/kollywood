@@ -4,7 +4,7 @@ ExUnit.start(exclude: [:docker_integration])
 migrations_path = Application.app_dir(:kollywood, "priv/repo/migrations")
 db_path = Application.get_env(:kollywood, Kollywood.Repo)[:database]
 
-if is_binary(db_path) and db_path != ":memory:" do
+if Kollywood.Repo.__adapter__() == Ecto.Adapters.SQLite3 and is_binary(db_path) and db_path != ":memory:" do
   File.mkdir_p!(Path.dirname(Path.expand(db_path)))
 end
 

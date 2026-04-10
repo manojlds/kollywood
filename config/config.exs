@@ -7,19 +7,18 @@
 # General application configuration
 import Config
 
-kollywood_home =
-  System.get_env("KOLLYWOOD_HOME") ||
-    Path.join(System.user_home!(), ".kollywood")
-
-default_db_path =
-  System.get_env("KOLLYWOOD_DB_PATH") ||
-    Path.join(Path.expand(kollywood_home), "kollywood.db")
+config :kollywood, :ecto_adapter, Ecto.Adapters.SQLite3
 
 config :kollywood,
   generators: [timestamp_type: :utc_datetime],
   app_mode: :all,
   orchestrator_enabled: true,
   orchestrator_dispatch_mode: :queue,
+  orchestrator_leader_election_enabled: false,
+  orchestrator_leader_lease_name: "orchestrator",
+  orchestrator_leader_lease_ttl_ms: 15_000,
+  orchestrator_leader_lease_refresh_interval_ms: 5_000,
+  orchestrator_control_state_backend: :auto,
   worker_transport: :local_queue,
   control_plane_url: nil,
   internal_api_token: nil,
@@ -35,10 +34,6 @@ config :kollywood,
 config :kollywood, Kollywood.PrdJsonArchiver, enabled: true, interval_ms: 15 * 60 * 1000
 
 config :kollywood, Kollywood.Repo,
-  adapter: Ecto.Adapters.SQLite3,
-  database: default_db_path,
-  pool_size: 5,
-  busy_timeout: 5_000,
   stacktrace: true,
   show_sensitive_data_on_connection_error: true
 

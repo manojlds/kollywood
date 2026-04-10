@@ -1,5 +1,8 @@
 import Config
 
+truthy_env? = fn value -> value in ["1", "true", "TRUE", "yes", "YES"] end
+maybe_enable_ipv6 = fn value -> if truthy_env?.(value), do: [:inet6], else: [] end
+
 # config/runtime.exs is executed for all environments, including
 # during releases. It is executed after compilation and before the
 # system starts, so it is typically used to load production configuration
@@ -84,15 +87,37 @@ case System.get_env("KOLLYWOOD_GLOBAL_MAX_CONCURRENT_AGENTS") do
 end
 
 if config_env() != :test do
-  kollywood_home =
-    System.get_env("KOLLYWOOD_HOME") ||
-      Path.join(System.user_home!(), ".kollywood")
+  case Application.get_env(:kollywood, :ecto_adapter, Ecto.Adapters.SQLite3) do
+    Ecto.Adapters.Postgres ->
+      database_url =
+        System.get_env("DATABASE_URL") ||
+          System.get_env("KOLLYWOOD_DATABASE_URL") ||
+          if(config_env() == :dev, do: "ecto://postgres:postgres@127.0.0.1:5432/kollywood_dev")
 
-  default_db_path = Path.join(Path.expand(kollywood_home), "kollywood.db")
+      if config_env() == :prod and is_nil(database_url) do
+        raise "DATABASE_URL or KOLLYWOOD_DATABASE_URL is required for Postgres"
+      end
 
-  config :kollywood, Kollywood.Repo,
-    database: System.get_env("KOLLYWOOD_DB_PATH", default_db_path),
-    pool_size: String.to_integer(System.get_env("POOL_SIZE", "5"))
+      if database_url do
+        config :kollywood, Kollywood.Repo,
+          url: database_url,
+          pool_size: String.to_integer(System.get_env("POOL_SIZE", "10")),
+          socket_options: maybe_enable_ipv6.(System.get_env("ECTO_IPV6")),
+          ssl: truthy_env?.(System.get_env("ECTO_SSL"))
+      end
+
+    _other ->
+      kollywood_home =
+        System.get_env("KOLLYWOOD_HOME") ||
+          Path.join(System.user_home!(), ".kollywood")
+
+      default_db_path = Path.join(Path.expand(kollywood_home), "kollywood.db")
+
+      config :kollywood, Kollywood.Repo,
+        database: System.get_env("KOLLYWOOD_DB_PATH", default_db_path),
+        pool_size: String.to_integer(System.get_env("POOL_SIZE", "5")),
+        busy_timeout: 5_000
+  end
 
   if control_plane_url = System.get_env("KOLLYWOOD_CONTROL_PLANE_URL") do
     config :kollywood, control_plane_url: control_plane_url
@@ -105,6 +130,24 @@ if config_env() != :test do
   case System.get_env("KOLLYWOOD_WORKER_TRANSPORT") do
     "remote" -> config :kollywood, worker_transport: :remote
     "local_queue" -> config :kollywood, worker_transport: :local_queue
+    nil -> :ok
+    _other -> :ok
+  end
+
+  case System.get_env("KOLLYWOOD_ORCHESTRATOR_LEADER_ELECTION") do
+    value when value in ["1", "true", "TRUE", "yes", "YES"] ->
+      config :kollywood, orchestrator_leader_election_enabled: true
+
+    value when value in ["0", "false", "FALSE", "no", "NO"] ->
+      config :kollywood, orchestrator_leader_election_enabled: false
+
+    _other ->
+      :ok
+  end
+
+  case System.get_env("KOLLYWOOD_CONTROL_STATE_BACKEND") do
+    "db" -> config :kollywood, orchestrator_control_state_backend: :db
+    "file" -> config :kollywood, orchestrator_control_state_backend: :file
     nil -> :ok
     _other -> :ok
   end

@@ -7,3 +7,11 @@ ready_http = "http://127.0.0.1:${PORT:-4000}/"
 ready_delay = 1
 retry = 3
 env = { MIX_ENV = "dev" }
+
+[daemons.server_postgres]
+run = "bash -lc 'mise run setup && exec mix phx.server'"
+mise = true
+ready_http = "http://127.0.0.1:${PORT:-4000}/"
+ready_delay = 1
+retry = 3
+env = { MIX_ENV = "dev", KOLLYWOOD_DB_ADAPTER = "postgres", DATABASE_URL = "ecto://postgres:postgres@127.0.0.1:5432/kollywood_dev" }
