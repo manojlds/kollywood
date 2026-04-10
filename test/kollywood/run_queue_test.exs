@@ -107,6 +107,28 @@ defmodule Kollywood.RunQueueTest do
     end
   end
 
+  describe "worker-owned transitions" do
+    test "worker can move its claimed entry to running" do
+      {:ok, _entry} = RunQueue.enqueue(%{issue_id: "owned", identifier: "US-OWNED"})
+      assert {:ok, claimed} = RunQueue.claim("worker-1")
+
+      assert {:ok, running} = RunQueue.mark_running_for_worker(claimed.id, "worker-1")
+      assert running.status == "running"
+      assert running.claimed_by_node == "worker-1"
+      assert running.last_heartbeat_at != nil
+    end
+
+    test "another worker cannot complete a leased entry it does not own" do
+      {:ok, _entry} = RunQueue.enqueue(%{issue_id: "conflict", identifier: "US-CONFLICT"})
+      assert {:ok, claimed} = RunQueue.claim("worker-1")
+
+      assert {:error, :conflict} =
+               RunQueue.complete_for_worker(claimed.id, "worker-2", %{
+                 result_payload: %{status: "ok"}
+               })
+    end
+  end
+
   describe "complete/2" do
     test "marks entry as completed with payload" do
       {:ok, entry} = RunQueue.enqueue(%{issue_id: "x", identifier: "US-X"})
@@ -206,7 +228,7 @@ defmodule Kollywood.RunQueueTest do
 
       Repo.update_all(
         from(e in Entry, where: e.id == ^claimed_id),
-        set: [claimed_at: old_time]
+        set: [claimed_at: old_time, last_heartbeat_at: old_time]
       )
 
       count = RunQueue.reclaim_stale(600_000)
@@ -215,6 +237,27 @@ defmodule Kollywood.RunQueueTest do
       refreshed = RunQueue.get(claimed.id)
       assert refreshed.status == "pending"
       assert refreshed.claimed_by_node == nil
+    end
+
+    test "reclaims running entries with stale heartbeats" do
+      {:ok, _entry} = RunQueue.enqueue(%{issue_id: "running-stale", identifier: "US-RUN-ST"})
+      assert {:ok, claimed} = RunQueue.claim("worker-1")
+      assert {:ok, _running} = RunQueue.mark_running_for_worker(claimed.id, "worker-1")
+
+      old_time = DateTime.add(DateTime.utc_now(), -700, :second)
+
+      Repo.update_all(
+        from(e in Entry, where: e.id == ^claimed.id),
+        set: [last_heartbeat_at: old_time]
+      )
+
+      count = RunQueue.reclaim_stale(600_000)
+      assert count == 1
+
+      refreshed = RunQueue.get(claimed.id)
+      assert refreshed.status == "pending"
+      assert refreshed.claimed_by_node == nil
+      assert refreshed.started_at == nil
     end
   end
 

@@ -93,6 +93,21 @@ if config_env() != :test do
   config :kollywood, Kollywood.Repo,
     database: System.get_env("KOLLYWOOD_DB_PATH", default_db_path),
     pool_size: String.to_integer(System.get_env("POOL_SIZE", "5"))
+
+  if control_plane_url = System.get_env("KOLLYWOOD_CONTROL_PLANE_URL") do
+    config :kollywood, control_plane_url: control_plane_url
+  end
+
+  if internal_api_token = System.get_env("KOLLYWOOD_INTERNAL_API_TOKEN") do
+    config :kollywood, internal_api_token: internal_api_token
+  end
+
+  case System.get_env("KOLLYWOOD_WORKER_TRANSPORT") do
+    "remote" -> config :kollywood, worker_transport: :remote
+    "local_queue" -> config :kollywood, worker_transport: :local_queue
+    nil -> :ok
+    _other -> :ok
+  end
 end
 
 if config_env() == :prod do

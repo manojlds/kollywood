@@ -1,0 +1,72 @@
+defmodule KollywoodWeb.InternalWorkerControllerTest do
+  use KollywoodWeb.ConnCase, async: false
+
+  alias Kollywood.RunQueue
+
+  setup do
+    previous_token = Application.get_env(:kollywood, :internal_api_token)
+    Application.put_env(:kollywood, :internal_api_token, "test-internal-token")
+
+    on_exit(fn ->
+      Application.put_env(:kollywood, :internal_api_token, previous_token)
+    end)
+
+    :ok
+  end
+
+  test "rejects unauthenticated requests", %{conn: conn} do
+    conn =
+      conn
+      |> put_req_header("accept", "application/json")
+      |> post("/api/internal/workers/lease-next", %{worker_id: "worker-1", limit: 1})
+
+    assert json_response(conn, 401)["error"] == "unauthorized"
+  end
+
+  test "leases and completes work for an authenticated worker", %{conn: conn} do
+    {:ok, entry} = RunQueue.enqueue(%{issue_id: "internal-1", identifier: "US-INT-1"})
+    entry_id = entry.id
+
+    lease_conn =
+      conn
+      |> auth_conn()
+      |> post("/api/internal/workers/lease-next", %{worker_id: "worker-1", limit: 1})
+
+    entries = get_in(json_response(lease_conn, 200), ["data", "entries"])
+    assert [%{"id" => ^entry_id, "issue_id" => "internal-1"}] = entries
+
+    start_conn =
+      build_conn()
+      |> auth_conn()
+      |> post("/api/internal/runs/#{entry.id}/start", %{worker_id: "worker-1"})
+
+    assert get_in(json_response(start_conn, 200), ["data", "ok"]) == true
+
+    heartbeat_conn =
+      build_conn()
+      |> auth_conn()
+      |> post("/api/internal/runs/#{entry.id}/heartbeat", %{worker_id: "worker-1"})
+
+    assert get_in(json_response(heartbeat_conn, 200), ["data", "ok"]) == true
+
+    complete_conn =
+      build_conn()
+      |> auth_conn()
+      |> post("/api/internal/runs/#{entry.id}/complete", %{
+        worker_id: "worker-1",
+        result_payload: %{"status" => "ok"}
+      })
+
+    assert get_in(json_response(complete_conn, 200), ["data", "ok"]) == true
+
+    refreshed = RunQueue.get(entry.id)
+    assert refreshed.status == "completed"
+    assert refreshed.claimed_by_node == "worker-1"
+  end
+
+  defp auth_conn(conn) do
+    conn
+    |> put_req_header("accept", "application/json")
+    |> put_req_header("authorization", "Bearer test-internal-token")
+  end
+end

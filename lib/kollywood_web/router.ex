@@ -14,6 +14,11 @@ defmodule KollywoodWeb.Router do
     plug :accepts, ["json"]
   end
 
+  pipeline :internal_api do
+    plug :accepts, ["json"]
+    plug KollywoodWeb.Plugs.InternalApiAuth
+  end
+
   scope "/", KollywoodWeb do
     pipe_through :browser
 
@@ -54,5 +59,16 @@ defmodule KollywoodWeb.Router do
     delete "/projects/:project_slug/stories/:story_id", StoryController, :delete
     get "/projects/:project_slug/runs/:story_id/:attempt/events", RunEventsController, :index
     post "/projects/:project_slug/stories/:story_id/retries", StoryController, :retry_step
+  end
+
+  scope "/api/internal", KollywoodWeb do
+    pipe_through :internal_api
+
+    post "/workers/lease-next", InternalWorkerController, :lease_next
+    post "/runs/:id/start", InternalWorkerController, :start
+    post "/runs/:id/heartbeat", InternalWorkerController, :heartbeat
+    post "/runs/:id/events", InternalWorkerController, :events
+    post "/runs/:id/complete", InternalWorkerController, :complete
+    post "/runs/:id/fail", InternalWorkerController, :fail
   end
 end
