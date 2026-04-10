@@ -21,6 +21,7 @@ defmodule Kollywood.RunQueue.Entry do
     field(:error, :string)
     field(:claimed_by_node, :string)
     field(:claimed_at, :utc_datetime_usec)
+    field(:last_heartbeat_at, :utc_datetime_usec)
     field(:started_at, :utc_datetime_usec)
     field(:completed_at, :utc_datetime_usec)
 
@@ -38,6 +39,7 @@ defmodule Kollywood.RunQueue.Entry do
     :error,
     :claimed_by_node,
     :claimed_at,
+    :last_heartbeat_at,
     :started_at,
     :completed_at
   ]

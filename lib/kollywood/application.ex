@@ -68,10 +68,7 @@ defmodule Kollywood.Application do
 
         worker_children =
           for i <- 1..worker_count do
-            name = :"Kollywood.WorkerConsumer.#{i}"
-
-            {Kollywood.WorkerConsumer,
-             name: name, max_local_workers: worker_concurrency, worker_id: i}
+            worker_child_spec(mode, i, worker_concurrency)
           end
 
         children ++ worker_children
@@ -84,10 +81,30 @@ defmodule Kollywood.Application do
         children ++
           [Kollywood.PreviewSessionManager, Kollywood.Chat.Supervisor, KollywoodWeb.Endpoint]
       else
-        children ++ [Kollywood.PreviewSessionManager]
+        if AppMode.data_enabled?(mode) do
+          children ++ [Kollywood.PreviewSessionManager]
+        else
+          children
+        end
       end
 
     children
+  end
+
+  defp worker_child_spec(mode, worker_id, worker_concurrency) do
+    worker_transport = Application.get_env(:kollywood, :worker_transport, :local_queue)
+
+    if mode == :worker or worker_transport == :remote do
+      name = :"Kollywood.WorkerNode.#{worker_id}"
+
+      {Kollywood.WorkerNode,
+       name: name, max_local_workers: worker_concurrency, worker_id: worker_id}
+    else
+      name = :"Kollywood.WorkerConsumer.#{worker_id}"
+
+      {Kollywood.WorkerConsumer,
+       name: name, max_local_workers: worker_concurrency, worker_id: worker_id}
+    end
   end
 
   defp maybe_add_orchestrator(children, mode) do
