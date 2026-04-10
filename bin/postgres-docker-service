@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ACTION="${1:-}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
+ROOT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+COMPOSE_FILE="$ROOT_DIR/ops/docker/postgres.compose.yml"
+ENV_FILE="${KOLLYWOOD_POSTGRES_ENV_FILE:-$HOME/.config/kollywood-postgres/kollywood-postgres.env}"
+WAIT_TIMEOUT_SECONDS="${KOLLYWOOD_POSTGRES_WAIT_TIMEOUT_SECONDS:-60}"
+
+log() { printf '==> %s\n' "$*"; }
+err() { printf '==> ERROR: %s\n' "$*" >&2; exit 1; }
+
+[[ -f "$COMPOSE_FILE" ]] || err "Compose file not found at $COMPOSE_FILE"
+[[ -f "$ENV_FILE" ]] || err "Env file not found at $ENV_FILE"
+
+set -a
+source "$ENV_FILE"
+set +a
+
+require_env() {
+  local name="$1"
+  [[ -n "${!name:-}" ]] || err "Required environment variable $name is missing (source: $ENV_FILE)"
+}
+
+require_env KOLLYWOOD_POSTGRES_PASSWORD
+require_env KOLLYWOOD_POSTGRES_DB
+require_env KOLLYWOOD_POSTGRES_USER
+require_env KOLLYWOOD_POSTGRES_DATA_DIR
+
+mkdir -p "$KOLLYWOOD_POSTGRES_DATA_DIR"
+
+compose() {
+  docker compose \
+    --project-name "${KOLLYWOOD_POSTGRES_PROJECT_NAME:-kollywood-postgres}" \
+    --env-file "$ENV_FILE" \
+    -f "$COMPOSE_FILE" "$@"
+}
+
+wait_until_ready() {
+  local started_at
+  started_at="$(date +%s)"
+
+  while true; do
+    if compose exec -T postgres pg_isready -U "$KOLLYWOOD_POSTGRES_USER" -d "$KOLLYWOOD_POSTGRES_DB" >/dev/null 2>&1; then
+      return 0
+    fi
+
+    if (( $(date +%s) - started_at >= WAIT_TIMEOUT_SECONDS )); then
+      return 1
+    fi
+
+    sleep 1
+  done
+}
+
+connection_url() {
+  printf 'ecto://%s:%s@127.0.0.1:%s/%s\n' \
+    "$KOLLYWOOD_POSTGRES_USER" \
+    "$KOLLYWOOD_POSTGRES_PASSWORD" \
+    "${KOLLYWOOD_POSTGRES_PORT:-5432}" \
+    "$KOLLYWOOD_POSTGRES_DB"
+}
+
+case "$ACTION" in
+  start)
+    log "Starting Postgres container"
+    compose up -d
+    wait_until_ready || err "Postgres did not become ready within ${WAIT_TIMEOUT_SECONDS}s"
+    log "Postgres is ready"
+    ;;
+  stop)
+    log "Stopping Postgres container"
+    compose down
+    ;;
+  restart)
+    "$0" stop
+    "$0" start
+    ;;
+  status)
+    compose ps
+    ;;
+  logs)
+    compose logs --tail=200
+    ;;
+  connection-url)
+    connection_url
+    ;;
+  *)
+    err "usage: $0 <start|stop|restart|status|logs|connection-url>"
+    ;;
+esac

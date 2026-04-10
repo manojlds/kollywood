@@ -8,10 +8,13 @@ This is the recommended production-style setup for Kollywood on Linux.
 
 ```bash
 sudo apt update
-sudo apt install -y build-essential curl git unzip postgresql postgresql-contrib
+sudo apt install -y build-essential curl git unzip docker.io docker-compose-v2
 curl https://mise.run | sh
 curl https://sh.rustup.rs -sSf | sh
 ```
+
+If you prefer distro Postgres instead of Docker, the earlier host-Postgres path still works,
+but the managed Docker service below is the recommended no-sudo runtime path.
 
 2. Clone the app.
 
@@ -21,21 +24,23 @@ git clone <your-repo-url> ~/projects/kollywood
 git clone <your-repo-url> ~/projects/kollywood-server
 ```
 
-3. Create the Postgres role and database.
+3. Install the Docker Postgres user service.
 
 ```bash
-sudo -u postgres createuser --pwprompt kollywood
-sudo -u postgres createdb --owner=kollywood kollywood_prod
+cd ~/projects/kollywood
+bin/install-postgres-docker-service \
+  --repo-dir "$HOME/projects/kollywood-server" \
+  --start
 ```
 
-4. Install the user service and env file.
+4. Install the Kollywood app user service and point it at the Docker Postgres URL.
 
 ```bash
 cd ~/projects/kollywood
 bin/install-user-service \
   --repo-dir "$HOME/projects/kollywood-server" \
   --phx-host "your-hostname-or-tailnet-name" \
-  --database-url "ecto://kollywood:YOUR_DB_PASSWORD@127.0.0.1:5432/kollywood_prod"
+  --database-url "$(bin/postgres-docker-service connection-url)"
 ```
 
 5. Build and deploy.
@@ -52,29 +57,33 @@ systemctl --user status kollywood-server.service
 curl http://127.0.0.1:4000/api/health
 ```
 
-## Existing SQLite Host to Postgres
+## Existing SQLite Host to Docker Postgres
 
-1. Install and start Postgres.
-2. Create `kollywood_prod` and a dedicated role.
-3. Update `~/.config/kollywood-server/kollywood-server.env` to include `DATABASE_URL`.
-4. Set `KOLLYWOOD_CONTROL_STATE_BACKEND=db` and `KOLLYWOOD_ORCHESTRATOR_LEADER_ELECTION=true`.
+1. Install Docker Engine and the Compose plugin.
+2. Run `bin/install-postgres-docker-service --repo-dir "$HOME/projects/kollywood-server" --start`.
+3. Update `~/.config/kollywood-server/kollywood-server.env` to include `DATABASE_URL=$(~/projects/kollywood/bin/postgres-docker-service connection-url)`.
+4. Ensure `KOLLYWOOD_CONTROL_STATE_BACKEND=db` and `KOLLYWOOD_ORCHESTRATOR_LEADER_ELECTION=true` are set.
 5. Run `mise x -- bash bin/deploy` from the dev repo.
 
 ## macOS Laptop
 
-Use Postgres locally, but do not use systemd.
+Use Docker Postgres locally, but do not use systemd.
 
 1. Install tooling.
 
 ```bash
-brew install postgresql@16 mise rustup-init
-brew services start postgresql@16
+brew install mise rustup-init docker
 ```
 
-2. Create the local database.
+2. Start local Docker Postgres.
 
 ```bash
-createdb kollywood_dev
+cd ~/projects/kollywood
+KOLLYWOOD_POSTGRES_DB=kollywood_dev \
+KOLLYWOOD_POSTGRES_USER=kollywood \
+KOLLYWOOD_POSTGRES_PASSWORD=kollywood-dev \
+KOLLYWOOD_POSTGRES_DATA_DIR="$HOME/.local/share/kollywood/postgres-dev" \
+bin/postgres-docker-service start
 ```
 
 3. Run the app with Postgres.
@@ -82,7 +91,7 @@ createdb kollywood_dev
 ```bash
 cd ~/projects/kollywood
 mix clean
-KOLLYWOOD_DB_ADAPTER=postgres DATABASE_URL=ecto://127.0.0.1/kollywood_dev pitchfork start server_postgres
+DATABASE_URL="ecto://kollywood:kollywood-dev@127.0.0.1:5432/kollywood_dev" pitchfork start server_postgres
 ```
 
 For a prod-like local release instead of pitchfork:

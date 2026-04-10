@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVICE_NAME="kollywood-postgres.service"
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+UNIT_DIR="$CONFIG_HOME/systemd/user"
+ENV_FILE="${KOLLYWOOD_POSTGRES_ENV_FILE:-$CONFIG_HOME/kollywood-postgres/kollywood-postgres.env}"
+UNIT_FILE="$UNIT_DIR/$SERVICE_NAME"
+REPO_DIR="${KOLLYWOOD_SERVER_DIR:-$HOME/projects/kollywood-server}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
+ROOT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+TEMPLATE_FILE="$ROOT_DIR/ops/systemd/kollywood-postgres.service.example"
+OVERWRITE_ENV=0
+START_SERVICE=0
+POSTGRES_DB_VALUE="${KOLLYWOOD_POSTGRES_DB:-kollywood_prod}"
+POSTGRES_USER_VALUE="${KOLLYWOOD_POSTGRES_USER:-kollywood}"
+POSTGRES_PASSWORD_VALUE="${KOLLYWOOD_POSTGRES_PASSWORD:-}"
+POSTGRES_PORT_VALUE="${KOLLYWOOD_POSTGRES_PORT:-5432}"
+POSTGRES_IMAGE_TAG_VALUE="${KOLLYWOOD_POSTGRES_IMAGE_TAG:-16}"
+POSTGRES_CONTAINER_NAME_VALUE="${KOLLYWOOD_POSTGRES_CONTAINER_NAME:-kollywood-postgres}"
+POSTGRES_PROJECT_NAME_VALUE="${KOLLYWOOD_POSTGRES_PROJECT_NAME:-kollywood-postgres}"
+POSTGRES_DATA_DIR_VALUE="${KOLLYWOOD_POSTGRES_DATA_DIR:-$HOME/.local/share/kollywood/postgres/data}"
+
+usage() {
+  cat <<'EOF'
+Usage: bin/install-postgres-docker-service [options]
+
+Options:
+  --repo-dir PATH           Repo path used by the user service (default: ~/projects/kollywood-server)
+  --env-file PATH           Target env file path
+  --db-name NAME            Postgres database name (default: kollywood_prod)
+  --db-user USER            Postgres user name (default: kollywood)
+  --db-password PASSWORD    Postgres password (generated when omitted)
+  --port PORT               Host port to publish (default: 5432)
+  --image-tag TAG           Postgres image tag (default: 16)
+  --data-dir PATH           Persistent data directory (default: ~/.local/share/kollywood/postgres/data)
+  --overwrite-env           Rewrite the env file even if it exists
+  --start                   Start the user service after install
+  --help                    Show this message
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo-dir)
+      REPO_DIR="$2"
+      shift 2
+      ;;
+    --env-file)
+      ENV_FILE="$2"
+      shift 2
+      ;;
+    --db-name)
+      POSTGRES_DB_VALUE="$2"
+      shift 2
+      ;;
+    --db-user)
+      POSTGRES_USER_VALUE="$2"
+      shift 2
+      ;;
+    --db-password)
+      POSTGRES_PASSWORD_VALUE="$2"
+      shift 2
+      ;;
+    --port)
+      POSTGRES_PORT_VALUE="$2"
+      shift 2
+      ;;
+    --image-tag)
+      POSTGRES_IMAGE_TAG_VALUE="$2"
+      shift 2
+      ;;
+    --data-dir)
+      POSTGRES_DATA_DIR_VALUE="$2"
+      shift 2
+      ;;
+    --overwrite-env)
+      OVERWRITE_ENV=1
+      shift
+      ;;
+    --start)
+      START_SERVICE=1
+      shift
+      ;;
+    --help)
+      usage
+      exit 0
+      ;;
+    *)
+      printf 'unknown argument: %s\n' "$1" >&2
+      usage >&2
+      exit 64
+      ;;
+  esac
+done
+
+[[ -d "$REPO_DIR" ]] || { printf 'repo not found at %s\n' "$REPO_DIR" >&2; exit 1; }
+[[ -f "$TEMPLATE_FILE" ]] || { printf 'template not found at %s\n' "$TEMPLATE_FILE" >&2; exit 1; }
+
+if [[ -z "$POSTGRES_PASSWORD_VALUE" ]]; then
+  POSTGRES_PASSWORD_VALUE="$(openssl rand -hex 24)"
+fi
+
+mkdir -p "$UNIT_DIR"
+mkdir -p "$(dirname "$ENV_FILE")"
+mkdir -p "$POSTGRES_DATA_DIR_VALUE"
+
+if [[ ! -f "$ENV_FILE" || "$OVERWRITE_ENV" -eq 1 ]]; then
+  cat >"$ENV_FILE" <<EOF
+KOLLYWOOD_POSTGRES_PROJECT_NAME=$POSTGRES_PROJECT_NAME_VALUE
+KOLLYWOOD_POSTGRES_CONTAINER_NAME=$POSTGRES_CONTAINER_NAME_VALUE
+KOLLYWOOD_POSTGRES_IMAGE_TAG=$POSTGRES_IMAGE_TAG_VALUE
+KOLLYWOOD_POSTGRES_PORT=$POSTGRES_PORT_VALUE
+KOLLYWOOD_POSTGRES_DB=$POSTGRES_DB_VALUE
+KOLLYWOOD_POSTGRES_USER=$POSTGRES_USER_VALUE
+KOLLYWOOD_POSTGRES_PASSWORD=$POSTGRES_PASSWORD_VALUE
+KOLLYWOOD_POSTGRES_DATA_DIR=$POSTGRES_DATA_DIR_VALUE
+EOF
+fi
+
+PATH_VALUE="$HOME/.opencode/bin:$HOME/.amp/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+sed \
+  -e "s|__REPO_DIR__|$REPO_DIR|g" \
+  -e "s|__ENV_FILE__|$ENV_FILE|g" \
+  -e "s|__PATH__|$PATH_VALUE|g" \
+  "$TEMPLATE_FILE" >"$UNIT_FILE"
+
+systemctl --user daemon-reload
+systemctl --user enable "$SERVICE_NAME"
+
+if [[ "$START_SERVICE" -eq 1 ]]; then
+  systemctl --user restart "$SERVICE_NAME"
+fi
+
+printf 'Installed %s\n' "$UNIT_FILE"
+printf 'Env file: %s\n' "$ENV_FILE"
+printf 'DATABASE_URL=%s\n' "ecto://$POSTGRES_USER_VALUE:$POSTGRES_PASSWORD_VALUE@127.0.0.1:$POSTGRES_PORT_VALUE/$POSTGRES_DB_VALUE"
+
+if [[ "$START_SERVICE" -eq 1 ]]; then
+  systemctl --user status "$SERVICE_NAME" --no-pager
+else
+  printf 'Run `systemctl --user restart %s` when ready.\n' "$SERVICE_NAME"
+fi
