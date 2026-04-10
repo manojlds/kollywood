@@ -20,6 +20,7 @@ defmodule Kollywood.RunQueue.Entry do
     field(:result_payload, :string)
     field(:error, :string)
     field(:claimed_by_node, :string)
+    field(:lease_token, :string)
     field(:claimed_at, :utc_datetime_usec)
     field(:last_heartbeat_at, :utc_datetime_usec)
     field(:started_at, :utc_datetime_usec)
@@ -38,6 +39,7 @@ defmodule Kollywood.RunQueue.Entry do
     :result_payload,
     :error,
     :claimed_by_node,
+    :lease_token,
     :claimed_at,
     :last_heartbeat_at,
     :started_at,

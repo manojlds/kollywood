@@ -48,6 +48,7 @@ defmodule Kollywood.RunQueue do
   @spec claim(String.t(), pos_integer()) :: {:ok, Entry.t()} | :none
   def claim(node_id, count \\ 1) when is_binary(node_id) and count > 0 do
     now = DateTime.utc_now()
+    lease_token = Ecto.UUID.generate()
 
     entry =
       Entry
@@ -68,6 +69,7 @@ defmodule Kollywood.RunQueue do
             set: [
               status: "claimed",
               claimed_by_node: node_id,
+              lease_token: lease_token,
               claimed_at: now,
               last_heartbeat_at: now,
               updated_at: now
@@ -99,24 +101,28 @@ defmodule Kollywood.RunQueue do
 
   @spec mark_running(integer()) :: {:ok, Entry.t()} | {:error, term()}
   def mark_running(entry_id) do
-    case Repo.get(Entry, entry_id) do
-      nil ->
-        {:error, :not_found}
-
-      entry ->
-        entry
-        |> Entry.changeset(%{status: "running", started_at: DateTime.utc_now()})
-        |> Repo.update()
-    end
-  end
-
-  @spec mark_running_for_worker(integer(), String.t()) :: {:ok, Entry.t()} | {:error, term()}
-  def mark_running_for_worker(entry_id, worker_id)
-      when is_integer(entry_id) and is_binary(worker_id) do
     now = DateTime.utc_now()
 
     {updated_count, _} =
-      owned_active_query(entry_id, worker_id)
+      Entry
+      |> where([e], e.id == ^entry_id and e.status == "claimed")
+      |> Repo.update_all(set: [status: "running", started_at: now, updated_at: now])
+
+    case updated_count do
+      1 -> {:ok, Repo.get!(Entry, entry_id)}
+      _ -> ownership_error(entry_id)
+    end
+  end
+
+  @spec mark_running_for_worker(integer(), String.t(), String.t()) ::
+          {:ok, Entry.t()} | {:error, term()}
+  def mark_running_for_worker(entry_id, worker_id, lease_token)
+      when is_integer(entry_id) and is_binary(worker_id) and is_binary(lease_token) do
+    now = DateTime.utc_now()
+
+    {updated_count, _} =
+      owned_active_query(entry_id, worker_id, lease_token)
+      |> where([e], e.status == "claimed")
       |> Repo.update_all(
         set: [
           status: "running",
@@ -132,51 +138,55 @@ defmodule Kollywood.RunQueue do
     end
   end
 
-  def mark_running_for_worker(_entry_id, _worker_id), do: {:error, :invalid_arguments}
+  def mark_running_for_worker(_entry_id, _worker_id, _lease_token),
+    do: {:error, :invalid_arguments}
 
   # --- Complete ---
 
   @spec complete(integer(), map()) :: {:ok, Entry.t()} | {:error, term()}
   def complete(entry_id, result_attrs \\ %{}) do
-    case Repo.get(Entry, entry_id) do
-      nil ->
-        {:error, :not_found}
-
-      entry ->
-        payload =
-          Map.get(result_attrs, :result_payload) || Map.get(result_attrs, "result_payload")
-
-        changeset =
-          Entry.changeset(entry, %{
-            status: "completed",
-            result_payload: encode_payload(payload),
-            completed_at: DateTime.utc_now()
-          })
-
-        case Repo.update(changeset) do
-          {:ok, updated} = ok ->
-            broadcast(
-              {:completed, updated.id, updated.issue_id, decode_payload(updated.result_payload)}
-            )
-
-            ok
-
-          error ->
-            error
-        end
-    end
-  end
-
-  @spec complete_for_worker(integer(), String.t(), map()) :: {:ok, Entry.t()} | {:error, term()}
-  def complete_for_worker(entry_id, worker_id, result_attrs \\ %{})
-
-  def complete_for_worker(entry_id, worker_id, result_attrs)
-      when is_integer(entry_id) and is_binary(worker_id) and is_map(result_attrs) do
     payload = Map.get(result_attrs, :result_payload) || Map.get(result_attrs, "result_payload")
     now = DateTime.utc_now()
 
     {updated_count, _} =
-      owned_active_query(entry_id, worker_id)
+      Entry
+      |> where([e], e.id == ^entry_id and e.status in ["claimed", "running"])
+      |> Repo.update_all(
+        set: [
+          status: "completed",
+          result_payload: encode_payload(payload),
+          completed_at: now,
+          updated_at: now
+        ]
+      )
+
+    case updated_count do
+      1 ->
+        updated = Repo.get!(Entry, entry_id)
+
+        broadcast(
+          {:completed, updated.id, updated.issue_id, decode_payload(updated.result_payload)}
+        )
+
+        {:ok, updated}
+
+      _ ->
+        ownership_error(entry_id)
+    end
+  end
+
+  @spec complete_for_worker(integer(), String.t(), String.t(), map()) ::
+          {:ok, Entry.t()} | {:error, term()}
+  def complete_for_worker(entry_id, worker_id, lease_token, result_attrs \\ %{})
+
+  def complete_for_worker(entry_id, worker_id, lease_token, result_attrs)
+      when is_integer(entry_id) and is_binary(worker_id) and is_binary(lease_token) and
+             is_map(result_attrs) do
+    payload = Map.get(result_attrs, :result_payload) || Map.get(result_attrs, "result_payload")
+    now = DateTime.utc_now()
+
+    {updated_count, _} =
+      owned_active_query(entry_id, worker_id, lease_token)
       |> Repo.update_all(
         set: [
           status: "completed",
@@ -202,42 +212,42 @@ defmodule Kollywood.RunQueue do
     end
   end
 
-  def complete_for_worker(_entry_id, _worker_id, _result_attrs), do: {:error, :invalid_arguments}
+  def complete_for_worker(_entry_id, _worker_id, _lease_token, _result_attrs),
+    do: {:error, :invalid_arguments}
 
   # --- Fail ---
 
   @spec fail(integer(), String.t()) :: {:ok, Entry.t()} | {:error, term()}
   def fail(entry_id, error_message) do
-    case Repo.get(Entry, entry_id) do
-      nil ->
-        {:error, :not_found}
-
-      entry ->
-        changeset =
-          Entry.changeset(entry, %{
-            status: "failed",
-            error: error_message,
-            completed_at: DateTime.utc_now()
-          })
-
-        case Repo.update(changeset) do
-          {:ok, updated} = ok ->
-            broadcast({:failed, updated.id, updated.issue_id, error_message})
-            ok
-
-          error ->
-            error
-        end
-    end
-  end
-
-  @spec fail_for_worker(integer(), String.t(), String.t()) :: {:ok, Entry.t()} | {:error, term()}
-  def fail_for_worker(entry_id, worker_id, error_message)
-      when is_integer(entry_id) and is_binary(worker_id) and is_binary(error_message) do
     now = DateTime.utc_now()
 
     {updated_count, _} =
-      owned_active_query(entry_id, worker_id)
+      Entry
+      |> where([e], e.id == ^entry_id and e.status in ["claimed", "running"])
+      |> Repo.update_all(
+        set: [status: "failed", error: error_message, completed_at: now, updated_at: now]
+      )
+
+    case updated_count do
+      1 ->
+        updated = Repo.get!(Entry, entry_id)
+        broadcast({:failed, updated.id, updated.issue_id, error_message})
+        {:ok, updated}
+
+      _ ->
+        ownership_error(entry_id)
+    end
+  end
+
+  @spec fail_for_worker(integer(), String.t(), String.t(), String.t()) ::
+          {:ok, Entry.t()} | {:error, term()}
+  def fail_for_worker(entry_id, worker_id, lease_token, error_message)
+      when is_integer(entry_id) and is_binary(worker_id) and is_binary(lease_token) and
+             is_binary(error_message) do
+    now = DateTime.utc_now()
+
+    {updated_count, _} =
+      owned_active_query(entry_id, worker_id, lease_token)
       |> Repo.update_all(
         set: [
           status: "failed",
@@ -259,7 +269,8 @@ defmodule Kollywood.RunQueue do
     end
   end
 
-  def fail_for_worker(_entry_id, _worker_id, _error_message), do: {:error, :invalid_arguments}
+  def fail_for_worker(_entry_id, _worker_id, _lease_token, _error_message),
+    do: {:error, :invalid_arguments}
 
   @doc "Marks running queue entries owned by one worker node as failed."
   @spec fail_running_for_node(String.t(), String.t()) :: non_neg_integer()
@@ -284,24 +295,35 @@ defmodule Kollywood.RunQueue do
 
   @spec cancel(integer()) :: {:ok, Entry.t()} | {:error, term()}
   def cancel(entry_id) do
-    case Repo.get(Entry, entry_id) do
-      nil ->
-        {:error, :not_found}
-
-      entry ->
-        entry
-        |> Entry.changeset(%{status: "cancelled", completed_at: DateTime.utc_now()})
-        |> Repo.update()
-    end
-  end
-
-  @spec heartbeat_for_worker(integer(), String.t()) :: {:ok, Entry.t()} | {:error, term()}
-  def heartbeat_for_worker(entry_id, worker_id)
-      when is_integer(entry_id) and is_binary(worker_id) do
     now = DateTime.utc_now()
 
     {updated_count, _} =
-      owned_active_query(entry_id, worker_id)
+      Entry
+      |> where([e], e.id == ^entry_id and e.status in ["pending", "claimed", "running"])
+      |> Repo.update_all(
+        set: [
+          status: "cancelled",
+          completed_at: now,
+          lease_token: nil,
+          last_heartbeat_at: nil,
+          updated_at: now
+        ]
+      )
+
+    case updated_count do
+      1 -> {:ok, Repo.get!(Entry, entry_id)}
+      _ -> ownership_error(entry_id)
+    end
+  end
+
+  @spec heartbeat_for_worker(integer(), String.t(), String.t()) ::
+          {:ok, Entry.t()} | {:error, term()}
+  def heartbeat_for_worker(entry_id, worker_id, lease_token)
+      when is_integer(entry_id) and is_binary(worker_id) and is_binary(lease_token) do
+    now = DateTime.utc_now()
+
+    {updated_count, _} =
+      owned_active_query(entry_id, worker_id, lease_token)
       |> Repo.update_all(set: [last_heartbeat_at: now, updated_at: now])
 
     case updated_count do
@@ -310,18 +332,21 @@ defmodule Kollywood.RunQueue do
     end
   end
 
-  def heartbeat_for_worker(_entry_id, _worker_id), do: {:error, :invalid_arguments}
+  def heartbeat_for_worker(_entry_id, _worker_id, _lease_token), do: {:error, :invalid_arguments}
 
-  @spec get_for_worker(integer(), String.t()) :: Entry.t() | nil
-  def get_for_worker(entry_id, worker_id)
-      when is_integer(entry_id) and is_binary(worker_id) do
+  @spec get_for_worker(integer(), String.t(), String.t()) :: Entry.t() | nil
+  def get_for_worker(entry_id, worker_id, lease_token)
+      when is_integer(entry_id) and is_binary(worker_id) and is_binary(lease_token) do
     Entry
-    |> where([e], e.id == ^entry_id and e.claimed_by_node == ^worker_id)
+    |> where(
+      [e],
+      e.id == ^entry_id and e.claimed_by_node == ^worker_id and e.lease_token == ^lease_token
+    )
     |> where([e], e.status in ["claimed", "running"])
     |> Repo.one()
   end
 
-  def get_for_worker(_entry_id, _worker_id), do: nil
+  def get_for_worker(_entry_id, _worker_id, _lease_token), do: nil
 
   # --- Queries ---
 
@@ -411,6 +436,7 @@ defmodule Kollywood.RunQueue do
         set: [
           status: "pending",
           claimed_by_node: nil,
+          lease_token: nil,
           claimed_at: nil,
           last_heartbeat_at: nil,
           started_at: nil,
@@ -481,9 +507,12 @@ defmodule Kollywood.RunQueue do
     |> Repo.aggregate(:count)
   end
 
-  defp owned_active_query(entry_id, worker_id) do
+  defp owned_active_query(entry_id, worker_id, lease_token) do
     Entry
-    |> where([e], e.id == ^entry_id and e.claimed_by_node == ^worker_id)
+    |> where(
+      [e],
+      e.id == ^entry_id and e.claimed_by_node == ^worker_id and e.lease_token == ^lease_token
+    )
     |> where([e], e.status in ["claimed", "running"])
   end
 

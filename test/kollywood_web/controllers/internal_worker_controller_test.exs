@@ -34,18 +34,26 @@ defmodule KollywoodWeb.InternalWorkerControllerTest do
 
     entries = get_in(json_response(lease_conn, 200), ["data", "entries"])
     assert [%{"id" => ^entry_id, "issue_id" => "internal-1"}] = entries
+    lease_token = hd(entries)["lease_token"]
+    assert is_binary(lease_token)
 
     start_conn =
       build_conn()
       |> auth_conn()
-      |> post("/api/internal/runs/#{entry.id}/start", %{worker_id: "worker-1"})
+      |> post("/api/internal/runs/#{entry.id}/start", %{
+        worker_id: "worker-1",
+        lease_token: lease_token
+      })
 
     assert get_in(json_response(start_conn, 200), ["data", "ok"]) == true
 
     heartbeat_conn =
       build_conn()
       |> auth_conn()
-      |> post("/api/internal/runs/#{entry.id}/heartbeat", %{worker_id: "worker-1"})
+      |> post("/api/internal/runs/#{entry.id}/heartbeat", %{
+        worker_id: "worker-1",
+        lease_token: lease_token
+      })
 
     assert get_in(json_response(heartbeat_conn, 200), ["data", "ok"]) == true
 
@@ -54,6 +62,7 @@ defmodule KollywoodWeb.InternalWorkerControllerTest do
       |> auth_conn()
       |> post("/api/internal/runs/#{entry.id}/complete", %{
         worker_id: "worker-1",
+        lease_token: lease_token,
         result_payload: %{"status" => "ok"}
       })
 
@@ -62,6 +71,28 @@ defmodule KollywoodWeb.InternalWorkerControllerTest do
     refreshed = RunQueue.get(entry.id)
     assert refreshed.status == "completed"
     assert refreshed.claimed_by_node == "worker-1"
+  end
+
+  test "rejects requests with the wrong lease token", %{conn: conn} do
+    {:ok, entry} = RunQueue.enqueue(%{issue_id: "internal-2", identifier: "US-INT-2"})
+
+    lease_conn =
+      conn
+      |> auth_conn()
+      |> post("/api/internal/workers/lease-next", %{worker_id: "worker-1", limit: 1})
+
+    [%{"id" => entry_id}] = get_in(json_response(lease_conn, 200), ["data", "entries"])
+    assert entry_id == entry.id
+
+    conflict_conn =
+      build_conn()
+      |> auth_conn()
+      |> post("/api/internal/runs/#{entry.id}/start", %{
+        worker_id: "worker-1",
+        lease_token: Ecto.UUID.generate()
+      })
+
+    assert json_response(conflict_conn, 409)["error"] == "run is not leased by this worker"
   end
 
   defp auth_conn(conn) do

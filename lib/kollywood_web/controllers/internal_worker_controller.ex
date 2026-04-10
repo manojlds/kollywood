@@ -21,7 +21,8 @@ defmodule KollywoodWeb.InternalWorkerController do
   def start(conn, %{"id" => id} = params) do
     with {:ok, entry_id} <- parse_entry_id(id),
          {:ok, worker_id} <- require_string(params, "worker_id"),
-         {:ok, _entry} <- RunQueue.mark_running_for_worker(entry_id, worker_id) do
+         {:ok, lease_token} <- require_string(params, "lease_token"),
+         {:ok, _entry} <- RunQueue.mark_running_for_worker(entry_id, worker_id, lease_token) do
       json(conn, %{data: %{ok: true}})
     else
       {:error, reason} -> error_response(conn, status_for_reason(reason), error_message(reason))
@@ -31,7 +32,8 @@ defmodule KollywoodWeb.InternalWorkerController do
   def heartbeat(conn, %{"id" => id} = params) do
     with {:ok, entry_id} <- parse_entry_id(id),
          {:ok, worker_id} <- require_string(params, "worker_id"),
-         {:ok, _entry} <- RunQueue.heartbeat_for_worker(entry_id, worker_id) do
+         {:ok, lease_token} <- require_string(params, "lease_token"),
+         {:ok, _entry} <- RunQueue.heartbeat_for_worker(entry_id, worker_id, lease_token) do
       json(conn, %{data: %{ok: true}})
     else
       {:error, reason} -> error_response(conn, status_for_reason(reason), error_message(reason))
@@ -41,9 +43,10 @@ defmodule KollywoodWeb.InternalWorkerController do
   def events(conn, %{"id" => id} = params) do
     with {:ok, entry_id} <- parse_entry_id(id),
          {:ok, worker_id} <- require_string(params, "worker_id"),
+         {:ok, lease_token} <- require_string(params, "lease_token"),
          {:ok, issue_id} <- require_string(params, "issue_id"),
          {:ok, event} <- require_map(params, "event"),
-         entry when not is_nil(entry) <- RunQueue.get_for_worker(entry_id, worker_id) do
+         entry when not is_nil(entry) <- RunQueue.get_for_worker(entry_id, worker_id, lease_token) do
       if entry.issue_id == issue_id do
         maybe_forward_runner_event(issue_id, event)
         json(conn, %{data: %{ok: true}})
@@ -59,9 +62,12 @@ defmodule KollywoodWeb.InternalWorkerController do
   def complete(conn, %{"id" => id} = params) do
     with {:ok, entry_id} <- parse_entry_id(id),
          {:ok, worker_id} <- require_string(params, "worker_id"),
+         {:ok, lease_token} <- require_string(params, "lease_token"),
          {:ok, result_payload} <- require_map(params, "result_payload"),
          {:ok, _entry} <-
-           RunQueue.complete_for_worker(entry_id, worker_id, %{result_payload: result_payload}) do
+           RunQueue.complete_for_worker(entry_id, worker_id, lease_token, %{
+             result_payload: result_payload
+           }) do
       json(conn, %{data: %{ok: true}})
     else
       {:error, reason} -> error_response(conn, status_for_reason(reason), error_message(reason))
@@ -71,8 +77,10 @@ defmodule KollywoodWeb.InternalWorkerController do
   def fail(conn, %{"id" => id} = params) do
     with {:ok, entry_id} <- parse_entry_id(id),
          {:ok, worker_id} <- require_string(params, "worker_id"),
+         {:ok, lease_token} <- require_string(params, "lease_token"),
          {:ok, error_message} <- require_string(params, "error"),
-         {:ok, _entry} <- RunQueue.fail_for_worker(entry_id, worker_id, error_message) do
+         {:ok, _entry} <-
+           RunQueue.fail_for_worker(entry_id, worker_id, lease_token, error_message) do
       json(conn, %{data: %{ok: true}})
     else
       {:error, reason} -> error_response(conn, status_for_reason(reason), error_message(reason))
@@ -91,6 +99,7 @@ defmodule KollywoodWeb.InternalWorkerController do
       id: entry.id,
       issue_id: entry.issue_id,
       identifier: entry.identifier,
+      lease_token: entry.lease_token,
       project_slug: entry.project_slug,
       attempt: entry.attempt,
       config_snapshot: entry.config_snapshot,

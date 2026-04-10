@@ -33,29 +33,43 @@ defmodule Kollywood.Worker.ControlPlaneClient do
     end
   end
 
-  @spec start_run(t(), integer(), String.t()) :: :ok | {:error, term()}
-  def start_run(%__MODULE__{} = client, entry_id, worker_id)
-      when is_integer(entry_id) and is_binary(worker_id) do
-    case post(client, "/api/internal/runs/#{entry_id}/start", %{worker_id: worker_id}) do
+  @spec start_run(t(), integer(), String.t(), String.t()) :: :ok | {:error, term()}
+  def start_run(%__MODULE__{} = client, entry_id, worker_id, lease_token)
+      when is_integer(entry_id) and is_binary(worker_id) and is_binary(lease_token) do
+    case post(client, "/api/internal/runs/#{entry_id}/start", %{
+           worker_id: worker_id,
+           lease_token: lease_token
+         }) do
       {:ok, _body} -> :ok
       {:error, reason} -> {:error, reason}
     end
   end
 
-  @spec heartbeat_run(t(), integer(), String.t()) :: :ok | {:error, term()}
-  def heartbeat_run(%__MODULE__{} = client, entry_id, worker_id)
-      when is_integer(entry_id) and is_binary(worker_id) do
-    case post(client, "/api/internal/runs/#{entry_id}/heartbeat", %{worker_id: worker_id}) do
+  def start_run(_client, _entry_id, _worker_id, _lease_token), do: {:error, :invalid_arguments}
+
+  @spec heartbeat_run(t(), integer(), String.t(), String.t()) :: :ok | {:error, term()}
+  def heartbeat_run(%__MODULE__{} = client, entry_id, worker_id, lease_token)
+      when is_integer(entry_id) and is_binary(worker_id) and is_binary(lease_token) do
+    case post(client, "/api/internal/runs/#{entry_id}/heartbeat", %{
+           worker_id: worker_id,
+           lease_token: lease_token
+         }) do
       {:ok, _body} -> :ok
       {:error, reason} -> {:error, reason}
     end
   end
 
-  @spec report_event(t(), integer(), String.t(), String.t(), map()) :: :ok | {:error, term()}
-  def report_event(%__MODULE__{} = client, entry_id, worker_id, issue_id, event)
-      when is_integer(entry_id) and is_binary(worker_id) and is_binary(issue_id) and is_map(event) do
+  def heartbeat_run(_client, _entry_id, _worker_id, _lease_token),
+    do: {:error, :invalid_arguments}
+
+  @spec report_event(t(), integer(), String.t(), String.t(), String.t(), map()) ::
+          :ok | {:error, term()}
+  def report_event(%__MODULE__{} = client, entry_id, worker_id, lease_token, issue_id, event)
+      when is_integer(entry_id) and is_binary(worker_id) and is_binary(lease_token) and
+             is_binary(issue_id) and is_map(event) do
     case post(client, "/api/internal/runs/#{entry_id}/events", %{
            worker_id: worker_id,
+           lease_token: lease_token,
            issue_id: issue_id,
            event: event
          }) do
@@ -64,11 +78,16 @@ defmodule Kollywood.Worker.ControlPlaneClient do
     end
   end
 
-  @spec complete_run(t(), integer(), String.t(), map()) :: :ok | {:error, term()}
-  def complete_run(%__MODULE__{} = client, entry_id, worker_id, result_payload)
-      when is_integer(entry_id) and is_binary(worker_id) and is_map(result_payload) do
+  def report_event(_client, _entry_id, _worker_id, _lease_token, _issue_id, _event),
+    do: {:error, :invalid_arguments}
+
+  @spec complete_run(t(), integer(), String.t(), String.t(), map()) :: :ok | {:error, term()}
+  def complete_run(%__MODULE__{} = client, entry_id, worker_id, lease_token, result_payload)
+      when is_integer(entry_id) and is_binary(worker_id) and is_binary(lease_token) and
+             is_map(result_payload) do
     case post(client, "/api/internal/runs/#{entry_id}/complete", %{
            worker_id: worker_id,
+           lease_token: lease_token,
            result_payload: result_payload
          }) do
       {:ok, _body} -> :ok
@@ -76,17 +95,25 @@ defmodule Kollywood.Worker.ControlPlaneClient do
     end
   end
 
-  @spec fail_run(t(), integer(), String.t(), String.t()) :: :ok | {:error, term()}
-  def fail_run(%__MODULE__{} = client, entry_id, worker_id, error_message)
-      when is_integer(entry_id) and is_binary(worker_id) and is_binary(error_message) do
+  def complete_run(_client, _entry_id, _worker_id, _lease_token, _result_payload),
+    do: {:error, :invalid_arguments}
+
+  @spec fail_run(t(), integer(), String.t(), String.t(), String.t()) :: :ok | {:error, term()}
+  def fail_run(%__MODULE__{} = client, entry_id, worker_id, lease_token, error_message)
+      when is_integer(entry_id) and is_binary(worker_id) and is_binary(lease_token) and
+             is_binary(error_message) do
     case post(client, "/api/internal/runs/#{entry_id}/fail", %{
            worker_id: worker_id,
+           lease_token: lease_token,
            error: error_message
          }) do
       {:ok, _body} -> :ok
       {:error, reason} -> {:error, reason}
     end
   end
+
+  def fail_run(_client, _entry_id, _worker_id, _lease_token, _error_message),
+    do: {:error, :invalid_arguments}
 
   defp post(%__MODULE__{base_url: nil}, _path, _payload), do: {:error, :missing_base_url}
 
