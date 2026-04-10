@@ -1,5 +1,7 @@
 import Config
 
+config :kollywood, :ecto_adapter, Ecto.Adapters.SQLite3
+
 # We don't run a server during test. If one is required,
 # you can enable the server option below.
 config :kollywood, KollywoodWeb.Endpoint,
@@ -33,5 +35,6 @@ config :kollywood, Kollywood.PrdJsonArchiver, enabled: false
 config :kollywood, Kollywood.Repo,
   database: Path.join(System.tmp_dir!(), "kollywood_test.db"),
   pool: Ecto.Adapters.SQL.Sandbox,
+  pool_size: 5,
   journal_mode: :wal,
   busy_timeout: 15_000

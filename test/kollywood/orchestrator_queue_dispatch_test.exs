@@ -241,4 +241,71 @@ defmodule Kollywood.OrchestratorQueueDispatchTest do
     assert_receive {:tracker_mark_done, ^issue_id}, 2_000
     assert_receive {:tracker_mark_merged, ^issue_id}, 2_000
   end
+
+  test "leader election allows only one orchestrator to enqueue" do
+    suffix = System.unique_integer([:positive])
+    issue_id = "issue-q-leader-#{suffix}"
+
+    issue = %{
+      "id" => issue_id,
+      "identifier" => "US-Q-LEADER-#{suffix}",
+      "title" => "Leader election queue dispatch",
+      "description" => "Only one orchestrator should enqueue",
+      "priority" => 1,
+      "state" => "open",
+      "status" => "open"
+    }
+
+    tracker = fn _config -> {:ok, [issue]} end
+    {:ok, pool_a} = Kollywood.AgentPool.start_link(name: nil)
+    {:ok, pool_b} = Kollywood.AgentPool.start_link(name: nil)
+
+    common_opts = [
+      workflow_store: @test_config,
+      tracker: tracker,
+      runner: fn _issue, _opts -> raise "should not run locally" end,
+      auto_poll: false,
+      dispatch_mode: :queue,
+      ephemeral_store: nil,
+      retry_store: nil,
+      retries_enabled: false,
+      poll_interval_ms: 60_000,
+      leader_election_enabled: true,
+      leader_lease_name: "test-orchestrator-lease-#{suffix}",
+      leader_lease_ttl_ms: 10_000,
+      leader_lease_refresh_interval_ms: 1_000
+    ]
+
+    {:ok, orch_a} =
+      Orchestrator.start_link(
+        Keyword.merge(common_opts,
+          name: nil,
+          agent_pool: pool_a,
+          leader_owner_id: "orch-a-#{suffix}"
+        )
+      )
+
+    {:ok, orch_b} =
+      Orchestrator.start_link(
+        Keyword.merge(common_opts,
+          name: nil,
+          agent_pool: pool_b,
+          leader_owner_id: "orch-b-#{suffix}"
+        )
+      )
+
+    status_a = Orchestrator.status(orch_a)
+    status_b = Orchestrator.status(orch_b)
+
+    assert status_a.leader? != status_b.leader?
+
+    capture_log(fn ->
+      Orchestrator.poll_now(orch_a)
+      Orchestrator.poll_now(orch_b)
+    end)
+
+    entries = RunQueue.list_by_status(["pending", "claimed", "running"])
+    issue_entries = Enum.filter(entries, &(&1.issue_id == issue_id))
+    assert length(issue_entries) == 1
+  end
 end

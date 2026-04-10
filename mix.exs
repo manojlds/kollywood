@@ -75,6 +75,7 @@ defmodule Kollywood.MixProject do
       {:phoenix_ecto, "~> 4.6"},
       {:ecto_sql, "~> 3.12"},
       {:ecto_sqlite3, "~> 0.17"},
+      {:postgrex, "~> 0.20"},
       {:yaml_elixir, "~> 2.9"},
       {:solid, "~> 0.15"},
       {:req, "~> 0.5"},
@@ -90,7 +91,9 @@ defmodule Kollywood.MixProject do
   # See the documentation for `Mix` for more info on aliases.
   defp aliases do
     [
-      setup: ["deps.get", "assets.setup", "assets.build"],
+      setup: ["deps.get", "ecto.setup", "assets.setup", "assets.build"],
+      "ecto.setup": ["ecto.create", "ecto.migrate"],
+      "ecto.reset": ["ecto.drop", "ecto.setup"],
       "assets.setup": ["tailwind.install --if-missing", "esbuild.install --if-missing"],
       "assets.build": ["compile", "tailwind kollywood", "esbuild kollywood"],
       "assets.deploy": [

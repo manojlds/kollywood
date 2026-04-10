@@ -14,6 +14,12 @@ This project uses `mise.toml` for tool management (Elixir, Erlang) and
 pitchfork start server
 ```
 
+For local Postgres-backed development, start the alternate daemon instead:
+
+```bash
+pitchfork start server_postgres
+```
+
 To stop:
 
 ```bash
@@ -22,6 +28,10 @@ pitchfork stop server
 
 On first start, pitchfork runs the setup task via mise which bootstraps
 deps and the database.
+
+`server_postgres` assumes a local Postgres server is already running and uses
+`DATABASE_URL=ecto://postgres:postgres@127.0.0.1:5432/kollywood_dev` by default.
+Override `DATABASE_URL` in the shell or `pitchfork.local.toml` if needed.
 
 `vaibhav` auto-discovers process ports from pitchfork and live
 process checks, so no per-project metadata file is required.
@@ -57,6 +67,9 @@ Kollywood supports role-based startup via `KOLLYWOOD_APP_MODE`.
 - `orchestrator`: orchestrator + agent pool (no web endpoint)
 - `worker`: agent pool only
 
+When using the remote worker path, set `KOLLYWOOD_WORKER_TRANSPORT=remote` and
+`KOLLYWOOD_CONTROL_PLANE_URL` for worker-only nodes.
+
 Examples:
 
 ```bash
@@ -72,6 +85,23 @@ KOLLYWOOD_APP_MODE=orchestrator mix run --no-halt
 # Worker-pool-only node
 KOLLYWOOD_APP_MODE=worker mix run --no-halt
 ```
+
+## Data Stores
+
+Kollywood now supports two control-store modes:
+
+- SQLite: local dev/test and single control-plane deployments
+- Postgres: recommended for local prod-like deployments and required for future multi-control-plane scale-out
+
+SQLite support is intentionally limited to a single server owning the control plane.
+
+Adapter selection is compile-time:
+
+- test uses SQLite
+- prod builds use Postgres
+- dev uses SQLite by default, or Postgres when `KOLLYWOOD_DB_ADAPTER=postgres` or `DATABASE_URL` is set before compile/start
+
+If you switch adapters in development, run `mix clean` before recompiling.
 
 ## Projects
 

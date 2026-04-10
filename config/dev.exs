@@ -1,5 +1,9 @@
 import Config
 
+if System.get_env("KOLLYWOOD_DB_ADAPTER") == "postgres" or System.get_env("DATABASE_URL") do
+  config :kollywood, :ecto_adapter, Ecto.Adapters.Postgres
+end
+
 # For development, we disable any cache and enable
 # debugging and code reloading.
 #

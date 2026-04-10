@@ -28,6 +28,7 @@ defmodule Kollywood.Orchestrator do
   alias Kollywood.Publisher
   alias Kollywood.RecoveryGuidance
   alias Kollywood.RepoSync
+  alias Kollywood.Scheduler.Lease
   alias Kollywood.StoryExecutionOverrides
   alias Kollywood.RunQueue
   alias Kollywood.Tracker
@@ -46,6 +47,8 @@ defmodule Kollywood.Orchestrator do
   @default_continuation_delay_ms 1_000
   @default_stale_threshold_multiplier 3
   @default_status_tick_interval_ms 1_000
+  @default_leader_lease_ttl_ms 15_000
+  @default_leader_lease_refresh_interval_ms 5_000
   @maintenance_retry_defer_ms 5_000
 
   @type state :: %__MODULE__{
@@ -62,7 +65,16 @@ defmodule Kollywood.Orchestrator do
           poll_timer_ref: reference() | nil,
           watchdog_timer_ref: reference() | nil,
           status_tick_timer_ref: reference() | nil,
+          leader_timer_ref: reference() | nil,
           maintenance_mode: :normal | :drain,
+          leader_election_enabled: boolean(),
+          leader?: boolean(),
+          startup_reconciled?: boolean(),
+          leader_lease_name: String.t(),
+          leader_owner_id: String.t(),
+          leader_lease_ttl_ms: pos_integer(),
+          leader_lease_refresh_interval_ms: pos_integer(),
+          leader_lease_expires_at: DateTime.t() | nil,
           poll_interval_ms: pos_integer(),
           stale_threshold_multiplier: pos_integer(),
           watchdog_check_interval_ms: pos_integer(),
@@ -118,7 +130,16 @@ defmodule Kollywood.Orchestrator do
     :poll_timer_ref,
     :watchdog_timer_ref,
     :status_tick_timer_ref,
+    :leader_timer_ref,
     :maintenance_mode,
+    :leader_election_enabled,
+    :leader?,
+    :startup_reconciled?,
+    :leader_lease_name,
+    :leader_owner_id,
+    :leader_lease_ttl_ms,
+    :leader_lease_refresh_interval_ms,
+    :leader_lease_expires_at,
     :poll_interval_ms,
     :stale_threshold_multiplier,
     :watchdog_check_interval_ms,
@@ -204,6 +225,50 @@ defmodule Kollywood.Orchestrator do
     with {:ok, agent_pool} <- resolve_agent_pool(Keyword.get(opts, :agent_pool, AgentPool)) do
       maintenance_mode = ControlState.load_maintenance_mode(:normal)
 
+      leader_election_enabled =
+        Keyword.get(
+          opts,
+          :leader_election_enabled,
+          Application.get_env(:kollywood, :orchestrator_leader_election_enabled, false)
+        )
+
+      leader_lease_name =
+        Keyword.get(
+          opts,
+          :leader_lease_name,
+          Application.get_env(:kollywood, :orchestrator_leader_lease_name, "orchestrator")
+        )
+
+      leader_lease_ttl_ms =
+        positive_integer(
+          Keyword.get(
+            opts,
+            :leader_lease_ttl_ms,
+            Application.get_env(
+              :kollywood,
+              :orchestrator_leader_lease_ttl_ms,
+              @default_leader_lease_ttl_ms
+            )
+          ),
+          @default_leader_lease_ttl_ms
+        )
+
+      leader_lease_refresh_interval_ms =
+        positive_integer(
+          Keyword.get(
+            opts,
+            :leader_lease_refresh_interval_ms,
+            Application.get_env(
+              :kollywood,
+              :orchestrator_leader_lease_refresh_interval_ms,
+              @default_leader_lease_refresh_interval_ms
+            )
+          ),
+          @default_leader_lease_refresh_interval_ms
+        )
+
+      leader_owner_id = Keyword.get(opts, :leader_owner_id, scheduler_owner_id())
+
       poll_interval_ms =
         positive_integer(Keyword.get(opts, :poll_interval_ms), @default_poll_interval_ms)
 
@@ -240,7 +305,16 @@ defmodule Kollywood.Orchestrator do
         poll_timer_ref: nil,
         watchdog_timer_ref: nil,
         status_tick_timer_ref: nil,
+        leader_timer_ref: nil,
         maintenance_mode: maintenance_mode,
+        leader_election_enabled: leader_election_enabled,
+        leader?: not leader_election_enabled,
+        startup_reconciled?: not leader_election_enabled,
+        leader_lease_name: to_string(leader_lease_name),
+        leader_owner_id: to_string(leader_owner_id),
+        leader_lease_ttl_ms: leader_lease_ttl_ms,
+        leader_lease_refresh_interval_ms: leader_lease_refresh_interval_ms,
+        leader_lease_expires_at: nil,
         poll_interval_ms: poll_interval_ms,
         stale_threshold_multiplier:
           positive_integer(
@@ -303,9 +377,8 @@ defmodule Kollywood.Orchestrator do
       state =
         state
         |> cleanup_orphan_workers()
-        |> restore_persisted_ephemeral_state()
-        |> startup_reconcile()
-        |> restore_persisted_retries()
+        |> maybe_refresh_leader_lease()
+        |> maybe_hydrate_startup_state()
 
       state =
         if state.auto_poll do
@@ -315,6 +388,8 @@ defmodule Kollywood.Orchestrator do
         else
           state
         end
+
+      state = schedule_leader_tick(state, 0)
 
       state =
         if state.dispatch_mode == :queue do
@@ -336,6 +411,8 @@ defmodule Kollywood.Orchestrator do
   @impl true
   def handle_call(:poll_now, _from, state) do
     state = refresh_maintenance_mode(state)
+    state = maybe_refresh_leader_lease(state)
+    state = maybe_hydrate_startup_state(state)
     state = run_poll_cycle(state)
 
     state =
@@ -352,6 +429,8 @@ defmodule Kollywood.Orchestrator do
 
   def handle_call(:status, _from, state) do
     state = refresh_maintenance_mode(state)
+    state = maybe_refresh_leader_lease(state)
+    state = maybe_hydrate_startup_state(state)
     state = reconcile_running_run_states(state)
     snapshot = status_snapshot(state)
     {:reply, snapshot, persist_control_status(state)}
@@ -378,9 +457,18 @@ defmodule Kollywood.Orchestrator do
   end
 
   @impl true
+  def handle_info(:leader_tick, state) do
+    state = %{state | leader_timer_ref: nil}
+    state = maybe_refresh_leader_lease(state)
+    state = maybe_hydrate_startup_state(state)
+    {:noreply, state |> schedule_leader_tick() |> persist_control_status()}
+  end
+
   def handle_info(:poll, state) do
     state = %{state | poll_timer_ref: nil}
     state = refresh_maintenance_mode(state)
+    state = maybe_refresh_leader_lease(state)
+    state = maybe_hydrate_startup_state(state)
     state = run_poll_cycle(state)
 
     state =
@@ -394,6 +482,8 @@ defmodule Kollywood.Orchestrator do
   def handle_info(:watchdog_tick, state) do
     state = %{state | watchdog_timer_ref: nil}
     state = refresh_maintenance_mode(state)
+    state = maybe_refresh_leader_lease(state)
+    state = maybe_hydrate_startup_state(state)
     state = reconcile_running_run_states(state)
     state = run_poll_watchdog(state)
 
@@ -685,6 +775,12 @@ defmodule Kollywood.Orchestrator do
     end
   end
 
+  @impl true
+  def terminate(_reason, state) do
+    _ = maybe_release_leader_lease(state)
+    :ok
+  end
+
   defp handle_run_worker_down(state, ref, reason) do
     case pop_running_by_ref(state, ref) do
       {:ok, issue_id, run_entry, state} ->
@@ -765,33 +861,37 @@ defmodule Kollywood.Orchestrator do
   end
 
   defp run_poll_cycle(state) do
-    state =
-      state
-      |> refresh_maintenance_mode()
-      |> maybe_sync_managed_repos()
-
-    with {:ok, config} <- fetch_config(state.workflow_store),
-         tracker <- resolve_tracker(state.tracker, config),
-         {:ok, issues} <- list_active_issues(tracker, config) do
-      state
-      |> prune_expired_ephemeral()
-      |> apply_runtime_limits(config)
-      |> refresh_project_limits()
-      |> record_poll_heartbeat()
-      |> clear_completed_for_open_issues(issues)
-      |> reconcile_running(issues, config)
-      |> prune_ineligible_retries(issues, config)
-      |> prune_stale_open_claims(issues)
-      |> detect_merges(config)
-      |> dispatch_available(issues, config, tracker)
-      |> Map.put(:last_error, nil)
-    else
-      {:error, reason} ->
-        Logger.error("Orchestrator poll failed: #{reason}")
-
+    if scheduler_active?(state) do
+      state =
         state
-        |> Map.put(:last_error, reason)
+        |> refresh_maintenance_mode()
+        |> maybe_sync_managed_repos()
+
+      with {:ok, config} <- fetch_config(state.workflow_store),
+           tracker <- resolve_tracker(state.tracker, config),
+           {:ok, issues} <- list_active_issues(tracker, config) do
+        state
+        |> prune_expired_ephemeral()
+        |> apply_runtime_limits(config)
+        |> refresh_project_limits()
         |> record_poll_heartbeat()
+        |> clear_completed_for_open_issues(issues)
+        |> reconcile_running(issues, config)
+        |> prune_ineligible_retries(issues, config)
+        |> prune_stale_open_claims(issues)
+        |> detect_merges(config)
+        |> dispatch_available(issues, config, tracker)
+        |> Map.put(:last_error, nil)
+      else
+        {:error, reason} ->
+          Logger.error("Orchestrator poll failed: #{reason}")
+
+          state
+          |> Map.put(:last_error, reason)
+          |> record_poll_heartbeat()
+      end
+    else
+      state
     end
   end
 
@@ -3235,7 +3335,8 @@ defmodule Kollywood.Orchestrator do
   defp maybe_sync_managed_repos(state) do
     now_ms = System.monotonic_time(:millisecond)
 
-    if repo_sync_due?(state, now_ms) and not repo_sync_in_progress?(state) do
+    if scheduler_active?(state) and repo_sync_due?(state, now_ms) and
+         not repo_sync_in_progress?(state) do
       state
       |> start_repo_sync_task(now_ms)
       |> Map.put(:last_repo_sync_at_ms, now_ms)
@@ -4151,6 +4252,25 @@ defmodule Kollywood.Orchestrator do
 
   defp positive_integer(_value, fallback), do: fallback
 
+  defp scheduler_owner_id do
+    System.get_env("KOLLYWOOD_SCHEDULER_ID") ||
+      scheduler_owner_from_hostname() || scheduler_owner_from_node()
+  end
+
+  defp scheduler_owner_from_hostname do
+    case System.get_env("HOSTNAME") do
+      value when is_binary(value) and value != "" -> "#{value}:#{:os.getpid()}"
+      _other -> nil
+    end
+  end
+
+  defp scheduler_owner_from_node do
+    case Atom.to_string(node()) do
+      "nonode@nohost" -> "orchestrator-#{:os.getpid()}"
+      value -> "#{value}:#{:os.getpid()}"
+    end
+  end
+
   defp positive_integer_with_default(nil, default, _field), do: default
 
   defp positive_integer_with_default(value, default, field) do
@@ -4206,6 +4326,89 @@ defmodule Kollywood.Orchestrator do
     %{state | status_tick_timer_ref: ref}
   end
 
+  defp schedule_leader_tick(state, delay_ms \\ nil) do
+    if state.leader_election_enabled do
+      if state.leader_timer_ref do
+        Process.cancel_timer(state.leader_timer_ref)
+      end
+
+      ref =
+        Process.send_after(
+          self(),
+          :leader_tick,
+          delay_ms || state.leader_lease_refresh_interval_ms
+        )
+
+      %{state | leader_timer_ref: ref}
+    else
+      state
+    end
+  end
+
+  defp scheduler_active?(state), do: not state.leader_election_enabled or state.leader?
+
+  defp maybe_refresh_leader_lease(state) do
+    if state.leader_election_enabled do
+      case Lease.acquire(
+             state.leader_lease_name,
+             state.leader_owner_id,
+             state.leader_lease_ttl_ms
+           ) do
+        {:ok, lease_status} ->
+          state
+          |> maybe_log_leadership_transition(lease_status)
+          |> Map.put(:leader?, lease_status.leader?)
+          |> Map.put(:leader_lease_expires_at, lease_status.lease_expires_at)
+
+        {:error, reason} ->
+          Logger.warning("Failed to refresh orchestrator leader lease: #{inspect(reason)}")
+          %{state | leader?: false, leader_lease_expires_at: nil}
+      end
+    else
+      %{state | leader?: true}
+    end
+  end
+
+  defp maybe_hydrate_startup_state(state) do
+    if scheduler_active?(state) and not state.startup_reconciled? do
+      state
+      |> restore_persisted_ephemeral_state()
+      |> startup_reconcile()
+      |> restore_persisted_retries()
+      |> Map.put(:startup_reconciled?, true)
+    else
+      state
+    end
+  end
+
+  defp maybe_log_leadership_transition(state, %{leader?: true}) do
+    if state.leader? do
+      state
+    else
+      Logger.info(
+        "orchestrator_event=leadership_acquired lease=#{state.leader_lease_name} owner=#{state.leader_owner_id}"
+      )
+
+      state
+    end
+  end
+
+  defp maybe_log_leadership_transition(state, %{leader?: false, owner_id: owner_id}) do
+    if state.leader? do
+      Logger.warning(
+        "orchestrator_event=leadership_lost lease=#{state.leader_lease_name} owner=#{state.leader_owner_id} current_owner=#{inspect(owner_id)}"
+      )
+    end
+
+    state
+  end
+
+  defp maybe_release_leader_lease(%{leader_election_enabled: true, leader?: true} = state) do
+    Lease.release(state.leader_lease_name, state.leader_owner_id)
+  end
+
+  defp maybe_release_leader_lease(_state), do: :ok
+
   defp refresh_maintenance_mode(state) do
     mode = ControlState.load_maintenance_mode(state.maintenance_mode)
 
@@ -4213,7 +4416,7 @@ defmodule Kollywood.Orchestrator do
       state
     else
       Logger.info("orchestrator_event=maintenance_mode_changed mode=#{mode}")
-      set_maintenance_mode_state(state, mode, persist?: false, source: :control_file)
+      set_maintenance_mode_state(state, mode, persist?: false, source: :control_state)
     end
   end
 
@@ -4257,36 +4460,40 @@ defmodule Kollywood.Orchestrator do
   end
 
   defp run_poll_watchdog(state) do
-    age_ms = poll_age_ms(state)
-    threshold_ms = stale_threshold_ms(state)
-    stale? = stale_poll?(age_ms, threshold_ms)
+    if not scheduler_active?(state) do
+      state
+    else
+      age_ms = poll_age_ms(state)
+      threshold_ms = stale_threshold_ms(state)
+      stale? = stale_poll?(age_ms, threshold_ms)
 
-    cond do
-      not stale? ->
-        maybe_clear_stale_state(state, age_ms, threshold_ms)
+      cond do
+        not stale? ->
+          maybe_clear_stale_state(state, age_ms, threshold_ms)
 
-      state.poll_stale_recovery_attempted ->
-        diagnostics = stale_diagnostics(state, age_ms, threshold_ms)
+        state.poll_stale_recovery_attempted ->
+          diagnostics = stale_diagnostics(state, age_ms, threshold_ms)
 
-        Logger.error(
-          "orchestrator_event=poll_watchdog_restart reason=persistent_stale diagnostics=#{inspect(diagnostics)}"
-        )
+          Logger.error(
+            "orchestrator_event=poll_watchdog_restart reason=persistent_stale diagnostics=#{inspect(diagnostics)}"
+          )
 
-        exit({:poll_watchdog_stale, diagnostics})
+          exit({:poll_watchdog_stale, diagnostics})
 
-      true ->
-        state =
-          if state.poll_stale do
-            state
-          else
-            Logger.warning(
-              "orchestrator_event=poll_watchdog_stale_detected diagnostics=#{inspect(stale_diagnostics(state, age_ms, threshold_ms))}"
-            )
+        true ->
+          state =
+            if state.poll_stale do
+              state
+            else
+              Logger.warning(
+                "orchestrator_event=poll_watchdog_stale_detected diagnostics=#{inspect(stale_diagnostics(state, age_ms, threshold_ms))}"
+              )
 
-            %{state | poll_stale: true, poll_stale_detected_at: now()}
-          end
+              %{state | poll_stale: true, poll_stale_detected_at: now()}
+            end
 
-        run_watchdog_recovery_poll(state, age_ms, threshold_ms)
+          run_watchdog_recovery_poll(state, age_ms, threshold_ms)
+      end
     end
   end
 
@@ -4541,11 +4748,18 @@ defmodule Kollywood.Orchestrator do
       completed_count: MapSet.size(state.completed),
       maintenance_mode: state.maintenance_mode,
       dispatch_paused: state.maintenance_mode == :drain,
+      leader_election_enabled: state.leader_election_enabled,
+      leader?: state.leader?,
+      leader_owner_id: state.leader_owner_id,
+      leader_lease_name: state.leader_lease_name,
+      leader_lease_expires_at: state.leader_lease_expires_at,
       drain_ready: running_count == 0,
       control_paths: %{
         maintenance_mode: ControlState.maintenance_mode_path(),
         status: ControlState.status_path()
       },
+      control_state_backend:
+        Application.get_env(:kollywood, :orchestrator_control_state_backend, :auto),
       poll_interval_ms: state.poll_interval_ms,
       repo_sync_interval_ms: state.repo_sync_interval_ms,
       repo_sync_timeout_ms: state.repo_sync_timeout_ms,

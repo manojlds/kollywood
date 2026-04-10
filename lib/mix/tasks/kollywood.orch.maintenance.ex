@@ -2,7 +2,7 @@ defmodule Mix.Tasks.Kollywood.Orch.Maintenance do
   @shortdoc "Manage orchestrator maintenance/drain mode"
 
   @moduledoc """
-  Manages orchestrator maintenance mode via control files.
+  Manages orchestrator maintenance mode via the shared control-state backend.
 
       mix kollywood.orch.maintenance
       mix kollywood.orch.maintenance --mode drain
