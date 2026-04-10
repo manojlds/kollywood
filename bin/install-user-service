@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVICE_NAME="kollywood-server.service"
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+UNIT_DIR="$CONFIG_HOME/systemd/user"
+ENV_DIR="$CONFIG_HOME/kollywood-server"
+UNIT_FILE="$UNIT_DIR/$SERVICE_NAME"
+ENV_FILE="$ENV_DIR/kollywood-server.env"
+REPO_DIR="${KOLLYWOOD_SERVER_DIR:-$HOME/projects/kollywood-server}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
+ROOT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+TEMPLATE_FILE="$ROOT_DIR/ops/systemd/kollywood-server.service.example"
+OVERWRITE_ENV=0
+START_SERVICE=0
+PHX_HOST_VALUE="${PHX_HOST:-localhost}"
+DATABASE_URL_VALUE="${DATABASE_URL:-${KOLLYWOOD_DATABASE_URL:-}}"
+PORT_VALUE="${PORT:-4000}"
+KOLLYWOOD_HOME_VALUE="${KOLLYWOOD_HOME:-$HOME/.kollywood}"
+TAILSCALE_PORT_VALUE="${KOLLYWOOD_TAILSCALE_SERVE_HTTPS_PORT:-}"
+SECRET_KEY_BASE_VALUE="${SECRET_KEY_BASE:-}"
+INTERNAL_API_TOKEN_VALUE="${KOLLYWOOD_INTERNAL_API_TOKEN:-}"
+
+usage() {
+  cat <<'EOF'
+Usage: bin/install-user-service [options]
+
+Options:
+  --repo-dir PATH           Server checkout path (default: ~/projects/kollywood-server)
+  --env-file PATH           Target env file path
+  --phx-host HOST           PHX_HOST value (default: localhost)
+  --database-url URL        DATABASE_URL value for Postgres
+  --port PORT               App port (default: 4000)
+  --kollywood-home PATH     KOLLYWOOD_HOME path (default: ~/.kollywood)
+  --tailscale-port PORT     Optional tailscale serve HTTPS port
+  --overwrite-env           Rewrite the env file even if it exists
+  --start                   Restart the systemd user service after install
+  --help                    Show this message
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo-dir)
+      REPO_DIR="$2"
+      shift 2
+      ;;
+    --env-file)
+      ENV_FILE="$2"
+      shift 2
+      ;;
+    --phx-host)
+      PHX_HOST_VALUE="$2"
+      shift 2
+      ;;
+    --database-url)
+      DATABASE_URL_VALUE="$2"
+      shift 2
+      ;;
+    --port)
+      PORT_VALUE="$2"
+      shift 2
+      ;;
+    --kollywood-home)
+      KOLLYWOOD_HOME_VALUE="$2"
+      shift 2
+      ;;
+    --tailscale-port)
+      TAILSCALE_PORT_VALUE="$2"
+      shift 2
+      ;;
+    --overwrite-env)
+      OVERWRITE_ENV=1
+      shift
+      ;;
+    --start)
+      START_SERVICE=1
+      shift
+      ;;
+    --help)
+      usage
+      exit 0
+      ;;
+    *)
+      printf 'unknown argument: %s\n' "$1" >&2
+      usage >&2
+      exit 64
+      ;;
+  esac
+done
+
+[[ -d "$REPO_DIR" ]] || {
+  printf 'server repo not found at %s\n' "$REPO_DIR" >&2
+  exit 1
+}
+
+[[ -f "$TEMPLATE_FILE" ]] || {
+  printf 'service template not found at %s\n' "$TEMPLATE_FILE" >&2
+  exit 1
+}
+
+if [[ -z "$DATABASE_URL_VALUE" ]]; then
+  printf 'DATABASE_URL is required; pass --database-url or set DATABASE_URL\n' >&2
+  exit 1
+fi
+
+if [[ -z "$SECRET_KEY_BASE_VALUE" ]]; then
+  SECRET_KEY_BASE_VALUE="$(openssl rand -base64 48 | tr -d '\n')"
+fi
+
+if [[ -z "$INTERNAL_API_TOKEN_VALUE" ]]; then
+  INTERNAL_API_TOKEN_VALUE="$(openssl rand -hex 32)"
+fi
+
+mkdir -p "$UNIT_DIR"
+mkdir -p "$(dirname "$ENV_FILE")"
+
+if [[ ! -f "$ENV_FILE" || "$OVERWRITE_ENV" -eq 1 ]]; then
+  cat >"$ENV_FILE" <<EOF
+PHX_SERVER=true
+PHX_HOST=$PHX_HOST_VALUE
+PORT=$PORT_VALUE
+KOLLYWOOD_HOME=$KOLLYWOOD_HOME_VALUE
+DATABASE_URL=$DATABASE_URL_VALUE
+SECRET_KEY_BASE=$SECRET_KEY_BASE_VALUE
+KOLLYWOOD_CONTROL_STATE_BACKEND=db
+KOLLYWOOD_ORCHESTRATOR_LEADER_ELECTION=true
+KOLLYWOOD_INTERNAL_API_TOKEN=$INTERNAL_API_TOKEN_VALUE
+POOL_SIZE=10
+EOF
+
+  if [[ -n "$TAILSCALE_PORT_VALUE" ]]; then
+    printf 'KOLLYWOOD_TAILSCALE_SERVE_HTTPS_PORT=%s\n' "$TAILSCALE_PORT_VALUE" >>"$ENV_FILE"
+  fi
+fi
+
+PATH_VALUE="$HOME/.opencode/bin:$HOME/.amp/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+sed \
+  -e "s|__REPO_DIR__|$REPO_DIR|g" \
+  -e "s|__ENV_FILE__|$ENV_FILE|g" \
+  -e "s|__PATH__|$PATH_VALUE|g" \
+  "$TEMPLATE_FILE" >"$UNIT_FILE"
+
+systemctl --user daemon-reload
+systemctl --user enable "$SERVICE_NAME"
+
+if [[ "$START_SERVICE" -eq 1 ]]; then
+  systemctl --user restart "$SERVICE_NAME"
+fi
+
+printf 'Installed %s\n' "$UNIT_FILE"
+printf 'Env file: %s\n' "$ENV_FILE"
+
+if [[ "$START_SERVICE" -eq 1 ]]; then
+  systemctl --user status "$SERVICE_NAME" --no-pager
+else
+  printf 'Run `systemctl --user restart %s` after your first deploy.\n' "$SERVICE_NAME"
+fi
