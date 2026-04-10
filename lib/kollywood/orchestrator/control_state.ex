@@ -221,16 +221,25 @@ defmodule Kollywood.Orchestrator.ControlState do
   end
 
   defp db_backend? do
-    case Application.get_env(:kollywood, :orchestrator_control_state_backend, :auto) do
-      :db ->
+    case System.get_env("KOLLYWOOD_CONTROL_STATE_BACKEND") do
+      value when value in ["db", "DB"] ->
         true
 
-      :file ->
+      value when value in ["file", "FILE"] ->
         false
 
-      _auto ->
-        Application.get_env(:kollywood, :ecto_adapter, Ecto.Adapters.SQLite3) ==
-          Ecto.Adapters.Postgres
+      _other ->
+        case Application.get_env(:kollywood, :orchestrator_control_state_backend, :auto) do
+          :db ->
+            true
+
+          :file ->
+            false
+
+          _auto ->
+            Application.get_env(:kollywood, :ecto_adapter, Ecto.Adapters.SQLite3) ==
+              Ecto.Adapters.Postgres
+        end
     end
   end
 

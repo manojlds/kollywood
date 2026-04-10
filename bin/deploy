@@ -37,6 +37,9 @@ if systemctl --user cat "$POSTGRES_SERVICE_NAME" >/dev/null 2>&1; then
   systemctl --user start "$POSTGRES_SERVICE_NAME"
 fi
 
+log "Ensuring prod dependencies are available"
+MIX_ENV=prod mix deps.get --only prod
+
 on_exit() {
   exit_code=$?
 
@@ -51,7 +54,7 @@ on_exit() {
 trap on_exit EXIT
 
 log "Enabling maintenance drain"
-MIX_ENV=prod mix kollywood.orch.maintenance --mode drain --wait --timeout "$DRAIN_TIMEOUT_SECONDS"
+KOLLYWOOD_CONTROL_STATE_BACKEND=file MIX_ENV=prod mix kollywood.orch.maintenance --mode drain --wait --timeout "$DRAIN_TIMEOUT_SECONDS"
 DRAIN_ENABLED=1
 
 log "Pulling latest code"
@@ -165,7 +168,7 @@ fi
 log "Health check passed: $REPORTED_VERSION"
 
 log "Restoring maintenance mode"
-MIX_ENV=prod mix kollywood.orch.maintenance --mode normal
+KOLLYWOOD_CONTROL_STATE_BACKEND=file MIX_ENV=prod mix kollywood.orch.maintenance --mode normal
 DRAIN_ENABLED=0
 
 DEPLOY_SUCCESS=1
