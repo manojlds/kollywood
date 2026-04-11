@@ -21,16 +21,13 @@ but the managed Docker service below is the recommended no-sudo runtime path.
 ```bash
 mkdir -p ~/projects
 git clone <your-repo-url> ~/projects/kollywood
-git clone <your-repo-url> ~/projects/kollywood-server
 ```
 
 3. Install the Docker Postgres user service.
 
 ```bash
 cd ~/projects/kollywood
-bin/install-postgres-docker-service \
-  --repo-dir "$HOME/projects/kollywood-server" \
-  --start
+bin/install-postgres-docker-service --start
 ```
 
 4. Install the Kollywood app user service and point it at the Docker Postgres URL.
@@ -38,7 +35,6 @@ bin/install-postgres-docker-service \
 ```bash
 cd ~/projects/kollywood
 bin/install-user-service \
-  --repo-dir "$HOME/projects/kollywood-server" \
   --phx-host "your-hostname-or-tailnet-name" \
   --database-url "$(bin/postgres-docker-service connection-url)"
 ```
@@ -60,7 +56,7 @@ curl http://127.0.0.1:4000/api/health
 ## Existing SQLite Host to Docker Postgres
 
 1. Install Docker Engine and the Compose plugin.
-2. Run `bin/install-postgres-docker-service --repo-dir "$HOME/projects/kollywood-server" --start`.
+2. Run `bin/install-postgres-docker-service --start`.
 3. Update `~/.config/kollywood-server/kollywood-server.env` to include `DATABASE_URL=$(~/projects/kollywood/bin/postgres-docker-service connection-url)`.
 4. Ensure `KOLLYWOOD_CONTROL_STATE_BACKEND=db` and `KOLLYWOOD_ORCHESTRATOR_LEADER_ELECTION=true` are set.
 5. Run `mise x -- bash bin/deploy` from the dev repo.

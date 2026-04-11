@@ -7,9 +7,9 @@ UNIT_DIR="$CONFIG_HOME/systemd/user"
 ENV_DIR="$CONFIG_HOME/kollywood-server"
 UNIT_FILE="$UNIT_DIR/$SERVICE_NAME"
 ENV_FILE="$ENV_DIR/kollywood-server.env"
-REPO_DIR="${KOLLYWOOD_SERVER_DIR:-$HOME/projects/kollywood-server}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
 ROOT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="${KOLLYWOOD_SERVER_DIR:-$ROOT_DIR}"
 TEMPLATE_FILE="$ROOT_DIR/ops/systemd/kollywood-server.service.example"
 OVERWRITE_ENV=0
 START_SERVICE=0
@@ -26,7 +26,7 @@ usage() {
 Usage: bin/install-user-service [options]
 
 Options:
-  --repo-dir PATH           Server checkout path (default: ~/projects/kollywood-server)
+  --repo-dir PATH           Server checkout path (default: current repo)
   --env-file PATH           Target env file path
   --phx-host HOST           PHX_HOST value (default: localhost)
   --database-url URL        DATABASE_URL value for Postgres

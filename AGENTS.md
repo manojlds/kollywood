@@ -23,17 +23,19 @@
 Production runs as a release via `systemd --user` on the local server.
 
 ```bash
-# From the dev repo (~/projects/kollywood):
+# From ~/projects/kollywood:
 git push origin main
 
-# Deploy (pulls, builds release, restarts service):
+# Deploy (builds release from this repo, restarts service):
 mise x -- bash bin/deploy
-# Run from ~/projects/kollywood-server, or it will cd there automatically.
+
+# Optional override when you intentionally deploy from another checkout:
+KOLLYWOOD_SERVER_DIR=/path/to/other/checkout mise x -- bash bin/deploy
 ```
 
-- **Server repo**: `~/projects/kollywood-server` (clone of same repo, used for prod builds)
+- **Deploy repo**: `~/projects/kollywood` (same checkout used for dev + deploy)
 - **Service**: `kollywood-server.service` (systemd user unit)
-- **Release**: `~/projects/kollywood-server/_build/prod/rel/kollywood`
+- **Release**: `~/projects/kollywood/_build/prod/rel/kollywood`
 - **Env file**: `~/.config/kollywood-server/kollywood-server.env`
 - **Manage**: `systemctl --user {status,restart,stop,logs} kollywood-server`
 - Migrations run automatically on release boot.

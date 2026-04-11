@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_DIR="${KOLLYWOOD_SERVER_DIR:-$HOME/projects/kollywood-server}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
+DEFAULT_REPO_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="${KOLLYWOOD_SERVER_DIR:-$DEFAULT_REPO_DIR}"
 RELEASE_DIR="$REPO_DIR/_build/prod/rel/kollywood"
 SERVICE_NAME="kollywood-server.service"
 DRAIN_TIMEOUT_SECONDS="${KOLLYWOOD_DRAIN_TIMEOUT_SECONDS:-900}"
@@ -18,7 +20,7 @@ require_env() {
   [[ -n "${!name:-}" ]] || err "Required environment variable $name is missing (source: $ENV_FILE)"
 }
 
-[[ -d "$REPO_DIR" ]] || err "Server repo not found at $REPO_DIR"
+[[ -d "$REPO_DIR" ]] || err "Deploy repo not found at $REPO_DIR"
 
 [[ -f "$ENV_FILE" ]] || err "Env file not found at $ENV_FILE"
 
