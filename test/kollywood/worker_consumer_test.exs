@@ -2,7 +2,7 @@ defmodule Kollywood.WorkerConsumerTest do
   use ExUnit.Case, async: false
 
   alias Kollywood.Repo
-  alias Kollywood.RunQueue
+  alias Kollywood.RunAttempts
   alias Kollywood.WorkerConsumer
 
   defmodule FakeAgentPool do
@@ -51,7 +51,7 @@ defmodule Kollywood.WorkerConsumerTest do
 
   test "consumer claims and processes pending queue entries", %{pool: pool} do
     {:ok, _entry} =
-      RunQueue.enqueue(%{
+      RunAttempts.enqueue(%{
         issue_id: "test-issue-1",
         identifier: "US-100",
         config_snapshot:
@@ -76,16 +76,16 @@ defmodule Kollywood.WorkerConsumerTest do
 
     Process.sleep(500)
 
-    refreshed = RunQueue.get_by_issue("test-issue-1")
+    refreshed = RunAttempts.get_active_for_issue("test-issue-1")
 
     if refreshed do
-      assert refreshed.status in ["claimed", "running", "completed", "failed"]
+      assert refreshed.status in ["leased", "running", "completed", "failed"]
     end
   end
 
   test "consumer respects max_local_workers limit", %{pool: pool} do
     for i <- 1..5 do
-      RunQueue.enqueue(%{
+      RunAttempts.enqueue(%{
         issue_id: "issue-#{i}",
         identifier: "US-#{i}",
         run_opts_snapshot: Jason.encode!(%{})

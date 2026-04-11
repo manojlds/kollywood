@@ -7,8 +7,8 @@ defmodule Kollywood.RunAttempts.Attempt do
   import Ecto.Changeset
 
   @valid_statuses [
-    "pending",
-    "claimed",
+    "queued",
+    "leased",
     "running",
     "cancel_requested",
     "completed",
@@ -20,7 +20,7 @@ defmodule Kollywood.RunAttempts.Attempt do
     field(:issue_id, :string)
     field(:identifier, :string)
     field(:project_slug, :string)
-    field(:status, :string, default: "pending")
+    field(:status, :string, default: "queued")
     field(:priority, :integer, default: 0)
     field(:attempt, :integer)
     field(:config_snapshot, :string)

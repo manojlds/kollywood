@@ -106,8 +106,8 @@ defmodule Kollywood.Orchestrator do
           retry_attempts: %{optional(String.t()) => map()},
           completed: MapSet.t(String.t()),
           completed_until: %{optional(String.t()) => integer()},
-          dispatch_mode: :local | :queue,
-          queue_poll_timer_ref: reference() | nil,
+          dispatch_mode: :local | :attempts,
+          attempt_poll_timer_ref: reference() | nil,
           last_error: String.t() | nil,
           last_poll_at: DateTime.t() | nil,
           last_poll_monotonic_ms: integer() | nil,
@@ -174,7 +174,7 @@ defmodule Kollywood.Orchestrator do
     :poll_stale_recovery_attempted,
     :last_recovery_attempt,
     dispatch_mode: :local,
-    queue_poll_timer_ref: nil,
+    attempt_poll_timer_ref: nil,
     dispatch_rotation: 0,
     running: %{},
     running_by_ref: %{},
@@ -364,7 +364,7 @@ defmodule Kollywood.Orchestrator do
         project_limit_fetcher:
           Keyword.get(opts, :project_limit_fetcher, &default_project_limit_fetcher/0),
         dispatch_mode: resolve_dispatch_mode(Keyword.get(opts, :dispatch_mode, :local)),
-        queue_poll_timer_ref: nil,
+        attempt_poll_timer_ref: nil,
         project_max_concurrent_agents: %{},
         dispatch_rotation: 0,
         last_poll_monotonic_ms: monotonic_now_ms(),
@@ -392,7 +392,7 @@ defmodule Kollywood.Orchestrator do
       state = schedule_leader_tick(state, 0)
 
       state =
-        if state.dispatch_mode == :queue do
+        if state.dispatch_mode == :attempts do
           RunAttempts.subscribe()
           state
         else
@@ -617,9 +617,9 @@ defmodule Kollywood.Orchestrator do
   end
 
   def handle_info({:run_attempts, {:completed, _entry_id, issue_id, result_payload}}, state)
-      when state.dispatch_mode == :queue do
+      when state.dispatch_mode == :attempts do
     case Map.get(state.running, issue_id) do
-      %{queue_entry_id: _entry_id} ->
+      %{attempt_id: _entry_id} ->
         case pop_running_by_issue(state, issue_id) do
           {:ok, run_entry, state} ->
             cancel_run_timeout_timer(run_entry)
@@ -640,9 +640,9 @@ defmodule Kollywood.Orchestrator do
   end
 
   def handle_info({:run_attempts, {:failed, _entry_id, issue_id, error_msg}}, state)
-      when state.dispatch_mode == :queue do
+      when state.dispatch_mode == :attempts do
     case Map.get(state.running, issue_id) do
-      %{queue_entry_id: _entry_id} ->
+      %{attempt_id: _entry_id} ->
         case pop_running_by_issue(state, issue_id) do
           {:ok, run_entry, state} ->
             cancel_run_timeout_timer(run_entry)
@@ -689,13 +689,13 @@ defmodule Kollywood.Orchestrator do
     end
   end
 
-  def handle_info({:queue_run_timeout, issue_id}, state) when is_binary(issue_id) do
+  def handle_info({:attempt_timeout, issue_id}, state) when is_binary(issue_id) do
     case Map.get(state.running, issue_id) do
-      %{queue_entry_id: entry_id} when not is_nil(entry_id) ->
+      %{attempt_id: entry_id} when not is_nil(entry_id) ->
         case pop_running_by_issue(state, issue_id) do
           {:ok, run_entry, state} ->
             cancel_run_timeout_timer(run_entry)
-            reason = "queued run timed out after #{state.run_timeout_ms || "configured"}ms"
+            reason = "attempt run timed out after #{state.run_timeout_ms || "configured"}ms"
             maybe_complete_run_logs(run_entry, %{status: :failed, error: reason})
             RunAttempts.request_cancel(entry_id, reason)
             next_attempt = next_retry_attempt(run_entry.attempt)
@@ -818,15 +818,15 @@ defmodule Kollywood.Orchestrator do
         |> MapSet.new()
 
       case state.dispatch_mode do
-        :queue ->
+        :attempts ->
           Enum.reduce(in_progress_ids, state, fn issue_id, acc ->
-            has_active_queue_entry =
+            has_active_attempt =
               case RunAttempts.get_active_for_issue(issue_id) do
                 nil -> false
-                entry -> entry.status in ["pending", "claimed", "running"]
+                entry -> entry.status in ["queued", "leased", "running"]
               end
 
-            if has_active_queue_entry do
+            if has_active_attempt do
               claim(acc, issue_id)
             else
               Logger.info(
@@ -1467,8 +1467,8 @@ defmodule Kollywood.Orchestrator do
       run_opts = maybe_put_prompt_template(run_opts, state.workflow_store)
 
       case state.dispatch_mode do
-        :queue ->
-          dispatch_to_queue(
+        :attempts ->
+          dispatch_to_attempts(
             state,
             issue,
             issue_id,
@@ -1601,7 +1601,7 @@ defmodule Kollywood.Orchestrator do
     end
   end
 
-  defp dispatch_to_queue(
+  defp dispatch_to_attempts(
          state,
          issue,
          issue_id,
@@ -1620,7 +1620,7 @@ defmodule Kollywood.Orchestrator do
     started_at = DateTime.utc_now()
     run_state = RunState.from_status(:running)
 
-    queue_attrs = %{
+    attempt_attrs = %{
       issue_id: issue_id,
       identifier: identifier,
       priority: issue_priority(issue),
@@ -1629,14 +1629,14 @@ defmodule Kollywood.Orchestrator do
       run_opts_snapshot: safe_json_encode(serializable_run_opts)
     }
 
-    case RunAttempts.enqueue_attempt(queue_attrs) do
+    case RunAttempts.enqueue(attempt_attrs) do
       {:ok, entry} ->
         run_entry = %{
           issue: issue,
           attempt: attempt,
           run_ref: nil,
           run_pid: nil,
-          run_timeout_timer_ref: schedule_queue_run_timeout_timer(issue_id, state),
+          run_timeout_timer_ref: schedule_attempt_timeout_timer(issue_id, state),
           started_at: started_at,
           runtime_profile: runtime_profile,
           runtime_process_state: initial_runtime_process_state(runtime_profile),
@@ -1648,11 +1648,11 @@ defmodule Kollywood.Orchestrator do
           run_log_context: run_log_context,
           retry_mode: retry_mode,
           retry_provenance: retry_provenance,
-          queue_entry_id: entry.id
+          attempt_id: entry.id
         }
 
         Logger.info(
-          "Dispatching to queue issue_id=#{issue_id} identifier=#{identifier} queue_entry=#{entry.id} attempt=#{inspect(attempt)}"
+          "Dispatching to attempts issue_id=#{issue_id} identifier=#{identifier} attempt_id=#{entry.id} attempt=#{inspect(attempt)}"
         )
 
         state
@@ -1740,11 +1740,11 @@ defmodule Kollywood.Orchestrator do
     end
   end
 
-  defp schedule_queue_run_timeout_timer(issue_id, state) do
+  defp schedule_attempt_timeout_timer(issue_id, state) do
     timeout_ms = state.run_timeout_ms
 
     if is_integer(timeout_ms) and timeout_ms > 0 do
-      Process.send_after(self(), {:queue_run_timeout, issue_id}, timeout_ms)
+      Process.send_after(self(), {:attempt_timeout, issue_id}, timeout_ms)
     else
       nil
     end
@@ -1805,8 +1805,8 @@ defmodule Kollywood.Orchestrator do
 
   defp parse_datetime(_), do: nil
 
-  defp resolve_dispatch_mode(:queue), do: :queue
-  defp resolve_dispatch_mode("queue"), do: :queue
+  defp resolve_dispatch_mode(:attempts), do: :attempts
+  defp resolve_dispatch_mode("attempts"), do: :attempts
   defp resolve_dispatch_mode(_), do: :local
 
   defp resolve_story_execution(config, issue) do
@@ -3016,7 +3016,7 @@ defmodule Kollywood.Orchestrator do
         _ = AgentPool.stop_run(state.agent_pool, pid)
 
       nil ->
-        case Map.get(run_entry, :queue_entry_id) do
+        case Map.get(run_entry, :attempt_id) do
           entry_id when not is_nil(entry_id) ->
             RunAttempts.request_cancel(entry_id, "run stopped by operator")
 
@@ -4598,7 +4598,7 @@ defmodule Kollywood.Orchestrator do
       is_pid(Map.get(run_entry, :run_pid)) ->
         true
 
-      is_integer(Map.get(run_entry, :queue_entry_id)) ->
+      is_integer(Map.get(run_entry, :attempt_id)) ->
         true
 
       true ->

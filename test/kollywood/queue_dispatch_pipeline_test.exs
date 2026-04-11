@@ -1,16 +1,16 @@
-defmodule Kollywood.QueueDispatchPipelineTest do
+defmodule Kollywood.AttemptDispatchPipelineTest do
   @moduledoc """
-  Integration tests for the queue dispatch pipeline.
+  Integration tests for the durable attempt dispatch pipeline.
 
   Verifies that run_opts (especially log_files and on_event) survive
-  the serialization round-trip through the RunQueue and that the
+  the serialization round-trip through RunAttempts and that the
   WorkerConsumer reconstructs a working on_event callback.
   """
 
   use ExUnit.Case, async: false
 
   alias Kollywood.Repo
-  alias Kollywood.RunQueue
+  alias Kollywood.RunAttempts
   alias Kollywood.WorkerConsumer
 
   @tmp_dir System.tmp_dir!()
@@ -74,7 +74,7 @@ defmodule Kollywood.QueueDispatchPipelineTest do
       assert decoded["log_files"]["events"] == "/tmp/test_run/events.jsonl"
     end
 
-    test "log_files round-trips through RunQueue enqueue/claim" do
+    test "log_files round-trips through RunAttempts enqueue/lease" do
       log_files = %{
         agent: "/tmp/test_run/agent.log",
         events: "/tmp/test_run/events.jsonl",
@@ -91,14 +91,14 @@ defmodule Kollywood.QueueDispatchPipelineTest do
       serialized = serialize_run_opts_for_queue(run_opts)
 
       {:ok, entry} =
-        RunQueue.enqueue(%{
+        RunAttempts.enqueue(%{
           issue_id: "test-logfiles-#{System.unique_integer([:positive])}",
           identifier: "US-RT-1",
           run_opts_snapshot: Jason.encode!(serialized),
           config_snapshot: Jason.encode!(%{"issue" => %{"id" => "test", "state" => "open"}})
         })
 
-      fetched = RunQueue.get(entry.id)
+      fetched = RunAttempts.get_attempt(entry.id)
       {:ok, decoded} = Jason.decode(fetched.run_opts_snapshot)
 
       assert decoded["log_files"]["agent"] == "/tmp/test_run/agent.log"
@@ -167,14 +167,14 @@ defmodule Kollywood.QueueDispatchPipelineTest do
         })
 
       {:ok, entry} =
-        RunQueue.enqueue(%{
+        RunAttempts.enqueue(%{
           issue_id: "test-atomize-#{System.unique_integer([:positive])}",
           identifier: "US-ATOM-1",
           run_opts_snapshot: run_opts_snapshot,
           config_snapshot: Jason.encode!(%{"issue" => %{"id" => "test", "state" => "open"}})
         })
 
-      fetched = RunQueue.get(entry.id)
+      fetched = RunAttempts.get_attempt(entry.id)
       {:ok, decoded_map} = Jason.decode(fetched.run_opts_snapshot)
 
       opts =
@@ -200,8 +200,8 @@ defmodule Kollywood.QueueDispatchPipelineTest do
     end
   end
 
-  describe "full queue dispatch pipeline" do
-    test "worker consumer writes events to log files from queue entry" do
+  describe "full attempt dispatch pipeline" do
+    test "worker consumer writes events to log files from attempt entry" do
       test_dir =
         Path.join(@tmp_dir, "kollywood_test_pipeline_#{System.unique_integer([:positive])}")
 
@@ -231,7 +231,7 @@ defmodule Kollywood.QueueDispatchPipelineTest do
       issue_id = "test-pipeline-#{System.unique_integer([:positive])}"
 
       {:ok, _entry} =
-        RunQueue.enqueue(%{
+        RunAttempts.enqueue(%{
           issue_id: issue_id,
           identifier: "US-PIPE-1",
           run_opts_snapshot: run_opts_snapshot,
@@ -263,7 +263,7 @@ defmodule Kollywood.QueueDispatchPipelineTest do
 
       assert String.length(events_content) > 0,
              "Expected events to be written to events.jsonl but file is empty. " <>
-               "This means on_event was not reconstructed from log_files in the queue entry."
+               "This means on_event was not reconstructed from log_files in the attempt entry."
     end
   end
 

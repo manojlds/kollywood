@@ -251,7 +251,7 @@ defmodule Kollywood.WorkerNode do
         monitor_ref = Process.monitor(worker_pid)
 
         worker_entry = %{
-          queue_entry_id: entry_id,
+          attempt_id: entry_id,
           issue_id: issue_id,
           identifier: identifier,
           lease_token: lease_token,
@@ -268,7 +268,7 @@ defmodule Kollywood.WorkerNode do
         monitor_ref = Process.monitor(worker_pid)
 
         worker_entry = %{
-          queue_entry_id: entry_id,
+          attempt_id: entry_id,
           issue_id: issue_id,
           identifier: identifier,
           lease_token: lease_token,

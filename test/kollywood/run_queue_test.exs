@@ -1,10 +1,10 @@
-defmodule Kollywood.RunQueueTest do
+defmodule Kollywood.RunAttemptsTest do
   use ExUnit.Case, async: false
 
   import Ecto.Query
 
   alias Kollywood.Repo
-  alias Kollywood.RunQueue
+  alias Kollywood.RunAttempts
   alias Kollywood.RunAttempts.Attempt, as: Entry
 
   setup do
@@ -16,12 +16,12 @@ defmodule Kollywood.RunQueueTest do
   describe "enqueue/1" do
     test "creates a pending entry" do
       assert {:ok, entry} =
-               RunQueue.enqueue(%{
+               RunAttempts.enqueue(%{
                  issue_id: "issue-1",
                  identifier: "US-001"
                })
 
-      assert entry.status == "pending"
+      assert entry.status == "queued"
       assert entry.issue_id == "issue-1"
       assert entry.identifier == "US-001"
       assert entry.priority == 0
@@ -29,7 +29,7 @@ defmodule Kollywood.RunQueueTest do
 
     test "accepts optional fields" do
       assert {:ok, entry} =
-               RunQueue.enqueue(%{
+               RunAttempts.enqueue(%{
                  issue_id: "issue-2",
                  identifier: "US-002",
                  project_slug: "kollywood",
@@ -44,40 +44,40 @@ defmodule Kollywood.RunQueueTest do
     end
 
     test "rejects missing required fields" do
-      assert {:error, changeset} = RunQueue.enqueue(%{issue_id: "x"})
+      assert {:error, changeset} = RunAttempts.enqueue(%{issue_id: "x"})
       assert %{identifier: ["can't be blank"]} = errors_on(changeset)
     end
   end
 
   describe "claim/2" do
     test "claims oldest pending entry" do
-      {:ok, _e1} = RunQueue.enqueue(%{issue_id: "a", identifier: "US-A"})
-      {:ok, _e2} = RunQueue.enqueue(%{issue_id: "b", identifier: "US-B"})
+      {:ok, _e1} = RunAttempts.enqueue(%{issue_id: "a", identifier: "US-A"})
+      {:ok, _e2} = RunAttempts.enqueue(%{issue_id: "b", identifier: "US-B"})
 
-      assert {:ok, claimed} = RunQueue.claim("node-1")
+      assert {:ok, claimed} = RunAttempts.lease_next("node-1")
       assert claimed.issue_id == "a"
-      assert claimed.status == "claimed"
+      assert claimed.status == "leased"
       assert claimed.claimed_by_node == "node-1"
       assert is_binary(claimed.lease_token)
       assert claimed.claimed_at != nil
     end
 
     test "returns :none when queue is empty" do
-      assert :none = RunQueue.claim("node-1")
+      assert :none = RunAttempts.lease_next("node-1")
     end
 
     test "does not reclaim already claimed entries" do
-      {:ok, _} = RunQueue.enqueue(%{issue_id: "a", identifier: "US-A"})
-      {:ok, _} = RunQueue.claim("node-1")
+      {:ok, _} = RunAttempts.enqueue(%{issue_id: "a", identifier: "US-A"})
+      {:ok, _} = RunAttempts.lease_next("node-1")
 
-      assert :none = RunQueue.claim("node-2")
+      assert :none = RunAttempts.lease_next("node-2")
     end
 
     test "higher priority entries are claimed first" do
-      {:ok, _} = RunQueue.enqueue(%{issue_id: "low", identifier: "US-L", priority: 1})
-      {:ok, _} = RunQueue.enqueue(%{issue_id: "high", identifier: "US-H", priority: 10})
+      {:ok, _} = RunAttempts.enqueue(%{issue_id: "low", identifier: "US-L", priority: 1})
+      {:ok, _} = RunAttempts.enqueue(%{issue_id: "high", identifier: "US-H", priority: 10})
 
-      assert {:ok, claimed} = RunQueue.claim("node-1")
+      assert {:ok, claimed} = RunAttempts.lease_next("node-1")
       assert claimed.issue_id == "high"
     end
   end
@@ -85,25 +85,25 @@ defmodule Kollywood.RunQueueTest do
   describe "claim_batch/2" do
     test "claims up to N entries" do
       for i <- 1..5 do
-        RunQueue.enqueue(%{issue_id: "i-#{i}", identifier: "US-#{i}"})
+        RunAttempts.enqueue(%{issue_id: "i-#{i}", identifier: "US-#{i}"})
       end
 
-      entries = RunQueue.claim_batch("node-1", 3)
+      entries = RunAttempts.lease_batch("node-1", 3)
       assert length(entries) == 3
     end
 
     test "returns fewer if not enough pending" do
-      {:ok, _} = RunQueue.enqueue(%{issue_id: "only", identifier: "US-1"})
-      entries = RunQueue.claim_batch("node-1", 5)
+      {:ok, _} = RunAttempts.enqueue(%{issue_id: "only", identifier: "US-1"})
+      entries = RunAttempts.lease_batch("node-1", 5)
       assert length(entries) == 1
     end
   end
 
   describe "mark_running/1" do
     test "sets claimed entries to running" do
-      {:ok, entry} = RunQueue.enqueue(%{issue_id: "x", identifier: "US-X"})
-      assert {:ok, _claimed} = RunQueue.claim("node-1")
-      assert {:ok, updated} = RunQueue.mark_running(entry.id)
+      {:ok, entry} = RunAttempts.enqueue(%{issue_id: "x", identifier: "US-X"})
+      assert {:ok, _claimed} = RunAttempts.lease_next("node-1")
+      assert {:ok, updated} = RunAttempts.start_attempt(entry.id)
       assert updated.status == "running"
       assert updated.started_at != nil
     end
@@ -111,11 +111,11 @@ defmodule Kollywood.RunQueueTest do
 
   describe "worker-owned transitions" do
     test "worker can move its claimed entry to running" do
-      {:ok, _entry} = RunQueue.enqueue(%{issue_id: "owned", identifier: "US-OWNED"})
-      assert {:ok, claimed} = RunQueue.claim("worker-1")
+      {:ok, _entry} = RunAttempts.enqueue(%{issue_id: "owned", identifier: "US-OWNED"})
+      assert {:ok, claimed} = RunAttempts.lease_next("worker-1")
 
       assert {:ok, running} =
-               RunQueue.mark_running_for_worker(claimed.id, "worker-1", claimed.lease_token)
+               RunAttempts.start_attempt(claimed.id, "worker-1", claimed.lease_token)
 
       assert running.status == "running"
       assert running.claimed_by_node == "worker-1"
@@ -123,41 +123,43 @@ defmodule Kollywood.RunQueueTest do
     end
 
     test "another worker cannot complete a leased entry it does not own" do
-      {:ok, _entry} = RunQueue.enqueue(%{issue_id: "conflict", identifier: "US-CONFLICT"})
-      assert {:ok, claimed} = RunQueue.claim("worker-1")
+      {:ok, _entry} = RunAttempts.enqueue(%{issue_id: "conflict", identifier: "US-CONFLICT"})
+      assert {:ok, claimed} = RunAttempts.lease_next("worker-1")
 
       assert {:error, :conflict} =
-               RunQueue.complete_for_worker(claimed.id, "worker-2", claimed.lease_token, %{
+               RunAttempts.complete_attempt(claimed.id, "worker-2", claimed.lease_token, %{
                  result_payload: %{status: "ok"}
                })
     end
 
     test "same worker cannot advance a run with the wrong lease token" do
-      {:ok, _entry} = RunQueue.enqueue(%{issue_id: "wrong-token", identifier: "US-WRONG"})
-      assert {:ok, claimed} = RunQueue.claim("worker-1")
+      {:ok, _entry} = RunAttempts.enqueue(%{issue_id: "wrong-token", identifier: "US-WRONG"})
+      assert {:ok, claimed} = RunAttempts.lease_next("worker-1")
 
       assert {:error, :conflict} =
-               RunQueue.mark_running_for_worker(claimed.id, "worker-1", Ecto.UUID.generate())
+               RunAttempts.start_attempt(claimed.id, "worker-1", Ecto.UUID.generate())
     end
 
     test "heartbeat reports cancellation requests for the owning worker" do
-      {:ok, _entry} = RunQueue.enqueue(%{issue_id: "cancel-requested", identifier: "US-CANCEL"})
-      assert {:ok, claimed} = RunQueue.claim("worker-1")
+      {:ok, _entry} =
+        RunAttempts.enqueue(%{issue_id: "cancel-requested", identifier: "US-CANCEL"})
 
-      assert {:ok, requested} = RunQueue.cancel(claimed.id, "stop requested")
+      assert {:ok, claimed} = RunAttempts.lease_next("worker-1")
+
+      assert {:ok, requested} = RunAttempts.request_cancel(claimed.id, "stop requested")
       assert requested.status == "cancel_requested"
 
       assert {:error, :cancel_requested} =
-               RunQueue.heartbeat_for_worker(claimed.id, "worker-1", claimed.lease_token)
+               RunAttempts.heartbeat_attempt(claimed.id, "worker-1", claimed.lease_token)
     end
 
     test "worker can acknowledge a cancellation request" do
-      {:ok, _entry} = RunQueue.enqueue(%{issue_id: "cancel-ack", identifier: "US-CANCEL-ACK"})
-      assert {:ok, claimed} = RunQueue.claim("worker-1")
-      assert {:ok, _requested} = RunQueue.cancel(claimed.id, "operator stop")
+      {:ok, _entry} = RunAttempts.enqueue(%{issue_id: "cancel-ack", identifier: "US-CANCEL-ACK"})
+      assert {:ok, claimed} = RunAttempts.lease_next("worker-1")
+      assert {:ok, _requested} = RunAttempts.request_cancel(claimed.id, "operator stop")
 
       assert {:ok, cancelled} =
-               RunQueue.cancel_ack_for_worker(claimed.id, "worker-1", claimed.lease_token)
+               RunAttempts.acknowledge_cancel(claimed.id, "worker-1", claimed.lease_token)
 
       assert cancelled.status == "cancelled"
       assert cancelled.cancel_reason == "operator stop"
@@ -167,10 +169,10 @@ defmodule Kollywood.RunQueueTest do
 
   describe "complete/2" do
     test "marks active entry as completed with payload" do
-      {:ok, entry} = RunQueue.enqueue(%{issue_id: "x", identifier: "US-X"})
-      assert {:ok, _claimed} = RunQueue.claim("node-1")
-      assert {:ok, _running} = RunQueue.mark_running(entry.id)
-      assert {:ok, updated} = RunQueue.complete(entry.id, %{result_payload: %{"status" => "ok"}})
+      {:ok, entry} = RunAttempts.enqueue(%{issue_id: "x", identifier: "US-X"})
+      assert {:ok, _claimed} = RunAttempts.lease_next("node-1")
+      assert {:ok, _running} = RunAttempts.start_attempt(entry.id)
+      assert {:ok, updated} = RunAttempts.complete_attempt(entry.id, %{"status" => "ok"})
       assert updated.status == "completed"
       assert updated.completed_at != nil
     end
@@ -178,10 +180,10 @@ defmodule Kollywood.RunQueueTest do
 
   describe "fail/2" do
     test "marks active entry as failed" do
-      {:ok, entry} = RunQueue.enqueue(%{issue_id: "x", identifier: "US-X"})
-      assert {:ok, _claimed} = RunQueue.claim("node-1")
-      assert {:ok, _running} = RunQueue.mark_running(entry.id)
-      assert {:ok, updated} = RunQueue.fail(entry.id, "something broke")
+      {:ok, entry} = RunAttempts.enqueue(%{issue_id: "x", identifier: "US-X"})
+      assert {:ok, _claimed} = RunAttempts.lease_next("node-1")
+      assert {:ok, _running} = RunAttempts.start_attempt(entry.id)
+      assert {:ok, updated} = RunAttempts.fail_attempt(entry.id, "something broke")
       assert updated.status == "failed"
       assert updated.error == "something broke"
     end
@@ -189,20 +191,20 @@ defmodule Kollywood.RunQueueTest do
 
   describe "fail_running_for_node/2" do
     test "marks running entries for one node as failed" do
-      {:ok, entry_a} = RunQueue.enqueue(%{issue_id: "node-a", identifier: "US-A"})
-      {:ok, entry_b} = RunQueue.enqueue(%{issue_id: "node-b", identifier: "US-B"})
+      {:ok, entry_a} = RunAttempts.enqueue(%{issue_id: "node-a", identifier: "US-A"})
+      {:ok, entry_b} = RunAttempts.enqueue(%{issue_id: "node-b", identifier: "US-B"})
 
-      assert {:ok, _} = RunQueue.claim("node-1")
-      assert {:ok, _} = RunQueue.claim("node-2")
+      assert {:ok, _} = RunAttempts.lease_next("node-1")
+      assert {:ok, _} = RunAttempts.lease_next("node-2")
 
-      assert {:ok, _} = RunQueue.mark_running(entry_a.id)
-      assert {:ok, _} = RunQueue.mark_running(entry_b.id)
+      assert {:ok, _} = RunAttempts.start_attempt(entry_a.id)
+      assert {:ok, _} = RunAttempts.start_attempt(entry_b.id)
 
-      count = RunQueue.fail_running_for_node("node-1", "startup recovery")
+      count = RunAttempts.recover_orphaned_running_for_worker("node-1", "startup recovery")
       assert count == 1
 
-      refreshed_a = RunQueue.get(entry_a.id)
-      refreshed_b = RunQueue.get(entry_b.id)
+      refreshed_a = RunAttempts.get_attempt(entry_a.id)
+      refreshed_b = RunAttempts.get_attempt(entry_b.id)
 
       assert refreshed_a.status == "failed"
       assert refreshed_a.error == "startup recovery"
@@ -212,75 +214,75 @@ defmodule Kollywood.RunQueueTest do
 
   describe "cancel/1" do
     test "cancels pending entries immediately" do
-      {:ok, entry} = RunQueue.enqueue(%{issue_id: "x", identifier: "US-X"})
-      assert {:ok, updated} = RunQueue.cancel(entry.id)
+      {:ok, entry} = RunAttempts.enqueue(%{issue_id: "x", identifier: "US-X"})
+      assert {:ok, updated} = RunAttempts.request_cancel(entry.id)
       assert updated.status == "cancelled"
     end
 
     test "requests cancellation for running entries" do
-      {:ok, entry} = RunQueue.enqueue(%{issue_id: "x-run", identifier: "US-X-RUN"})
-      assert {:ok, claimed} = RunQueue.claim("worker-1")
+      {:ok, entry} = RunAttempts.enqueue(%{issue_id: "x-run", identifier: "US-X-RUN"})
+      assert {:ok, claimed} = RunAttempts.lease_next("worker-1")
       assert entry.id == claimed.id
 
       assert {:ok, _running} =
-               RunQueue.mark_running_for_worker(entry.id, "worker-1", claimed.lease_token)
+               RunAttempts.start_attempt(entry.id, "worker-1", claimed.lease_token)
 
-      assert {:ok, updated} = RunQueue.cancel(entry.id, "stop requested")
+      assert {:ok, updated} = RunAttempts.request_cancel(entry.id, "stop requested")
       assert updated.status == "cancel_requested"
       assert updated.cancel_reason == "stop requested"
-      assert RunQueue.get_by_issue("x-run").status == "cancel_requested"
+      assert RunAttempts.get_active_for_issue("x-run").status == "cancel_requested"
     end
   end
 
   describe "queries" do
-    test "list_pending returns only pending entries" do
-      {:ok, _} = RunQueue.enqueue(%{issue_id: "a", identifier: "US-A"})
-      {:ok, _} = RunQueue.enqueue(%{issue_id: "b", identifier: "US-B"})
-      RunQueue.claim("node-1")
+    test "list_queued returns only queued entries" do
+      {:ok, _} = RunAttempts.enqueue(%{issue_id: "a", identifier: "US-A"})
+      {:ok, _} = RunAttempts.enqueue(%{issue_id: "b", identifier: "US-B"})
+      RunAttempts.lease_next("node-1")
 
-      pending = RunQueue.list_pending()
-      assert length(pending) == 1
-      assert hd(pending).issue_id == "b"
+      queued = RunAttempts.list_queued()
+      assert length(queued) == 1
+      assert hd(queued).issue_id == "b"
     end
 
     test "list_by_status filters correctly" do
-      {:ok, _} = RunQueue.enqueue(%{issue_id: "a", identifier: "US-A"})
-      {:ok, e2} = RunQueue.enqueue(%{issue_id: "b", identifier: "US-B"})
-      RunQueue.claim("node-1")
-      RunQueue.claim("node-2")
-      RunQueue.mark_running(e2.id)
-      RunQueue.fail(e2.id, "error")
+      {:ok, _} = RunAttempts.enqueue(%{issue_id: "a", identifier: "US-A"})
+      {:ok, e2} = RunAttempts.enqueue(%{issue_id: "b", identifier: "US-B"})
+      RunAttempts.lease_next("node-1")
+      RunAttempts.lease_next("node-2")
+      RunAttempts.start_attempt(e2.id)
+      RunAttempts.fail_attempt(e2.id, "error")
 
-      failed = RunQueue.list_by_status("failed")
+      failed = RunAttempts.list_by_status("failed")
       assert length(failed) == 1
       assert hd(failed).issue_id == "b"
     end
 
-    test "pending_count" do
-      {:ok, _} = RunQueue.enqueue(%{issue_id: "a", identifier: "US-A"})
-      {:ok, _} = RunQueue.enqueue(%{issue_id: "b", identifier: "US-B"})
-      assert RunQueue.pending_count() == 2
+    test "queued_count" do
+      {:ok, _} = RunAttempts.enqueue(%{issue_id: "a", identifier: "US-A"})
+      {:ok, _} = RunAttempts.enqueue(%{issue_id: "b", identifier: "US-B"})
+      assert RunAttempts.queued_count() == 2
     end
 
     test "get_by_issue returns active entry for issue" do
-      {:ok, _} = RunQueue.enqueue(%{issue_id: "x", identifier: "US-X"})
-      assert entry = RunQueue.get_by_issue("x")
+      {:ok, _} = RunAttempts.enqueue(%{issue_id: "x", identifier: "US-X"})
+      assert entry = RunAttempts.get_active_for_issue("x")
       assert entry.issue_id == "x"
     end
 
     test "get_by_issue returns nil for completed issues" do
-      {:ok, e} = RunQueue.enqueue(%{issue_id: "x", identifier: "US-X"})
-      RunQueue.claim("node-1")
-      RunQueue.mark_running(e.id)
-      RunQueue.complete(e.id)
-      assert RunQueue.get_by_issue("x") == nil
+      {:ok, e} = RunAttempts.enqueue(%{issue_id: "x", identifier: "US-X"})
+      RunAttempts.lease_next("node-1")
+      RunAttempts.start_attempt(e.id)
+      RunAttempts.complete_attempt(e.id, %{})
+      assert RunAttempts.get_active_for_issue("x") == nil
     end
   end
 
   describe "reclaim_stale/1" do
     test "reclaims entries claimed longer than threshold" do
-      {:ok, _entry} = RunQueue.enqueue(%{issue_id: "stale", identifier: "US-S"})
-      {:ok, claimed} = RunQueue.claim("node-1")
+      {:ok, _entry} = RunAttempts.enqueue(%{issue_id: "stale", identifier: "US-S"})
+      {:ok, claimed} = RunAttempts.lease_next("node-1")
 
       old_time = DateTime.add(DateTime.utc_now(), -700, :second)
       claimed_id = claimed.id
@@ -290,20 +292,20 @@ defmodule Kollywood.RunQueueTest do
         set: [claimed_at: old_time, last_heartbeat_at: old_time]
       )
 
-      count = RunQueue.reclaim_stale(600_000)
+      count = RunAttempts.reclaim_stale_attempts(600_000)
       assert count == 1
 
-      refreshed = RunQueue.get(claimed.id)
-      assert refreshed.status == "pending"
+      refreshed = RunAttempts.get_attempt(claimed.id)
+      assert refreshed.status == "queued"
       assert refreshed.claimed_by_node == nil
     end
 
     test "reclaims running entries with stale heartbeats" do
-      {:ok, _entry} = RunQueue.enqueue(%{issue_id: "running-stale", identifier: "US-RUN-ST"})
-      assert {:ok, claimed} = RunQueue.claim("worker-1")
+      {:ok, _entry} = RunAttempts.enqueue(%{issue_id: "running-stale", identifier: "US-RUN-ST"})
+      assert {:ok, claimed} = RunAttempts.lease_next("worker-1")
 
       assert {:ok, _running} =
-               RunQueue.mark_running_for_worker(claimed.id, "worker-1", claimed.lease_token)
+               RunAttempts.start_attempt(claimed.id, "worker-1", claimed.lease_token)
 
       old_time = DateTime.add(DateTime.utc_now(), -700, :second)
 
@@ -312,11 +314,11 @@ defmodule Kollywood.RunQueueTest do
         set: [last_heartbeat_at: old_time]
       )
 
-      count = RunQueue.reclaim_stale(600_000)
+      count = RunAttempts.reclaim_stale_attempts(600_000)
       assert count == 1
 
-      refreshed = RunQueue.get(claimed.id)
-      assert refreshed.status == "pending"
+      refreshed = RunAttempts.get_attempt(claimed.id)
+      assert refreshed.status == "queued"
       assert refreshed.claimed_by_node == nil
       assert refreshed.started_at == nil
     end
@@ -324,10 +326,10 @@ defmodule Kollywood.RunQueueTest do
 
   describe "prune_completed/1" do
     test "removes old completed entries" do
-      {:ok, e} = RunQueue.enqueue(%{issue_id: "old", identifier: "US-O"})
-      RunQueue.claim("node-1")
-      RunQueue.mark_running(e.id)
-      RunQueue.complete(e.id)
+      {:ok, e} = RunAttempts.enqueue(%{issue_id: "old", identifier: "US-O"})
+      RunAttempts.lease_next("node-1")
+      RunAttempts.start_attempt(e.id)
+      RunAttempts.complete_attempt(e.id, %{})
 
       old_time = DateTime.add(DateTime.utc_now(), -100_000, :second)
       entry_id = e.id
@@ -337,7 +339,7 @@ defmodule Kollywood.RunQueueTest do
         set: [completed_at: old_time]
       )
 
-      count = RunQueue.prune_completed(86_400_000)
+      count = Kollywood.RunAttempts.Store.prune_completed(86_400_000)
       assert count == 1
     end
   end
