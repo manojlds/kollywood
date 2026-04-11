@@ -13,6 +13,7 @@ defmodule Mix.Tasks.Kollywood.Orch.Maintenance do
   use Mix.Task
 
   alias Kollywood.Orchestrator.ControlState
+  alias Kollywood.Repo
   alias Mix.Tasks.Kollywood.Orch.Shared
 
   @default_wait_timeout_seconds 600
@@ -20,6 +21,10 @@ defmodule Mix.Tasks.Kollywood.Orch.Maintenance do
 
   @impl Mix.Task
   def run(args) do
+    with_control_state_repo(fn -> do_run(args) end)
+  end
+
+  defp do_run(args) do
     {opts, positional, invalid} =
       OptionParser.parse(args,
         strict: [mode: :string, wait: :boolean, timeout: :integer, interval: :integer],
@@ -63,6 +68,72 @@ defmodule Mix.Tasks.Kollywood.Orch.Maintenance do
     end
 
     print_status_path()
+  end
+
+  defp with_control_state_repo(fun) when is_function(fun, 0) do
+    case control_state_backend() do
+      :db -> with_started_repo(fun)
+      :file -> fun.()
+    end
+  end
+
+  defp with_started_repo(fun) when is_function(fun, 0) do
+    case Process.whereis(Repo) do
+      nil ->
+        ensure_ecto_sql_started!()
+
+        case Repo.start_link(pool_size: 1) do
+          {:ok, repo_pid} ->
+            try do
+              fun.()
+            after
+              GenServer.stop(repo_pid)
+            end
+
+          {:error, {:already_started, _repo_pid}} ->
+            fun.()
+
+          {:error, reason} ->
+            Mix.raise("failed to start #{inspect(Repo)}: #{inspect(reason)}")
+        end
+
+      _repo_pid ->
+        fun.()
+    end
+  end
+
+  defp ensure_ecto_sql_started! do
+    case Application.ensure_all_started(:ecto_sql) do
+      {:ok, _started} -> :ok
+      {:error, {app, reason}} -> Mix.raise("failed to start #{inspect(app)}: #{inspect(reason)}")
+    end
+  end
+
+  defp control_state_backend do
+    case System.get_env("KOLLYWOOD_CONTROL_STATE_BACKEND") do
+      value when value in ["db", "DB"] ->
+        :db
+
+      value when value in ["file", "FILE"] ->
+        :file
+
+      _other ->
+        case Application.get_env(:kollywood, :orchestrator_control_state_backend, :auto) do
+          :db ->
+            :db
+
+          :file ->
+            :file
+
+          _auto ->
+            if Application.get_env(:kollywood, :ecto_adapter, Ecto.Adapters.SQLite3) ==
+                 Ecto.Adapters.Postgres do
+              :db
+            else
+              :file
+            end
+        end
+    end
   end
 
   defp parse_mode!(mode) do
