@@ -1,6 +1,6 @@
 defmodule Kollywood.WorkerConsumer do
   @moduledoc """
-  Pulls work from the RunQueue and executes it via the local AgentPool.
+  Pulls leased run attempts and executes them via the local AgentPool.
 
   This process runs on worker nodes (`:worker`, `:orchestrator`, `:all` modes).
   It polls the queue for pending entries, claims them, spawns RunWorkers, and
@@ -17,7 +17,7 @@ defmodule Kollywood.WorkerConsumer do
   alias Kollywood.AgentRunner
   alias Kollywood.Config
   alias Kollywood.Orchestrator.RunLogs
-  alias Kollywood.RunQueue
+  alias Kollywood.RunAttempts
 
   @default_poll_interval_ms 2_000
   @default_max_local_workers 2
@@ -78,7 +78,7 @@ defmodule Kollywood.WorkerConsumer do
     now = DateTime.utc_now()
 
     recovered_running =
-      RunQueue.fail_running_for_node(
+      RunAttempts.recover_orphaned_running_for_worker(
         node_id,
         "orphaned running queue entry recovered on worker startup"
       )
@@ -105,7 +105,7 @@ defmodule Kollywood.WorkerConsumer do
       claims_succeeded: 0
     }
 
-    RunQueue.subscribe()
+    RunAttempts.subscribe()
 
     state =
       state
@@ -119,7 +119,7 @@ defmodule Kollywood.WorkerConsumer do
   def handle_call(:status, _from, state) do
     active_runs =
       Enum.map(state.active_workers, fn {entry_id, worker} ->
-        queue_entry = RunQueue.get(entry_id)
+        queue_entry = RunAttempts.get_attempt(entry_id)
 
         %{
           queue_entry_id: entry_id,
@@ -179,7 +179,7 @@ defmodule Kollywood.WorkerConsumer do
 
   def handle_info(:reclaim_stale, state) do
     state = touch_seen(state)
-    reclaimed = RunQueue.reclaim_stale()
+    reclaimed = RunAttempts.reclaim_stale_attempts()
 
     if reclaimed > 0 do
       Logger.info("WorkerConsumer reclaimed #{reclaimed} stale queue entries")
@@ -189,13 +189,25 @@ defmodule Kollywood.WorkerConsumer do
     {:noreply, state}
   end
 
-  def handle_info({:run_queue, {:enqueued, _id, _issue_id}}, state) do
+  def handle_info({:run_attempts, {:enqueued, _id, _issue_id}}, state) do
     state = touch_seen(state)
     state = try_claim_and_run(state)
     {:noreply, state}
   end
 
-  def handle_info({:run_queue, _event}, state) do
+  def handle_info({:run_attempts, {:cancel_requested, entry_id, _issue_id, _reason}}, state) do
+    state = touch_seen(state)
+
+    state =
+      case Map.get(state.active_workers, entry_id) do
+        nil -> state
+        worker -> stop_cancelled_worker(state, entry_id, worker)
+      end
+
+    {:noreply, try_claim_and_run(state)}
+  end
+
+  def handle_info({:run_attempts, _event}, state) do
     {:noreply, touch_seen(state)}
   end
 
@@ -218,10 +230,10 @@ defmodule Kollywood.WorkerConsumer do
     state = touch_seen(state)
 
     case Map.pop(state.active_workers, entry_id) do
-      {%{worker_pid: ^worker_pid, monitor_ref: ref}, active_workers} ->
+      {%{worker_pid: ^worker_pid, monitor_ref: ref} = worker, active_workers} ->
         Process.demonitor(ref, [:flush])
         state = %{state | active_workers: active_workers}
-        handle_worker_result(state, entry_id, result)
+        handle_worker_result(state, entry_id, worker, result)
 
       _ ->
         {:noreply, state}
@@ -232,12 +244,12 @@ defmodule Kollywood.WorkerConsumer do
     state = touch_seen(state)
 
     case find_worker_by_ref(state, ref) do
-      {entry_id, %{worker_pid: ^pid}} ->
+      {entry_id, %{worker_pid: ^pid} = worker} ->
         active_workers = Map.delete(state.active_workers, entry_id)
         state = %{state | active_workers: active_workers}
 
         error_msg = "Worker process exited: #{inspect(reason)}"
-        RunQueue.fail(entry_id, error_msg)
+        finalize_local_shutdown(state, entry_id, worker, error_msg)
 
         Logger.warning("WorkerConsumer: worker for entry #{entry_id} crashed: #{error_msg}")
 
@@ -257,7 +269,7 @@ defmodule Kollywood.WorkerConsumer do
     if available_slots == 0 do
       state
     else
-      entries = RunQueue.claim_batch(state.node_id, available_slots)
+      entries = RunAttempts.lease_batch(state.node_id, available_slots)
       claims_count = length(entries)
 
       state = %{
@@ -285,14 +297,30 @@ defmodule Kollywood.WorkerConsumer do
       issue = decode_issue_from_entry(entry)
       run_opts = inject_on_event(run_opts, issue_id, entry.attempt, identifier)
 
-      RunQueue.mark_running(entry_id)
+      case RunAttempts.start_attempt(entry_id, state.node_id, entry.lease_token) do
+        {:ok, _entry} ->
+          case invoke_runner(issue, run_opts) do
+            {:ok, _result} = ok ->
+              send(consumer_pid, {:worker_done, entry_id, self(), ok})
 
-      case invoke_runner(issue, run_opts) do
-        {:ok, _result} = ok ->
-          send(consumer_pid, {:worker_done, entry_id, self(), ok})
+            {:error, _result} = err ->
+              send(consumer_pid, {:worker_done, entry_id, self(), err})
+          end
 
-        {:error, _result} = err ->
-          send(consumer_pid, {:worker_done, entry_id, self(), err})
+        {:error, :cancel_requested} ->
+          _ = RunAttempts.acknowledge_cancel(entry_id, state.node_id, entry.lease_token)
+
+          send(
+            consumer_pid,
+            {:worker_done, entry_id, self(), {:cancelled, "run cancelled before start"}}
+          )
+
+        {:error, reason} ->
+          send(
+            consumer_pid,
+            {:worker_done, entry_id, self(),
+             {:error, %{error: "failed to start leased run: #{inspect(reason)}"}}}
+          )
       end
     end
 
@@ -307,6 +335,7 @@ defmodule Kollywood.WorkerConsumer do
         worker_entry = %{
           worker_pid: worker_pid,
           monitor_ref: monitor_ref,
+          lease_token: entry.lease_token,
           issue_id: issue_id,
           issue_title: extract_issue_title(entry),
           identifier: identifier,
@@ -323,6 +352,7 @@ defmodule Kollywood.WorkerConsumer do
         worker_entry = %{
           worker_pid: worker_pid,
           monitor_ref: monitor_ref,
+          lease_token: entry.lease_token,
           issue_id: issue_id,
           issue_title: extract_issue_title(entry),
           identifier: identifier,
@@ -338,20 +368,41 @@ defmodule Kollywood.WorkerConsumer do
           "WorkerConsumer: failed to start worker for entry #{entry_id}: #{inspect(error)}"
         )
 
-        RunQueue.fail(entry_id, "failed to start worker: #{inspect(error)}")
+        maybe_fail_local_run(
+          state,
+          entry_id,
+          entry.lease_token,
+          "failed to start worker: #{inspect(error)}"
+        )
+
         state
     end
   end
 
-  defp handle_worker_result(state, entry_id, {:ok, result}) do
+  defp handle_worker_result(state, entry_id, worker, {:ok, result}) do
     result_payload = serialize_result(result)
-    RunQueue.complete(entry_id, %{result_payload: result_payload})
+
+    case RunAttempts.complete_attempt(entry_id, state.node_id, worker.lease_token, result_payload) do
+      {:ok, _entry} ->
+        :ok
+
+      {:error, :cancel_requested} ->
+        _ = RunAttempts.acknowledge_cancel(entry_id, state.node_id, worker.lease_token)
+
+      {:error, reason} ->
+        Logger.warning("WorkerConsumer: failed to complete entry #{entry_id}: #{inspect(reason)}")
+    end
 
     state = try_claim_and_run(state)
     {:noreply, state}
   end
 
-  defp handle_worker_result(state, entry_id, {:error, result}) do
+  defp handle_worker_result(state, _entry_id, _worker, {:cancelled, _reason}) do
+    state = try_claim_and_run(state)
+    {:noreply, state}
+  end
+
+  defp handle_worker_result(state, entry_id, worker, {:error, result}) do
     error_msg =
       cond do
         is_map(result) and Map.has_key?(result, :error) -> to_string(result.error)
@@ -359,7 +410,7 @@ defmodule Kollywood.WorkerConsumer do
         true -> inspect(result)
       end
 
-    RunQueue.fail(entry_id, error_msg)
+    maybe_fail_local_run(state, entry_id, worker.lease_token, error_msg)
 
     state = try_claim_and_run(state)
     {:noreply, state}
@@ -560,8 +611,41 @@ defmodule Kollywood.WorkerConsumer do
 
   defp queue_status_label(entry) do
     case entry.status do
-      status when status in ["claimed", "running"] -> status
+      status when status in ["claimed", "running", "cancel_requested"] -> status
       _ -> "completed"
+    end
+  end
+
+  defp stop_cancelled_worker(state, entry_id, worker) do
+    Logger.info("WorkerConsumer stopping cancelled local worker for entry #{entry_id}")
+
+    Process.demonitor(worker.monitor_ref, [:flush])
+    _ = AgentPool.stop_run(state.agent_pool, worker.worker_pid)
+    _ = RunAttempts.acknowledge_cancel(entry_id, state.node_id, worker.lease_token)
+
+    %{state | active_workers: Map.delete(state.active_workers, entry_id)}
+  end
+
+  defp finalize_local_shutdown(state, entry_id, worker, error_msg) do
+    case RunAttempts.get_owned_attempt(entry_id, state.node_id, worker.lease_token) do
+      %{status: "cancel_requested"} ->
+        _ = RunAttempts.acknowledge_cancel(entry_id, state.node_id, worker.lease_token)
+
+      _other ->
+        maybe_fail_local_run(state, entry_id, worker.lease_token, error_msg)
+    end
+  end
+
+  defp maybe_fail_local_run(state, entry_id, lease_token, error_msg) do
+    case RunAttempts.fail_attempt(entry_id, state.node_id, lease_token, error_msg) do
+      {:ok, _entry} ->
+        :ok
+
+      {:error, :cancel_requested} ->
+        _ = RunAttempts.acknowledge_cancel(entry_id, state.node_id, lease_token)
+
+      {:error, reason} ->
+        Logger.warning("WorkerConsumer: failed to fail entry #{entry_id}: #{inspect(reason)}")
     end
   end
 

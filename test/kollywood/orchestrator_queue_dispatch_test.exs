@@ -236,7 +236,7 @@ defmodule Kollywood.OrchestratorQueueDispatchTest do
       ]
     }
 
-    send(orch, {:run_queue, {:completed, entry.id, entry.issue_id, result_payload}})
+    send(orch, {:run_attempts, {:completed, entry.id, entry.issue_id, result_payload}})
 
     assert_receive {:tracker_mark_done, ^issue_id}, 2_000
     assert_receive {:tracker_mark_merged, ^issue_id}, 2_000

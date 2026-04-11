@@ -1,14 +1,22 @@
-defmodule Kollywood.RunQueue.Entry do
+defmodule Kollywood.RunAttempts.Attempt do
   @moduledoc """
-  Ecto schema for a run queue entry.
+  Ecto schema for a durable run attempt.
   """
 
   use Ecto.Schema
   import Ecto.Changeset
 
-  @valid_statuses ["pending", "claimed", "running", "completed", "failed", "cancelled"]
+  @valid_statuses [
+    "pending",
+    "claimed",
+    "running",
+    "cancel_requested",
+    "completed",
+    "failed",
+    "cancelled"
+  ]
 
-  schema "run_queue" do
+  schema "run_attempts" do
     field(:issue_id, :string)
     field(:identifier, :string)
     field(:project_slug, :string)
@@ -23,6 +31,8 @@ defmodule Kollywood.RunQueue.Entry do
     field(:lease_token, :string)
     field(:claimed_at, :utc_datetime_usec)
     field(:last_heartbeat_at, :utc_datetime_usec)
+    field(:cancel_requested_at, :utc_datetime_usec)
+    field(:cancel_reason, :string)
     field(:started_at, :utc_datetime_usec)
     field(:completed_at, :utc_datetime_usec)
 
@@ -42,9 +52,13 @@ defmodule Kollywood.RunQueue.Entry do
     :lease_token,
     :claimed_at,
     :last_heartbeat_at,
+    :cancel_requested_at,
+    :cancel_reason,
     :started_at,
     :completed_at
   ]
+
+  @type t :: %__MODULE__{}
 
   @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
   def changeset(entry, attrs) do

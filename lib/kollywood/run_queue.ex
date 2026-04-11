@@ -1,21 +1,22 @@
 defmodule Kollywood.RunQueue do
   @moduledoc """
-  Persistent work queue backed by SQLite.
+  Durable run attempt storage implementation.
 
   The orchestrator enqueues dispatch intents; worker nodes claim and execute
   them. Results are written back to the queue and broadcast via PubSub so
   the orchestrator can react without polling.
 
   Statuses: pending -> claimed -> running -> completed | failed | cancelled
+            running -> cancel_requested -> cancelled
   """
 
   import Ecto.Query
 
   alias Kollywood.Repo
-  alias Kollywood.RunQueue.Entry
+  alias Kollywood.RunAttempts.Attempt, as: Entry
 
   @pubsub Kollywood.PubSub
-  @topic "run_queue"
+  @topic "run_attempts"
   @stale_claim_threshold_ms 600_000
 
   # --- PubSub ---
@@ -23,8 +24,7 @@ defmodule Kollywood.RunQueue do
   @spec subscribe() :: :ok | {:error, term()}
   def subscribe, do: Phoenix.PubSub.subscribe(@pubsub, @topic)
 
-  defp broadcast(event),
-    do: Phoenix.PubSub.broadcast(@pubsub, @topic, {:run_queue, event})
+  defp broadcast(event), do: Phoenix.PubSub.broadcast(@pubsub, @topic, {:run_attempts, event})
 
   # --- Enqueue ---
 
@@ -134,7 +134,7 @@ defmodule Kollywood.RunQueue do
 
     case updated_count do
       1 -> {:ok, Repo.get!(Entry, entry_id)}
-      _ -> ownership_error(entry_id)
+      _ -> worker_transition_error(entry_id, worker_id, lease_token)
     end
   end
 
@@ -208,7 +208,7 @@ defmodule Kollywood.RunQueue do
         {:ok, updated}
 
       _ ->
-        ownership_error(entry_id)
+        worker_transition_error(entry_id, worker_id, lease_token)
     end
   end
 
@@ -265,7 +265,7 @@ defmodule Kollywood.RunQueue do
         {:ok, updated}
 
       _ ->
-        ownership_error(entry_id)
+        worker_transition_error(entry_id, worker_id, lease_token)
     end
   end
 
@@ -293,28 +293,72 @@ defmodule Kollywood.RunQueue do
 
   # --- Cancel ---
 
-  @spec cancel(integer()) :: {:ok, Entry.t()} | {:error, term()}
-  def cancel(entry_id) do
+  @spec cancel(integer(), String.t() | nil) :: {:ok, Entry.t()} | {:error, term()}
+  def cancel(entry_id, reason \\ nil)
+
+  def cancel(entry_id, reason)
+      when is_integer(entry_id) and (is_binary(reason) or is_nil(reason)) do
     now = DateTime.utc_now()
 
-    {updated_count, _} =
-      Entry
-      |> where([e], e.id == ^entry_id and e.status in ["pending", "claimed", "running"])
-      |> Repo.update_all(
-        set: [
-          status: "cancelled",
-          completed_at: now,
-          lease_token: nil,
-          last_heartbeat_at: nil,
-          updated_at: now
-        ]
-      )
+    case Repo.get(Entry, entry_id) do
+      nil ->
+        {:error, :not_found}
 
-    case updated_count do
-      1 -> {:ok, Repo.get!(Entry, entry_id)}
-      _ -> ownership_error(entry_id)
+      %Entry{status: "pending"} ->
+        {updated_count, _} =
+          Entry
+          |> where([e], e.id == ^entry_id and e.status == "pending")
+          |> Repo.update_all(
+            set: [
+              status: "cancelled",
+              cancel_requested_at: now,
+              cancel_reason: reason,
+              completed_at: now,
+              lease_token: nil,
+              last_heartbeat_at: nil,
+              updated_at: now
+            ]
+          )
+
+        case updated_count do
+          1 ->
+            updated = Repo.get!(Entry, entry_id)
+            broadcast({:cancelled, updated.id, updated.issue_id, updated.cancel_reason})
+            {:ok, updated}
+
+          _ ->
+            ownership_error(entry_id)
+        end
+
+      %Entry{status: status} when status in ["claimed", "running"] ->
+        {updated_count, _} =
+          Entry
+          |> where([e], e.id == ^entry_id and e.status in ["claimed", "running"])
+          |> Repo.update_all(
+            set: [
+              status: "cancel_requested",
+              cancel_requested_at: now,
+              cancel_reason: reason,
+              updated_at: now
+            ]
+          )
+
+        case updated_count do
+          1 ->
+            updated = Repo.get!(Entry, entry_id)
+            broadcast({:cancel_requested, updated.id, updated.issue_id, updated.cancel_reason})
+            {:ok, updated}
+
+          _ ->
+            ownership_error(entry_id)
+        end
+
+      %Entry{} = entry ->
+        {:ok, entry}
     end
   end
+
+  def cancel(_entry_id, _reason), do: {:error, :invalid_arguments}
 
   @spec heartbeat_for_worker(integer(), String.t(), String.t()) ::
           {:ok, Entry.t()} | {:error, term()}
@@ -328,7 +372,7 @@ defmodule Kollywood.RunQueue do
 
     case updated_count do
       1 -> {:ok, Repo.get!(Entry, entry_id)}
-      _ -> ownership_error(entry_id)
+      _ -> worker_transition_error(entry_id, worker_id, lease_token)
     end
   end
 
@@ -347,6 +391,55 @@ defmodule Kollywood.RunQueue do
   end
 
   def get_for_worker(_entry_id, _worker_id, _lease_token), do: nil
+
+  @spec get_owned_entry(integer(), String.t(), String.t()) :: Entry.t() | nil
+  def get_owned_entry(entry_id, worker_id, lease_token)
+      when is_integer(entry_id) and is_binary(worker_id) and is_binary(lease_token) do
+    Entry
+    |> where(
+      [e],
+      e.id == ^entry_id and e.claimed_by_node == ^worker_id and e.lease_token == ^lease_token
+    )
+    |> Repo.one()
+  end
+
+  def get_owned_entry(_entry_id, _worker_id, _lease_token), do: nil
+
+  @spec cancel_ack_for_worker(integer(), String.t(), String.t()) ::
+          {:ok, Entry.t()} | {:error, term()}
+  def cancel_ack_for_worker(entry_id, worker_id, lease_token)
+      when is_integer(entry_id) and is_binary(worker_id) and is_binary(lease_token) do
+    now = DateTime.utc_now()
+
+    {updated_count, _} =
+      Entry
+      |> where(
+        [e],
+        e.id == ^entry_id and e.claimed_by_node == ^worker_id and e.lease_token == ^lease_token and
+          e.status == "cancel_requested"
+      )
+      |> Repo.update_all(
+        set: [
+          status: "cancelled",
+          completed_at: now,
+          last_heartbeat_at: nil,
+          lease_token: nil,
+          updated_at: now
+        ]
+      )
+
+    case updated_count do
+      1 ->
+        updated = Repo.get!(Entry, entry_id)
+        broadcast({:cancelled, updated.id, updated.issue_id, updated.cancel_reason})
+        {:ok, updated}
+
+      _ ->
+        worker_transition_error(entry_id, worker_id, lease_token)
+    end
+  end
+
+  def cancel_ack_for_worker(_entry_id, _worker_id, _lease_token), do: {:error, :invalid_arguments}
 
   # --- Queries ---
 
@@ -380,7 +473,7 @@ defmodule Kollywood.RunQueue do
   def get_by_issue(issue_id) do
     Entry
     |> where([e], e.issue_id == ^issue_id)
-    |> where([e], e.status in ["pending", "claimed", "running"])
+    |> where([e], e.status in ["pending", "claimed", "running", "cancel_requested"])
     |> order_by([e], desc: e.inserted_at)
     |> limit(1)
     |> Repo.one()
@@ -423,8 +516,9 @@ defmodule Kollywood.RunQueue do
   @spec reclaim_stale(pos_integer()) :: non_neg_integer()
   def reclaim_stale(threshold_ms \\ @stale_claim_threshold_ms) do
     cutoff = DateTime.add(DateTime.utc_now(), -threshold_ms, :millisecond)
+    now = DateTime.utc_now()
 
-    {count, _} =
+    {requeue_count, _} =
       Entry
       |> where([e], e.status in ["claimed", "running"])
       |> where(
@@ -440,9 +534,31 @@ defmodule Kollywood.RunQueue do
           claimed_at: nil,
           last_heartbeat_at: nil,
           started_at: nil,
-          updated_at: DateTime.utc_now()
+          cancel_requested_at: nil,
+          cancel_reason: nil,
+          updated_at: now
         ]
       )
+
+    {cancel_count, _} =
+      Entry
+      |> where([e], e.status == "cancel_requested")
+      |> where(
+        [e],
+        (not is_nil(e.last_heartbeat_at) and e.last_heartbeat_at < ^cutoff) or
+          (is_nil(e.last_heartbeat_at) and not is_nil(e.claimed_at) and e.claimed_at < ^cutoff)
+      )
+      |> Repo.update_all(
+        set: [
+          status: "cancelled",
+          completed_at: now,
+          last_heartbeat_at: nil,
+          lease_token: nil,
+          updated_at: now
+        ]
+      )
+
+    count = requeue_count + cancel_count
 
     if count > 0 do
       broadcast({:reclaimed_stale, count})
@@ -514,6 +630,14 @@ defmodule Kollywood.RunQueue do
       e.id == ^entry_id and e.claimed_by_node == ^worker_id and e.lease_token == ^lease_token
     )
     |> where([e], e.status in ["claimed", "running"])
+  end
+
+  defp worker_transition_error(entry_id, worker_id, lease_token) do
+    case get_owned_entry(entry_id, worker_id, lease_token) do
+      nil -> ownership_error(entry_id)
+      %Entry{status: "cancel_requested"} -> {:error, :cancel_requested}
+      %Entry{} -> {:error, :conflict}
+    end
   end
 
   defp ownership_error(entry_id) do

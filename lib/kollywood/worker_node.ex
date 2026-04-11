@@ -161,7 +161,7 @@ defmodule Kollywood.WorkerNode do
         active_workers = Map.delete(state.active_workers, entry_id)
         state = %{state | active_workers: active_workers}
         error_msg = "Worker process exited: #{inspect(reason)}"
-        maybe_fail_remote_run(state, entry_id, worker.lease_token, error_msg)
+        finalize_remote_shutdown(state, entry_id, worker, error_msg)
         {:noreply, lease_and_run(state)}
 
       _ ->
@@ -224,6 +224,14 @@ defmodule Kollywood.WorkerNode do
             {:error, _result} = err ->
               send(consumer_pid, {:worker_done, entry_id, self(), err})
           end
+
+        :cancel_requested ->
+          _ = ControlPlaneClient.cancel_ack_run(control_plane, entry_id, worker_id, lease_token)
+
+          send(
+            consumer_pid,
+            {:worker_done, entry_id, self(), {:cancelled, "run cancelled before start"}}
+          )
 
         {:error, reason} ->
           send(
@@ -300,12 +308,25 @@ defmodule Kollywood.WorkerNode do
       :ok ->
         :ok
 
+      :cancel_requested ->
+        _ =
+          ControlPlaneClient.cancel_ack_run(
+            state.control_plane,
+            entry_id,
+            state.worker_id,
+            worker.lease_token
+          )
+
       {:error, reason} ->
         Logger.warning(
           "WorkerNode failed to report completion for entry #{entry_id}: #{inspect(reason)}"
         )
     end
 
+    lease_and_run(state)
+  end
+
+  defp handle_worker_result(state, _entry_id, _worker, {:cancelled, _reason}) do
     lease_and_run(state)
   end
 
@@ -334,6 +355,28 @@ defmodule Kollywood.WorkerNode do
       :ok ->
         :ok
 
+      :cancel_requested ->
+        _ =
+          ControlPlaneClient.cancel_ack_run(
+            state.control_plane,
+            entry_id,
+            state.worker_id,
+            lease_token
+          )
+
+        :ok
+
+      {:error, {409, "run cancellation requested"}} ->
+        _ =
+          ControlPlaneClient.cancel_ack_run(
+            state.control_plane,
+            entry_id,
+            state.worker_id,
+            lease_token
+          )
+
+        :ok
+
       {:error, reason} ->
         Logger.warning(
           "WorkerNode failed to report failure for entry #{entry_id}: #{inspect(reason)}"
@@ -355,6 +398,9 @@ defmodule Kollywood.WorkerNode do
            ) do
         :ok ->
           acc
+
+        :cancel_requested ->
+          stop_cancelled_worker(acc, entry_id, worker)
 
         {:error, {:conflict, _reason}} ->
           stop_lost_worker(acc, entry_id, worker)
@@ -383,6 +429,45 @@ defmodule Kollywood.WorkerNode do
     _ = AgentPool.stop_run(state.agent_pool, worker.worker_pid)
 
     %{state | active_workers: Map.delete(state.active_workers, entry_id)}
+  end
+
+  defp stop_cancelled_worker(state, entry_id, worker) do
+    Logger.info("WorkerNode stopping cancelled local worker for entry #{entry_id}")
+
+    _ = AgentPool.stop_run(state.agent_pool, worker.worker_pid)
+
+    _ =
+      ControlPlaneClient.cancel_ack_run(
+        state.control_plane,
+        entry_id,
+        state.worker_id,
+        worker.lease_token
+      )
+
+    %{state | active_workers: Map.delete(state.active_workers, entry_id)}
+  end
+
+  defp finalize_remote_shutdown(state, entry_id, worker, error_msg) do
+    case ControlPlaneClient.heartbeat_run(
+           state.control_plane,
+           entry_id,
+           state.worker_id,
+           worker.lease_token
+         ) do
+      :cancel_requested ->
+        _ =
+          ControlPlaneClient.cancel_ack_run(
+            state.control_plane,
+            entry_id,
+            state.worker_id,
+            worker.lease_token
+          )
+
+        :ok
+
+      _other ->
+        maybe_fail_remote_run(state, entry_id, worker.lease_token, error_msg)
+    end
   end
 
   defp decode_run_opts(entry) do

@@ -33,28 +33,30 @@ defmodule Kollywood.Worker.ControlPlaneClient do
     end
   end
 
-  @spec start_run(t(), integer(), String.t(), String.t()) :: :ok | {:error, term()}
+  @spec start_run(t(), integer(), String.t(), String.t()) ::
+          :ok | :cancel_requested | {:error, term()}
   def start_run(%__MODULE__{} = client, entry_id, worker_id, lease_token)
       when is_integer(entry_id) and is_binary(worker_id) and is_binary(lease_token) do
     case post(client, "/api/internal/runs/#{entry_id}/start", %{
            worker_id: worker_id,
            lease_token: lease_token
          }) do
-      {:ok, _body} -> :ok
+      {:ok, body} -> response_status(body)
       {:error, reason} -> {:error, reason}
     end
   end
 
   def start_run(_client, _entry_id, _worker_id, _lease_token), do: {:error, :invalid_arguments}
 
-  @spec heartbeat_run(t(), integer(), String.t(), String.t()) :: :ok | {:error, term()}
+  @spec heartbeat_run(t(), integer(), String.t(), String.t()) ::
+          :ok | :cancel_requested | {:error, term()}
   def heartbeat_run(%__MODULE__{} = client, entry_id, worker_id, lease_token)
       when is_integer(entry_id) and is_binary(worker_id) and is_binary(lease_token) do
     case post(client, "/api/internal/runs/#{entry_id}/heartbeat", %{
            worker_id: worker_id,
            lease_token: lease_token
          }) do
-      {:ok, _body} -> :ok
+      {:ok, body} -> response_status(body)
       {:error, reason} -> {:error, reason}
     end
   end
@@ -81,7 +83,8 @@ defmodule Kollywood.Worker.ControlPlaneClient do
   def report_event(_client, _entry_id, _worker_id, _lease_token, _issue_id, _event),
     do: {:error, :invalid_arguments}
 
-  @spec complete_run(t(), integer(), String.t(), String.t(), map()) :: :ok | {:error, term()}
+  @spec complete_run(t(), integer(), String.t(), String.t(), map()) ::
+          :ok | :cancel_requested | {:error, term()}
   def complete_run(%__MODULE__{} = client, entry_id, worker_id, lease_token, result_payload)
       when is_integer(entry_id) and is_binary(worker_id) and is_binary(lease_token) and
              is_map(result_payload) do
@@ -90,7 +93,7 @@ defmodule Kollywood.Worker.ControlPlaneClient do
            lease_token: lease_token,
            result_payload: result_payload
          }) do
-      {:ok, _body} -> :ok
+      {:ok, body} -> response_status(body)
       {:error, reason} -> {:error, reason}
     end
   end
@@ -98,7 +101,8 @@ defmodule Kollywood.Worker.ControlPlaneClient do
   def complete_run(_client, _entry_id, _worker_id, _lease_token, _result_payload),
     do: {:error, :invalid_arguments}
 
-  @spec fail_run(t(), integer(), String.t(), String.t(), String.t()) :: :ok | {:error, term()}
+  @spec fail_run(t(), integer(), String.t(), String.t(), String.t()) ::
+          :ok | :cancel_requested | {:error, term()}
   def fail_run(%__MODULE__{} = client, entry_id, worker_id, lease_token, error_message)
       when is_integer(entry_id) and is_binary(worker_id) and is_binary(lease_token) and
              is_binary(error_message) do
@@ -107,12 +111,27 @@ defmodule Kollywood.Worker.ControlPlaneClient do
            lease_token: lease_token,
            error: error_message
          }) do
-      {:ok, _body} -> :ok
+      {:ok, body} -> response_status(body)
       {:error, reason} -> {:error, reason}
     end
   end
 
   def fail_run(_client, _entry_id, _worker_id, _lease_token, _error_message),
+    do: {:error, :invalid_arguments}
+
+  @spec cancel_ack_run(t(), integer(), String.t(), String.t()) :: :ok | {:error, term()}
+  def cancel_ack_run(%__MODULE__{} = client, entry_id, worker_id, lease_token)
+      when is_integer(entry_id) and is_binary(worker_id) and is_binary(lease_token) do
+    case post(client, "/api/internal/runs/#{entry_id}/cancel-ack", %{
+           worker_id: worker_id,
+           lease_token: lease_token
+         }) do
+      {:ok, _body} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def cancel_ack_run(_client, _entry_id, _worker_id, _lease_token),
     do: {:error, :invalid_arguments}
 
   defp post(%__MODULE__{base_url: nil}, _path, _payload), do: {:error, :missing_base_url}
@@ -141,6 +160,9 @@ defmodule Kollywood.Worker.ControlPlaneClient do
 
   defp normalize_body(body) when is_map(body), do: body
   defp normalize_body(_body), do: %{}
+
+  defp response_status(%{"data" => %{"cancel_requested" => true}}), do: :cancel_requested
+  defp response_status(_body), do: :ok
 
   defp error_from_body(%{"error" => error}) when is_binary(error), do: error
   defp error_from_body(body) when is_binary(body), do: body

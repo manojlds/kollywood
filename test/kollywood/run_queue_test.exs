@@ -5,7 +5,7 @@ defmodule Kollywood.RunQueueTest do
 
   alias Kollywood.Repo
   alias Kollywood.RunQueue
-  alias Kollywood.RunQueue.Entry
+  alias Kollywood.RunAttempts.Attempt, as: Entry
 
   setup do
     :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo)
@@ -139,6 +139,30 @@ defmodule Kollywood.RunQueueTest do
       assert {:error, :conflict} =
                RunQueue.mark_running_for_worker(claimed.id, "worker-1", Ecto.UUID.generate())
     end
+
+    test "heartbeat reports cancellation requests for the owning worker" do
+      {:ok, _entry} = RunQueue.enqueue(%{issue_id: "cancel-requested", identifier: "US-CANCEL"})
+      assert {:ok, claimed} = RunQueue.claim("worker-1")
+
+      assert {:ok, requested} = RunQueue.cancel(claimed.id, "stop requested")
+      assert requested.status == "cancel_requested"
+
+      assert {:error, :cancel_requested} =
+               RunQueue.heartbeat_for_worker(claimed.id, "worker-1", claimed.lease_token)
+    end
+
+    test "worker can acknowledge a cancellation request" do
+      {:ok, _entry} = RunQueue.enqueue(%{issue_id: "cancel-ack", identifier: "US-CANCEL-ACK"})
+      assert {:ok, claimed} = RunQueue.claim("worker-1")
+      assert {:ok, _requested} = RunQueue.cancel(claimed.id, "operator stop")
+
+      assert {:ok, cancelled} =
+               RunQueue.cancel_ack_for_worker(claimed.id, "worker-1", claimed.lease_token)
+
+      assert cancelled.status == "cancelled"
+      assert cancelled.cancel_reason == "operator stop"
+      assert cancelled.completed_at != nil
+    end
   end
 
   describe "complete/2" do
@@ -187,10 +211,24 @@ defmodule Kollywood.RunQueueTest do
   end
 
   describe "cancel/1" do
-    test "marks entry as cancelled" do
+    test "cancels pending entries immediately" do
       {:ok, entry} = RunQueue.enqueue(%{issue_id: "x", identifier: "US-X"})
       assert {:ok, updated} = RunQueue.cancel(entry.id)
       assert updated.status == "cancelled"
+    end
+
+    test "requests cancellation for running entries" do
+      {:ok, entry} = RunQueue.enqueue(%{issue_id: "x-run", identifier: "US-X-RUN"})
+      assert {:ok, claimed} = RunQueue.claim("worker-1")
+      assert entry.id == claimed.id
+
+      assert {:ok, _running} =
+               RunQueue.mark_running_for_worker(entry.id, "worker-1", claimed.lease_token)
+
+      assert {:ok, updated} = RunQueue.cancel(entry.id, "stop requested")
+      assert updated.status == "cancel_requested"
+      assert updated.cancel_reason == "stop requested"
+      assert RunQueue.get_by_issue("x-run").status == "cancel_requested"
     end
   end
 
