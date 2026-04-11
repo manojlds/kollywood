@@ -848,7 +848,8 @@ defmodule Kollywood.Tracker.PrdJson do
   defp read_prd(config) do
     case tracker_path(config) do
       {:ok, path} ->
-        with {:ok, content} <- File.read(path),
+        with :ok <- ensure_prd_exists(config, path),
+             {:ok, content} <- File.read(path),
              {:ok, decoded} <- Jason.decode(content) do
           {:ok, decoded}
         else
@@ -857,6 +858,14 @@ defmodule Kollywood.Tracker.PrdJson do
 
       {:error, :tracker_unconfigured} ->
         {:error, @tracker_unconfigured_reason}
+    end
+  end
+
+  defp ensure_prd_exists(config, path) do
+    if File.exists?(path) do
+      :ok
+    else
+      write_prd(config, new_prd_doc())
     end
   end
 

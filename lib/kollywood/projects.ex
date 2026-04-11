@@ -3,11 +3,14 @@ defmodule Kollywood.Projects do
   Project registry CRUD for Kollywood.
   """
 
+  require Logger
+
   import Ecto.Query
 
   alias Kollywood.Projects.Project
   alias Kollywood.Repo
   alias Kollywood.ServiceConfig
+  alias Kollywood.Tracker.PrdJson
 
   @type create_attrs :: map() | keyword()
 
@@ -102,6 +105,14 @@ defmodule Kollywood.Projects do
     %Project{}
     |> Project.changeset(attrs)
     |> Repo.insert()
+    |> case do
+      {:ok, project} ->
+        ensure_tracker_bootstrapped(project)
+        {:ok, project}
+
+      {:error, changeset} ->
+        {:error, changeset}
+    end
   end
 
   @spec update_project(Project.t(), create_attrs()) ::
@@ -216,4 +227,22 @@ defmodule Kollywood.Projects do
   end
 
   defp repository_path(_value), do: nil
+
+  defp ensure_tracker_bootstrapped(project) do
+    case tracker_path(project) do
+      path when is_binary(path) ->
+        case PrdJson.list_stories(path) do
+          {:ok, _stories} ->
+            :ok
+
+          {:error, reason} ->
+            Logger.warning(
+              "project_event=tracker_bootstrap_failed slug=#{field(project, :slug) || "unknown"} reason=#{inspect(reason)}"
+            )
+        end
+
+      _other ->
+        :ok
+    end
+  end
 end

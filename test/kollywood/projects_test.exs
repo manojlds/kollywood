@@ -3,6 +3,30 @@ defmodule Kollywood.ProjectsTest do
 
   alias Kollywood.Projects
 
+  setup do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "kollywood_projects_test_#{System.unique_integer([:positive])}"
+      )
+
+    previous_home = System.get_env("KOLLYWOOD_HOME")
+    kollywood_home = Path.join(root, ".kollywood-home")
+
+    System.put_env("KOLLYWOOD_HOME", kollywood_home)
+
+    on_exit(fn ->
+      case previous_home do
+        nil -> System.delete_env("KOLLYWOOD_HOME")
+        value -> System.put_env("KOLLYWOOD_HOME", value)
+      end
+
+      File.rm_rf!(root)
+    end)
+
+    :ok
+  end
+
   test "creates a local project with generated slug and managed paths" do
     assert {:ok, project} =
              Projects.create_project(%{
@@ -24,6 +48,12 @@ defmodule Kollywood.ProjectsTest do
 
     assert Projects.tracker_path(project) ==
              Kollywood.ServiceConfig.project_tracker_path("my-local-app")
+
+    tracker_path = Projects.tracker_path(project)
+    assert File.exists?(tracker_path)
+
+    {:ok, decoded} = tracker_path |> File.read!() |> Jason.decode()
+    assert decoded["userStories"] == []
   end
 
   test "requires repository for all providers" do

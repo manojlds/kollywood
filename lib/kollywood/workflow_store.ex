@@ -138,6 +138,8 @@ defmodule Kollywood.WorkflowStore do
   end
 
   defp check_and_reload(state) do
+    state = maybe_refresh_project_context(state)
+
     case file_stamp(state.path) do
       {:ok, stamp} when stamp != state.file_stamp ->
         case load_file(state) do
@@ -160,6 +162,44 @@ defmodule Kollywood.WorkflowStore do
 
         %{state | last_error: reason}
     end
+  end
+
+  defp maybe_refresh_project_context(state) do
+    resolved = resolve_project_context(state.path, nil, nil, nil)
+
+    if project_context_changed?(state, resolved) do
+      refreshed_state = apply_project_context(state, resolved)
+
+      case load_file(refreshed_state) do
+        {:ok, new_state} ->
+          Logger.info(
+            "WorkflowStore refreshed project context path=#{new_state.path} slug=#{inspect(new_state.project_slug)}"
+          )
+
+          new_state
+
+        {:error, reason} ->
+          Logger.error("WorkflowStore context refresh failed: #{reason}")
+          %{refreshed_state | last_error: reason}
+      end
+    else
+      state
+    end
+  end
+
+  defp project_context_changed?(state, {path, provider, slug, local_path}) do
+    path != state.path or provider != state.project_provider or slug != state.project_slug or
+      local_path != state.project_local_path
+  end
+
+  defp apply_project_context(state, {path, provider, slug, local_path}) do
+    %{
+      state
+      | path: path,
+        project_provider: provider,
+        project_slug: slug,
+        project_local_path: local_path
+    }
   end
 
   defp load_file(state) do

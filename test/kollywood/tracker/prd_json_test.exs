@@ -330,6 +330,20 @@ defmodule Kollywood.Tracker.PrdJsonTest do
     assert decoded["userStories"] == []
   end
 
+  test "list_active_issues auto-creates missing prd.json and returns no issues", %{root: root} do
+    path = Path.join(root, "missing-active-prd.json")
+    cfg = config(path)
+
+    refute File.exists?(path)
+
+    assert {:ok, []} = PrdJson.list_active_issues(cfg)
+    assert {:ok, []} = PrdJson.list_pending_merge_issues(cfg)
+    assert File.exists?(path)
+
+    {:ok, decoded} = path |> File.read!() |> Jason.decode()
+    assert decoded["userStories"] == []
+  end
+
   test "create_story auto-creates missing prd.json before append", %{root: root} do
     path = Path.join(root, "missing-create-prd.json")
 
