@@ -73,6 +73,51 @@ defmodule KollywoodWeb.InternalWorkerControllerTest do
     assert refreshed.claimed_by_node == "worker-1"
   end
 
+  test "heartbeat reports cancellation requests and cancel-ack finalizes them", %{conn: conn} do
+    {:ok, entry} = RunQueue.enqueue(%{issue_id: "internal-cancel", identifier: "US-INT-CANCEL"})
+
+    lease_conn =
+      conn
+      |> auth_conn()
+      |> post("/api/internal/workers/lease-next", %{worker_id: "worker-1", limit: 1})
+
+    [%{"lease_token" => lease_token}] =
+      get_in(json_response(lease_conn, 200), ["data", "entries"])
+
+    start_conn =
+      build_conn()
+      |> auth_conn()
+      |> post("/api/internal/runs/#{entry.id}/start", %{
+        worker_id: "worker-1",
+        lease_token: lease_token
+      })
+
+    assert get_in(json_response(start_conn, 200), ["data", "ok"]) == true
+
+    assert {:ok, _requested} = RunQueue.cancel(entry.id, "operator stop")
+
+    heartbeat_conn =
+      build_conn()
+      |> auth_conn()
+      |> post("/api/internal/runs/#{entry.id}/heartbeat", %{
+        worker_id: "worker-1",
+        lease_token: lease_token
+      })
+
+    assert get_in(json_response(heartbeat_conn, 200), ["data", "cancel_requested"]) == true
+
+    cancel_ack_conn =
+      build_conn()
+      |> auth_conn()
+      |> post("/api/internal/runs/#{entry.id}/cancel-ack", %{
+        worker_id: "worker-1",
+        lease_token: lease_token
+      })
+
+    assert get_in(json_response(cancel_ack_conn, 200), ["data", "ok"]) == true
+    assert RunQueue.get(entry.id).status == "cancelled"
+  end
+
   test "rejects requests with the wrong lease token", %{conn: conn} do
     {:ok, entry} = RunQueue.enqueue(%{issue_id: "internal-2", identifier: "US-INT-2"})
 

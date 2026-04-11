@@ -4,7 +4,7 @@ defmodule KollywoodWeb.AdminLiveTest do
   alias Kollywood.Projects
   alias Kollywood.Repo
   alias Kollywood.RunQueue
-  alias Kollywood.RunQueue.Entry
+  alias Kollywood.RunAttempts.Attempt, as: Entry
   alias Kollywood.WorkerConsumer
 
   setup do

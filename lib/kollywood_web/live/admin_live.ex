@@ -6,7 +6,7 @@ defmodule KollywoodWeb.AdminLive do
 
   alias Kollywood.Projects
   alias Kollywood.RepoSync
-  alias Kollywood.RunQueue
+  alias Kollywood.RunAttempts
   alias Kollywood.ServiceConfig
   alias Kollywood.WorkerConsumer
 
@@ -16,7 +16,7 @@ defmodule KollywoodWeb.AdminLive do
   def mount(_params, _session, socket) do
     if connected?(socket) do
       :timer.send_interval(@refresh_interval_ms, self(), :refresh)
-      RunQueue.subscribe()
+      RunAttempts.subscribe()
     end
 
     {:ok,
@@ -28,7 +28,7 @@ defmodule KollywoodWeb.AdminLive do
      |> assign(:projects, Projects.list_projects())
      |> assign(:sync_status, %{})
      |> assign(:workers, list_workers())
-     |> assign(:queue_stats, RunQueue.queue_overview_stats())
+     |> assign(:queue_stats, RunAttempts.stats())
      |> assign(:recent_queue_entries, list_recent_queue_entries())}
   end
 
@@ -62,7 +62,7 @@ defmodule KollywoodWeb.AdminLive do
     {:noreply, refresh_assigns(socket)}
   end
 
-  def handle_info({:run_queue, _event}, socket) do
+  def handle_info({:run_attempts, _event}, socket) do
     {:noreply, refresh_assigns(socket)}
   end
 
@@ -849,7 +849,7 @@ defmodule KollywoodWeb.AdminLive do
     socket
     |> assign(:orchestrator_status, fetch_orchestrator_status())
     |> assign(:workers, workers)
-    |> assign(:queue_stats, RunQueue.queue_overview_stats())
+    |> assign(:queue_stats, RunAttempts.stats())
     |> assign(:recent_queue_entries, list_recent_queue_entries())
     |> assign(:selected_worker, if(worker_id, do: find_worker(worker_id, workers), else: nil))
   end
@@ -960,7 +960,7 @@ defmodule KollywoodWeb.AdminLive do
   end
 
   defp list_recent_queue_entries do
-    RunQueue.list_recent(12)
+    RunAttempts.list_recent(12)
   end
 
   defp format_datetime(nil), do: "—"

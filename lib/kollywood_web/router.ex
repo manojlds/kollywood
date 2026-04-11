@@ -70,5 +70,6 @@ defmodule KollywoodWeb.Router do
     post "/runs/:id/events", InternalWorkerController, :events
     post "/runs/:id/complete", InternalWorkerController, :complete
     post "/runs/:id/fail", InternalWorkerController, :fail
+    post "/runs/:id/cancel-ack", InternalWorkerController, :cancel_ack
   end
 end

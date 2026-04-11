@@ -1,12 +1,12 @@
 defmodule KollywoodWeb.InternalWorkerController do
   use KollywoodWeb, :controller
 
-  alias Kollywood.RunQueue
+  alias Kollywood.RunAttempts
 
   def lease_next(conn, params) do
     with {:ok, worker_id} <- require_string(params, "worker_id"),
          {:ok, limit} <- parse_limit(Map.get(params, "limit")) do
-      entries = RunQueue.claim_batch(worker_id, limit)
+      entries = RunAttempts.lease_batch(worker_id, limit)
 
       json(conn, %{
         data: %{
@@ -21,9 +21,12 @@ defmodule KollywoodWeb.InternalWorkerController do
   def start(conn, %{"id" => id} = params) do
     with {:ok, entry_id} <- parse_entry_id(id),
          {:ok, worker_id} <- require_string(params, "worker_id"),
-         {:ok, lease_token} <- require_string(params, "lease_token"),
-         {:ok, _entry} <- RunQueue.mark_running_for_worker(entry_id, worker_id, lease_token) do
-      json(conn, %{data: %{ok: true}})
+         {:ok, lease_token} <- require_string(params, "lease_token") do
+      case RunAttempts.start_attempt(entry_id, worker_id, lease_token) do
+        {:ok, _entry} -> json(conn, %{data: %{ok: true, cancel_requested: false}})
+        {:error, :cancel_requested} -> json(conn, %{data: %{ok: false, cancel_requested: true}})
+        {:error, reason} -> error_response(conn, status_for_reason(reason), error_message(reason))
+      end
     else
       {:error, reason} -> error_response(conn, status_for_reason(reason), error_message(reason))
     end
@@ -32,9 +35,12 @@ defmodule KollywoodWeb.InternalWorkerController do
   def heartbeat(conn, %{"id" => id} = params) do
     with {:ok, entry_id} <- parse_entry_id(id),
          {:ok, worker_id} <- require_string(params, "worker_id"),
-         {:ok, lease_token} <- require_string(params, "lease_token"),
-         {:ok, _entry} <- RunQueue.heartbeat_for_worker(entry_id, worker_id, lease_token) do
-      json(conn, %{data: %{ok: true}})
+         {:ok, lease_token} <- require_string(params, "lease_token") do
+      case RunAttempts.heartbeat_attempt(entry_id, worker_id, lease_token) do
+        {:ok, _entry} -> json(conn, %{data: %{ok: true, cancel_requested: false}})
+        {:error, :cancel_requested} -> json(conn, %{data: %{ok: false, cancel_requested: true}})
+        {:error, reason} -> error_response(conn, status_for_reason(reason), error_message(reason))
+      end
     else
       {:error, reason} -> error_response(conn, status_for_reason(reason), error_message(reason))
     end
@@ -46,7 +52,8 @@ defmodule KollywoodWeb.InternalWorkerController do
          {:ok, lease_token} <- require_string(params, "lease_token"),
          {:ok, issue_id} <- require_string(params, "issue_id"),
          {:ok, event} <- require_map(params, "event"),
-         entry when not is_nil(entry) <- RunQueue.get_for_worker(entry_id, worker_id, lease_token) do
+         entry when not is_nil(entry) <-
+           RunAttempts.get_active_for_worker(entry_id, worker_id, lease_token) do
       if entry.issue_id == issue_id do
         maybe_forward_runner_event(issue_id, event)
         json(conn, %{data: %{ok: true}})
@@ -63,12 +70,12 @@ defmodule KollywoodWeb.InternalWorkerController do
     with {:ok, entry_id} <- parse_entry_id(id),
          {:ok, worker_id} <- require_string(params, "worker_id"),
          {:ok, lease_token} <- require_string(params, "lease_token"),
-         {:ok, result_payload} <- require_map(params, "result_payload"),
-         {:ok, _entry} <-
-           RunQueue.complete_for_worker(entry_id, worker_id, lease_token, %{
-             result_payload: result_payload
-           }) do
-      json(conn, %{data: %{ok: true}})
+         {:ok, result_payload} <- require_map(params, "result_payload") do
+      case RunAttempts.complete_attempt(entry_id, worker_id, lease_token, result_payload) do
+        {:ok, _entry} -> json(conn, %{data: %{ok: true, cancel_requested: false}})
+        {:error, :cancel_requested} -> json(conn, %{data: %{ok: false, cancel_requested: true}})
+        {:error, reason} -> error_response(conn, status_for_reason(reason), error_message(reason))
+      end
     else
       {:error, reason} -> error_response(conn, status_for_reason(reason), error_message(reason))
     end
@@ -78,9 +85,22 @@ defmodule KollywoodWeb.InternalWorkerController do
     with {:ok, entry_id} <- parse_entry_id(id),
          {:ok, worker_id} <- require_string(params, "worker_id"),
          {:ok, lease_token} <- require_string(params, "lease_token"),
-         {:ok, error_message} <- require_string(params, "error"),
-         {:ok, _entry} <-
-           RunQueue.fail_for_worker(entry_id, worker_id, lease_token, error_message) do
+         {:ok, error_message} <- require_string(params, "error") do
+      case RunAttempts.fail_attempt(entry_id, worker_id, lease_token, error_message) do
+        {:ok, _entry} -> json(conn, %{data: %{ok: true, cancel_requested: false}})
+        {:error, :cancel_requested} -> json(conn, %{data: %{ok: false, cancel_requested: true}})
+        {:error, reason} -> error_response(conn, status_for_reason(reason), error_message(reason))
+      end
+    else
+      {:error, reason} -> error_response(conn, status_for_reason(reason), error_message(reason))
+    end
+  end
+
+  def cancel_ack(conn, %{"id" => id} = params) do
+    with {:ok, entry_id} <- parse_entry_id(id),
+         {:ok, worker_id} <- require_string(params, "worker_id"),
+         {:ok, lease_token} <- require_string(params, "lease_token"),
+         {:ok, _entry} <- RunAttempts.acknowledge_cancel(entry_id, worker_id, lease_token) do
       json(conn, %{data: %{ok: true}})
     else
       {:error, reason} -> error_response(conn, status_for_reason(reason), error_message(reason))
@@ -146,11 +166,13 @@ defmodule KollywoodWeb.InternalWorkerController do
 
   defp status_for_reason(:not_found), do: :not_found
   defp status_for_reason(:conflict), do: :conflict
+  defp status_for_reason(:cancel_requested), do: :conflict
   defp status_for_reason(:invalid_arguments), do: :unprocessable_entity
   defp status_for_reason(_reason), do: :unprocessable_entity
 
   defp error_message(:not_found), do: "run not found"
   defp error_message(:conflict), do: "run is not leased by this worker"
+  defp error_message(:cancel_requested), do: "run cancellation requested"
   defp error_message(:invalid_arguments), do: "invalid request"
   defp error_message(reason) when is_binary(reason), do: reason
   defp error_message(reason), do: inspect(reason)

@@ -30,7 +30,7 @@ defmodule Kollywood.Orchestrator do
   alias Kollywood.RepoSync
   alias Kollywood.Scheduler.Lease
   alias Kollywood.StoryExecutionOverrides
-  alias Kollywood.RunQueue
+  alias Kollywood.RunAttempts
   alias Kollywood.Tracker
   alias Kollywood.Workspace
   alias Kollywood.WorkflowStore
@@ -393,7 +393,7 @@ defmodule Kollywood.Orchestrator do
 
       state =
         if state.dispatch_mode == :queue do
-          RunQueue.subscribe()
+          RunAttempts.subscribe()
           state
         else
           state
@@ -616,7 +616,7 @@ defmodule Kollywood.Orchestrator do
     {:noreply, state |> track_runner_event(issue_id, event) |> persist_control_status()}
   end
 
-  def handle_info({:run_queue, {:completed, _entry_id, issue_id, result_payload}}, state)
+  def handle_info({:run_attempts, {:completed, _entry_id, issue_id, result_payload}}, state)
       when state.dispatch_mode == :queue do
     case Map.get(state.running, issue_id) do
       %{queue_entry_id: _entry_id} ->
@@ -639,7 +639,7 @@ defmodule Kollywood.Orchestrator do
     end
   end
 
-  def handle_info({:run_queue, {:failed, _entry_id, issue_id, error_msg}}, state)
+  def handle_info({:run_attempts, {:failed, _entry_id, issue_id, error_msg}}, state)
       when state.dispatch_mode == :queue do
     case Map.get(state.running, issue_id) do
       %{queue_entry_id: _entry_id} ->
@@ -662,7 +662,7 @@ defmodule Kollywood.Orchestrator do
     end
   end
 
-  def handle_info({:run_queue, _event}, state) do
+  def handle_info({:run_attempts, _event}, state) do
     {:noreply, state}
   end
 
@@ -697,7 +697,7 @@ defmodule Kollywood.Orchestrator do
             cancel_run_timeout_timer(run_entry)
             reason = "queued run timed out after #{state.run_timeout_ms || "configured"}ms"
             maybe_complete_run_logs(run_entry, %{status: :failed, error: reason})
-            RunQueue.cancel(entry_id)
+            RunAttempts.request_cancel(entry_id, reason)
             next_attempt = next_retry_attempt(run_entry.attempt)
 
             state
@@ -821,7 +821,7 @@ defmodule Kollywood.Orchestrator do
         :queue ->
           Enum.reduce(in_progress_ids, state, fn issue_id, acc ->
             has_active_queue_entry =
-              case RunQueue.get_by_issue(issue_id) do
+              case RunAttempts.get_active_for_issue(issue_id) do
                 nil -> false
                 entry -> entry.status in ["pending", "claimed", "running"]
               end
@@ -1629,7 +1629,7 @@ defmodule Kollywood.Orchestrator do
       run_opts_snapshot: safe_json_encode(serializable_run_opts)
     }
 
-    case RunQueue.enqueue(queue_attrs) do
+    case RunAttempts.enqueue_attempt(queue_attrs) do
       {:ok, entry} ->
         run_entry = %{
           issue: issue,
@@ -3017,8 +3017,11 @@ defmodule Kollywood.Orchestrator do
 
       nil ->
         case Map.get(run_entry, :queue_entry_id) do
-          entry_id when not is_nil(entry_id) -> RunQueue.cancel(entry_id)
-          _ -> :ok
+          entry_id when not is_nil(entry_id) ->
+            RunAttempts.request_cancel(entry_id, "run stopped by operator")
+
+          _ ->
+            :ok
         end
     end
 
