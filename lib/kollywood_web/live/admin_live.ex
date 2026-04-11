@@ -28,8 +28,8 @@ defmodule KollywoodWeb.AdminLive do
      |> assign(:projects, Projects.list_projects())
      |> assign(:sync_status, %{})
      |> assign(:workers, list_workers())
-     |> assign(:queue_stats, RunAttempts.stats())
-     |> assign(:recent_queue_entries, list_recent_queue_entries())}
+     |> assign(:attempt_stats, RunAttempts.stats())
+     |> assign(:recent_attempts, list_recent_attempts())}
   end
 
   @impl true
@@ -197,7 +197,7 @@ defmodule KollywoodWeb.AdminLive do
           />
         <% else %>
           <.workers_section workers={@workers} selected_worker={@selected_worker} />
-          <.queue_overview_section stats={@queue_stats} recent_entries={@recent_queue_entries} />
+          <.attempt_overview_section stats={@attempt_stats} recent_entries={@recent_attempts} />
         <% end %>
       </main>
     </div>
@@ -628,14 +628,14 @@ defmodule KollywoodWeb.AdminLive do
                         <span class="badge badge-sm badge-ghost capitalize">{run.status}</span>
                       </td>
                       <td class="text-xs">
-                        {format_datetime(run.run_started_at || run.claimed_at || run.started_at)}
+                        {format_datetime(run.run_started_at || run.leased_at || run.started_at)}
                       </td>
                       <td class="text-xs">
                         {format_duration_ms(
-                          duration_since(run.run_started_at || run.claimed_at || run.started_at)
+                          duration_since(run.run_started_at || run.leased_at || run.started_at)
                         )}
                       </td>
-                      <td class="font-mono text-xs">#{run.queue_entry_id}</td>
+                      <td class="font-mono text-xs">#{run.attempt_id}</td>
                       <td>
                         <.link
                           :if={run.project_slug}
@@ -660,21 +660,21 @@ defmodule KollywoodWeb.AdminLive do
   attr :stats, :map, required: true
   attr :recent_entries, :list, required: true
 
-  defp queue_overview_section(assigns) do
+  defp attempt_overview_section(assigns) do
     ~H"""
     <section>
-      <h2 class="text-lg font-semibold mb-3">Run Queue Overview</h2>
+      <h2 class="text-lg font-semibold mb-3">Run Attempt Overview</h2>
 
       <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4" id="run-queue-stats">
-        <.queue_stat_card title="Pending" value={@stats.pending_count} />
-        <.queue_stat_card title="Running" value={@stats.running_count} />
-        <.queue_stat_card title="Completed (1h)" value={@stats.completed_last_hour_count} />
-        <.queue_stat_card title="Failed (1h)" value={@stats.failed_last_hour_count} />
+        <.attempt_stat_card title="Queued" value={@stats.queued_count} />
+        <.attempt_stat_card title="Running" value={@stats.running_count} />
+        <.attempt_stat_card title="Completed (1h)" value={@stats.completed_last_hour_count} />
+        <.attempt_stat_card title="Failed (1h)" value={@stats.failed_last_hour_count} />
       </div>
 
       <div class="card bg-base-200 border border-base-300">
         <div class="card-body p-4">
-          <h3 class="font-medium text-sm mb-2">Recent queue entries</h3>
+          <h3 class="font-medium text-sm mb-2">Recent attempts</h3>
           <div class="overflow-x-auto">
             <table class="table table-sm" id="recent-queue-entries">
               <thead>
@@ -692,7 +692,7 @@ defmodule KollywoodWeb.AdminLive do
                     <td class="font-mono text-xs">#{entry.id}</td>
                     <td class="font-mono text-xs">{entry.issue_id}</td>
                     <td>
-                      <span class={queue_status_badge_class(entry.status)}>{entry.status}</span>
+                      <span class={attempt_status_badge_class(entry.status)}>{entry.status}</span>
                     </td>
                     <td class="font-mono text-xs">{entry.claimed_by_node || "—"}</td>
                     <td class="text-xs">{format_datetime(entry.inserted_at)}</td>
@@ -710,7 +710,7 @@ defmodule KollywoodWeb.AdminLive do
   attr :title, :string, required: true
   attr :value, :integer, required: true
 
-  defp queue_stat_card(assigns) do
+  defp attempt_stat_card(assigns) do
     ~H"""
     <div class="card bg-base-200 border border-base-300">
       <div class="card-body p-3">
@@ -849,8 +849,8 @@ defmodule KollywoodWeb.AdminLive do
     socket
     |> assign(:orchestrator_status, fetch_orchestrator_status())
     |> assign(:workers, workers)
-    |> assign(:queue_stats, RunAttempts.stats())
-    |> assign(:recent_queue_entries, list_recent_queue_entries())
+    |> assign(:attempt_stats, RunAttempts.stats())
+    |> assign(:recent_attempts, list_recent_attempts())
     |> assign(:selected_worker, if(worker_id, do: find_worker(worker_id, workers), else: nil))
   end
 
@@ -959,7 +959,7 @@ defmodule KollywoodWeb.AdminLive do
     end
   end
 
-  defp list_recent_queue_entries do
+  defp list_recent_attempts do
     RunAttempts.list_recent(12)
   end
 
@@ -1055,13 +1055,13 @@ defmodule KollywoodWeb.AdminLive do
   defp worker_status_badge_class("stale"), do: "badge badge-sm badge-error"
   defp worker_status_badge_class(_), do: "badge badge-sm badge-success"
 
-  defp queue_status_badge_class("running"), do: "badge badge-sm badge-info"
-  defp queue_status_badge_class("claimed"), do: "badge badge-sm badge-warning"
-  defp queue_status_badge_class("completed"), do: "badge badge-sm badge-success"
-  defp queue_status_badge_class("failed"), do: "badge badge-sm badge-error"
-  defp queue_status_badge_class("pending"), do: "badge badge-sm badge-ghost"
-  defp queue_status_badge_class("cancelled"), do: "badge badge-sm badge-neutral"
-  defp queue_status_badge_class(_), do: "badge badge-sm"
+  defp attempt_status_badge_class("running"), do: "badge badge-sm badge-info"
+  defp attempt_status_badge_class("leased"), do: "badge badge-sm badge-warning"
+  defp attempt_status_badge_class("completed"), do: "badge badge-sm badge-success"
+  defp attempt_status_badge_class("failed"), do: "badge badge-sm badge-error"
+  defp attempt_status_badge_class("queued"), do: "badge badge-sm badge-ghost"
+  defp attempt_status_badge_class("cancelled"), do: "badge badge-sm badge-neutral"
+  defp attempt_status_badge_class(_), do: "badge badge-sm"
 
   defp worker_poll_frequency_label(worker) do
     poll_interval = worker.poll_interval_ms

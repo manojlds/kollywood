@@ -3,7 +3,7 @@ defmodule KollywoodWeb.AdminLiveTest do
 
   alias Kollywood.Projects
   alias Kollywood.Repo
-  alias Kollywood.RunQueue
+  alias Kollywood.RunAttempts
   alias Kollywood.RunAttempts.Attempt, as: Entry
   alias Kollywood.WorkerConsumer
 
@@ -100,7 +100,7 @@ defmodule KollywoodWeb.AdminLiveTest do
     refute html =~ "US-056-PUBSUB"
 
     {:ok, _entry} =
-      RunQueue.enqueue(%{
+      RunAttempts.enqueue(%{
         issue_id: "US-056-PUBSUB",
         identifier: "US-056",
         run_opts_snapshot: Jason.encode!(%{})

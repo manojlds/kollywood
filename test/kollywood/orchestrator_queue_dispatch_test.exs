@@ -7,7 +7,7 @@ defmodule Kollywood.OrchestratorQueueDispatchTest do
   alias Kollywood.Config
   alias Kollywood.Orchestrator
   alias Kollywood.Repo
-  alias Kollywood.RunQueue
+  alias Kollywood.RunAttempts
 
   @test_config %Config{
     tracker: %{
@@ -116,7 +116,7 @@ defmodule Kollywood.OrchestratorQueueDispatchTest do
       runner: runner,
       agent_pool: pool,
       auto_poll: false,
-      dispatch_mode: :queue,
+      dispatch_mode: :attempts,
       ephemeral_store: nil,
       retry_store: nil,
       retries_enabled: false,
@@ -127,7 +127,7 @@ defmodule Kollywood.OrchestratorQueueDispatchTest do
     Orchestrator.start_link(merged_opts)
   end
 
-  test "orchestrator enqueues to RunQueue in :queue dispatch mode" do
+  test "orchestrator enqueues to RunAttempts in :attempts dispatch mode" do
     {:ok, orch} = start_orchestrator([])
 
     capture_log(fn ->
@@ -135,15 +135,15 @@ defmodule Kollywood.OrchestratorQueueDispatchTest do
       Process.sleep(200)
     end)
 
-    pending = RunQueue.list_by_status(["pending", "claimed", "running"])
-    assert length(pending) >= 1
+    queued = RunAttempts.list_by_status(["queued", "leased", "running"])
+    assert length(queued) >= 1
 
-    entry = hd(pending)
+    entry = hd(queued)
     assert entry.issue_id == "issue-q-1"
     assert entry.identifier == "US-Q1"
   end
 
-  test "orchestrator does NOT start local workers in :queue mode" do
+  test "orchestrator does NOT start local workers in :attempts mode" do
     {:ok, orch} = start_orchestrator([])
 
     capture_log(fn ->
@@ -170,7 +170,7 @@ defmodule Kollywood.OrchestratorQueueDispatchTest do
     assert running_count >= 1
   end
 
-  test "queue dispatch preserves publish_merged event for tracker finalization" do
+  test "attempt dispatch preserves publish_merged event for tracker finalization" do
     suffix = System.unique_integer([:positive])
     issue_id = "issue-q-merge-#{suffix}"
     identifier = "US-Q-MERGE-#{suffix}"
@@ -206,7 +206,7 @@ defmodule Kollywood.OrchestratorQueueDispatchTest do
         end,
         agent_pool: pool,
         auto_poll: false,
-        dispatch_mode: :queue,
+        dispatch_mode: :attempts,
         ephemeral_store: nil,
         retry_store: nil,
         retries_enabled: false,
@@ -216,7 +216,7 @@ defmodule Kollywood.OrchestratorQueueDispatchTest do
     capture_log(fn -> assert :ok = Orchestrator.poll_now(orch) end)
 
     entry =
-      RunQueue.list_by_status(["pending", "claimed", "running", "completed"])
+      RunAttempts.list_by_status(["queued", "leased", "running", "completed"])
       |> Enum.find(&(&1.issue_id == issue_id))
 
     assert entry
@@ -249,7 +249,7 @@ defmodule Kollywood.OrchestratorQueueDispatchTest do
     issue = %{
       "id" => issue_id,
       "identifier" => "US-Q-LEADER-#{suffix}",
-      "title" => "Leader election queue dispatch",
+      "title" => "Leader election attempt dispatch",
       "description" => "Only one orchestrator should enqueue",
       "priority" => 1,
       "state" => "open",
@@ -265,7 +265,7 @@ defmodule Kollywood.OrchestratorQueueDispatchTest do
       tracker: tracker,
       runner: fn _issue, _opts -> raise "should not run locally" end,
       auto_poll: false,
-      dispatch_mode: :queue,
+      dispatch_mode: :attempts,
       ephemeral_store: nil,
       retry_store: nil,
       retries_enabled: false,
@@ -304,7 +304,7 @@ defmodule Kollywood.OrchestratorQueueDispatchTest do
       Orchestrator.poll_now(orch_b)
     end)
 
-    entries = RunQueue.list_by_status(["pending", "claimed", "running"])
+    entries = RunAttempts.list_by_status(["queued", "leased", "running"])
     issue_entries = Enum.filter(entries, &(&1.issue_id == issue_id))
     assert length(issue_entries) == 1
   end

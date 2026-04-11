@@ -3552,7 +3552,7 @@ defmodule KollywoodWeb.DashboardLive do
         do: get_in(assigns.run_detail, ["metadata", "status"]) || "unknown",
         else: "unknown"
 
-    run_in_progress = run_status in ["running", "in_progress", "claimed"]
+    run_in_progress = run_status in ["running", "in_progress", "leased"]
 
     steps =
       if is_map(assigns.run_detail) do
@@ -3808,7 +3808,7 @@ defmodule KollywoodWeb.DashboardLive do
         do: get_in(assigns.run_detail, ["metadata", "status"]) || "unknown",
         else: "unknown"
 
-    run_in_progress = run_status in ["running", "in_progress", "claimed"]
+    run_in_progress = run_status in ["running", "in_progress", "leased"]
 
     all_steps =
       if is_map(assigns.run_detail) do
@@ -8911,7 +8911,7 @@ defmodule KollywoodWeb.DashboardLive do
 
       run_in_progress =
         if run_detail,
-          do: get_in(run_detail, ["metadata", "status"]) in ["running", "in_progress", "claimed"],
+          do: get_in(run_detail, ["metadata", "status"]) in ["running", "in_progress", "leased"],
           else: false
 
       steps =

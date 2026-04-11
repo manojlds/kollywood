@@ -3,8 +3,8 @@ defmodule Kollywood.WorkerConsumer do
   Pulls leased run attempts and executes them via the local AgentPool.
 
   This process runs on worker nodes (`:worker`, `:orchestrator`, `:all` modes).
-  It polls the queue for pending entries, claims them, spawns RunWorkers, and
-  writes results back to the queue + PubSub.
+  It polls for queued attempts, leases them, spawns RunWorkers, and writes
+  results back to durable run attempts + PubSub.
 
   The consumer self-throttles based on the number of active local workers
   vs. a configured concurrency limit.
@@ -119,19 +119,19 @@ defmodule Kollywood.WorkerConsumer do
   def handle_call(:status, _from, state) do
     active_runs =
       Enum.map(state.active_workers, fn {entry_id, worker} ->
-        queue_entry = RunAttempts.get_attempt(entry_id)
+        attempt = RunAttempts.get_attempt(entry_id)
 
         %{
-          queue_entry_id: entry_id,
+          attempt_id: entry_id,
           issue_id: worker.issue_id,
           identifier: worker.identifier,
           issue_title: worker.issue_title,
           project_slug: worker.project_slug,
           attempt: worker.attempt,
           started_at: worker.started_at,
-          status: queue_status_label(queue_entry),
-          run_started_at: queue_entry && queue_entry.started_at,
-          claimed_at: queue_entry && queue_entry.claimed_at
+          status: attempt_status_label(attempt),
+          run_started_at: attempt && attempt.started_at,
+          leased_at: attempt && attempt.claimed_at
         }
       end)
 
@@ -607,11 +607,11 @@ defmodule Kollywood.WorkerConsumer do
     end)
   end
 
-  defp queue_status_label(nil), do: "unknown"
+  defp attempt_status_label(nil), do: "unknown"
 
-  defp queue_status_label(entry) do
+  defp attempt_status_label(entry) do
     case entry.status do
-      status when status in ["claimed", "running", "cancel_requested"] -> status
+      status when status in ["leased", "running", "cancel_requested"] -> status
       _ -> "completed"
     end
   end

@@ -1,7 +1,7 @@
 defmodule KollywoodWeb.InternalWorkerControllerTest do
   use KollywoodWeb.ConnCase, async: false
 
-  alias Kollywood.RunQueue
+  alias Kollywood.RunAttempts
 
   setup do
     previous_token = Application.get_env(:kollywood, :internal_api_token)
@@ -24,7 +24,7 @@ defmodule KollywoodWeb.InternalWorkerControllerTest do
   end
 
   test "leases and completes work for an authenticated worker", %{conn: conn} do
-    {:ok, entry} = RunQueue.enqueue(%{issue_id: "internal-1", identifier: "US-INT-1"})
+    {:ok, entry} = RunAttempts.enqueue(%{issue_id: "internal-1", identifier: "US-INT-1"})
     entry_id = entry.id
 
     lease_conn =
@@ -68,13 +68,14 @@ defmodule KollywoodWeb.InternalWorkerControllerTest do
 
     assert get_in(json_response(complete_conn, 200), ["data", "ok"]) == true
 
-    refreshed = RunQueue.get(entry.id)
+    refreshed = RunAttempts.get_attempt(entry.id)
     assert refreshed.status == "completed"
     assert refreshed.claimed_by_node == "worker-1"
   end
 
   test "heartbeat reports cancellation requests and cancel-ack finalizes them", %{conn: conn} do
-    {:ok, entry} = RunQueue.enqueue(%{issue_id: "internal-cancel", identifier: "US-INT-CANCEL"})
+    {:ok, entry} =
+      RunAttempts.enqueue(%{issue_id: "internal-cancel", identifier: "US-INT-CANCEL"})
 
     lease_conn =
       conn
@@ -94,7 +95,7 @@ defmodule KollywoodWeb.InternalWorkerControllerTest do
 
     assert get_in(json_response(start_conn, 200), ["data", "ok"]) == true
 
-    assert {:ok, _requested} = RunQueue.cancel(entry.id, "operator stop")
+    assert {:ok, _requested} = RunAttempts.request_cancel(entry.id, "operator stop")
 
     heartbeat_conn =
       build_conn()
@@ -115,11 +116,11 @@ defmodule KollywoodWeb.InternalWorkerControllerTest do
       })
 
     assert get_in(json_response(cancel_ack_conn, 200), ["data", "ok"]) == true
-    assert RunQueue.get(entry.id).status == "cancelled"
+    assert RunAttempts.get_attempt(entry.id).status == "cancelled"
   end
 
   test "rejects requests with the wrong lease token", %{conn: conn} do
-    {:ok, entry} = RunQueue.enqueue(%{issue_id: "internal-2", identifier: "US-INT-2"})
+    {:ok, entry} = RunAttempts.enqueue(%{issue_id: "internal-2", identifier: "US-INT-2"})
 
     lease_conn =
       conn
