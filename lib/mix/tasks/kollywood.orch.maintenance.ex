@@ -80,6 +80,7 @@ defmodule Mix.Tasks.Kollywood.Orch.Maintenance do
   defp with_started_repo(fun) when is_function(fun, 0) do
     case Process.whereis(Repo) do
       nil ->
+        load_runtime_config!()
         ensure_ecto_sql_started!()
 
         case Repo.start_link(pool_size: 1) do
@@ -100,6 +101,10 @@ defmodule Mix.Tasks.Kollywood.Orch.Maintenance do
       _repo_pid ->
         fun.()
     end
+  end
+
+  defp load_runtime_config! do
+    Mix.Task.run("app.config")
   end
 
   defp ensure_ecto_sql_started! do
