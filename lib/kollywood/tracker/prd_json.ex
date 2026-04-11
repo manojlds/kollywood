@@ -11,8 +11,8 @@ defmodule Kollywood.Tracker.PrdJson do
   alias Kollywood.Config
   alias Kollywood.StoryExecutionOverrides
 
-  @default_path "prd.json"
   @default_priority 99
+  @tracker_unconfigured_reason "tracker path is not configured"
 
   @create_statuses ["draft", "open"]
   @manual_statuses ["draft", "open", "done", "failed", "cancelled"]
@@ -47,6 +47,9 @@ defmodule Kollywood.Tracker.PrdJson do
         |> Enum.map(&story_to_issue(&1, stories_by_id))
 
       {:ok, issues}
+    else
+      {:error, @tracker_unconfigured_reason} -> {:ok, []}
+      other -> other
     end
   end
 
@@ -67,6 +70,9 @@ defmodule Kollywood.Tracker.PrdJson do
         |> Enum.map(&story_to_issue(&1, stories_by_id))
 
       {:ok, issues}
+    else
+      {:error, @tracker_unconfigured_reason} -> {:ok, []}
+      other -> other
     end
   end
 
@@ -222,16 +228,20 @@ defmodule Kollywood.Tracker.PrdJson do
         user_stories(prd)
 
       {:error, reason} ->
-        path = tracker_path(config)
+        case tracker_path(config) do
+          {:ok, path} ->
+            if not File.exists?(path) do
+              with :ok <- write_prd(config, new_prd_doc()),
+                   {:ok, prd} <- read_prd(config),
+                   {:ok, stories} <- user_stories(prd) do
+                {:ok, stories}
+              end
+            else
+              {:error, reason}
+            end
 
-        if not File.exists?(path) do
-          with :ok <- write_prd(config, new_prd_doc()),
-               {:ok, prd} <- read_prd(config),
-               {:ok, stories} <- user_stories(prd) do
-            {:ok, stories}
-          end
-        else
-          {:error, reason}
+          {:error, :tracker_unconfigured} ->
+            {:error, @tracker_unconfigured_reason}
         end
     end
   end
@@ -836,29 +846,38 @@ defmodule Kollywood.Tracker.PrdJson do
   end
 
   defp read_prd(config) do
-    path = tracker_path(config)
+    case tracker_path(config) do
+      {:ok, path} ->
+        with {:ok, content} <- File.read(path),
+             {:ok, decoded} <- Jason.decode(content) do
+          {:ok, decoded}
+        else
+          {:error, reason} -> {:error, "failed to read PRD #{path}: #{inspect(reason)}"}
+        end
 
-    with {:ok, content} <- File.read(path),
-         {:ok, decoded} <- Jason.decode(content) do
-      {:ok, decoded}
-    else
-      {:error, reason} -> {:error, "failed to read PRD #{path}: #{inspect(reason)}"}
+      {:error, :tracker_unconfigured} ->
+        {:error, @tracker_unconfigured_reason}
     end
   end
 
   defp write_prd(config, prd) do
-    path = tracker_path(config)
-    temp_path = "#{path}.tmp.#{System.unique_integer([:positive])}"
-    encoded = Jason.encode_to_iodata!(prd, pretty: true)
+    case tracker_path(config) do
+      {:ok, path} ->
+        temp_path = "#{path}.tmp.#{System.unique_integer([:positive])}"
+        encoded = Jason.encode_to_iodata!(prd, pretty: true)
 
-    with :ok <- File.mkdir_p(Path.dirname(path)),
-         :ok <- File.write(temp_path, [encoded, "\n"]),
-         :ok <- File.rename(temp_path, path) do
-      :ok
-    else
-      {:error, reason} ->
-        _ = File.rm(temp_path)
-        {:error, "failed to write PRD #{path}: #{inspect(reason)}"}
+        with :ok <- File.mkdir_p(Path.dirname(path)),
+             :ok <- File.write(temp_path, [encoded, "\n"]),
+             :ok <- File.rename(temp_path, path) do
+          :ok
+        else
+          {:error, reason} ->
+            _ = File.rm(temp_path)
+            {:error, "failed to write PRD #{path}: #{inspect(reason)}"}
+        end
+
+      {:error, :tracker_unconfigured} ->
+        {:error, @tracker_unconfigured_reason}
     end
   end
 
@@ -1061,29 +1080,43 @@ defmodule Kollywood.Tracker.PrdJson do
   end
 
   defp tracker_path(config) do
+    raw_tracker = Map.get(config.raw || %{}, "tracker", %{})
+
     slug =
       config
       |> get_in([Access.key(:tracker, %{}), Access.key(:project_slug)])
       |> optional_string()
 
-    if slug do
-      Kollywood.ServiceConfig.project_tracker_path(slug)
-    else
-      path =
-        config
-        |> get_in([Access.key(:tracker, %{}), Access.key(:path)])
-        |> optional_string()
-        |> Kernel.||(@default_path)
+    explicit_path = optional_string(Map.get(raw_tracker, "path"))
 
-      source = get_in(config, [Access.key(:workspace, %{}), Access.key(:source)])
+    configured_path =
+      config |> get_in([Access.key(:tracker, %{}), Access.key(:path)]) |> optional_string()
 
-      if is_binary(source) do
-        Path.expand(path, source)
-      else
-        Path.expand(path)
-      end
+    source = get_in(config, [Access.key(:workspace, %{}), Access.key(:source)])
+
+    cond do
+      slug ->
+        {:ok, Kollywood.ServiceConfig.project_tracker_path(slug)}
+
+      explicit_path ->
+        {:ok, resolve_tracker_path(explicit_path, source)}
+
+      configured_path && is_binary(source) ->
+        {:ok, resolve_tracker_path(configured_path, source)}
+
+      configured_path && empty_raw_config?(config) ->
+        {:ok, resolve_tracker_path(configured_path, nil)}
+
+      true ->
+        {:error, :tracker_unconfigured}
     end
   end
+
+  defp resolve_tracker_path(path, source) when is_binary(source), do: Path.expand(path, source)
+  defp resolve_tracker_path(path, _source), do: Path.expand(path)
+
+  defp empty_raw_config?(%Config{raw: raw}) when raw in [%{}, nil], do: true
+  defp empty_raw_config?(_config), do: false
 
   defp story_id(story) do
     story

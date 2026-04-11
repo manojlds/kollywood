@@ -77,6 +77,34 @@ defmodule Kollywood.Tracker.PrdJsonTest do
            ]
   end
 
+  test "returns no issues when local tracker path is only parser-defaulted" do
+    cfg = %Config{
+      tracker: %{kind: "prd_json", path: "prd.json"},
+      workspace: %{},
+      polling: %{},
+      hooks: %{},
+      agent: %{},
+      raw: %{"tracker" => %{"kind" => "prd_json"}}
+    }
+
+    assert {:ok, []} = PrdJson.list_active_issues(cfg)
+    assert {:ok, []} = PrdJson.list_pending_merge_issues(cfg)
+  end
+
+  test "returns a clear error for mutations when local tracker is unconfigured" do
+    cfg = %Config{
+      tracker: %{kind: "prd_json", path: "prd.json"},
+      workspace: %{},
+      polling: %{},
+      hooks: %{},
+      agent: %{},
+      raw: %{"tracker" => %{"kind" => "prd_json"}}
+    }
+
+    assert {:error, reason} = PrdJson.mark_in_progress(cfg, "US-001")
+    assert reason == "tracker path is not configured"
+  end
+
   test "updates story status for in_progress, failed and done", %{root: root} do
     path = Path.join(root, "prd.json")
 
