@@ -4,6 +4,7 @@ defmodule KollywoodWeb.AdminLive do
   """
   use KollywoodWeb, :live_view
 
+  alias Kollywood.AppMode
   alias Kollywood.Projects
   alias Kollywood.RepoSync
   alias Kollywood.RunAttempts
@@ -855,30 +856,9 @@ defmodule KollywoodWeb.AdminLive do
   end
 
   defp list_workers do
-    worker_names = discover_worker_names()
-
-    Enum.map(worker_names, fn worker_name ->
-      status = safe_worker_status(worker_name)
-      worker_id = worker_name_to_id(worker_name)
-
-      %{
-        id: worker_id,
-        node_id: status[:node_id],
-        active_workers: status[:active_workers] || 0,
-        max_local_workers: status[:max_local_workers] || 0,
-        last_poll_at: status[:last_poll_at],
-        started_at: status[:started_at],
-        last_seen_at: status[:last_seen_at],
-        uptime_ms: status[:uptime_ms],
-        poll_interval_ms: status[:poll_interval_ms],
-        poll_count: status[:poll_count] || 0,
-        claim_attempts: status[:claim_attempts] || 0,
-        claims_succeeded: status[:claims_succeeded] || 0,
-        claim_success_rate: status[:claim_success_rate],
-        active_runs: status[:active_runs] || [],
-        status: worker_status_label(status)
-      }
-    end)
+    discover_worker_names()
+    |> Enum.map(&worker_snapshot/1)
+    |> merge_worker_snapshots()
     |> Enum.sort_by(& &1.id)
   end
 
@@ -895,29 +875,115 @@ defmodule KollywoodWeb.AdminLive do
   defp find_worker(_, _), do: nil
 
   defp discover_worker_names do
-    configured =
-      if Application.get_env(:kollywood, :worker_consumer_enabled, true) do
-        count = Application.get_env(:kollywood, :worker_consumer_count, 1)
-
-        for i <- 1..count do
-          String.to_atom("Elixir.Kollywood.WorkerConsumer.#{i}")
-        end
-      else
-        []
-      end
-
-    registered =
-      Process.registered()
-      |> Enum.filter(fn atom ->
-        atom_name = Atom.to_string(atom)
-
-        atom_name == "Elixir.Kollywood.WorkerConsumer" or
-          String.starts_with?(atom_name, "Elixir.Kollywood.WorkerConsumer.")
-      end)
+    configured = discover_configured_worker_names()
+    registered = discover_registered_worker_names()
 
     (configured ++ registered)
     |> Enum.uniq()
   end
+
+  defp discover_configured_worker_names do
+    if Application.get_env(:kollywood, :worker_consumer_enabled, true) do
+      count = Application.get_env(:kollywood, :worker_consumer_count, 1)
+      prefix = configured_worker_name_prefix()
+
+      for i <- 1..count do
+        String.to_atom("#{prefix}.#{i}")
+      end
+    else
+      []
+    end
+  end
+
+  defp configured_worker_name_prefix do
+    app_mode =
+      Application.get_env(:kollywood, :app_mode, :all)
+      |> AppMode.normalize()
+
+    worker_transport = Application.get_env(:kollywood, :worker_transport, :local_queue)
+
+    if app_mode == :worker or worker_transport == :remote do
+      "Kollywood.WorkerNode"
+    else
+      "Kollywood.WorkerConsumer"
+    end
+  end
+
+  defp discover_registered_worker_names do
+    Process.registered()
+    |> Enum.filter(fn atom ->
+      atom_name = Atom.to_string(atom)
+
+      Enum.any?(worker_name_prefixes(), fn prefix ->
+        atom_name == prefix or String.starts_with?(atom_name, prefix <> ".")
+      end)
+    end)
+  end
+
+  defp worker_name_prefixes do
+    [
+      "Kollywood.WorkerConsumer",
+      "Elixir.Kollywood.WorkerConsumer",
+      "Kollywood.WorkerNode",
+      "Elixir.Kollywood.WorkerNode"
+    ]
+  end
+
+  defp worker_snapshot(worker_name) do
+    status = safe_worker_status(worker_name)
+    worker_id = worker_name_to_id(worker_name)
+    claim_attempts = status[:claim_attempts] || status[:lease_attempts] || 0
+    claims_succeeded = status[:claims_succeeded] || status[:leases_succeeded] || 0
+
+    %{
+      id: worker_id,
+      node_id: status[:node_id] || status[:worker_id],
+      active_workers: status[:active_workers] || 0,
+      max_local_workers: status[:max_local_workers] || 0,
+      last_poll_at: status[:last_poll_at],
+      started_at: status[:started_at],
+      last_seen_at: status[:last_seen_at],
+      uptime_ms: status[:uptime_ms],
+      poll_interval_ms: status[:poll_interval_ms],
+      poll_count: status[:poll_count] || 0,
+      claim_attempts: claim_attempts,
+      claims_succeeded: claims_succeeded,
+      claim_success_rate:
+        status[:claim_success_rate] || success_rate(claim_attempts, claims_succeeded),
+      active_runs: status[:active_runs] || [],
+      status: worker_status_label(status),
+      status_payload: status
+    }
+  end
+
+  defp merge_worker_snapshots(snapshots) do
+    snapshots
+    |> Enum.group_by(& &1.id)
+    |> Enum.map(fn {_worker_id, entries} ->
+      entries
+      |> Enum.max_by(&worker_snapshot_priority/1)
+      |> Map.delete(:status_payload)
+    end)
+  end
+
+  defp worker_snapshot_priority(%{status_payload: status, last_seen_at: last_seen_at}) do
+    status_score = if status == %{}, do: 0, else: 1
+
+    recency_score =
+      case last_seen_at do
+        %DateTime{} = dt -> DateTime.to_unix(dt, :millisecond)
+        _ -> 0
+      end
+
+    {status_score, recency_score}
+  end
+
+  defp success_rate(attempts, successes)
+       when is_integer(attempts) and attempts > 0 and is_integer(successes) and successes >= 0 do
+    Float.round(successes / attempts, 4)
+  end
+
+  defp success_rate(_attempts, _successes), do: nil
 
   defp safe_worker_status(worker_name) do
     WorkerConsumer.status(worker_name)

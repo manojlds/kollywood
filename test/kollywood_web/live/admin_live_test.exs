@@ -32,7 +32,7 @@ defmodule KollywoodWeb.AdminLiveTest do
 
     {:ok, worker_pid} =
       WorkerConsumer.start_link(
-        name: String.to_atom("Elixir.#{worker_id}"),
+        name: String.to_atom(worker_id),
         agent_pool: nil,
         poll_interval_ms: 60_000,
         max_local_workers: 2
@@ -114,7 +114,7 @@ defmodule KollywoodWeb.AdminLiveTest do
 
     {:ok, worker_pid} =
       WorkerConsumer.start_link(
-        name: String.to_atom("Elixir.#{worker_id}"),
+        name: String.to_atom(worker_id),
         agent_pool: nil,
         poll_interval_ms: 60_000,
         max_local_workers: 1
