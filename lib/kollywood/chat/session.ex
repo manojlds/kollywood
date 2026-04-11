@@ -420,12 +420,18 @@ defmodule Kollywood.Chat.Session do
   defp handle_session_update(state, payload) do
     update = get_in(payload, ["params", "update"])
 
-    case update do
-      _other ->
-        case assistant_update(update) do
-          {:ok, remote_id, text} ->
-            {state, local_id} = ensure_assistant_message(state, remote_id)
-            state |> append_message_text(local_id, text) |> clear_error() |> touch()
+    case assistant_update(update) do
+      {:ok, remote_id, text} ->
+        {state, local_id} = ensure_assistant_message(state, remote_id)
+        state |> append_message_text(local_id, text) |> clear_error() |> touch()
+
+      :ignore ->
+        case activity_update(update) do
+          {:ok, content} ->
+            state
+            |> append_activity_message(content)
+            |> clear_error()
+            |> touch()
 
           :ignore ->
             state
@@ -467,6 +473,182 @@ defmodule Kollywood.Chat.Session do
   end
 
   defp assistant_update(_update), do: :ignore
+
+  defp activity_update(update) when is_map(update) do
+    type =
+      update
+      |> Map.get("sessionUpdate", "")
+      |> to_string()
+      |> String.trim()
+
+    cond do
+      type == "" ->
+        :ignore
+
+      type in ["tool_call", "tool"] or String.starts_with?(type, "tool_") ->
+        {:ok, tool_activity_line(update, type)}
+
+      String.contains?(type, "skill") ->
+        {:ok, skill_activity_line(update, type)}
+
+      true ->
+        :ignore
+    end
+  end
+
+  defp activity_update(_update), do: :ignore
+
+  defp append_activity_message(state, content) when is_binary(content) do
+    text = String.trim(content)
+
+    cond do
+      text == "" ->
+        state
+
+      activity_duplicate?(state.messages, text) ->
+        state
+
+      true ->
+        append_message(state, new_message("system", text))
+    end
+  end
+
+  defp append_activity_message(state, _content), do: state
+
+  defp activity_duplicate?(messages, text) when is_list(messages) do
+    case List.last(messages) do
+      %{role: "system", content: ^text} -> true
+      _other -> false
+    end
+  end
+
+  defp activity_duplicate?(_messages, _text), do: false
+
+  defp tool_activity_line(update, type) do
+    subtype = event_subtype(type, Map.get(update, "subtype"), "tool")
+
+    {tool_name, payload} =
+      tool_call_info(Map.get(update, "tool_call") || Map.get(update, "toolCall"))
+
+    summary = tool_summary(tool_name, payload)
+
+    "[tool #{subtype}] #{tool_name}" <> if(summary, do: ": #{summary}", else: "")
+  end
+
+  defp skill_activity_line(update, type) do
+    subtype = event_subtype(type, Map.get(update, "subtype"), "skill")
+
+    skill_name =
+      Map.get(update, "skill") ||
+        get_in(update, ["content", "skill"]) ||
+        get_in(update, ["metadata", "skill"]) ||
+        Map.get(update, "name") ||
+        "skill"
+
+    summary =
+      get_in(update, ["content", "text"]) ||
+        Map.get(update, "text") ||
+        get_in(update, ["message", "content", "text"])
+
+    base = "[skill #{subtype}] #{to_string(skill_name)}"
+
+    case summary do
+      value when is_binary(value) and value != "" ->
+        base <> ": " <> String.slice(String.trim(value), 0, 160)
+
+      _other ->
+        base
+    end
+  end
+
+  defp event_subtype(type, subtype, prefix) when is_binary(type) and is_binary(prefix) do
+    cond do
+      is_binary(subtype) and String.trim(subtype) != "" ->
+        String.downcase(String.trim(subtype))
+
+      String.starts_with?(type, prefix <> "_") ->
+        type
+        |> String.replace_prefix(prefix <> "_", "")
+        |> String.trim()
+        |> case do
+          "" -> "event"
+          value -> String.downcase(value)
+        end
+
+      true ->
+        "event"
+    end
+  end
+
+  defp event_subtype(_type, _subtype, _prefix), do: "event"
+
+  defp tool_call_info(tool_call) when is_map(tool_call) do
+    case Enum.at(tool_call, 0) do
+      {name, payload} when is_binary(name) and is_map(payload) ->
+        {normalize_tool_name(name), payload}
+
+      {name, _payload} when is_binary(name) ->
+        {normalize_tool_name(name), %{}}
+
+      _other ->
+        {"tool", %{}}
+    end
+  end
+
+  defp tool_call_info(_tool_call), do: {"tool", %{}}
+
+  defp normalize_tool_name(name) when is_binary(name) do
+    name
+    |> String.replace_suffix("ToolCall", "")
+    |> String.replace(~r/([a-z0-9])([A-Z])/, "\\1_\\2")
+    |> String.downcase()
+    |> case do
+      "" -> "tool"
+      value -> value
+    end
+  end
+
+  defp normalize_tool_name(_name), do: "tool"
+
+  defp tool_summary(tool_name, payload) when is_binary(tool_name) and is_map(payload) do
+    args =
+      Map.get(payload, "args") ||
+        Map.get(payload, "arguments") ||
+        Map.get(payload, "input") ||
+        %{}
+
+    summary =
+      case tool_name do
+        "shell" -> arg(args, ["command", "cmd"])
+        "read_file" -> arg(args, ["path"])
+        "grep" -> arg(args, ["pattern"])
+        "glob" -> arg(args, ["globPattern", "glob_pattern"])
+        "skill" -> arg(args, ["name", "skill"])
+        _other -> nil
+      end
+
+    case summary do
+      value when is_binary(value) ->
+        trimmed = String.trim(value)
+        if trimmed == "", do: nil, else: String.slice(trimmed, 0, 120)
+
+      _other ->
+        nil
+    end
+  end
+
+  defp tool_summary(_tool_name, _payload), do: nil
+
+  defp arg(args, keys) when is_map(args) and is_list(keys) do
+    Enum.find_value(keys, fn key ->
+      case Map.get(args, key) do
+        value when is_binary(value) and value != "" -> value
+        _other -> nil
+      end
+    end)
+  end
+
+  defp arg(_args, _keys), do: nil
 
   defp ensure_assistant_message(state, remote_id) do
     case Map.get(state.remote_to_local, remote_id) do

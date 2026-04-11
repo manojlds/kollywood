@@ -234,7 +234,7 @@ defmodule KollywoodWeb.ChatLive do
           "Starting ACP session... your first prompt will be queued."
 
         :running ->
-          "Agent is responding..."
+          nil
 
         :cancelling ->
           "Cancelling current response..."
@@ -460,21 +460,19 @@ defmodule KollywoodWeb.ChatLive do
                       </div>
                     <% end %>
 
-                    <div class="flex items-center justify-between gap-3">
-                      <div>
-                        <h2 class="text-lg font-semibold truncate max-w-[72vw] sm:max-w-[40rem]">
-                          {@chat_selected_title}
-                        </h2>
-                        <p class="text-xs text-base-content/60 mt-1">
+                    <div class="space-y-1">
+                      <h2 class="text-lg font-semibold truncate max-w-full">
+                        {@chat_selected_title}
+                      </h2>
+                      <div class="flex flex-wrap items-center gap-2 text-xs text-base-content/60">
+                        <span>
                           <%= if @chat_selected_snapshot do %>
                             Session {Map.get(@chat_selected_snapshot, :id)}
                           <% else %>
                             No session selected
                           <% end %>
-                        </p>
-                      </div>
+                        </span>
 
-                      <div class="flex items-center gap-2">
                         <span class={[
                           @chat_status_meta.badge_class,
                           "badge border-0 text-xs uppercase tracking-wide"
@@ -518,20 +516,37 @@ defmodule KollywoodWeb.ChatLive do
                             message.role == "user" &&
                               "border-info/40 bg-info/5 ml-auto max-w-[95%] sm:max-w-[88%]",
                             message.role == "assistant" &&
-                              "border-success/40 bg-success/5 mr-auto max-w-[95%] sm:max-w-[88%]"
+                              "border-success/40 bg-success/5 mr-auto max-w-[95%] sm:max-w-[88%]",
+                            message.role == "system" &&
+                              "border-base-300 bg-base-200/70 mr-auto max-w-[95%] sm:max-w-[88%]"
                           ]}>
                             <p class="text-xs font-semibold uppercase tracking-wide text-base-content/60 mb-1">
-                              {message.role}
+                              {chat_role_label(message.role)}
                             </p>
                             <%= if message.role == "assistant" do %>
                               <div class="prose prose-sm max-w-none break-words text-base-content [&_pre]:whitespace-pre-wrap [&_code]:break-words">
                                 {raw(markdown_to_html(message.content))}
                               </div>
                             <% else %>
-                              <pre class="whitespace-pre-wrap break-words text-sm font-sans leading-6">{message.content}</pre>
+                              <%= if message.role == "system" do %>
+                                <p class="whitespace-pre-wrap break-words text-sm leading-6 text-base-content/80">
+                                  {message.content}
+                                </p>
+                              <% else %>
+                                <pre class="whitespace-pre-wrap break-words text-sm font-sans leading-6">{message.content}</pre>
+                              <% end %>
                             <% end %>
                           </div>
                         <% end %>
+                      <% end %>
+
+                      <%= if @chat_status == :running do %>
+                        <div class="rounded-lg border border-success/40 bg-success/10 mr-auto max-w-[95%] sm:max-w-[88%] p-3">
+                          <p class="text-xs font-semibold uppercase tracking-wide text-success/80 mb-1">
+                            assistant
+                          </p>
+                          <p class="text-sm text-base-content/80">Agent is responding...</p>
+                        </div>
                       <% end %>
                     </div>
 
@@ -800,6 +815,10 @@ defmodule KollywoodWeb.ChatLive do
 
   defp file_exists?(path) when is_binary(path), do: File.exists?(path)
   defp file_exists?(_path), do: false
+
+  defp chat_role_label("system"), do: "activity"
+  defp chat_role_label(role) when is_binary(role), do: role
+  defp chat_role_label(_role), do: "message"
 
   defp status_meta(:starting), do: %{label: "starting", badge_class: "badge-warning"}
 
