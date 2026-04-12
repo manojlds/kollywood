@@ -43,4 +43,53 @@ defmodule Kollywood.Agent.ClaudeTest do
     assert result.output =~ "args:--print --dangerously-skip-permissions review this patch"
     assert result.output =~ "prompt:review this patch"
   end
+
+  test "passes --model flag when model is configured in session", %{
+    workspace: workspace,
+    cli_path: cli_path
+  } do
+    assert {:ok, %Session{} = session} =
+             Claude.start_session(workspace, %{command: cli_path, model: "claude-sonnet-4-6"})
+
+    assert session.model == "claude-sonnet-4-6"
+
+    assert {:ok, result} = Claude.run_turn(session, "hello")
+    assert result.output =~ "--model claude-sonnet-4-6"
+  end
+
+  test "passes --model flag with claude-opus-4 model", %{
+    workspace: workspace,
+    cli_path: cli_path
+  } do
+    assert {:ok, %Session{} = session} =
+             Claude.start_session(workspace, %{command: cli_path, model: "claude-opus-4"})
+
+    assert session.model == "claude-opus-4"
+
+    assert {:ok, result} = Claude.run_turn(session, "hello")
+    assert result.output =~ "--model claude-opus-4"
+  end
+
+  test "does not pass --model flag when model is not configured", %{
+    workspace: workspace,
+    cli_path: cli_path
+  } do
+    assert {:ok, %Session{} = session} = Claude.start_session(workspace, %{command: cli_path})
+    assert session.model == nil
+
+    assert {:ok, result} = Claude.run_turn(session, "hello")
+    refute result.output =~ "--model"
+  end
+
+  test "prefers turn opts model over session model", %{
+    workspace: workspace,
+    cli_path: cli_path
+  } do
+    assert {:ok, %Session{} = session} =
+             Claude.start_session(workspace, %{command: cli_path, model: "claude-sonnet-4-6"})
+
+    assert {:ok, result} = Claude.run_turn(session, "hello", %{model: "claude-opus-4"})
+    assert result.output =~ "--model claude-opus-4"
+    refute result.output =~ "--model claude-sonnet-4-6"
+  end
 end
