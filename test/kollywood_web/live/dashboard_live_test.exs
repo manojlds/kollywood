@@ -1886,6 +1886,30 @@ defmodule KollywoodWeb.DashboardLiveTest do
       refute step_html =~ "legacy agent stdout should not be shown"
     end
 
+    test "step detail streams agent stdout while step is running", %{conn: conn, project: project} do
+      story_id = "US-STEP-RUNNING-STREAM"
+
+      context =
+        prepare_run_logs!(project.slug, story_id,
+          events: [
+            %{type: :turn_started, turn: 1}
+          ],
+          status: "running"
+        )
+
+      File.write!(context.files.agent_stdout, "live running output")
+
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
+
+      step_path =
+        Regex.run(~r|/projects/#{project.slug}/runs/#{story_id}/1/step/\d+|, html)
+        |> List.first()
+
+      {:ok, _step_view, step_html} = live(conn, step_path)
+
+      assert step_html =~ "live running output"
+    end
+
     test "run detail reports tab shows review report json view", %{
       conn: conn,
       project: project

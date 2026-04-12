@@ -4206,11 +4206,18 @@ defmodule KollywoodWeb.DashboardLive do
     if is_nil(files) do
       nil
     else
-      step_log_for_step(step, files, run_detail)
+      if step_running?(step) do
+        step_log_for_kind(step.kind, files)
+      else
+        step_log_for_step(step, files, run_detail)
+      end
     end
   end
 
   defp step_log_content(_step, _run_detail), do: nil
+
+  defp step_running?(%{status: status}) when is_binary(status), do: status == "running"
+  defp step_running?(_step), do: false
 
   defp step_prompt_content(nil, _run_detail), do: nil
 
