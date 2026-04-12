@@ -18,6 +18,7 @@ defmodule Kollywood.Agent.CLI do
     with {:ok, workspace_path} <- workspace_path(workspace),
          :ok <- ensure_workspace_exists(workspace_path),
          {:ok, command} <- command(opts, defaults),
+         {:ok, model} <- model(opts),
          {:ok, args} <- args(opts, defaults),
          {:ok, env} <- env(opts, defaults),
          {:ok, timeout_ms} <- timeout_ms(opts, defaults),
@@ -28,6 +29,7 @@ defmodule Kollywood.Agent.CLI do
          adapter: adapter,
          workspace_path: workspace_path,
          command: command,
+         model: model,
          args: args,
          env: env,
          timeout_ms: timeout_ms,
@@ -314,6 +316,25 @@ defmodule Kollywood.Agent.CLI do
       {:ok, value}
     else
       {:error, "Agent command must be a non-empty string"}
+    end
+  end
+
+  defp model(opts) do
+    case opt(opts, :model, nil) do
+      nil ->
+        {:ok, nil}
+
+      value when is_binary(value) ->
+        trimmed = String.trim(value)
+
+        if trimmed == "" do
+          {:ok, nil}
+        else
+          {:ok, trimmed}
+        end
+
+      _other ->
+        {:error, "session model must be a string when provided"}
     end
   end
 

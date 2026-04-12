@@ -8,6 +8,7 @@ defmodule Kollywood.Config do
   require Logger
 
   @type agent_kind :: :amp | :claude | :codex | :cursor | :opencode | :pi
+  @type agent_model :: String.t()
   @type publish_provider :: :github | :gitlab
   @type publish_mode :: :push | :pr | :merge
   @type auto_push_policy :: :never | :on_pass
@@ -21,6 +22,7 @@ defmodule Kollywood.Config do
   @valid_auto_merge_policies ~w(never on_pass)a
   @valid_auto_create_pr_policies ~w(never draft ready)a
   @default_timeout_ms 7_200_000
+  @agent_model_pattern ~r/^[A-Za-z0-9][A-Za-z0-9._:+\/-]*$/
 
   @type t :: %__MODULE__{
           tracker: map(),
@@ -140,6 +142,11 @@ defmodule Kollywood.Config do
                       default: nil
                     },
                     "command" => %{type: ["string", "null"], default: nil},
+                    "model" => %{
+                      type: ["agent_model", "null"],
+                      default: nil,
+                      description: "Provider-specific model identifier for the review agent"
+                    },
                     "args" => %{type: "list[string]", default: []},
                     "env" => %{type: "map[string]string", default: %{}},
                     "timeout_ms" => %{type: "positive_integer", default: @default_timeout_ms}
@@ -163,6 +170,11 @@ defmodule Kollywood.Config do
                       default: nil
                     },
                     "command" => %{type: ["string", "null"], default: nil},
+                    "model" => %{
+                      type: ["agent_model", "null"],
+                      default: nil,
+                      description: "Provider-specific model identifier for the testing agent"
+                    },
                     "args" => %{type: "list[string]", default: []},
                     "env" => %{type: "map[string]string", default: %{}},
                     "timeout_ms" => %{type: "positive_integer", default: @default_timeout_ms}
@@ -210,6 +222,11 @@ defmodule Kollywood.Config do
             "max_attempts" => %{type: "positive_integer", default: 1},
             "max_retry_backoff_ms" => %{type: "positive_integer", default: 300_000},
             "command" => %{type: ["string", "null"], default: nil},
+            "model" => %{
+              type: ["agent_model", "null"],
+              default: nil,
+              description: "Provider-specific model identifier for the primary agent"
+            },
             "args" => %{type: "list[string]", default: []},
             "completion_signals" => %{type: "list[string]", default: []},
             "idle_timeout_ms" => %{type: ["positive_integer", "null"], default: nil},
@@ -664,6 +681,7 @@ defmodule Kollywood.Config do
                    explicit: testing_agent_explicit,
                    kind: testing_agent_kind,
                    command: testing_agent_command,
+                   model: parse_agent_model(Map.get(testing_agent, "model")),
                    args: testing_agent_args,
                    env: testing_agent_env,
                    timeout_ms: testing_agent_timeout_ms
@@ -708,6 +726,7 @@ defmodule Kollywood.Config do
         explicit: review_agent_explicit,
         kind: review_agent_kind,
         command: optional_string(Map.get(review_agent, "command")),
+        model: parse_agent_model(Map.get(review_agent, "model")),
         args: string_list(Map.get(review_agent, "args", [])),
         env: string_map(Map.get(review_agent, "env", %{})),
         timeout_ms:
@@ -890,6 +909,7 @@ defmodule Kollywood.Config do
       max_retry_backoff_ms:
         positive_integer(Map.get(agent, "max_retry_backoff_ms", 300_000), 300_000),
       command: optional_string(Map.get(agent, "command")),
+      model: parse_agent_model(Map.get(agent, "model")),
       args: string_list(Map.get(agent, "args", [])),
       completion_signals: completion_signals(Map.get(agent, "completion_signals", [])),
       idle_timeout_ms: positive_integer(Map.get(agent, "idle_timeout_ms"), nil),
@@ -1078,6 +1098,15 @@ defmodule Kollywood.Config do
 
   defp optional_string(value) when is_binary(value) and value != "", do: value
   defp optional_string(_value), do: nil
+
+  defp parse_agent_model(value) do
+    value
+    |> optional_string()
+    |> case do
+      nil -> nil
+      model -> if(String.match?(model, @agent_model_pattern), do: model, else: nil)
+    end
+  end
 
   defp parse_boolean_field(value, _path) when is_boolean(value), do: {:ok, value}
 

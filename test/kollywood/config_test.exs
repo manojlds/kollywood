@@ -24,6 +24,7 @@ defmodule Kollywood.ConfigTest do
     root: ~/workspaces
   agent:
     kind: amp
+    model: gpt-5
     max_concurrent_agents: 3
     project_max_concurrent_agents:
       alpha: 1
@@ -37,6 +38,7 @@ defmodule Kollywood.ConfigTest do
   test "parses valid WORKFLOW.md content" do
     assert {:ok, config, template} = Config.parse(@valid_workflow)
     assert config.agent.kind == :amp
+    assert config.agent.model == "gpt-5"
     assert config.agent.max_concurrent_agents == 3
     assert config.agent.project_max_concurrent_agents == %{"alpha" => 1, "beta" => 2}
     assert config.agent.max_turns == 10
@@ -122,6 +124,7 @@ defmodule Kollywood.ConfigTest do
     assert config.agent.retries_enabled == false
     assert config.agent.max_retry_backoff_ms == 300_000
     assert config.agent.command == nil
+    assert config.agent.model == nil
     assert config.agent.args == []
     assert config.agent.env == %{}
     assert config.agent.timeout_ms == 7_200_000
@@ -332,6 +335,7 @@ defmodule Kollywood.ConfigTest do
         prompt_template: "Review {{ issue.identifier }}"
         agent:
           kind: claude
+          model: claude-3-7-sonnet
           command: /usr/local/bin/claude
           args:
             - --print
@@ -359,6 +363,7 @@ defmodule Kollywood.ConfigTest do
     assert config.review.max_cycles == 3
     assert config.review.prompt_template == "Review {{ issue.identifier }}"
     assert config.review.agent.kind == :claude
+    assert config.review.agent.model == "claude-3-7-sonnet"
     assert config.review.agent.command == "/usr/local/bin/claude"
     assert config.review.agent.args == ["--print"]
     assert config.review.agent.env == %{"REVIEW_MODE" => "strict"}
@@ -377,6 +382,7 @@ defmodule Kollywood.ConfigTest do
         prompt_template: "Test {{ issue.identifier }}"
         agent:
           kind: cursor
+          model: claude-sonnet-4
           command: /usr/local/bin/cursor
           args:
             - --print
@@ -405,6 +411,7 @@ defmodule Kollywood.ConfigTest do
     assert config.testing.timeout_ms == 180_000
     assert config.testing.prompt_template == "Test {{ issue.identifier }}"
     assert config.testing.agent.kind == :cursor
+    assert config.testing.agent.model == "claude-sonnet-4"
     assert config.testing.agent.command == "/usr/local/bin/cursor"
     assert config.testing.agent.args == ["--print"]
     assert config.testing.agent.env == %{"TEST_MODE" => "smoke"}

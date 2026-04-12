@@ -14,6 +14,7 @@ defmodule Kollywood.AgentHarnessTest do
         agent: %{
           explicit: true,
           kind: :codex,
+          model: "o3",
           command: "/usr/local/bin/reviewer",
           args: ["--print"],
           env: %{"REVIEW_MODE" => "strict"},
@@ -31,6 +32,7 @@ defmodule Kollywood.AgentHarnessTest do
     assert profile.role.explicit == true
 
     assert profile.harness.command == "/usr/local/bin/reviewer"
+    assert profile.harness.model == "o3"
     assert profile.harness.args == ["--print"]
     assert profile.harness.env["BASE"] == "1"
     assert profile.harness.env["REVIEW_MODE"] == "strict"
@@ -38,6 +40,7 @@ defmodule Kollywood.AgentHarnessTest do
 
     assert profile.session_config.agent.kind == :codex
     assert profile.session_config.agent.max_turns == 1
+    assert profile.session_config.agent.model == "o3"
     assert profile.session_config.agent.command == "/usr/local/bin/reviewer"
   end
 
@@ -52,6 +55,7 @@ defmodule Kollywood.AgentHarnessTest do
         agent: %{
           explicit: true,
           kind: :cursor,
+          model: "cursor-fast",
           command: "/usr/local/bin/tester",
           args: ["--json"],
           env: %{"TEST_MODE" => "smoke"},
@@ -80,6 +84,7 @@ defmodule Kollywood.AgentHarnessTest do
 
     assert profile.session_config.agent.kind == :cursor
     assert profile.session_config.agent.max_turns == 1
+    assert profile.session_config.agent.model == "cursor-fast"
     assert profile.session_config.agent.command == "/usr/local/bin/tester"
   end
 
@@ -102,6 +107,7 @@ defmodule Kollywood.AgentHarnessTest do
         completion_signals: ["DONE"],
         idle_timeout_ms: 5_000,
         command: "/usr/local/bin/opencode",
+        model: "gpt-5",
         args: ["--fast"],
         env: %{"BASE" => "1"},
         timeout_ms: 90_000

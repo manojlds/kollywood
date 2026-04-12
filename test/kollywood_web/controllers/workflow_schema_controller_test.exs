@@ -24,6 +24,15 @@ defmodule KollywoodWeb.WorkflowSchemaControllerTest do
              "pi"
            ]
 
+    assert agent_fields["model"]["type"] == ["agent_model", "null"]
+    assert agent_fields["model"]["description"] =~ "model identifier"
+
+    assert sections["quality"]["fields"]["review"]["fields"]["agent"]["fields"]["model"]["type"] ==
+             ["agent_model", "null"]
+
+    assert sections["quality"]["fields"]["testing"]["fields"]["agent"]["fields"]["model"]["type"] ==
+             ["agent_model", "null"]
+
     assert %{"fields" => workspace_fields} = sections["workspace"]
     assert workspace_fields["strategy"]["allowed"] == ["clone", "worktree"]
   end

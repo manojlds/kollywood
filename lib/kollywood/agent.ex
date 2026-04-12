@@ -47,7 +47,7 @@ defmodule Kollywood.Agent do
 
     config_opts =
       config.agent
-      |> Map.take([:command, :args, :env, :timeout_ms])
+      |> Map.take([:command, :model, :args, :env, :timeout_ms])
       |> Map.reject(fn
         {:args, []} -> true
         {_key, value} -> is_nil(value)
@@ -59,7 +59,12 @@ defmodule Kollywood.Agent do
   @doc "Runs one turn using the adapter stored in the session."
   @spec run_turn(Session.t(), String.t(), map()) :: {:ok, turn_result()} | {:error, String.t()}
   def run_turn(%Session{adapter: adapter} = session, prompt, opts \\ %{}) do
-    adapter.run_turn(session, prompt, normalize_opts(opts))
+    turn_opts =
+      opts
+      |> normalize_opts()
+      |> maybe_put_model_opt(session)
+
+    adapter.run_turn(session, prompt, turn_opts)
   end
 
   @doc "Stops an adapter session."
@@ -70,4 +75,7 @@ defmodule Kollywood.Agent do
 
   defp normalize_opts(opts) when is_map(opts), do: opts
   defp normalize_opts(opts) when is_list(opts), do: Map.new(opts)
+
+  defp maybe_put_model_opt(opts, %Session{model: nil}), do: opts
+  defp maybe_put_model_opt(opts, %Session{model: model}), do: Map.put_new(opts, :model, model)
 end

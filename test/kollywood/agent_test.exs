@@ -5,6 +5,24 @@ defmodule Kollywood.AgentTest do
   alias Kollywood.Agent.Session
   alias Kollywood.Config
 
+  defmodule SpyAdapter do
+    @behaviour Kollywood.Agent
+
+    @impl true
+    def start_session(_workspace, _opts), do: {:error, "not implemented"}
+
+    @impl true
+    def run_turn(session, _prompt, opts) do
+      send(self(), {:spy_run_turn, session, opts})
+
+      {:ok,
+       %{output: "ok", raw_output: "ok", exit_code: 0, duration_ms: 1, command: "spy", args: []}}
+    end
+
+    @impl true
+    def stop_session(_session), do: :ok
+  end
+
   setup do
     root =
       Path.join(System.tmp_dir!(), "kollywood_agent_test_#{System.unique_integer([:positive])}")
@@ -56,6 +74,7 @@ defmodule Kollywood.AgentTest do
       agent: %{
         kind: :amp,
         command: cli_path,
+        model: "gpt-5",
         env: %{"KOLLYWOOD_TOKEN" => "abc123"},
         timeout_ms: 10_000,
         args: []
@@ -64,6 +83,7 @@ defmodule Kollywood.AgentTest do
 
     assert {:ok, %Session{} = session} = Agent.start_session(config, workspace)
     assert session.adapter == Kollywood.Agent.Amp
+    assert session.model == "gpt-5"
 
     assert {:ok, result} = Agent.run_turn(session, "finish stage 3")
     assert result.output =~ "pwd:#{workspace}"
@@ -71,6 +91,25 @@ defmodule Kollywood.AgentTest do
     assert result.output =~ "token:abc123"
 
     assert :ok = Agent.stop_session(session)
+  end
+
+  test "passes session model to adapter run_turn options" do
+    session = %Session{
+      id: 1,
+      adapter: SpyAdapter,
+      workspace_path: "/tmp",
+      command: "spy",
+      model: "claude-sonnet-4",
+      args: [],
+      env: %{},
+      timeout_ms: 1_000,
+      prompt_mode: :argv
+    }
+
+    assert {:ok, _result} = Agent.run_turn(session, "hi", %{})
+
+    assert_receive {:spy_run_turn, ^session, opts}
+    assert opts[:model] == "claude-sonnet-4"
   end
 
   test "keeps adapter default args when config args is empty", %{

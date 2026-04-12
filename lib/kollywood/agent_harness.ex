@@ -40,6 +40,7 @@ defmodule Kollywood.AgentHarness do
       |> Map.put(:kind, Map.get(role, :kind, base_kind))
       |> Map.put(:max_turns, Map.get(role, :max_turns, 1))
       |> Map.put(:command, Map.get(harness, :command))
+      |> Map.put(:model, Map.get(harness, :model))
       |> Map.put(:args, Map.get(harness, :args, []))
       |> Map.put(:env, Map.get(harness, :env, %{}))
       |> Map.put(:timeout_ms, Map.get(harness, :timeout_ms, @default_timeout_ms))
@@ -65,6 +66,7 @@ defmodule Kollywood.AgentHarness do
   defp base_harness(base_agent) do
     %{
       command: optional_string(Map.get(base_agent, :command)),
+      model: optional_string(Map.get(base_agent, :model)),
       args: string_list(Map.get(base_agent, :args, [])),
       env: string_map(Map.get(base_agent, :env, %{})),
       timeout_ms: positive_integer(Map.get(base_agent, :timeout_ms), @default_timeout_ms)
@@ -144,6 +146,13 @@ defmodule Kollywood.AgentHarness do
         Map.get(base_harness, :command)
       end
 
+    model =
+      if explicit do
+        optional_string(Map.get(phase_agent, :model)) || Map.get(base_harness, :model)
+      else
+        Map.get(base_harness, :model)
+      end
+
     args =
       if explicit do
         case string_list(Map.get(phase_agent, :args, [])) do
@@ -176,6 +185,7 @@ defmodule Kollywood.AgentHarness do
 
     %{
       command: command,
+      model: model,
       args: args,
       env: env,
       timeout_ms: timeout_ms

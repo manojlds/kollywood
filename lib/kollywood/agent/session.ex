@@ -10,6 +10,7 @@ defmodule Kollywood.Agent.Session do
           adapter: module(),
           workspace_path: String.t(),
           command: String.t(),
+          model: String.t() | nil,
           args: [String.t()],
           env: %{optional(String.t()) => String.t()},
           timeout_ms: pos_integer(),
@@ -17,5 +18,15 @@ defmodule Kollywood.Agent.Session do
         }
 
   @enforce_keys [:id, :adapter, :workspace_path, :command, :args, :env, :timeout_ms, :prompt_mode]
-  defstruct [:id, :adapter, :workspace_path, :command, :args, :env, :timeout_ms, :prompt_mode]
+  defstruct [
+    :id,
+    :adapter,
+    :workspace_path,
+    :command,
+    :model,
+    :args,
+    :env,
+    :timeout_ms,
+    :prompt_mode
+  ]
 end
