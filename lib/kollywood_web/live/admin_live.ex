@@ -156,7 +156,7 @@ defmodule KollywoodWeb.AdminLive do
   end
 
   def handle_event("cleanup_worktrees", _params, socket) do
-    status = cleanup_worktrees()
+    status = cleanup_all_workspaces()
 
     socket =
       socket
@@ -165,8 +165,8 @@ defmodule KollywoodWeb.AdminLive do
 
     socket =
       case status do
-        {:ok, _msg} -> put_flash(socket, :info, "Worktree cleanup complete.")
-        {:error, reason} -> put_flash(socket, :error, "Worktree cleanup failed: #{reason}")
+        {:ok, _msg} -> put_flash(socket, :info, "Workspace cleanup complete.")
+        {:error, reason} -> put_flash(socket, :error, "Workspace cleanup failed: #{reason}")
       end
 
     {:noreply, socket}
@@ -911,7 +911,7 @@ defmodule KollywoodWeb.AdminLive do
       <div class="flex items-center justify-between mb-3">
         <h2 class="text-lg font-semibold">Workspaces</h2>
         <button phx-click="cleanup_worktrees" class="btn btn-sm btn-outline gap-2">
-          <.icon name="hero-wrench-screwdriver" class="size-4" /> Clean Worktrees
+          <.icon name="hero-wrench-screwdriver" class="size-4" /> Clean All Workspaces
         </button>
       </div>
 
@@ -1324,14 +1324,50 @@ defmodule KollywoodWeb.AdminLive do
     end
   end
 
-  defp cleanup_worktrees do
+  defp cleanup_all_workspaces do
+    entries = list_workspace_entries()
+
+    {ok_count, error_count, errors} =
+      Enum.reduce(entries, {0, 0, []}, fn entry, {oks, errs, reasons} ->
+        case cleanup_workspace_entry(entry) do
+          {:ok, _} ->
+            {oks + 1, errs, reasons}
+
+          {:error, reason} ->
+            label = "#{entry.project_slug || "-"}/#{entry.story_id || "-"}"
+            {oks, errs + 1, ["#{label}: #{reason}" | reasons]}
+        end
+      end)
+
+    prune_result = prune_all_repos_worktrees()
+
+    case {error_count, prune_result} do
+      {0, {:ok, pruned}} ->
+        {:ok, "Cleaned #{ok_count} workspaces and pruned #{pruned} repos."}
+
+      {0, {:error, prune_reason}} ->
+        {:error, "Cleaned #{ok_count} workspaces, but prune failed: #{prune_reason}"}
+
+      {_count, {:ok, pruned}} ->
+        {:error,
+         "Cleaned #{ok_count} workspaces, #{error_count} failed, pruned #{pruned} repos. #{Enum.join(Enum.reverse(errors), " | ")}"}
+
+      {_count, {:error, prune_reason}} ->
+        {:error,
+         "Cleaned #{ok_count} workspaces, #{error_count} failed, prune failed: #{prune_reason}. #{Enum.join(Enum.reverse(errors), " | ")}"}
+    end
+  end
+
+  defp prune_all_repos_worktrees do
     repos_dir = ServiceConfig.repos_dir()
 
     if File.dir?(repos_dir) do
       repos =
         case File.ls(repos_dir) do
           {:ok, entries} ->
-            entries |> Enum.map(&Path.join(repos_dir, &1)) |> Enum.filter(&File.dir?/1)
+            entries
+            |> Enum.map(&Path.join(repos_dir, &1))
+            |> Enum.filter(&File.dir?/1)
 
           _ ->
             []
@@ -1346,13 +1382,13 @@ defmodule KollywoodWeb.AdminLive do
         end)
 
       if error_count == 0 do
-        {:ok, "Pruned worktrees for #{ok_count} repos."}
+        {:ok, ok_count}
       else
         {:error,
-         "Pruned #{ok_count} repos; #{error_count} failed. #{Enum.join(Enum.reverse(errors), " | ")}"}
+         "pruned #{ok_count} repos; #{error_count} failed. #{Enum.join(Enum.reverse(errors), " | ")}"}
       end
     else
-      {:error, "Repos directory not found: #{repos_dir}"}
+      {:error, "repos directory not found: #{repos_dir}"}
     end
   end
 

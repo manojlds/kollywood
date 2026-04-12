@@ -216,7 +216,7 @@ defmodule KollywoodWeb.AdminLiveTest do
     assert html =~ "clone"
     assert html =~ "worktree"
     assert html =~ "open"
-    assert html =~ "Clean Worktrees"
+    assert html =~ "Clean All Workspaces"
   end
 
   test "supports row-level cleanup for clone workspace", %{conn: conn, project: project} do
