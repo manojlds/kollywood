@@ -330,7 +330,6 @@ defmodule Mix.Tasks.Kollywood.OrchTasksTest do
     File.write!(Path.join(attempt_dir, "reviewer.log"), "")
     File.write!(Path.join(attempt_dir, "checks.log"), "")
     File.write!(Path.join(attempt_dir, "runtime.log"), "")
-    File.write!(Path.join(attempt_dir, "events.jsonl"), "")
 
     metadata =
       %{

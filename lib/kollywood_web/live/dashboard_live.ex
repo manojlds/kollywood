@@ -4305,19 +4305,7 @@ defmodule KollywoodWeb.DashboardLive do
         events
 
       _other ->
-        attempt_dir =
-          case get_in(run_detail, ["metadata", "attempt_dir"]) do
-            dir when is_binary(dir) -> dir
-            _ -> nil
-          end
-
-        if attempt_dir do
-          attempt_dir
-          |> Path.join("events.jsonl")
-          |> read_events_jsonl()
-        else
-          []
-        end
+        []
     end
   end
 
@@ -7109,9 +7097,15 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp list_run_attempts(project) do
+    project_root =
+      case project do
+        %{slug: slug} when is_binary(slug) and slug != "" -> ServiceConfig.project_data_dir(slug)
+        _other -> nil
+      end
+
     project
     |> run_logs_dirs()
-    |> Enum.flat_map(&list_run_attempts_in_dir/1)
+    |> Enum.flat_map(&list_run_attempts_in_dir(&1, project_root))
     |> Enum.reduce(%{}, fn run, acc ->
       Map.put_new(acc, {run.story_id, run.attempt}, run)
     end)
@@ -7121,7 +7115,8 @@ defmodule KollywoodWeb.DashboardLive do
     _ -> []
   end
 
-  defp list_run_attempts_in_dir(log_root) when is_binary(log_root) do
+  defp list_run_attempts_in_dir(log_root, project_root)
+       when is_binary(log_root) and is_binary(project_root) do
     if File.dir?(log_root) do
       log_root
       |> File.ls!()
@@ -7137,7 +7132,6 @@ defmodule KollywoodWeb.DashboardLive do
               attempt_dir_name |> String.replace_prefix("attempt-", "") |> String.to_integer()
 
             metadata_path = Path.join([story_dir, attempt_dir_name, "metadata.json"])
-            attempt_dir = Path.join(story_dir, attempt_dir_name)
 
             metadata =
               if File.exists?(metadata_path) do
@@ -7151,7 +7145,7 @@ defmodule KollywoodWeb.DashboardLive do
                 %{}
               end
 
-            phase = derive_phase_map(attempt_dir, metadata)
+            phase = derive_phase_map(project_root, story_dir_name, attempt_num, metadata)
             retry_mode = normalize_retry_mode(Map.get(metadata, "retry_mode"))
             retry_provenance = normalize_retry_provenance(Map.get(metadata, "retry_provenance"))
 
@@ -7179,7 +7173,7 @@ defmodule KollywoodWeb.DashboardLive do
     end
   end
 
-  defp list_run_attempts_in_dir(_), do: []
+  defp list_run_attempts_in_dir(_log_root, _project_root), do: []
 
   defp build_recent_runs(run_attempts, stories) do
     title_by_id = Map.new(stories, &{&1["id"], &1["title"]})
@@ -7410,42 +7404,26 @@ defmodule KollywoodWeb.DashboardLive do
 
   defp compact_reason(_reason), do: nil
 
-  defp derive_phase_map(attempt_dir, metadata) when is_binary(attempt_dir) and is_map(metadata) do
+  defp derive_phase_map(project_root, story_id, attempt, metadata)
+       when is_binary(project_root) and is_binary(story_id) and is_integer(attempt) and
+              attempt > 0 and
+              is_map(metadata) do
     status_phase = RunPhase.from_status(metadata["status"])
 
-    events =
-      attempt_dir
-      |> Path.join("events.jsonl")
-      |> read_events_jsonl()
+    case RunLogs.list_events(project_root, story_id, attempt) do
+      {:ok, %{events: events}} when is_list(events) ->
+        RunPhase.from_events(events, initial_phase: status_phase)
 
-    RunPhase.from_events(events, initial_phase: status_phase)
+      _other ->
+        status_phase
+    end
   end
 
-  defp derive_phase_map(_attempt_dir, metadata) when is_map(metadata) do
+  defp derive_phase_map(_project_root, _story_id, _attempt, metadata) when is_map(metadata) do
     RunPhase.from_status(metadata["status"])
   end
 
-  defp derive_phase_map(_attempt_dir, _metadata), do: RunPhase.unknown()
-
-  defp read_events_jsonl(path) when is_binary(path) do
-    if File.exists?(path) do
-      path
-      |> File.stream!([], :line)
-      |> Enum.reduce([], fn line, acc ->
-        case Jason.decode(String.trim(line)) do
-          {:ok, event} when is_map(event) -> [event | acc]
-          _other -> acc
-        end
-      end)
-      |> Enum.reverse()
-    else
-      []
-    end
-  rescue
-    _ -> []
-  end
-
-  defp read_events_jsonl(_path), do: []
+  defp derive_phase_map(_project_root, _story_id, _attempt, _metadata), do: RunPhase.unknown()
   # -- Settings Helpers --
 
   @workflow_yaml_key_order ~w(schema_version tracker workspace agent quality preview runtime hooks publish git)
@@ -9218,8 +9196,8 @@ defmodule KollywoodWeb.DashboardLive do
     |> derive_project_roots()
     |> Enum.find_value(fn project_root ->
       case RunLogs.resolve_attempt(project_root, story_id, :latest) do
-        {:ok, %{metadata: metadata, files: files}} ->
-          build_run_detail(project, story_id, metadata, files, tab)
+        {:ok, %{attempt: attempt, metadata: metadata, files: files}} ->
+          build_run_detail(project_root, project, story_id, attempt, metadata, files, tab)
 
         {:error, _} ->
           nil
@@ -9337,7 +9315,7 @@ defmodule KollywoodWeb.DashboardLive do
       |> Enum.find_value(fn project_root ->
         case RunLogs.resolve_attempt(project_root, story_id, parsed) do
           {:ok, %{metadata: metadata, files: files}} ->
-            build_run_detail(project, story_id, metadata, files, tab)
+            build_run_detail(project_root, project, story_id, parsed, metadata, files, tab)
 
           {:error, _} ->
             nil
@@ -9346,10 +9324,20 @@ defmodule KollywoodWeb.DashboardLive do
     end
   end
 
-  defp build_run_detail(project, story_id, metadata, files, tab) do
-    events = read_events_jsonl(files.events)
-    build_run_detail_from_events(project, story_id, metadata, files, tab, events, length(events))
+  defp build_run_detail(project_root, project, story_id, attempt, metadata, files, tab)
+       when is_binary(project_root) and is_binary(story_id) and is_integer(attempt) and
+              attempt > 0 do
+    case RunLogs.list_events(project_root, story_id, attempt) do
+      {:ok, %{events: events, next_cursor: next_cursor}} when is_list(events) ->
+        build_run_detail_from_events(project, story_id, metadata, files, tab, events, next_cursor)
+
+      _other ->
+        nil
+    end
   end
+
+  defp build_run_detail(_project_root, _project, _story_id, _attempt, _metadata, _files, _tab),
+    do: nil
 
   defp build_run_detail_from_events(
          project,

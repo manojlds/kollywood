@@ -508,8 +508,8 @@ defmodule Kollywood.StepRetry do
   defp load_source_attempt(project, story_id, source_attempt) do
     with {:ok, project_root} <- project_data_root(project),
          true <- non_empty_string?(story_id) or {:error, "story_id is required"},
-         {:ok, resolved} <- RunLogs.resolve_attempt(project_root, story_id, source_attempt) do
-      events = read_events_jsonl(resolved.files.events)
+         {:ok, resolved} <- RunLogs.resolve_attempt(project_root, story_id, source_attempt),
+         {:ok, events} <- load_attempt_events(project_root, story_id, resolved.attempt) do
       metadata = normalize_source_metadata(resolved.metadata, events)
       ancestor_events = load_ancestor_events(project_root, story_id, metadata["parent_attempt"])
 
@@ -563,21 +563,29 @@ defmodule Kollywood.StepRetry do
 
       case RunLogs.resolve_attempt(project_root, story_id, attempt) do
         {:ok, resolved} ->
-          events = read_events_jsonl(resolved.files.events)
+          case load_attempt_events(project_root, story_id, resolved.attempt) do
+            {:ok, events} ->
+              next_parent_attempt =
+                resolved.metadata
+                |> Map.get("parent_attempt")
+                |> normalize_parent_attempt()
 
-          next_parent_attempt =
-            resolved.metadata
-            |> Map.get("parent_attempt")
-            |> normalize_parent_attempt()
+              events ++
+                do_load_ancestor_events(
+                  project_root,
+                  story_id,
+                  next_parent_attempt,
+                  next_seen,
+                  depth + 1
+                )
 
-          events ++
-            do_load_ancestor_events(
-              project_root,
-              story_id,
-              next_parent_attempt,
-              next_seen,
-              depth + 1
-            )
+            {:error, reason} ->
+              Logger.warning(
+                "failed to load structured parent attempt events #{attempt} for #{story_id}: #{inspect(reason)}"
+              )
+
+              []
+          end
 
         {:error, reason} ->
           Logger.warning(
@@ -1027,25 +1035,18 @@ defmodule Kollywood.StepRetry do
 
   defp truthy?(_value), do: false
 
-  defp read_events_jsonl(path) when is_binary(path) do
-    if File.exists?(path) do
-      path
-      |> File.stream!([], :line)
-      |> Enum.reduce([], fn line, acc ->
-        case Jason.decode(String.trim(line)) do
-          {:ok, event} when is_map(event) -> [event | acc]
-          _other -> acc
-        end
-      end)
-      |> Enum.reverse()
-    else
-      []
+  defp load_attempt_events(project_root, story_id, attempt)
+       when is_binary(project_root) and is_binary(story_id) and is_integer(attempt) and
+              attempt > 0 do
+    case RunLogs.list_events(project_root, story_id, attempt) do
+      {:ok, %{events: events}} when is_list(events) -> {:ok, events}
+      {:ok, _page} -> {:ok, []}
+      {:error, reason} -> {:error, reason}
     end
-  rescue
-    _ -> []
   end
 
-  defp read_events_jsonl(_path), do: []
+  defp load_attempt_events(_project_root, _story_id, _attempt),
+    do: {:error, "invalid attempt event selector"}
 
   defp field(map, key) when is_map(map) do
     case Map.fetch(map, key) do

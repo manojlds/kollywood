@@ -1567,6 +1567,7 @@ defmodule Kollywood.Orchestrator do
           runtime_last_event: nil,
           run_phase: RunPhase.from_status(:running),
           run_state: run_state,
+          run_events: [],
           last_event_at: started_at,
           last_activity_event_at: started_at,
           run_log_context: run_log_context,
@@ -1643,6 +1644,7 @@ defmodule Kollywood.Orchestrator do
           runtime_last_event: nil,
           run_phase: RunPhase.from_status(:running),
           run_state: run_state,
+          run_events: [],
           last_event_at: started_at,
           last_activity_event_at: started_at,
           run_log_context: run_log_context,
@@ -2027,7 +2029,8 @@ defmodule Kollywood.Orchestrator do
           issue_id,
           run_entry,
           next_attempt,
-          failure_reason
+          failure_reason,
+          result.events
         )
 
       _other ->
@@ -2043,7 +2046,7 @@ defmodule Kollywood.Orchestrator do
     next_attempt = next_retry_attempt(run_entry.attempt)
     reason = result.error || "runner returned error"
     state = tracker_mark_failed(state, issue_id, reason, next_attempt)
-    schedule_retry_for_failed_run(state, issue_id, run_entry, next_attempt, reason)
+    schedule_retry_for_failed_run(state, issue_id, run_entry, next_attempt, reason, result.events)
   end
 
   defp handle_runner_result(state, issue_id, run_entry, other_result) do
@@ -2093,9 +2096,16 @@ defmodule Kollywood.Orchestrator do
     end
   end
 
-  defp schedule_retry_for_failed_run(state, issue_id, run_entry, attempt, reason) do
+  defp schedule_retry_for_failed_run(state, issue_id, run_entry, attempt, reason, events \\ nil) do
     if state.retries_enabled and agent_phase_continuation_candidate?(run_entry) do
-      maybe_schedule_agent_phase_continuation_retry(state, issue_id, run_entry, attempt, reason)
+      maybe_schedule_agent_phase_continuation_retry(
+        state,
+        issue_id,
+        run_entry,
+        attempt,
+        reason,
+        events
+      )
     else
       maybe_schedule_retry(state, issue_id, run_entry.issue, attempt, reason)
     end
@@ -2106,9 +2116,10 @@ defmodule Kollywood.Orchestrator do
          issue_id,
          run_entry,
          attempt,
-         failure_reason
+         failure_reason,
+         events
        ) do
-    case build_agent_continuation_finalization(state, run_entry, attempt, failure_reason) do
+    case build_agent_continuation_finalization(state, run_entry, attempt, failure_reason, events) do
       {:ok, finalization} ->
         schedule_retry(
           state,
@@ -2145,13 +2156,13 @@ defmodule Kollywood.Orchestrator do
          state,
          run_entry,
          continuation_attempt,
-         failure_reason
+         failure_reason,
+         events_hint
        ) do
     with {:ok, originating_attempt} <- originating_run_log_attempt(run_entry),
          {:ok, workspace_path} <- continuation_workspace_path(state, run_entry),
          :ok <- ensure_continuation_workspace(workspace_path),
-         {:ok, events_path} <- continuation_events_path(run_entry),
-         {:ok, events} <- read_run_log_events(events_path),
+         {:ok, events} <- continuation_events(run_entry, events_hint),
          {:ok, last_successful_turn} <- last_successful_turn(events, run_entry) do
       continuation = %{
         mode: "agent_continuation",
@@ -2162,7 +2173,6 @@ defmodule Kollywood.Orchestrator do
         failure_reason: failure_reason,
         originating_session_id: originating_session_id(events),
         workspace_path: workspace_path,
-        events_path: events_path,
         generated_at: DateTime.utc_now()
       }
 
@@ -2182,10 +2192,7 @@ defmodule Kollywood.Orchestrator do
          true <- is_binary(failure_reason) and byte_size(failure_reason) > 0,
          workspace_path <- field(continuation, :workspace_path),
          true <- is_binary(workspace_path) and byte_size(workspace_path) > 0,
-         true <- File.dir?(workspace_path),
-         events_path <- field(continuation, :events_path),
-         true <- is_binary(events_path) and byte_size(events_path) > 0,
-         true <- File.exists?(events_path) do
+         true <- File.dir?(workspace_path) do
       {:ok,
        %{
          mode: "agent_continuation",
@@ -2197,7 +2204,6 @@ defmodule Kollywood.Orchestrator do
          failure_reason: failure_reason,
          originating_session_id: field(continuation, :originating_session_id),
          workspace_path: workspace_path,
-         events_path: events_path,
          generated_at: field(continuation, :generated_at) || DateTime.utc_now()
        }}
     else
@@ -2206,7 +2212,7 @@ defmodule Kollywood.Orchestrator do
 
       false ->
         {:error,
-         "workspace/log prerequisites are unavailable; keep the workspace and run logs intact before retrying"}
+         "workspace prerequisites are unavailable; keep the workspace intact before retrying"}
 
       _other ->
         {:error, "retry provenance is incomplete; a full rerun is required"}
@@ -2344,41 +2350,53 @@ defmodule Kollywood.Orchestrator do
 
   defp ensure_continuation_workspace(_path), do: {:error, "workspace path is unavailable"}
 
-  defp continuation_events_path(run_entry) when is_map(run_entry) do
-    case get_in(run_entry, [:run_log_context, :files, :events]) do
-      path when is_binary(path) and byte_size(path) > 0 ->
-        {:ok, path}
+  defp continuation_events(run_entry, events_hint) when is_map(run_entry) do
+    run_entry_events =
+      case Map.get(run_entry, :run_events) do
+        events when is_list(events) and events != [] -> Enum.reverse(events)
+        _other -> []
+      end
 
-      _other ->
-        {:error, "run-log events file is missing"}
+    cond do
+      run_entry_events != [] ->
+        {:ok, run_entry_events}
+
+      is_list(events_hint) and events_hint != [] ->
+        {:ok, events_hint}
+
+      is_list(events_hint) ->
+        {:ok, []}
+
+      true ->
+        with {:ok, project_root, story_id, attempt} <- continuation_event_selector(run_entry),
+             {:ok, %{events: events}} <- RunLogs.list_events(project_root, story_id, attempt) do
+          {:ok, events}
+        else
+          {:error, reason} -> {:error, reason}
+          _other -> {:error, "run-log events are unavailable for continuation retry"}
+        end
     end
   end
 
-  defp continuation_events_path(_run_entry), do: {:error, "run-log events file is missing"}
+  defp continuation_events(_run_entry, _events_hint),
+    do: {:error, "run-log events are unavailable for continuation retry"}
 
-  defp read_run_log_events(path) when is_binary(path) do
-    if File.exists?(path) do
-      events =
-        path
-        |> File.stream!([], :line)
-        |> Enum.reduce([], fn line, acc ->
-          case Jason.decode(String.trim(line)) do
-            {:ok, event} when is_map(event) -> [event | acc]
-            _other -> acc
-          end
-        end)
-        |> Enum.reverse()
+  defp continuation_event_selector(run_entry) when is_map(run_entry) do
+    run_log_context = Map.get(run_entry, :run_log_context, %{})
 
-      {:ok, events}
+    with project_root when is_binary(project_root) and project_root != "" <-
+           Map.get(run_log_context, :project_root),
+         story_id when is_binary(story_id) and story_id != "" <-
+           Map.get(run_log_context, :story_id),
+         attempt when is_integer(attempt) and attempt > 0 <- Map.get(run_log_context, :attempt) do
+      {:ok, project_root, story_id, attempt}
     else
-      {:error, "run-log events file not found: #{path}"}
+      _other -> {:error, "run-log event selector is missing for continuation retry"}
     end
-  rescue
-    error ->
-      {:error, "failed to read run-log events: #{Exception.message(error)}"}
   end
 
-  defp read_run_log_events(_path), do: {:error, "run-log events path is invalid"}
+  defp continuation_event_selector(_run_entry),
+    do: {:error, "run-log event selector is missing for continuation retry"}
 
   defp last_successful_turn(events, run_entry) when is_list(events) do
     case last_successful_turn_from_events(events) do
@@ -3079,6 +3097,7 @@ defmodule Kollywood.Orchestrator do
 
           updated_entry =
             run_entry
+            |> append_run_event(event)
             |> Map.put(:runtime_process_state, runtime_process_state)
             |> Map.put(:runtime_last_event, runtime_last_event)
             |> Map.put(:previous_run_phase, current_phase)
@@ -3162,6 +3181,18 @@ defmodule Kollywood.Orchestrator do
       "runtime_stop_failed"
     ]
   end
+
+  defp append_run_event(run_entry, event) when is_map(run_entry) do
+    events = Map.get(run_entry, :run_events, [])
+
+    if is_list(events) do
+      Map.put(run_entry, :run_events, [event | events])
+    else
+      Map.put(run_entry, :run_events, [event])
+    end
+  end
+
+  defp append_run_event(run_entry, _event), do: run_entry
 
   # --- Config and integration ---
 

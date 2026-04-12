@@ -84,7 +84,7 @@ defmodule Kollywood.StepRetryTest do
     assert latest.metadata["retry_step"] == "checks"
     assert latest.metadata["status"] == "ok"
 
-    event_types = read_event_types(latest.files.events)
+    event_types = read_event_types(project, "US-CHECKS-SUCCESS", latest.attempt)
     assert "checks_started" in event_types
     assert "checks_passed" in event_types
     assert "publish_skipped" in event_types
@@ -234,7 +234,7 @@ defmodule Kollywood.StepRetryTest do
     assert latest.metadata["retry_step"] == "review"
     assert latest.metadata["status"] == "ok"
 
-    event_types = read_event_types(latest.files.events)
+    event_types = read_event_types(project, story_id, latest.attempt)
     assert "review_started" in event_types
     assert "review_passed" in event_types
     assert "publish_skipped" in event_types
@@ -392,7 +392,7 @@ defmodule Kollywood.StepRetryTest do
     assert latest.metadata["retry_step"] == "testing"
     assert latest.metadata["status"] == "ok"
 
-    event_types = read_event_types(latest.files.events)
+    event_types = read_event_types(project, story_id, latest.attempt)
     assert "testing_started" in event_types
     assert "testing_passed" in event_types
     assert "publish_skipped" in event_types
@@ -465,7 +465,7 @@ defmodule Kollywood.StepRetryTest do
     assert result.retry_step == "testing"
 
     latest = resolve_attempt!(project, story_id, result.attempt)
-    event_types = read_event_types(latest.files.events)
+    event_types = read_event_types(project, story_id, latest.attempt)
 
     assert "runtime_starting" in event_types
     assert "runtime_healthcheck_passed" in event_types
@@ -538,7 +538,7 @@ defmodule Kollywood.StepRetryTest do
              StepRetry.retry(project, story_id, source_retry_attempt.attempt, "testing")
 
     latest = resolve_attempt!(project, story_id, result.attempt)
-    event_types = read_event_types(latest.files.events)
+    event_types = read_event_types(project, story_id, latest.attempt)
 
     assert "testing_started" in event_types
     assert "testing_passed" in event_types
@@ -581,7 +581,7 @@ defmodule Kollywood.StepRetryTest do
     assert latest.metadata["retry_step"] == "publish"
     assert latest.metadata["status"] == "ok"
 
-    event_types = read_event_types(latest.files.events)
+    event_types = read_event_types(project, story_id, latest.attempt)
     assert "publish_started" in event_types
     assert "publish_push_succeeded" in event_types
     assert "publish_succeeded" in event_types
@@ -721,7 +721,7 @@ defmodule Kollywood.StepRetryTest do
              StepRetry.retry(project, story_id, source_context.attempt, "checks")
 
     latest = resolve_attempt!(project, story_id, retry_result.attempt)
-    event_types = read_event_types(latest.files.events)
+    event_types = read_event_types(project, story_id, latest.attempt)
 
     assert "checks_started" in event_types
     refute "review_started" in event_types
@@ -1046,15 +1046,18 @@ defmodule Kollywood.StepRetryTest do
     resolved
   end
 
-  defp read_event_types(events_path) do
-    events_path
-    |> File.stream!([], :line)
-    |> Enum.map(&String.trim/1)
-    |> Enum.reject(&(&1 == ""))
-    |> Enum.map(fn json ->
-      {:ok, decoded} = Jason.decode(json)
-      decoded["type"]
+  defp read_event_types(project, story_id, attempt) do
+    project_root = ServiceConfig.project_data_dir(project.slug)
+    {:ok, %{events: events}} = RunLogs.list_events(project_root, story_id, attempt)
+
+    events
+    |> Enum.map(fn
+      %{"type" => type} when is_binary(type) -> type
+      %{type: type} when is_atom(type) -> Atom.to_string(type)
+      %{type: type} when is_binary(type) -> type
+      _other -> nil
     end)
+    |> Enum.reject(&is_nil/1)
   end
 
   defp read_story!(project, story_id) do

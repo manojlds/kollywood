@@ -45,7 +45,6 @@ defmodule Kollywood.AttemptDispatchPipelineTest do
     test "log_files map survives JSON serialization and deserialization through the queue" do
       log_files = %{
         agent: "/tmp/test_run/agent.log",
-        events: "/tmp/test_run/events.jsonl",
         worker: "/tmp/test_run/worker.log",
         reviewer: "/tmp/test_run/reviewer.log",
         run: "/tmp/test_run/run.log"
@@ -65,20 +64,20 @@ defmodule Kollywood.AttemptDispatchPipelineTest do
 
       log_files_serialized = serialized["log_files"]
       assert log_files_serialized["agent"] == "/tmp/test_run/agent.log"
-      assert log_files_serialized["events"] == "/tmp/test_run/events.jsonl"
+      assert log_files_serialized["run"] == "/tmp/test_run/run.log"
 
       json = Jason.encode!(serialized)
       {:ok, decoded} = Jason.decode(json)
 
       assert decoded["log_files"]["agent"] == "/tmp/test_run/agent.log"
-      assert decoded["log_files"]["events"] == "/tmp/test_run/events.jsonl"
+      assert decoded["log_files"]["run"] == "/tmp/test_run/run.log"
     end
 
     test "log_files round-trips through RunAttempts enqueue/lease" do
       log_files = %{
         agent: "/tmp/test_run/agent.log",
-        events: "/tmp/test_run/events.jsonl",
-        worker: "/tmp/test_run/worker.log"
+        worker: "/tmp/test_run/worker.log",
+        run: "/tmp/test_run/run.log"
       }
 
       run_opts = [
@@ -102,7 +101,7 @@ defmodule Kollywood.AttemptDispatchPipelineTest do
       {:ok, decoded} = Jason.decode(fetched.run_opts_snapshot)
 
       assert decoded["log_files"]["agent"] == "/tmp/test_run/agent.log"
-      assert decoded["log_files"]["events"] == "/tmp/test_run/events.jsonl"
+      assert decoded["log_files"]["run"] == "/tmp/test_run/run.log"
     end
   end
 
@@ -115,15 +114,16 @@ defmodule Kollywood.AttemptDispatchPipelineTest do
 
       on_exit(fn -> File.rm_rf!(test_dir) end)
 
-      events_path = Path.join(test_dir, "events.jsonl")
-      File.write!(events_path, "")
+      run_path = Path.join(test_dir, "run.log")
+      worker_path = Path.join(test_dir, "worker.log")
+      File.write!(run_path, "")
+      File.write!(worker_path, "")
 
       run_opts = [
         log_files: %{
-          "events" => events_path,
           "agent" => Path.join(test_dir, "agent.log"),
-          "worker" => Path.join(test_dir, "worker.log"),
-          "run" => Path.join(test_dir, "run.log")
+          "worker" => worker_path,
+          "run" => run_path
         },
         attempt: 3
       ]
@@ -139,8 +139,8 @@ defmodule Kollywood.AttemptDispatchPipelineTest do
         timestamp: DateTime.utc_now() |> DateTime.to_iso8601()
       })
 
-      events_content = File.read!(events_path)
-      assert String.contains?(events_content, "turn_started")
+      run_content = File.read!(run_path)
+      assert String.contains?(run_content, "turn_started")
     end
 
     test "inject_on_event handles nil log_files gracefully" do
@@ -161,7 +161,7 @@ defmodule Kollywood.AttemptDispatchPipelineTest do
           "log_files" => %{
             "agent_stdout" => "/tmp/agent_stdout.log",
             "reviewer_stdout" => "/tmp/reviewer_stdout.log",
-            "events" => "/tmp/events.jsonl"
+            "run" => "/tmp/run.log"
           },
           "attempt" => 1
         })
@@ -209,12 +209,11 @@ defmodule Kollywood.AttemptDispatchPipelineTest do
 
       on_exit(fn -> File.rm_rf!(test_dir) end)
 
-      for f <- ~w(events.jsonl agent.log worker.log run.log reviewer.log) do
+      for f <- ~w(agent.log worker.log run.log reviewer.log) do
         File.write!(Path.join(test_dir, f), "")
       end
 
       log_files = %{
-        "events" => Path.join(test_dir, "events.jsonl"),
         "agent" => Path.join(test_dir, "agent.log"),
         "worker" => Path.join(test_dir, "worker.log"),
         "run" => Path.join(test_dir, "run.log"),
@@ -270,10 +269,10 @@ defmodule Kollywood.AttemptDispatchPipelineTest do
       send(consumer, :poll)
       Process.sleep(1_000)
 
-      events_content = File.read!(Path.join(test_dir, "events.jsonl"))
+      run_content = File.read!(Path.join(test_dir, "run.log"))
 
-      assert String.length(events_content) > 0,
-             "Expected events to be written to events.jsonl but file is empty. " <>
+      assert String.length(run_content) > 0,
+             "Expected run events to be written to run.log but file is empty. " <>
                "This means on_event was not reconstructed from log_files in the attempt entry."
     end
   end

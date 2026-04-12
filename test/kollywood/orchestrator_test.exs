@@ -1211,6 +1211,7 @@ defmodule Kollywood.OrchestratorTest do
 
   test "persists worker/reviewer/check/runtime logs and metadata per attempt", %{root: root} do
     prd_path = Path.join(root, "prd.json")
+    write_prd!(prd_path)
 
     %{store: workflow_store, path: workflow_path} =
       start_workflow_store!(root, %{tracker_kind: "prd_json", tracker_path: prd_path})
@@ -1283,7 +1284,6 @@ defmodule Kollywood.OrchestratorTest do
     assert File.exists?(Path.join(attempt_dir, "reviewer.log"))
     assert File.exists?(Path.join(attempt_dir, "checks.log"))
     assert File.exists?(Path.join(attempt_dir, "runtime.log"))
-    assert File.exists?(Path.join(attempt_dir, "events.jsonl"))
 
     worker_log = File.read!(Path.join(attempt_dir, "worker.log"))
     assert worker_log =~ "turn_succeeded"

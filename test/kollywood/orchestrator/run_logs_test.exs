@@ -1,5 +1,5 @@
 defmodule Kollywood.Orchestrator.RunLogsTest do
-  use ExUnit.Case, async: false
+  use Kollywood.DataCase, async: false
 
   alias Kollywood.AgentRunner.Result
   alias Kollywood.Config
@@ -307,19 +307,19 @@ defmodule Kollywood.Orchestrator.RunLogsTest do
       assert content =~ "--- Turn 2 ---"
       assert content =~ "Turn two output"
 
-      step_one_events =
+      step_one_log =
         context.files.steps_dir
-        |> Path.join("agent-0001/events.jsonl")
+        |> Path.join("agent-0001/step.log")
         |> File.read!()
 
-      assert step_one_events =~ "turn_succeeded"
+      assert step_one_log =~ "turn_succeeded"
 
-      step_two_events =
+      step_two_log =
         context.files.steps_dir
-        |> Path.join("agent-0002/events.jsonl")
+        |> Path.join("agent-0002/step.log")
         |> File.read!()
 
-      assert step_two_events =~ "turn_succeeded"
+      assert step_two_log =~ "turn_succeeded"
     end
 
     test "groups check lifecycle events into one step folder", %{context: context} do
@@ -329,13 +329,13 @@ defmodule Kollywood.Orchestrator.RunLogsTest do
       RunLogs.append_event(context, %{type: :checks_failed, error_count: 1})
 
       checks_dir = Path.join(context.files.steps_dir, "checks-0001")
-      checks_events = File.read!(Path.join(checks_dir, "events.jsonl"))
       checks_log = File.read!(Path.join(checks_dir, "step.log"))
+      step_events_index = File.read!(context.files.step_events)
 
-      assert checks_events =~ "checks_started"
-      assert checks_events =~ "check_started"
-      assert checks_events =~ "check_failed"
-      assert checks_events =~ "checks_failed"
+      assert step_events_index =~ "checks_started"
+      assert step_events_index =~ "check_started"
+      assert step_events_index =~ "check_failed"
+      assert step_events_index =~ "checks_failed"
       assert checks_log =~ "[checks] checks_started"
       assert checks_log =~ "[checks] check_failed"
     end
@@ -430,8 +430,10 @@ defmodule Kollywood.Orchestrator.RunLogsTest do
 
       assert :ok = RunLogs.append_event(context, event)
 
-      [line] = context.files.events |> File.read!() |> String.split("\n", trim: true)
-      decoded = Jason.decode!(line)
+      assert {:ok, page} =
+               RunLogs.list_events(context.project_root, context.story_id, context.attempt)
+
+      decoded = List.first(page.events)
 
       assert decoded["recovery_guidance"]["summary"] == "push failed"
 
@@ -459,8 +461,10 @@ defmodule Kollywood.Orchestrator.RunLogsTest do
 
       assert :ok = RunLogs.append_event(context, event)
 
-      [line] = context.files.events |> File.read!() |> String.split("\n", trim: true)
-      decoded = Jason.decode!(line)
+      assert {:ok, page} =
+               RunLogs.list_events(context.project_root, context.story_id, context.attempt)
+
+      decoded = List.first(page.events)
 
       assert decoded["recovery_guidance"]["summary"] == "push failed"
 
@@ -496,6 +500,25 @@ defmodule Kollywood.Orchestrator.RunLogsTest do
       assert {:ok, [attempt]} = RunLogs.list_attempts(project_root, "US-LEGACY")
       assert attempt.metadata["status"] == "failed"
       assert attempt.settings_snapshot == nil
+    end
+  end
+
+  describe "list_events/4" do
+    test "reads persisted events from structured storage", %{context: context} do
+      assert :ok = RunLogs.append_event(context, %{type: :run_started})
+      assert :ok = RunLogs.append_event(context, %{type: :turn_started, turn: 1})
+      assert :ok = RunLogs.append_event(context, %{type: :turn_succeeded, turn: 1, output: "ok"})
+
+      assert {:ok, page} =
+               RunLogs.list_events(context.project_root, context.story_id, context.attempt)
+
+      assert Enum.map(page.events, & &1["type"]) == [
+               "run_started",
+               "turn_started",
+               "turn_succeeded"
+             ]
+
+      assert page.next_cursor == 3
     end
   end
 

@@ -1,6 +1,6 @@
 defmodule Kollywood.Orchestrator.RunSteps do
   @moduledoc """
-  Parses a run's events.jsonl into a sequence of discrete pipeline steps.
+  Parses a run event stream into a sequence of discrete pipeline steps.
 
   Each step represents a logical unit: an agent turn, a checks pass,
   a review cycle, a testing phase, or a runtime operation. Steps carry

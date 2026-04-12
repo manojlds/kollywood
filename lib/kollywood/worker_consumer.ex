@@ -515,22 +515,22 @@ defmodule Kollywood.WorkerConsumer do
             _ -> 0
           end
 
-        attempt_dir =
-          case Map.get(log_files, :events) || Map.get(log_files, "events") do
-            path when is_binary(path) -> Path.dirname(path)
-            _ -> nil
-          end
-
         files =
           Map.new(log_files, fn {k, v} ->
             {if(is_atom(k), do: k, else: String.to_atom(k)), v}
           end)
+
+        attempt_dir = infer_attempt_dir(files)
+        project_root = project_root_from_attempt_dir(attempt_dir)
+        project_slug = project_slug_from_project_root(project_root)
 
         %{
           issue_id: issue_id,
           identifier: identifier || issue_id,
           story_id: issue_id,
           attempt: attempt_int,
+          project_slug: project_slug,
+          project_root: project_root,
           attempt_dir: attempt_dir,
           files: files
         }
@@ -554,6 +554,58 @@ defmodule Kollywood.WorkerConsumer do
 
     Keyword.put(run_opts, :on_event, on_event)
   end
+
+  defp infer_attempt_dir(files) when is_map(files) do
+    [
+      Map.get(files, :metadata),
+      Map.get(files, :run),
+      Map.get(files, :worker),
+      Map.get(files, :agent),
+      Map.get(files, :steps_dir)
+    ]
+    |> Enum.find_value(fn
+      path when is_binary(path) and path != "" ->
+        if File.dir?(path), do: path, else: Path.dirname(path)
+
+      _other ->
+        nil
+    end)
+  end
+
+  defp infer_attempt_dir(_files), do: nil
+
+  defp project_root_from_attempt_dir(attempt_dir)
+       when is_binary(attempt_dir) and attempt_dir != "" do
+    segments =
+      attempt_dir
+      |> Path.expand()
+      |> Path.split()
+
+    case Enum.find_index(segments, &(&1 == "run_logs")) do
+      idx when is_integer(idx) and idx > 0 ->
+        segments
+        |> Enum.take(idx)
+        |> Path.join()
+
+      _other ->
+        nil
+    end
+  end
+
+  defp project_root_from_attempt_dir(_attempt_dir), do: nil
+
+  defp project_slug_from_project_root(project_root)
+       when is_binary(project_root) and project_root != "" do
+    project_root
+    |> String.trim_trailing("/")
+    |> Path.basename()
+    |> case do
+      "" -> nil
+      slug -> slug
+    end
+  end
+
+  defp project_slug_from_project_root(_project_root), do: nil
 
   defp invoke_runner(runner_fun, issue, run_opts), do: runner_fun.(issue, run_opts)
 

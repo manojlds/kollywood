@@ -228,7 +228,7 @@ mix kollywood.orch.logs US-001 --follow
 
 ### Run terminal statuses and events
 
-Run metadata (`run_logs/*/metadata.json`) stores a terminal `status` and event stream (`events.jsonl`).
+Run metadata (`run_logs/*/metadata.json`) stores a terminal `status`, and events are persisted in the structured run event store.
 
 - terminal statuses:
   - `ok`: run completed without an early stop condition
@@ -244,12 +244,11 @@ Run metadata (`run_logs/*/metadata.json`) stores a terminal `status` and event s
   - `run_finished`: final event; includes terminal `status`
 - execution session lifecycle events (for observability):
   - `execution_session_started`, `execution_session_completed`, `execution_session_stopped`, `execution_session_stop_failed`
-  - legacy `session_started`/`session_stopped` may also appear for backward compatibility
 
 Dashboard run detail surfaces explicit terminal reasons for completion signal, max turns, and idle timeout.
 
-Some workspace/publish/sync failures include structured `recovery_guidance` metadata in `events.jsonl` (summary + commands).
-Dashboard run and step views render that guidance directly, and legacy string-based `Recovery commands:` errors remain supported for backward compatibility.
+Some workspace/publish/sync failures include structured `recovery_guidance` metadata in persisted run events (summary + commands).
+Dashboard run and step views render that guidance directly.
 
 ### Operator triage runbook
 

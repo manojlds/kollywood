@@ -8,7 +8,6 @@ defmodule Kollywood.Orchestrator.RunLogs do
         attempts.jsonl
         attempt-0001/
           metadata.json
-          events.jsonl
           run.log
           worker.log
           reviewer.log
@@ -28,6 +27,7 @@ defmodule Kollywood.Orchestrator.RunLogs do
   alias Kollywood.Config
   alias Kollywood.Orchestrator.RunState
   alias Kollywood.RecoveryGuidance
+  alias Kollywood.RunEvents
   alias Kollywood.ServiceConfig
 
   @base_log_dir ["run_logs"]
@@ -182,6 +182,7 @@ defmodule Kollywood.Orchestrator.RunLogs do
 
   @typedoc "Run-log context returned by `prepare_attempt/3`"
   @type context :: %{
+          project_slug: String.t() | nil,
           project_root: String.t(),
           story_id: String.t(),
           issue_id: String.t() | nil,
@@ -270,6 +271,7 @@ defmodule Kollywood.Orchestrator.RunLogs do
       |> Kernel.||("unknown-story")
 
     project_root = project_root(config)
+    project_slug = project_root |> String.trim_trailing("/") |> Path.basename()
     story_dir = story_dir(project_root, story_id)
 
     with :ok <- File.mkdir_p(story_dir),
@@ -285,6 +287,7 @@ defmodule Kollywood.Orchestrator.RunLogs do
           identifier,
           attempt,
           runner_attempt,
+          project_slug,
           project_root,
           attempt_dir,
           files,
@@ -310,6 +313,7 @@ defmodule Kollywood.Orchestrator.RunLogs do
              }) do
         {:ok,
          %{
+           project_slug: optional_string(project_slug),
            project_root: project_root,
            story_id: story_id,
            issue_id: optional_string(issue_id),
@@ -340,10 +344,10 @@ defmodule Kollywood.Orchestrator.RunLogs do
     category = category_for_event(Map.get(normalized_event, "type"))
     human_line = format_human_line(normalized_event, category)
 
-    with :ok <- append_jsonl(files.events, normalized_event),
-         :ok <- append_text(files.run, human_line),
+    with :ok <- append_text(files.run, human_line),
          :ok <- append_text(category_path(files, category), human_line),
          :ok <- maybe_append_agent_log(files, normalized_event),
+         :ok <- persist_structured_event(context, normalized_event, category),
          :ok <- append_step_event(context, normalized_event, human_line, category) do
       :ok
     else
@@ -354,6 +358,16 @@ defmodule Kollywood.Orchestrator.RunLogs do
   end
 
   def append_event(_context, _event), do: :ok
+
+  defp persist_structured_event(context, event, category) do
+    case RunEvents.append(context, event, category) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        {:error, "failed to persist structured event: #{inspect(reason)}"}
+    end
+  end
 
   @doc "Completes a run attempt with final metadata from `%Result{}`."
   @spec complete_attempt(context(), Result.t()) :: :ok | {:error, String.t()}
@@ -433,7 +447,6 @@ defmodule Kollywood.Orchestrator.RunLogs do
           tester: files.tester,
           checks: files.checks,
           runtime: files.runtime,
-          events: files.events,
           metadata: files.metadata,
           agent: files.agent,
           agent_stdout: files.agent_stdout,
@@ -535,7 +548,7 @@ defmodule Kollywood.Orchestrator.RunLogs do
     {:error, "invalid attempt selector: #{inspect(attempt)}"}
   end
 
-  @doc "Lists events for one attempt after a cursor (1-based line index)."
+  @doc "Lists events for one attempt after a cursor (1-based event sequence)."
   @spec list_events(String.t(), String.t(), pos_integer(), keyword()) ::
           {:ok, %{events: [map()], next_cursor: non_neg_integer(), metadata: map(), files: map()}}
           | {:error, String.t()}
@@ -545,7 +558,7 @@ defmodule Kollywood.Orchestrator.RunLogs do
       when is_binary(project_root) and is_binary(story_id) and is_integer(attempt) and attempt > 0 do
     with {:ok, %{metadata: metadata, files: files}} <-
            resolve_attempt(project_root, story_id, attempt),
-         {:ok, events, next_cursor} <- read_events_slice(files.events, opts) do
+         {:ok, events, next_cursor} <- read_events_slice(project_root, story_id, attempt, opts) do
       {:ok,
        %{
          events: events,
@@ -704,7 +717,6 @@ defmodule Kollywood.Orchestrator.RunLogs do
     %{
       attempts_index: Path.join(story_dir, "attempts.jsonl"),
       metadata: Path.join(attempt_dir, "metadata.json"),
-      events: Path.join(attempt_dir, "events.jsonl"),
       run: Path.join(attempt_dir, "run.log"),
       worker: Path.join(attempt_dir, "worker.log"),
       reviewer: Path.join(attempt_dir, "reviewer.log"),
@@ -729,7 +741,6 @@ defmodule Kollywood.Orchestrator.RunLogs do
   defp ensure_append_files(files) do
     base_files = [
       files.attempts_index,
-      files.events,
       files.run,
       files.worker,
       files.reviewer,
@@ -776,9 +787,6 @@ defmodule Kollywood.Orchestrator.RunLogs do
          {:ok, paths} <- ensure_step_paths(context, bucket, seq),
          step_category <- step_log_category(bucket, category),
          step_human_line <- format_human_line(event, step_category),
-         enriched <-
-           Map.put(event, "step_log", %{"bucket" => Atom.to_string(bucket), "seq" => seq}),
-         :ok <- append_jsonl(paths.event_path, enriched),
          :ok <- append_text(paths.human_path, step_human_line),
          :ok <-
            append_jsonl(context.files.step_events, %{
@@ -787,7 +795,6 @@ defmodule Kollywood.Orchestrator.RunLogs do
              "bucket" => Atom.to_string(bucket),
              "seq" => seq,
              "event" => event,
-             "event_path" => paths.event_path,
              "human_path" => paths.human_path
            }) do
       :ok
@@ -879,25 +886,19 @@ defmodule Kollywood.Orchestrator.RunLogs do
   end
 
   defp last_step_sequence(context, bucket) do
-    pattern =
-      context
-      |> step_event_file(bucket, nil)
-      |> case do
-        value when is_binary(value) -> Regex.escape(value)
-        _other -> nil
-      end
+    bucket_name = Atom.to_string(bucket)
 
-    if is_binary(pattern) and File.exists?(context.files.step_events) do
+    if is_binary(bucket_name) and File.exists?(context.files.step_events) do
       seq =
         context.files.step_events
         |> File.stream!([], :line)
         |> Enum.reduce(0, fn line, acc ->
           case Jason.decode(String.trim(line)) do
             {:ok, payload} when is_map(payload) ->
-              payload_path = Map.get(payload, "event_path")
+              payload_bucket = Map.get(payload, "bucket")
               payload_seq = positive_integer(Map.get(payload, "seq"), 0)
 
-              if is_binary(payload_path) and Regex.match?(~r/^#{pattern}$/, payload_path) do
+              if payload_bucket == bucket_name do
                 max(acc, payload_seq)
               else
                 acc
@@ -926,16 +927,13 @@ defmodule Kollywood.Orchestrator.RunLogs do
   defp ensure_step_paths(context, bucket, seq)
        when is_map(context) and is_atom(bucket) and is_integer(seq) and seq > 0 do
     step_dir = step_directory(context, bucket, seq)
-    event_path = step_event_file(context, bucket, seq)
     human_path = step_human_file(context, bucket, seq)
 
     with true <- is_binary(step_dir) or {:error, :invalid_step_dir},
-         true <- is_binary(event_path) or {:error, :invalid_step_event_path},
          true <- is_binary(human_path) or {:error, :invalid_step_human_path},
          :ok <- File.mkdir_p(step_dir),
-         :ok <- File.write(event_path, "", [:append]),
          :ok <- File.write(human_path, "", [:append]) do
-      {:ok, %{event_path: event_path, human_path: human_path}}
+      {:ok, %{human_path: human_path}}
     else
       {:error, reason} -> {:error, reason}
       false -> {:error, :invalid_step_log_paths}
@@ -953,23 +951,6 @@ defmodule Kollywood.Orchestrator.RunLogs do
         steps_dir,
         "#{Atom.to_string(bucket)}-#{String.pad_leading(Integer.to_string(seq), 4, "0")}"
       )
-    else
-      nil
-    end
-  end
-
-  defp step_event_file(context, bucket, seq) when is_integer(seq) and seq > 0 do
-    case step_directory(context, bucket, seq) do
-      nil -> nil
-      dir -> Path.join(dir, "events.jsonl")
-    end
-  end
-
-  defp step_event_file(context, bucket, nil) do
-    steps_dir = get_in(context, [:files, :steps_dir])
-
-    if is_binary(steps_dir) and is_atom(bucket) do
-      Path.join(steps_dir, "#{Atom.to_string(bucket)}-*")
     else
       nil
     end
@@ -1014,6 +995,7 @@ defmodule Kollywood.Orchestrator.RunLogs do
          identifier,
          attempt,
          runner_attempt,
+         project_slug,
          project_root,
          attempt_dir,
          files,
@@ -1033,6 +1015,7 @@ defmodule Kollywood.Orchestrator.RunLogs do
         "status",
         "started_at",
         "ended_at",
+        "project_slug",
         "project_root",
         "attempt_dir",
         "files",
@@ -1052,6 +1035,7 @@ defmodule Kollywood.Orchestrator.RunLogs do
       "run_state" => RunState.to_storage_map(RunState.from_status(:running)),
       "started_at" => now_iso8601(),
       "ended_at" => nil,
+      "project_slug" => optional_string(project_slug),
       "project_root" => project_root,
       "attempt_dir" => attempt_dir,
       "files" => %{
@@ -1061,7 +1045,6 @@ defmodule Kollywood.Orchestrator.RunLogs do
         "tester" => files.tester,
         "checks" => files.checks,
         "runtime" => files.runtime,
-        "events" => files.events,
         "agent" => files.agent,
         "agent_stdout" => files.agent_stdout,
         "reviewer_stdout" => files.reviewer_stdout,
@@ -1429,48 +1412,31 @@ defmodule Kollywood.Orchestrator.RunLogs do
 
   defp run_event_type(_event), do: nil
 
-  @default_event_slice_limit 2_000
-  @max_event_slice_limit 2_000
+  defp read_events_slice(project_root, story_id, attempt, opts)
+       when is_binary(project_root) and is_binary(story_id) and is_integer(attempt) and
+              attempt > 0 and
+              is_list(opts) do
+    project_slug =
+      project_root
+      |> String.trim_trailing("/")
+      |> Path.basename()
+      |> optional_string()
 
-  defp read_events_slice(path, opts) when is_binary(path) and is_list(opts) do
-    since = non_negative_integer(Keyword.get(opts, :since), 0)
+    case project_slug do
+      nil ->
+        {:error, "invalid project slug"}
 
-    limit =
-      Keyword.get(opts, :limit)
-      |> positive_integer(@default_event_slice_limit)
-      |> min(@max_event_slice_limit)
-
-    if File.exists?(path) and File.regular?(path) do
-      path
-      |> File.stream!([], :line)
-      |> Stream.with_index(1)
-      |> Stream.drop_while(fn {_line, idx} -> idx <= since end)
-      |> Enum.reduce_while({[], 0, since}, fn {line, idx}, {events_rev, count, _last_idx} ->
-        next_events_rev =
-          case Jason.decode(String.trim(line)) do
-            {:ok, event} when is_map(event) -> [event | events_rev]
-            _other -> events_rev
-          end
-
-        next_count = count + 1
-
-        if next_count >= limit do
-          {:halt, {next_events_rev, next_count, idx}}
+      slug ->
+        with {:ok, events, next_cursor} <- RunEvents.list_events(slug, story_id, attempt, opts) do
+          {:ok, events, next_cursor}
         else
-          {:cont, {next_events_rev, next_count, idx}}
+          {:error, reason} -> {:error, "failed to read structured events: #{inspect(reason)}"}
         end
-      end)
-      |> then(fn {events_rev, _count, last_idx} ->
-        {:ok, Enum.reverse(events_rev), last_idx}
-      end)
-    else
-      {:ok, [], since}
     end
-  rescue
-    error -> {:error, "failed to read events: #{Exception.message(error)}"}
   end
 
-  defp read_events_slice(_path, _opts), do: {:error, "invalid events path"}
+  defp read_events_slice(_project_root, _story_id, _attempt, _opts),
+    do: {:error, "invalid events selector"}
 
   defp positive_integer(value, _fallback) when is_integer(value) and value > 0, do: value
 
@@ -1482,17 +1448,6 @@ defmodule Kollywood.Orchestrator.RunLogs do
   end
 
   defp positive_integer(_value, fallback), do: fallback
-
-  defp non_negative_integer(value, _fallback) when is_integer(value) and value >= 0, do: value
-
-  defp non_negative_integer(value, fallback) when is_binary(value) do
-    case Integer.parse(String.trim(value)) do
-      {int, ""} when int >= 0 -> int
-      _other -> fallback
-    end
-  end
-
-  defp non_negative_integer(_value, fallback), do: fallback
 
   defp stringify_map(map) when is_map(map) do
     Map.new(map, fn {key, value} ->
