@@ -13,6 +13,7 @@ workspace:
   strategy: worktree
 agent:
   kind: opencode
+  model: opencode-go/glm-5.1
   max_attempts: 1
   max_concurrent_agents: 1
   max_turns: 20
@@ -30,12 +31,14 @@ quality:
   review:
     agent:
       kind: opencode
+      model: opencode-go/glm-5.1
       timeout_ms: 7200000
     enabled: true
     max_cycles: 3
   testing:
     agent:
       kind: opencode
+      model: opencode-go/glm-5.1
       timeout_ms: 7200000
     enabled: false
     max_cycles: 2
