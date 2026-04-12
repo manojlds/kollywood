@@ -5,6 +5,8 @@ defmodule KollywoodWeb.AdminLiveTest do
   alias Kollywood.Repo
   alias Kollywood.RunAttempts
   alias Kollywood.RunAttempts.Attempt, as: Entry
+  alias Kollywood.ServiceConfig
+  alias Kollywood.Tracker.PrdJson
   alias Kollywood.WorkerConsumer
 
   setup do
@@ -166,5 +168,79 @@ defmodule KollywoodWeb.AdminLiveTest do
     |> render_click()
 
     assert_redirect(view, ~p"/projects/#{project.slug}/runs/US-056-RUN/3")
+  end
+
+  test "renders workspaces tab with mode, story, and status", %{conn: conn, project: project} do
+    tracker_path = Projects.tracker_path(project)
+    workspace_root = ServiceConfig.project_workspace_root(project.slug)
+
+    File.mkdir_p!(workspace_root)
+
+    story_clone = "US-WS-CLONE"
+    story_worktree = "US-WS-WORKTREE"
+
+    clone_path = Path.join(workspace_root, story_clone)
+    worktree_path = Path.join(workspace_root, story_worktree)
+
+    File.mkdir_p!(Path.join(clone_path, ".git"))
+    File.mkdir_p!(worktree_path)
+
+    File.write!(
+      Path.join(worktree_path, ".git"),
+      "gitdir: /tmp/kollywood-test/.git/worktrees/#{story_worktree}\n"
+    )
+
+    assert {:ok, _} =
+             PrdJson.create_story(tracker_path, %{
+               "id" => story_clone,
+               "title" => "Clone story",
+               "status" => "open"
+             })
+
+    assert {:ok, _} =
+             PrdJson.create_story(tracker_path, %{
+               "id" => story_worktree,
+               "title" => "Worktree story",
+               "status" => "open"
+             })
+
+    on_exit(fn ->
+      File.rm_rf!(workspace_root)
+    end)
+
+    {:ok, _view, html} = live(conn, ~p"/admin/workspaces")
+
+    assert html =~ "Workspaces"
+    assert html =~ story_clone
+    assert html =~ story_worktree
+    assert html =~ "clone"
+    assert html =~ "worktree"
+    assert html =~ "open"
+    assert html =~ "Clean Worktrees"
+  end
+
+  test "supports row-level cleanup for clone workspace", %{conn: conn, project: project} do
+    workspace_root = ServiceConfig.project_workspace_root(project.slug)
+    story_clone = "US-WS-CLEAN-CLONE"
+    clone_path = Path.join(workspace_root, story_clone)
+
+    File.mkdir_p!(Path.join(clone_path, ".git"))
+
+    on_exit(fn ->
+      File.rm_rf!(workspace_root)
+    end)
+
+    {:ok, view, _html} = live(conn, ~p"/admin/workspaces")
+
+    row_id = Enum.join([project.slug, story_clone, clone_path], "|")
+
+    view
+    |> element("button[phx-click=cleanup_workspace][phx-value-row_id='#{row_id}']", "Clean")
+    |> render_click()
+
+    refute File.dir?(clone_path)
+
+    html = render(view)
+    refute html =~ story_clone
   end
 end

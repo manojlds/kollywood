@@ -25,6 +25,7 @@ defmodule KollywoodWeb.Router do
     live "/admin", AdminLive, :overview
     live "/admin/workers", AdminLive, :workers
     live "/admin/workers/:worker_id", AdminLive, :worker_detail
+    live "/admin/workspaces", AdminLive, :workspaces
     live "/", ProjectsLive, :index
     live "/projects/new", ProjectsLive, :new
     live "/projects/:project_slug", DashboardLive, :overview

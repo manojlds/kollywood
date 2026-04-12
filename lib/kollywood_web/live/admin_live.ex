@@ -9,6 +9,7 @@ defmodule KollywoodWeb.AdminLive do
   alias Kollywood.RepoSync
   alias Kollywood.RunAttempts
   alias Kollywood.ServiceConfig
+  alias Kollywood.Tracker.PrdJson
   alias Kollywood.WorkerConsumer
 
   @refresh_interval_ms 5_000
@@ -29,6 +30,8 @@ defmodule KollywoodWeb.AdminLive do
      |> assign(:projects, Projects.list_projects())
      |> assign(:sync_status, %{})
      |> assign(:workers, list_workers())
+     |> assign(:workspaces, list_workspace_entries())
+     |> assign(:workspace_cleanup_status, nil)
      |> assign(:attempt_stats, RunAttempts.stats())
      |> assign(:recent_attempts, list_recent_attempts())}
   end
@@ -48,6 +51,11 @@ defmodule KollywoodWeb.AdminLive do
           socket
           |> assign(:active_tab, :workers)
           |> assign(:selected_worker, worker)
+
+        :workspaces ->
+          socket
+          |> assign(:active_tab, :workspaces)
+          |> assign(:selected_worker, nil)
 
         _other ->
           socket
@@ -147,6 +155,50 @@ defmodule KollywoodWeb.AdminLive do
     end
   end
 
+  def handle_event("cleanup_worktrees", _params, socket) do
+    status = cleanup_worktrees()
+
+    socket =
+      socket
+      |> assign(:workspace_cleanup_status, status)
+      |> assign(:workspaces, list_workspace_entries())
+
+    socket =
+      case status do
+        {:ok, _msg} -> put_flash(socket, :info, "Worktree cleanup complete.")
+        {:error, reason} -> put_flash(socket, :error, "Worktree cleanup failed: #{reason}")
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("cleanup_workspace", %{"row_id" => row_id}, socket) do
+    entries = list_workspace_entries()
+
+    case Enum.find(entries, &(workspace_row_id(&1) == row_id)) do
+      nil ->
+        {:noreply,
+         socket
+         |> assign(:workspaces, entries)
+         |> put_flash(:error, "Workspace entry no longer exists.")}
+
+      entry ->
+        case cleanup_workspace_entry(entry) do
+          {:ok, _message} ->
+            {:noreply,
+             socket
+             |> assign(:workspaces, list_workspace_entries())
+             |> put_flash(:info, "Workspace cleaned.")}
+
+          {:error, reason} ->
+            {:noreply,
+             socket
+             |> assign(:workspaces, list_workspace_entries())
+             |> put_flash(:error, "Workspace cleanup failed: #{reason}")}
+        end
+    end
+  end
+
   @impl true
   def render(assigns) do
     ~H"""
@@ -185,6 +237,15 @@ defmodule KollywoodWeb.AdminLive do
           >
             Workers
           </.link>
+          <.link
+            patch={~p"/admin/workspaces"}
+            class={[
+              "tab",
+              if(@active_tab == :workspaces, do: "tab-active")
+            ]}
+          >
+            Workspaces
+          </.link>
         </nav>
 
         <%= if @active_tab == :overview do %>
@@ -197,8 +258,15 @@ defmodule KollywoodWeb.AdminLive do
             orchestrator_status={@orchestrator_status}
           />
         <% else %>
-          <.workers_section workers={@workers} selected_worker={@selected_worker} />
-          <.attempt_overview_section stats={@attempt_stats} recent_entries={@recent_attempts} />
+          <%= if @active_tab == :workers do %>
+            <.workers_section workers={@workers} selected_worker={@selected_worker} />
+            <.attempt_overview_section stats={@attempt_stats} recent_entries={@recent_attempts} />
+          <% else %>
+            <.workspaces_section
+              workspaces={@workspaces}
+              cleanup_status={@workspace_cleanup_status}
+            />
+          <% end %>
         <% end %>
       </main>
     </div>
@@ -832,6 +900,108 @@ defmodule KollywoodWeb.AdminLive do
     """
   end
 
+  # --- Workspaces ---
+
+  attr :workspaces, :list, required: true
+  attr :cleanup_status, :any, default: nil
+
+  defp workspaces_section(assigns) do
+    ~H"""
+    <section>
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-lg font-semibold">Workspaces</h2>
+        <button phx-click="cleanup_worktrees" class="btn btn-sm btn-outline gap-2">
+          <.icon name="hero-wrench-screwdriver" class="size-4" /> Clean Worktrees
+        </button>
+      </div>
+
+      <%= if match?({:ok, _}, @cleanup_status) do %>
+        <% {:ok, message} = @cleanup_status %>
+        <div class="alert alert-success mb-3">
+          <span>{message}</span>
+        </div>
+      <% end %>
+
+      <%= if match?({:error, _}, @cleanup_status) do %>
+        <% {:error, message} = @cleanup_status %>
+        <div class="alert alert-error mb-3">
+          <span>{message}</span>
+        </div>
+      <% end %>
+
+      <div class="card bg-base-200 border border-base-300">
+        <div class="card-body p-0">
+          <div class="overflow-x-auto">
+            <table class="table table-sm" id="workspaces-list">
+              <thead>
+                <tr>
+                  <th>Project</th>
+                  <th>Story</th>
+                  <th>Status</th>
+                  <th>Mode</th>
+                  <th>Workspace Path</th>
+                  <th>Source</th>
+                  <th>Branch</th>
+                  <th>State</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <%= if @workspaces == [] do %>
+                  <tr>
+                    <td colspan="9" class="text-sm text-base-content/60">No workspaces found.</td>
+                  </tr>
+                <% else %>
+                  <%= for ws <- @workspaces do %>
+                    <tr>
+                      <td class="font-mono text-xs">{ws.project_slug || "-"}</td>
+                      <td class="font-mono text-xs">{ws.story_id || "-"}</td>
+                      <td>
+                        <span class={story_status_badge_class(ws.story_status)}>
+                          {ws.story_status || "-"}
+                        </span>
+                      </td>
+                      <td>
+                        <span class="badge badge-sm badge-ghost">{ws.mode || "-"}</span>
+                      </td>
+                      <td class="max-w-0 w-72">
+                        <div class="font-mono text-xs truncate" title={ws.path || "-"}>
+                          {ws.path || "-"}
+                        </div>
+                      </td>
+                      <td class="max-w-0 w-56">
+                        <div
+                          class="font-mono text-xs text-base-content/60 truncate"
+                          title={ws.source || "-"}
+                        >
+                          {ws.source || "-"}
+                        </div>
+                      </td>
+                      <td class="font-mono text-xs">{ws.branch || "-"}</td>
+                      <td>
+                        <span class={workspace_state_badge_class(ws.state)}>{ws.state}</span>
+                      </td>
+                      <td>
+                        <button
+                          phx-click="cleanup_workspace"
+                          phx-value-row_id={workspace_row_id(ws)}
+                          class="btn btn-xs btn-outline"
+                        >
+                          Clean
+                        </button>
+                      </td>
+                    </tr>
+                  <% end %>
+                <% end %>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+    """
+  end
+
   # --- Helpers ---
 
   defp fetch_orchestrator_status do
@@ -849,6 +1019,8 @@ defmodule KollywoodWeb.AdminLive do
 
     socket
     |> assign(:orchestrator_status, fetch_orchestrator_status())
+    |> assign(:projects, Projects.list_projects())
+    |> assign(:workspaces, list_workspace_entries())
     |> assign(:workers, workers)
     |> assign(:attempt_stats, RunAttempts.stats())
     |> assign(:recent_attempts, list_recent_attempts())
@@ -1028,6 +1200,287 @@ defmodule KollywoodWeb.AdminLive do
   defp list_recent_attempts do
     RunAttempts.list_recent(12)
   end
+
+  defp list_workspace_entries do
+    projects = Projects.list_projects()
+
+    entries =
+      projects
+      |> Enum.flat_map(fn project ->
+        workspace_root = ServiceConfig.project_workspace_root(project.slug)
+        tracker_path = Projects.tracker_path(project)
+        story_statuses = tracker_story_statuses(tracker_path)
+
+        if File.dir?(workspace_root) do
+          list_workspace_dirs(workspace_root)
+          |> Enum.map(fn path ->
+            story_id = Path.basename(path)
+            workspace = workspace_metadata(path)
+
+            %{
+              project_slug: project.slug,
+              story_id: story_id,
+              story_status: Map.get(story_statuses, story_id),
+              mode: workspace.mode,
+              path: path,
+              source: workspace.source,
+              branch: workspace.branch,
+              state: workspace_state(path, workspace)
+            }
+          end)
+        else
+          []
+        end
+      end)
+
+    Enum.sort_by(entries, fn entry -> {entry.project_slug || "", entry.story_id || ""} end)
+  end
+
+  defp list_workspace_dirs(root) do
+    case File.ls(root) do
+      {:ok, entries} ->
+        entries
+        |> Enum.map(&Path.join(root, &1))
+        |> Enum.filter(&File.dir?/1)
+
+      {:error, _reason} ->
+        []
+    end
+  end
+
+  defp workspace_metadata(path) do
+    git_file = Path.join(path, ".git")
+
+    cond do
+      File.dir?(Path.join(path, ".git")) ->
+        %{
+          mode: "clone",
+          source: nil,
+          branch: git_branch(path)
+        }
+
+      File.regular?(git_file) ->
+        with {:ok, content} <- File.read(git_file),
+             "gitdir: " <> gitdir <- String.trim(content) do
+          gitdir = Path.expand(gitdir, path)
+
+          %{
+            mode: "worktree",
+            source: worktree_source_from_gitdir(gitdir),
+            branch: git_branch(path)
+          }
+        else
+          _ -> %{mode: "unknown", source: nil, branch: nil}
+        end
+
+      true ->
+        %{mode: "unknown", source: nil, branch: nil}
+    end
+  end
+
+  defp worktree_source_from_gitdir(gitdir) when is_binary(gitdir) do
+    gitdir
+    |> Path.dirname()
+    |> Path.dirname()
+    |> Path.dirname()
+  end
+
+  defp git_branch(path) when is_binary(path) do
+    case System.cmd("git", ["-C", path, "branch", "--show-current"], stderr_to_stdout: true) do
+      {output, 0} ->
+        output
+        |> String.trim()
+        |> case do
+          "" -> nil
+          branch -> branch
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp tracker_story_statuses(path) when is_binary(path) do
+    case PrdJson.list_stories(path) do
+      {:ok, stories} when is_list(stories) ->
+        Map.new(stories, fn story ->
+          id = Map.get(story, "id") || Map.get(story, :id)
+          status = Map.get(story, "status") || Map.get(story, :status)
+          {id, status}
+        end)
+
+      _ ->
+        %{}
+    end
+  end
+
+  defp tracker_story_statuses(_path), do: %{}
+
+  defp workspace_state(path, workspace) do
+    cond do
+      not File.dir?(path) -> "missing"
+      workspace.mode == "worktree" and not is_binary(workspace.source) -> "detached"
+      true -> "ready"
+    end
+  end
+
+  defp cleanup_worktrees do
+    repos_dir = ServiceConfig.repos_dir()
+
+    if File.dir?(repos_dir) do
+      repos =
+        case File.ls(repos_dir) do
+          {:ok, entries} ->
+            entries |> Enum.map(&Path.join(repos_dir, &1)) |> Enum.filter(&File.dir?/1)
+
+          _ ->
+            []
+        end
+
+      {ok_count, error_count, errors} =
+        Enum.reduce(repos, {0, 0, []}, fn repo, {oks, errs, reasons} ->
+          case System.cmd("git", ["-C", repo, "worktree", "prune"], stderr_to_stdout: true) do
+            {_output, 0} -> {oks + 1, errs, reasons}
+            {output, _code} -> {oks, errs + 1, ["#{repo}: #{String.trim(output)}" | reasons]}
+          end
+        end)
+
+      if error_count == 0 do
+        {:ok, "Pruned worktrees for #{ok_count} repos."}
+      else
+        {:error,
+         "Pruned #{ok_count} repos; #{error_count} failed. #{Enum.join(Enum.reverse(errors), " | ")}"}
+      end
+    else
+      {:error, "Repos directory not found: #{repos_dir}"}
+    end
+  end
+
+  defp cleanup_workspace_entry(entry) when is_map(entry) do
+    case entry.mode do
+      "worktree" -> cleanup_worktree_entry(entry)
+      "clone" -> cleanup_clone_entry(entry)
+      _other -> {:error, "unsupported workspace mode: #{entry.mode || "unknown"}"}
+    end
+  end
+
+  defp cleanup_workspace_entry(_entry), do: {:error, "invalid workspace entry"}
+
+  defp cleanup_worktree_entry(entry) do
+    path = Map.get(entry, :path)
+
+    cond do
+      not is_binary(path) or path == "" ->
+        {:error, "missing workspace path"}
+
+      not File.dir?(path) ->
+        {:ok, "workspace path already removed"}
+
+      true ->
+        case infer_worktree_source(path) do
+          {:ok, source_repo} ->
+            with :ok <- ensure_repo_root(source_repo),
+                 {_, 0} <- run_git(["-C", source_repo, "worktree", "remove", "--force", path]) do
+              case File.rm_rf(path) do
+                {:ok, _} ->
+                  {:ok, "worktree removed"}
+
+                {:error, reason, _failed_path} ->
+                  {:error, "failed to remove path: #{inspect(reason)}"}
+              end
+            else
+              {:error, reason} ->
+                {:error, reason}
+
+              {_output, _code} = failed ->
+                {:error, format_git_failure(failed)}
+            end
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+    end
+  end
+
+  defp cleanup_clone_entry(entry) do
+    path = Map.get(entry, :path)
+
+    if is_binary(path) and path != "" do
+      case File.rm_rf(path) do
+        {:ok, _} ->
+          {:ok, "clone workspace removed"}
+
+        {:error, reason, _path} ->
+          {:error, "failed to remove clone workspace: #{inspect(reason)}"}
+      end
+    else
+      {:error, "missing workspace path"}
+    end
+  end
+
+  defp infer_worktree_source(path) do
+    git_file = Path.join(path, ".git")
+
+    with true <- File.regular?(git_file) or {:error, "workspace is not a linked worktree"},
+         {:ok, content} <- File.read(git_file),
+         "gitdir: " <> gitdir <- String.trim(content) do
+      source_repo =
+        gitdir
+        |> Path.expand(path)
+        |> worktree_source_from_gitdir()
+
+      {:ok, source_repo}
+    else
+      {:error, reason} -> {:error, reason}
+      false -> {:error, "workspace is not a linked worktree"}
+      _ -> {:error, "unable to resolve worktree source repo"}
+    end
+  end
+
+  defp ensure_repo_root(path) when is_binary(path) do
+    case run_git(["-C", path, "rev-parse", "--git-dir"]) do
+      {_output, 0} -> :ok
+      failed -> {:error, "invalid source repo: #{format_git_failure(failed)}"}
+    end
+  end
+
+  defp ensure_repo_root(_path), do: {:error, "invalid source repo path"}
+
+  defp run_git(args) when is_list(args) do
+    System.cmd("git", args, stderr_to_stdout: true)
+  end
+
+  defp format_git_failure({output, code}) do
+    trimmed = output |> to_string() |> String.trim()
+    "git exited with code #{code}: #{trimmed}"
+  end
+
+  defp workspace_row_id(entry) when is_map(entry) do
+    [Map.get(entry, :project_slug), Map.get(entry, :story_id), Map.get(entry, :path)]
+    |> Enum.map(fn part ->
+      part
+      |> to_string()
+      |> String.replace("|", "_")
+    end)
+    |> Enum.join("|")
+  end
+
+  defp workspace_row_id(_entry), do: "invalid"
+
+  defp workspace_state_badge_class("ready"), do: "badge badge-sm badge-success"
+  defp workspace_state_badge_class("missing"), do: "badge badge-sm badge-error"
+  defp workspace_state_badge_class("detached"), do: "badge badge-sm badge-warning"
+  defp workspace_state_badge_class(_), do: "badge badge-sm badge-ghost"
+
+  defp story_status_badge_class("in_progress"), do: "badge badge-sm badge-info"
+  defp story_status_badge_class("pending_merge"), do: "badge badge-sm badge-warning"
+  defp story_status_badge_class("merged"), do: "badge badge-sm badge-success"
+  defp story_status_badge_class("done"), do: "badge badge-sm badge-success"
+  defp story_status_badge_class("failed"), do: "badge badge-sm badge-error"
+  defp story_status_badge_class("cancelled"), do: "badge badge-sm badge-neutral"
+  defp story_status_badge_class("open"), do: "badge badge-sm badge-ghost"
+  defp story_status_badge_class("draft"), do: "badge badge-sm badge-ghost"
+  defp story_status_badge_class(_), do: "badge badge-sm badge-ghost"
 
   defp format_datetime(nil), do: "—"
 
