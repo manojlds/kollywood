@@ -1131,6 +1131,7 @@ defmodule Kollywood.AgentRunner do
       state =
         state
         |> Map.put(:session, session)
+        |> emit(:prompt_captured, %{phase: :agent, prompt: prompt})
         |> emit(:session_started, %{
           session_id: session.id,
           adapter: session.adapter,
@@ -1778,6 +1779,7 @@ defmodule Kollywood.AgentRunner do
       state =
         state
         |> Map.put(:session, session)
+        |> emit(:prompt_captured, %{phase: :review, prompt: prompt})
         |> emit(:session_started, %{
           session_id: session.id,
           adapter: session.adapter,
@@ -1881,6 +1883,7 @@ defmodule Kollywood.AgentRunner do
       state =
         state
         |> Map.put(:session, session)
+        |> emit(:prompt_captured, %{phase: :testing, prompt: prompt})
         |> emit(:session_started, %{
           session_id: session.id,
           adapter: session.adapter,
@@ -1984,6 +1987,7 @@ defmodule Kollywood.AgentRunner do
       state =
         state
         |> Map.put(:session, session)
+        |> emit(:prompt_captured, %{phase: :agent, prompt: prompt})
         |> emit(:session_started, %{
           session_id: session.id,
           adapter: session.adapter,

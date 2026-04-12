@@ -34,6 +34,15 @@ defmodule KollywoodWeb.DashboardLive do
   @reports_tabs ["review", "testing"]
   @prompt_tabs ["agent", "review", "testing"]
   @interaction_surfaces [:story_editor, :workflow_editor, :story_overrides_editor]
+  @step_log_tab_to_kind %{
+    "agent" => "agent_turn",
+    "checks" => "checks",
+    "review" => "review",
+    "testing" => "testing",
+    "runtime" => "runtime",
+    "publish" => "publish",
+    "run" => "run_started"
+  }
 
   @impl true
   def mount(params, _session, socket) do
@@ -4193,7 +4202,12 @@ defmodule KollywoodWeb.DashboardLive do
 
   defp step_log_content(step, run_detail) when is_map(step) and is_map(run_detail) do
     files = run_detail["files"]
-    if is_nil(files), do: nil, else: step_log_for_kind(step.kind, files)
+
+    if is_nil(files) do
+      nil
+    else
+      step_log_for_step(step, files, run_detail)
+    end
   end
 
   defp step_log_content(_step, _run_detail), do: nil
@@ -4239,6 +4253,15 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp fallback_step_prompt(_run_detail, _kind), do: nil
+
+  defp step_log_for_step(step, files, run_detail) when is_map(step) and is_map(files) do
+    step_dir = step_logs_dir_for_step(step, run_detail)
+
+    read_file_safe(step_dir && Path.join(step_dir, "step.log")) ||
+      step_log_for_kind(step.kind, files)
+  end
+
+  defp step_log_for_step(_step, _files, _run_detail), do: nil
 
   defp step_log_for_kind("agent_turn", files) do
     read_file_safe(files[:agent_stdout]) || read_file_safe(files[:agent])
@@ -4292,6 +4315,168 @@ defmodule KollywoodWeb.DashboardLive do
   end
 
   defp run_detail_events(_), do: []
+
+  defp step_logs_dir_for_step(step, run_detail)
+       when is_map(step) and is_map(run_detail) do
+    files = Map.get(run_detail, "files", %{})
+    step_events_index = map_field(files, :step_events)
+
+    case read_step_events_index(step_events_index) do
+      [] ->
+        nil
+
+      entries ->
+        resolve_step_log_entry(step, run_detail, entries)
+    end
+  end
+
+  defp step_logs_dir_for_step(_step, _run_detail), do: nil
+
+  defp resolve_step_log_entry(step, run_detail, entries)
+       when is_map(step) and is_map(run_detail) and is_list(entries) do
+    events =
+      case Map.get(step, :events) do
+        list when is_list(list) -> list
+        _other -> []
+      end
+
+    step_run =
+      case Map.get(step, :run_number) do
+        value when is_integer(value) and value > 0 -> value
+        _other -> nil
+      end
+
+    event_matches =
+      events
+      |> Enum.map(&event_identity/1)
+      |> MapSet.new()
+
+    direct_match =
+      Enum.find(entries, fn entry ->
+        identity = event_identity(entry.event)
+        MapSet.member?(event_matches, identity)
+      end)
+
+    if direct_match do
+      direct_match
+      |> Map.get(:human_path)
+      |> maybe_parent_dir()
+    else
+      fallback_step_log_dir(step, step_run, entries)
+    end
+  end
+
+  defp resolve_step_log_entry(_step, _run_detail, _entries), do: nil
+
+  defp fallback_step_log_dir(step, step_run, entries) when is_map(step) and is_list(entries) do
+    step_kind = Map.get(step, :kind)
+
+    bucket =
+      @step_log_tab_to_kind
+      |> Enum.find_value(fn {bucket, kind} -> if kind == step_kind, do: bucket, else: nil end)
+
+    case bucket do
+      nil ->
+        nil
+
+      value ->
+        filtered =
+          Enum.filter(entries, fn entry ->
+            Map.get(entry, :bucket) == value and
+              (is_nil(step_run) or Map.get(entry, :run_number) == step_run)
+          end)
+
+        select_step_entry(filtered, step)
+        |> case do
+          nil -> nil
+          match -> match.human_path |> maybe_parent_dir()
+        end
+    end
+  end
+
+  defp fallback_step_log_dir(_step, _step_run, _entries), do: nil
+
+  defp select_step_entry(entries, step) when is_list(entries) and is_map(step) do
+    seq =
+      case Map.get(step, :turn) || Map.get(step, :cycle) do
+        value when is_integer(value) and value > 0 -> value
+        _other -> nil
+      end
+
+    Enum.find(entries, fn entry ->
+      if is_integer(seq), do: Map.get(entry, :seq) == seq, else: false
+    end) || List.first(entries)
+  end
+
+  defp select_step_entry(_entries, _step), do: nil
+
+  defp read_step_events_index(path) when is_binary(path) do
+    if File.exists?(path) do
+      path
+      |> File.stream!([], :line)
+      |> Enum.reduce([], fn line, acc ->
+        case Jason.decode(String.trim(line)) do
+          {:ok, event} when is_map(event) ->
+            bucket = maybe_string(map_field(event, :bucket))
+            seq = positive_integer_or_nil(map_field(event, :seq))
+            human_path = maybe_string(map_field(event, :human_path))
+            payload_event = map_field(event, :event)
+
+            if bucket && seq && human_path do
+              run_number = event_run_number(payload_event)
+
+              entry = %{
+                bucket: bucket,
+                seq: seq,
+                human_path: human_path,
+                run_number: run_number,
+                event: payload_event || %{}
+              }
+
+              [entry | acc]
+            else
+              acc
+            end
+
+          _other ->
+            acc
+        end
+      end)
+      |> Enum.reverse()
+    else
+      []
+    end
+  rescue
+    _ -> []
+  end
+
+  defp read_step_events_index(_path), do: []
+
+  defp event_run_number(event) when is_map(event) do
+    run =
+      map_field(event, :run_number) ||
+        map_field(event, :run_attempt_number) ||
+        map_field(event, :run_attempt)
+
+    positive_integer_or_nil(run)
+  end
+
+  defp event_run_number(_event), do: nil
+
+  defp event_identity(event) when is_map(event) do
+    {
+      maybe_string(map_field(event, :timestamp)),
+      maybe_string(map_field(event, :type)),
+      positive_integer_or_nil(map_field(event, :turn)),
+      positive_integer_or_nil(map_field(event, :cycle)),
+      positive_integer_or_nil(map_field(event, :checks_cycle))
+    }
+  end
+
+  defp event_identity(_event), do: {nil, nil, nil, nil, nil}
+
+  defp maybe_parent_dir(path) when is_binary(path), do: Path.dirname(path)
+  defp maybe_parent_dir(_path), do: nil
 
   # -- Story Detail Section --
 
@@ -9386,7 +9571,7 @@ defmodule KollywoodWeb.DashboardLive do
     |> Enum.reduce(%{}, fn event, acc ->
       phase = to_string(Map.get(event, "phase") || Map.get(event, :phase))
       prompt = Map.get(event, "prompt") || Map.get(event, :prompt) || ""
-      Map.put_new(acc, phase, prompt)
+      Map.put(acc, phase, prompt)
     end)
   end
 

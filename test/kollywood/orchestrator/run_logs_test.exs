@@ -44,6 +44,8 @@ defmodule Kollywood.Orchestrator.RunLogsTest do
       assert File.exists?(context.files.agent)
       assert File.exists?(context.files.tester)
       assert File.exists?(context.files.tester_stdout)
+      assert File.dir?(context.files.steps_dir)
+      assert File.exists?(context.files.step_events)
     end
 
     test "includes agent path in metadata files map", %{context: context} do
@@ -62,6 +64,10 @@ defmodule Kollywood.Orchestrator.RunLogsTest do
       assert metadata["files"]["testing_report"] == context.files.testing_report
       assert Map.has_key?(metadata["files"], "testing_artifacts_dir")
       assert metadata["files"]["testing_artifacts_dir"] == context.files.testing_artifacts_dir
+      assert Map.has_key?(metadata["files"], "steps_dir")
+      assert metadata["files"]["steps_dir"] == context.files.steps_dir
+      assert Map.has_key?(metadata["files"], "step_events")
+      assert metadata["files"]["step_events"] == context.files.step_events
     end
 
     test "includes agent in tracker_metadata", %{context: context} do
@@ -75,6 +81,8 @@ defmodule Kollywood.Orchestrator.RunLogsTest do
       assert Map.has_key?(tracker_meta.run_logs.files, :testing_cycles_dir)
       assert Map.has_key?(tracker_meta.run_logs.files, :testing_report)
       assert Map.has_key?(tracker_meta.run_logs.files, :testing_artifacts_dir)
+      assert Map.has_key?(tracker_meta.run_logs.files, :steps_dir)
+      assert Map.has_key?(tracker_meta.run_logs.files, :step_events)
     end
 
     test "persists retry mode and provenance in metadata" do
@@ -298,6 +306,38 @@ defmodule Kollywood.Orchestrator.RunLogsTest do
       assert content =~ "Turn one output"
       assert content =~ "--- Turn 2 ---"
       assert content =~ "Turn two output"
+
+      step_one_events =
+        context.files.steps_dir
+        |> Path.join("agent-0001/events.jsonl")
+        |> File.read!()
+
+      assert step_one_events =~ "turn_succeeded"
+
+      step_two_events =
+        context.files.steps_dir
+        |> Path.join("agent-0002/events.jsonl")
+        |> File.read!()
+
+      assert step_two_events =~ "turn_succeeded"
+    end
+
+    test "groups check lifecycle events into one step folder", %{context: context} do
+      RunLogs.append_event(context, %{type: :checks_started, check_count: 1})
+      RunLogs.append_event(context, %{type: :check_started, check_index: 1, command: "mix test"})
+      RunLogs.append_event(context, %{type: :check_failed, check_index: 1, reason: "exit code 1"})
+      RunLogs.append_event(context, %{type: :checks_failed, error_count: 1})
+
+      checks_dir = Path.join(context.files.steps_dir, "checks-0001")
+      checks_events = File.read!(Path.join(checks_dir, "events.jsonl"))
+      checks_log = File.read!(Path.join(checks_dir, "step.log"))
+
+      assert checks_events =~ "checks_started"
+      assert checks_events =~ "check_started"
+      assert checks_events =~ "check_failed"
+      assert checks_events =~ "checks_failed"
+      assert checks_log =~ "[checks] checks_started"
+      assert checks_log =~ "[checks] check_failed"
     end
 
     test "does not write to agent.log when output is absent", %{context: context} do
@@ -330,6 +370,13 @@ defmodule Kollywood.Orchestrator.RunLogsTest do
       refute worker_log =~ "output:"
       refute worker_log =~ "raw_output:"
       refute worker_log =~ "\"type\":\"assistant\""
+
+      step_log =
+        context.files.steps_dir
+        |> Path.join("agent-0001/step.log")
+        |> File.read!()
+
+      assert step_log =~ "[agent] turn_succeeded"
     end
   end
 

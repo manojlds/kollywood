@@ -1857,6 +1857,35 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert testing_prompt_html =~ "Testing first prompt"
     end
 
+    test "step detail logs prefer step-scoped logs when available", %{
+      conn: conn,
+      project: project
+    } do
+      story_id = "US-STEP-SCOPED-LOGS"
+
+      context =
+        prepare_run_logs!(project.slug, story_id,
+          events: [
+            %{type: :turn_started, turn: 1},
+            %{type: :turn_succeeded, turn: 1, output: "agent step output"}
+          ],
+          status: "ok"
+        )
+
+      File.write!(context.files.agent_stdout, "legacy agent stdout should not be shown")
+
+      {:ok, _view, html} = live(conn, ~p"/projects/#{project.slug}/runs/#{story_id}/1")
+
+      step_path =
+        Regex.run(~r|/projects/#{project.slug}/runs/#{story_id}/1/step/\d+|, html)
+        |> List.first()
+
+      {:ok, _step_view, step_html} = live(conn, step_path)
+
+      assert step_html =~ "agent step output"
+      refute step_html =~ "legacy agent stdout should not be shown"
+    end
+
     test "run detail reports tab shows review report json view", %{
       conn: conn,
       project: project
@@ -2845,6 +2874,29 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       assert reports_html =~ "Testing report"
       refute reports_html =~ "Review report"
+    end
+
+    test "prompts panel shows latest prompt for each phase", %{conn: conn, project: project} do
+      story_id = "US-PROMPT-LATEST"
+
+      prepare_run_logs!(project.slug, story_id,
+        events: [
+          %{type: :prompt_captured, phase: :agent, prompt: "Agent initial prompt"},
+          %{type: :prompt_captured, phase: :agent, prompt: "Agent remediation prompt"},
+          %{type: :prompt_captured, phase: :review, prompt: "Review initial prompt"},
+          %{type: :prompt_captured, phase: :review, prompt: "Review remediation prompt"}
+        ],
+        status: "ok"
+      )
+
+      {:ok, _view, html} =
+        live(
+          conn,
+          ~p"/projects/#{project.slug}/stories/#{story_id}?#{[attempt: "1", story_tab: "runs", run_panel_tab: "prompts"]}"
+        )
+
+      assert html =~ "Agent remediation prompt"
+      refute html =~ "Agent initial prompt"
     end
 
     test "renders ANSI colors and intensity across agent/review/worker tabs", %{

@@ -22,11 +22,14 @@ defmodule Kollywood.WorkerConsumer do
   @default_poll_interval_ms 2_000
   @default_max_local_workers 2
   @default_stale_reclaim_interval_ms 120_000
+  @default_heartbeat_interval_ms 15_000
 
   defstruct [
     :agent_pool,
     :poll_timer_ref,
     :stale_reclaim_timer_ref,
+    :heartbeat_timer_ref,
+    :runner_fun,
     :node_id,
     :started_at,
     :last_seen_at,
@@ -34,6 +37,7 @@ defmodule Kollywood.WorkerConsumer do
     poll_interval_ms: @default_poll_interval_ms,
     max_local_workers: @default_max_local_workers,
     stale_reclaim_interval_ms: @default_stale_reclaim_interval_ms,
+    heartbeat_interval_ms: @default_heartbeat_interval_ms,
     active_workers: %{},
     poll_count: 0,
     claim_attempts: 0,
@@ -96,6 +100,9 @@ defmodule Kollywood.WorkerConsumer do
         pos_int(Keyword.get(opts, :max_local_workers), @default_max_local_workers),
       stale_reclaim_interval_ms:
         pos_int(Keyword.get(opts, :stale_reclaim_interval_ms), @default_stale_reclaim_interval_ms),
+      heartbeat_interval_ms:
+        pos_int(Keyword.get(opts, :heartbeat_interval_ms), @default_heartbeat_interval_ms),
+      runner_fun: parse_runner_fun(Keyword.get(opts, :runner_fun, &AgentRunner.run_issue/2)),
       node_id: node_id,
       active_workers: %{},
       started_at: now,
@@ -111,6 +118,7 @@ defmodule Kollywood.WorkerConsumer do
       state
       |> schedule_poll(0)
       |> schedule_stale_reclaim()
+      |> schedule_heartbeat()
 
     {:ok, state}
   end
@@ -186,6 +194,16 @@ defmodule Kollywood.WorkerConsumer do
     end
 
     state = schedule_stale_reclaim(state)
+    {:noreply, state}
+  end
+
+  def handle_info(:heartbeat, state) do
+    state =
+      state
+      |> touch_seen()
+      |> heartbeat_active_workers()
+      |> schedule_heartbeat()
+
     {:noreply, state}
   end
 
@@ -299,7 +317,7 @@ defmodule Kollywood.WorkerConsumer do
 
       case RunAttempts.start_attempt(entry_id, state.node_id, entry.lease_token) do
         {:ok, _entry} ->
-          case invoke_runner(issue, run_opts) do
+          case invoke_runner(state.runner_fun, issue, run_opts) do
             {:ok, _result} = ok ->
               send(consumer_pid, {:worker_done, entry_id, self(), ok})
 
@@ -537,9 +555,7 @@ defmodule Kollywood.WorkerConsumer do
     Keyword.put(run_opts, :on_event, on_event)
   end
 
-  defp invoke_runner(issue, run_opts) do
-    AgentRunner.run_issue(issue, run_opts)
-  end
+  defp invoke_runner(runner_fun, issue, run_opts), do: runner_fun.(issue, run_opts)
 
   defp serialize_result(result) when is_map(result) do
     safe =
@@ -592,6 +608,34 @@ defmodule Kollywood.WorkerConsumer do
     ref = Process.send_after(self(), :reclaim_stale, state.stale_reclaim_interval_ms)
     %{state | stale_reclaim_timer_ref: ref}
   end
+
+  defp schedule_heartbeat(state) do
+    if state.heartbeat_timer_ref, do: Process.cancel_timer(state.heartbeat_timer_ref)
+    ref = Process.send_after(self(), :heartbeat, state.heartbeat_interval_ms)
+    %{state | heartbeat_timer_ref: ref}
+  end
+
+  defp heartbeat_active_workers(state) do
+    Enum.reduce(state.active_workers, state, fn {entry_id, worker}, acc ->
+      case RunAttempts.heartbeat_attempt(entry_id, acc.node_id, worker.lease_token) do
+        {:ok, _entry} ->
+          acc
+
+        {:error, :cancel_requested} ->
+          acc
+
+        {:error, reason} ->
+          Logger.warning(
+            "WorkerConsumer: heartbeat failed for entry #{entry_id}: #{inspect(reason)}"
+          )
+
+          acc
+      end
+    end)
+  end
+
+  defp parse_runner_fun(runner_fun) when is_function(runner_fun, 2), do: runner_fun
+  defp parse_runner_fun(_other), do: &AgentRunner.run_issue/2
 
   # --- Helpers ---
 

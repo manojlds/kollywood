@@ -1244,6 +1244,13 @@ defmodule Kollywood.AgentRunnerTest do
     assert :review_failed in Enum.map(result.events, & &1.type)
     assert :review_passed in Enum.map(result.events, & &1.type)
 
+    review_prompts =
+      result.events
+      |> Enum.filter(&(&1.type == :prompt_captured and &1.phase == :review))
+
+    assert length(review_prompts) == 2
+    assert Enum.at(review_prompts, 1).prompt =~ "Reviewer feedback from cycle 1"
+
     prompt_history = File.read!(prompt_log)
     assert prompt_history =~ "Work on ABC-123"
     assert prompt_history =~ "Reviewer feedback from cycle 1"
@@ -1755,8 +1762,47 @@ defmodule Kollywood.AgentRunnerTest do
     assert :testing_failed in Enum.map(result.events, & &1.type)
     assert :testing_passed in Enum.map(result.events, & &1.type)
 
+    testing_prompts =
+      result.events
+      |> Enum.filter(&(&1.type == :prompt_captured and &1.phase == :testing))
+
+    assert length(testing_prompts) == 2
+    assert Enum.at(testing_prompts, 1).prompt =~ "Tester feedback from cycle 1"
+
     prompt_history = File.read!(prompt_log)
     assert prompt_history =~ "Tester feedback from cycle 1"
+  end
+
+  test "emits remediation prompt when required checks fail and retry", %{
+    workspace_root: workspace_root,
+    cli_path: cli_path,
+    prompt_log: prompt_log
+  } do
+    config =
+      runner_config(workspace_root, cli_path, prompt_log)
+      |> Map.put(:quality, %{max_cycles: 2})
+      |> Map.put(:checks, %{
+        required: ["exit 7"],
+        timeout_ms: 10_000,
+        fail_fast: true,
+        max_cycles: 2
+      })
+
+    assert {:error, result} =
+             AgentRunner.run_issue(@issue,
+               config: config,
+               prompt_template: "Work on {{ issue.identifier }}",
+               mode: :single_turn
+             )
+
+    assert result.error =~ "checks failed after 2 cycle(s)"
+
+    agent_prompts =
+      result.events
+      |> Enum.filter(&(&1.type == :prompt_captured and &1.phase == :agent))
+
+    assert length(agent_prompts) == 2
+    assert Enum.at(agent_prompts, 1).prompt =~ "The following required checks failed"
   end
 
   test "fails when testing is enabled but runtime processes are not configured", %{

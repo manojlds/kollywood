@@ -99,6 +99,87 @@ defmodule Kollywood.Orchestrator.RunLogs do
     "testing_failed"
   ]
 
+  @step_events_path "step_events.jsonl"
+  @steps_dir_name "steps"
+
+  @step_event_buckets [
+    {:agent,
+     [
+       "turn_started",
+       "turn_succeeded",
+       "turn_failed",
+       "completion_detected",
+       "idle_timeout_reached"
+     ]},
+    {:checks,
+     [
+       "checks_started",
+       "check_started",
+       "check_passed",
+       "check_failed",
+       "checks_passed",
+       "checks_failed"
+     ]},
+    {:review, ["review_started", "review_passed", "review_failed", "review_error"]},
+    {:testing,
+     [
+       "testing_started",
+       "testing_checkpoint",
+       "testing_passed",
+       "testing_failed",
+       "testing_error"
+     ]},
+    {:runtime,
+     [
+       "runtime_starting",
+       "runtime_started",
+       "runtime_start_failed",
+       "runtime_healthcheck_started",
+       "runtime_healthcheck_passed",
+       "runtime_healthcheck_failed",
+       "runtime_stopping",
+       "runtime_stopped",
+       "runtime_stop_failed"
+     ]},
+    {:publish,
+     [
+       "publish_started",
+       "publish_pending_merge",
+       "publish_succeeded",
+       "publish_failed",
+       "publish_skipped",
+       "publish_pr_created",
+       "publish_merge_conflict",
+       "publish_merge_conflict_resolved",
+       "publish_push_succeeded",
+       "publish_pr_merge_auto_enabled",
+       "publish_pr_merge_auto_failed",
+       "publish_pr_create_failed",
+       "publish_push_failed",
+       "publish_merged",
+       "publish_pr_closed"
+     ]},
+    {:run,
+     [
+       "run_started",
+       "workspace_ready",
+       "quality_cycle_started",
+       "quality_cycle_retrying",
+       "quality_cycle_passed",
+       "run_finished"
+     ]}
+  ]
+
+  @step_start_events %{
+    agent: MapSet.new(["turn_started"]),
+    checks: MapSet.new(["checks_started"]),
+    review: MapSet.new(["review_started"]),
+    testing: MapSet.new(["testing_started"]),
+    runtime: MapSet.new(["runtime_starting", "runtime_stopping"]),
+    publish: MapSet.new(["publish_started"]),
+    run: MapSet.new(["run_started"])
+  }
+
   @typedoc "Run-log context returned by `prepare_attempt/3`"
   @type context :: %{
           project_root: String.t(),
@@ -262,7 +343,8 @@ defmodule Kollywood.Orchestrator.RunLogs do
     with :ok <- append_jsonl(files.events, normalized_event),
          :ok <- append_text(files.run, human_line),
          :ok <- append_text(category_path(files, category), human_line),
-         :ok <- maybe_append_agent_log(files, normalized_event) do
+         :ok <- maybe_append_agent_log(files, normalized_event),
+         :ok <- append_step_event(context, normalized_event, human_line, category) do
       :ok
     else
       {:error, reason} -> {:error, "failed to append run log event: #{inspect(reason)}"}
@@ -362,7 +444,9 @@ defmodule Kollywood.Orchestrator.RunLogs do
           testing_json: files.testing_json,
           testing_cycles_dir: files.testing_cycles_dir,
           testing_report: files.testing_report,
-          testing_artifacts_dir: files.testing_artifacts_dir
+          testing_artifacts_dir: files.testing_artifacts_dir,
+          steps_dir: files.steps_dir,
+          step_events: files.step_events
         }
       }
     }
@@ -615,6 +699,8 @@ defmodule Kollywood.Orchestrator.RunLogs do
   end
 
   defp build_attempt_files(story_dir, attempt_dir) do
+    steps_dir = Path.join(attempt_dir, @steps_dir_name)
+
     %{
       attempts_index: Path.join(story_dir, "attempts.jsonl"),
       metadata: Path.join(attempt_dir, "metadata.json"),
@@ -634,12 +720,14 @@ defmodule Kollywood.Orchestrator.RunLogs do
       testing_json: Path.join(attempt_dir, "testing.json"),
       testing_cycles_dir: Path.join(attempt_dir, "testing_cycles"),
       testing_report: Path.join(attempt_dir, "testing_report.json"),
-      testing_artifacts_dir: Path.join(attempt_dir, "testing_artifacts")
+      testing_artifacts_dir: Path.join(attempt_dir, "testing_artifacts"),
+      steps_dir: steps_dir,
+      step_events: Path.join(steps_dir, @step_events_path)
     }
   end
 
   defp ensure_append_files(files) do
-    [
+    base_files = [
       files.attempts_index,
       files.events,
       files.run,
@@ -653,12 +741,245 @@ defmodule Kollywood.Orchestrator.RunLogs do
       files.reviewer_stdout,
       files.tester_stdout
     ]
-    |> Enum.reduce_while(:ok, fn path, _acc ->
-      case File.write(path, "", [:append]) do
-        :ok -> {:cont, :ok}
-        {:error, reason} -> {:halt, {:error, reason}}
+
+    with :ok <- ensure_steps_root(files) do
+      base_files
+      |> Enum.reduce_while(:ok, fn path, _acc ->
+        case File.write(path, "", [:append]) do
+          :ok -> {:cont, :ok}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+    end
+  end
+
+  defp ensure_steps_root(files) do
+    steps_dir = Map.get(files, :steps_dir)
+    step_events = Map.get(files, :step_events)
+
+    with true <- is_binary(steps_dir) or {:error, :invalid_steps_dir},
+         :ok <- File.mkdir_p(steps_dir),
+         true <- is_binary(step_events) or {:error, :invalid_step_events_path},
+         :ok <- File.write(step_events, "", [:append]) do
+      :ok
+    else
+      {:error, reason} -> {:error, reason}
+      false -> {:error, :invalid_step_log_paths}
+      error -> {:error, error}
+    end
+  end
+
+  defp append_step_event(context, event, _human_line, category)
+       when is_map(context) and is_map(event) do
+    with {:ok, bucket} <- step_event_bucket(event),
+         {:ok, seq} <- step_event_sequence(context, bucket, event),
+         {:ok, paths} <- ensure_step_paths(context, bucket, seq),
+         step_category <- step_log_category(bucket, category),
+         step_human_line <- format_human_line(event, step_category),
+         enriched <-
+           Map.put(event, "step_log", %{"bucket" => Atom.to_string(bucket), "seq" => seq}),
+         :ok <- append_jsonl(paths.event_path, enriched),
+         :ok <- append_text(paths.human_path, step_human_line),
+         :ok <-
+           append_jsonl(context.files.step_events, %{
+             "timestamp" => Map.get(event, "timestamp") || now_iso8601(),
+             "type" => Map.get(event, "type"),
+             "bucket" => Atom.to_string(bucket),
+             "seq" => seq,
+             "event" => event,
+             "event_path" => paths.event_path,
+             "human_path" => paths.human_path
+           }) do
+      :ok
+    else
+      :ignore ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp append_step_event(_context, _event, _human_line, _category), do: :ok
+
+  defp step_log_category(:agent, _category), do: :agent
+  defp step_log_category(_bucket, category), do: category
+
+  defp step_event_bucket(event) when is_map(event) do
+    type = Map.get(event, "type")
+
+    bucket =
+      Enum.find_value(@step_event_buckets, fn {bucket, types} ->
+        if type in types, do: bucket, else: nil
+      end)
+
+    case bucket do
+      nil -> :ignore
+      value -> {:ok, value}
+    end
+  end
+
+  defp step_event_bucket(_event), do: :ignore
+
+  defp step_event_sequence(context, :agent, event) do
+    turn = positive_integer(Map.get(event, "turn"), nil)
+
+    if is_integer(turn) and turn > 0,
+      do: {:ok, turn},
+      else: sequence_for_non_start_event(context, :agent, event)
+  end
+
+  defp step_event_sequence(context, :checks, event) do
+    cycle = positive_integer(Map.get(event, "cycle"), nil)
+
+    if is_integer(cycle) and cycle > 0,
+      do: {:ok, cycle},
+      else: sequence_for_non_start_event(context, :checks, event)
+  end
+
+  defp step_event_sequence(context, :review, event) do
+    cycle = positive_integer(Map.get(event, "cycle"), nil)
+
+    if is_integer(cycle) and cycle > 0,
+      do: {:ok, cycle},
+      else: sequence_for_non_start_event(context, :review, event)
+  end
+
+  defp step_event_sequence(context, :testing, event) do
+    cycle = positive_integer(Map.get(event, "cycle"), nil)
+
+    if is_integer(cycle) and cycle > 0,
+      do: {:ok, cycle},
+      else: sequence_for_non_start_event(context, :testing, event)
+  end
+
+  defp step_event_sequence(context, bucket, event),
+    do: sequence_for_non_start_event(context, bucket, event)
+
+  defp sequence_for_non_start_event(context, bucket, event) do
+    if step_start_event?(bucket, event) do
+      next_step_sequence(context, bucket)
+    else
+      current_or_next_step_sequence(context, bucket)
+    end
+  end
+
+  defp step_start_event?(bucket, event) when is_atom(bucket) and is_map(event) do
+    type = Map.get(event, "type")
+    MapSet.member?(Map.get(@step_start_events, bucket, MapSet.new()), type)
+  end
+
+  defp step_start_event?(_bucket, _event), do: false
+
+  defp current_or_next_step_sequence(context, bucket) do
+    case last_step_sequence(context, bucket) do
+      {:ok, seq} when is_integer(seq) and seq > 0 -> {:ok, seq}
+      _other -> next_step_sequence(context, bucket)
+    end
+  end
+
+  defp last_step_sequence(context, bucket) do
+    pattern =
+      context
+      |> step_event_file(bucket, nil)
+      |> case do
+        value when is_binary(value) -> Regex.escape(value)
+        _other -> nil
       end
-    end)
+
+    if is_binary(pattern) and File.exists?(context.files.step_events) do
+      seq =
+        context.files.step_events
+        |> File.stream!([], :line)
+        |> Enum.reduce(0, fn line, acc ->
+          case Jason.decode(String.trim(line)) do
+            {:ok, payload} when is_map(payload) ->
+              payload_path = Map.get(payload, "event_path")
+              payload_seq = positive_integer(Map.get(payload, "seq"), 0)
+
+              if is_binary(payload_path) and Regex.match?(~r/^#{pattern}$/, payload_path) do
+                max(acc, payload_seq)
+              else
+                acc
+              end
+
+            _other ->
+              acc
+          end
+        end)
+
+      {:ok, seq}
+    else
+      {:ok, 0}
+    end
+  rescue
+    _ -> {:ok, 0}
+  end
+
+  defp next_step_sequence(context, bucket) do
+    case last_step_sequence(context, bucket) do
+      {:ok, seq} when is_integer(seq) -> {:ok, seq + 1}
+      _other -> {:ok, 1}
+    end
+  end
+
+  defp ensure_step_paths(context, bucket, seq)
+       when is_map(context) and is_atom(bucket) and is_integer(seq) and seq > 0 do
+    step_dir = step_directory(context, bucket, seq)
+    event_path = step_event_file(context, bucket, seq)
+    human_path = step_human_file(context, bucket, seq)
+
+    with true <- is_binary(step_dir) or {:error, :invalid_step_dir},
+         true <- is_binary(event_path) or {:error, :invalid_step_event_path},
+         true <- is_binary(human_path) or {:error, :invalid_step_human_path},
+         :ok <- File.mkdir_p(step_dir),
+         :ok <- File.write(event_path, "", [:append]),
+         :ok <- File.write(human_path, "", [:append]) do
+      {:ok, %{event_path: event_path, human_path: human_path}}
+    else
+      {:error, reason} -> {:error, reason}
+      false -> {:error, :invalid_step_log_paths}
+      error -> {:error, error}
+    end
+  end
+
+  defp ensure_step_paths(_context, _bucket, _seq), do: {:error, :invalid_step_selector}
+
+  defp step_directory(context, bucket, seq) do
+    steps_dir = get_in(context, [:files, :steps_dir])
+
+    if is_binary(steps_dir) and is_atom(bucket) and is_integer(seq) and seq > 0 do
+      Path.join(
+        steps_dir,
+        "#{Atom.to_string(bucket)}-#{String.pad_leading(Integer.to_string(seq), 4, "0")}"
+      )
+    else
+      nil
+    end
+  end
+
+  defp step_event_file(context, bucket, seq) when is_integer(seq) and seq > 0 do
+    case step_directory(context, bucket, seq) do
+      nil -> nil
+      dir -> Path.join(dir, "events.jsonl")
+    end
+  end
+
+  defp step_event_file(context, bucket, nil) do
+    steps_dir = get_in(context, [:files, :steps_dir])
+
+    if is_binary(steps_dir) and is_atom(bucket) do
+      Path.join(steps_dir, "#{Atom.to_string(bucket)}-*")
+    else
+      nil
+    end
+  end
+
+  defp step_human_file(context, bucket, seq) do
+    case step_directory(context, bucket, seq) do
+      nil -> nil
+      dir -> Path.join(dir, "step.log")
+    end
   end
 
   defp next_attempt_number(story_dir) do
@@ -750,7 +1071,9 @@ defmodule Kollywood.Orchestrator.RunLogs do
         "testing_json" => files.testing_json,
         "testing_cycles_dir" => files.testing_cycles_dir,
         "testing_report" => files.testing_report,
-        "testing_artifacts_dir" => files.testing_artifacts_dir
+        "testing_artifacts_dir" => files.testing_artifacts_dir,
+        "steps_dir" => files.steps_dir,
+        "step_events" => files.step_events
       }
     }
     |> Map.merge(extra_metadata)
