@@ -2,12 +2,12 @@ defmodule Kollywood.Config do
   @moduledoc """
   Parses and validates the YAML front matter from WORKFLOW.md.
 
-  Supports multiple agent kinds: amp, claude, codex, cursor, opencode, pi.
+  Supports multiple agent kinds: claude, codex, cursor, opencode, pi.
   """
 
   require Logger
 
-  @type agent_kind :: :amp | :claude | :codex | :cursor | :opencode | :pi
+  @type agent_kind :: :claude | :codex | :cursor | :opencode | :pi
   @type agent_model :: String.t()
   @type publish_provider :: :github | :gitlab
   @type publish_mode :: :push | :pr | :merge
@@ -15,7 +15,7 @@ defmodule Kollywood.Config do
   @type auto_merge_policy :: :never | :on_pass
   @type auto_create_pr_policy :: :never | :draft | :ready
 
-  @valid_agent_kinds ~w(amp claude codex cursor opencode pi)a
+  @valid_agent_kinds ~w(claude codex cursor opencode pi)a
   @valid_publish_providers ~w(github gitlab)a
   @valid_publish_modes ~w(push pr merge auto_merge)a
   @valid_auto_push_policies ~w(never on_pass)a
@@ -443,7 +443,7 @@ defmodule Kollywood.Config do
 
     cond do
       is_nil(kind_str) ->
-        {:error, "agent.kind is required (amp, claude, codex, cursor, opencode, or pi)"}
+        {:error, "agent.kind is required (claude, codex, cursor, opencode, or pi)"}
 
       true ->
         parse_agent_kind_value(kind_str)
@@ -469,9 +469,6 @@ defmodule Kollywood.Config do
 
   defp parse_agent_kind_value(kind) when is_binary(kind) do
     case String.trim(kind) do
-      "amp" ->
-        {:ok, :amp}
-
       "claude" ->
         {:ok, :claude}
 

@@ -5283,7 +5283,7 @@ defmodule KollywoodWeb.DashboardLive do
                         name="settings[agent][kind]"
                         class="select select-bordered select-sm w-full"
                       >
-                        <%= for k <- ["amp", "claude", "cursor", "opencode", "pi"] do %>
+                        <%= for k <- ["claude", "codex", "cursor", "opencode", "pi"] do %>
                           <option
                             value={k}
                             selected={get_in(@workflow.parsed, ["agent", "kind"]) == k}
@@ -5352,7 +5352,7 @@ defmodule KollywoodWeb.DashboardLive do
                         type="text"
                         name="settings[agent][command]"
                         value={get_in(@workflow.parsed, ["agent", "command"]) || ""}
-                        placeholder="e.g. /usr/local/bin/amp"
+                        placeholder="e.g. /usr/local/bin/opencode"
                         class="input input-bordered input-sm w-full font-mono"
                       />
                     </div>
@@ -5526,7 +5526,7 @@ defmodule KollywoodWeb.DashboardLive do
                               name="settings[quality][review][agent][kind]"
                               class="select select-bordered select-sm w-full"
                             >
-                              <%= for k <- ["amp", "claude", "cursor", "opencode", "pi"] do %>
+                              <%= for k <- ["claude", "codex", "cursor", "opencode", "pi"] do %>
                                 <option
                                   value={k}
                                   selected={
@@ -5569,7 +5569,7 @@ defmodule KollywoodWeb.DashboardLive do
                                 get_in(@workflow.parsed, ["quality", "review", "agent", "command"]) ||
                                   ""
                               }
-                              placeholder="e.g. /usr/local/bin/amp"
+                              placeholder="e.g. /usr/local/bin/opencode"
                               class="input input-bordered input-sm w-full font-mono"
                             />
                           </div>
@@ -5665,7 +5665,7 @@ defmodule KollywoodWeb.DashboardLive do
                               name="settings[quality][testing][agent][kind]"
                               class="select select-bordered select-sm w-full"
                             >
-                              <%= for k <- ["amp", "claude", "cursor", "opencode", "pi"] do %>
+                              <%= for k <- ["claude", "codex", "cursor", "opencode", "pi"] do %>
                                 <option
                                   value={k}
                                   selected={
@@ -5722,7 +5722,7 @@ defmodule KollywoodWeb.DashboardLive do
                                   "command"
                                 ]) || ""
                               }
-                              placeholder="e.g. /usr/local/bin/amp"
+                              placeholder="e.g. /usr/local/bin/opencode"
                               class="input input-bordered input-sm w-full font-mono"
                             />
                           </div>
@@ -7472,7 +7472,7 @@ defmodule KollywoodWeb.DashboardLive do
 
     new_agent =
       existing_agent
-      |> Map.put("kind", Map.get(agent_p, "kind", Map.get(existing_agent, "kind", "amp")))
+      |> Map.put("kind", Map.get(agent_p, "kind", Map.get(existing_agent, "kind", "opencode")))
       |> Map.put(
         "max_turns",
         parse_form_int(agent_p, "max_turns", Map.get(existing_agent, "max_turns", 20))

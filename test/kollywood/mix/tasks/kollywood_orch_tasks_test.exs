@@ -298,7 +298,7 @@ defmodule Mix.Tasks.Kollywood.OrchTasksTest do
       root: #{Path.join(root, "workspaces")}
       strategy: clone
     agent:
-      kind: amp
+      kind: pi
     ---
     Work on {{ issue.identifier }}
     """)
@@ -381,9 +381,9 @@ defmodule Mix.Tasks.Kollywood.OrchTasksTest do
         start_timeout_ms: 120_000,
         stop_timeout_ms: 60_000
       },
-      review: %{enabled: false, max_cycles: 1, agent: %{kind: :amp}},
+      review: %{enabled: false, max_cycles: 1, agent: %{kind: :pi}},
       agent: %{
-        kind: :amp,
+        kind: :pi,
         max_concurrent_agents: 1,
         max_turns: 1,
         max_retry_backoff_ms: 1_000,

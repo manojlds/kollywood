@@ -35,7 +35,7 @@ defmodule Kollywood.StoryExecutionOverridesTest do
     assert {:error, reason} =
              StoryExecutionOverrides.normalize_settings(%{
                "execution" => %{
-                 "agent_kind" => "amp",
+                 "agent_kind" => "opencode",
                  "unknown_field" => "value"
                }
              })
@@ -130,11 +130,15 @@ defmodule Kollywood.StoryExecutionOverridesTest do
 
     config =
       base_config()
-      |> Map.put(:testing, %{enabled: true, max_cycles: 1, agent: %{kind: :amp, explicit: false}})
+      |> Map.put(:testing, %{
+        enabled: true,
+        max_cycles: 1,
+        agent: %{kind: :opencode, explicit: false}
+      })
       |> Map.put(:quality, %{
         max_cycles: 2,
-        review: %{max_cycles: 1, agent: %{kind: :amp, explicit: false}},
-        testing: %{enabled: true, max_cycles: 1, agent: %{kind: :amp, explicit: false}}
+        review: %{max_cycles: 1, agent: %{kind: :opencode, explicit: false}},
+        testing: %{enabled: true, max_cycles: 1, agent: %{kind: :opencode, explicit: false}}
       })
 
     assert {:ok, resolved} = StoryExecutionOverrides.resolve(config, issue)
@@ -149,27 +153,27 @@ defmodule Kollywood.StoryExecutionOverridesTest do
         max_cycles: 2,
         review: %{
           max_cycles: 1,
-          agent: %{kind: :amp, explicit: false}
+          agent: %{kind: :opencode, explicit: false}
         },
         testing: %{
           enabled: false,
           max_cycles: 1,
           timeout_ms: 10_000,
           prompt_template: nil,
-          agent: %{kind: :amp, explicit: false}
+          agent: %{kind: :opencode, explicit: false}
         }
       },
       review: %{
         enabled: true,
         max_cycles: 1,
-        agent: %{kind: :amp, explicit: false}
+        agent: %{kind: :opencode, explicit: false}
       },
       testing: %{
         enabled: false,
         max_cycles: 1,
         timeout_ms: 10_000,
         prompt_template: nil,
-        agent: %{kind: :amp, explicit: false}
+        agent: %{kind: :opencode, explicit: false}
       },
       preview: %{
         enabled: false,
@@ -180,7 +184,7 @@ defmodule Kollywood.StoryExecutionOverridesTest do
         stop_timeout_ms: 60_000
       },
       agent: %{
-        kind: :amp,
+        kind: :opencode,
         max_turns: 3,
         max_concurrent_agents: 1,
         retries_enabled: true,

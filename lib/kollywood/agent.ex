@@ -6,7 +6,6 @@ defmodule Kollywood.Agent do
   agent-specific CLI invocation details.
   """
 
-  alias Kollywood.Agent.Amp
   alias Kollywood.Agent.Claude
   alias Kollywood.Agent.Codex
   alias Kollywood.Agent.Cursor
@@ -33,7 +32,6 @@ defmodule Kollywood.Agent do
 
   @doc "Returns the adapter module for an agent kind."
   @spec adapter_module(Config.agent_kind()) :: module()
-  def adapter_module(:amp), do: Amp
   def adapter_module(:claude), do: Claude
   def adapter_module(:codex), do: Codex
   def adapter_module(:cursor), do: Cursor

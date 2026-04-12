@@ -53,4 +53,24 @@ defmodule Kollywood.Agent.CodexTest do
 
     assert result.output =~ "prompt:review this patch"
   end
+
+  test "passes --model flag when model is configured in session", %{
+    workspace: workspace,
+    cli_path: cli_path
+  } do
+    assert {:ok, %Session{} = session} =
+             Codex.start_session(workspace, %{command: cli_path, model: "gpt-5"})
+
+    assert {:ok, result} = Codex.run_turn(session, "review this patch")
+    assert result.output =~ "--model gpt-5"
+  end
+
+  test "prefers turn opts model over session model", %{workspace: workspace, cli_path: cli_path} do
+    assert {:ok, %Session{} = session} =
+             Codex.start_session(workspace, %{command: cli_path, model: "gpt-5"})
+
+    assert {:ok, result} = Codex.run_turn(session, "review this patch", %{model: "o3"})
+    assert result.output =~ "--model o3"
+    refute result.output =~ "--model gpt-5"
+  end
 end

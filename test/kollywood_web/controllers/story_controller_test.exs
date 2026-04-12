@@ -158,7 +158,7 @@ defmodule KollywoodWeb.StoryControllerTest do
     workspace:
       strategy: clone
     agent:
-      kind: amp
+      kind: pi
       command: /bin/true
     quality:
       max_cycles: 1

@@ -134,7 +134,7 @@ EOF
   fi
 fi
 
-PATH_VALUE="$HOME/.opencode/bin:$HOME/.amp/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+PATH_VALUE="$HOME/.opencode/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
 sed \
   -e "s|__REPO_DIR__|$REPO_DIR|g" \

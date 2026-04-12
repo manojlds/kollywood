@@ -8,7 +8,7 @@ defmodule Kollywood.WorkflowStoreTest do
   workspace:
     root: /tmp/test
   agent:
-    kind: amp
+    kind: pi
   ---
   Hello {{ issue.identifier }}
   """
@@ -26,7 +26,7 @@ defmodule Kollywood.WorkflowStoreTest do
       start_supervised!({WorkflowStore, path: path, name: :"store_#{System.unique_integer()}"})
 
     config = WorkflowStore.get_config(pid)
-    assert config.agent.kind == :amp
+    assert config.agent.kind == :pi
     assert config.workspace.root == "/tmp/test"
 
     template = WorkflowStore.get_prompt_template(pid)
@@ -45,7 +45,7 @@ defmodule Kollywood.WorkflowStoreTest do
     pid =
       start_supervised!({WorkflowStore, path: path, name: :"store_#{System.unique_integer()}"})
 
-    assert WorkflowStore.get_config(pid).agent.kind == :amp
+    assert WorkflowStore.get_config(pid).agent.kind == :pi
     original_identity = WorkflowStore.get_workflow_identity(pid)
 
     updated = """
@@ -74,14 +74,14 @@ defmodule Kollywood.WorkflowStoreTest do
     pid =
       start_supervised!({WorkflowStore, path: path, name: :"store_#{System.unique_integer()}"})
 
-    assert WorkflowStore.get_config(pid).agent.kind == :amp
+    assert WorkflowStore.get_config(pid).agent.kind == :pi
 
     # Write invalid content
     File.write!(path, "this is not valid workflow markdown")
     Process.sleep(1_500)
 
     # Config should remain unchanged
-    assert WorkflowStore.get_config(pid).agent.kind == :amp
+    assert WorkflowStore.get_config(pid).agent.kind == :pi
     assert WorkflowStore.get_last_error(pid) != nil
   end
 

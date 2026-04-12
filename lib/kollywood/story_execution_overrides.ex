@@ -15,7 +15,7 @@ defmodule Kollywood.StoryExecutionOverrides do
 
   alias Kollywood.Config
 
-  @valid_agent_kinds ~w(amp claude codex cursor opencode pi)a
+  @valid_agent_kinds ~w(claude codex cursor opencode pi)a
   @valid_agent_kind_strings Enum.map(@valid_agent_kinds, &Atom.to_string/1)
 
   @execution_keys ~w(
@@ -95,7 +95,7 @@ defmodule Kollywood.StoryExecutionOverrides do
       |> Map.get(:agent, %{})
       |> map_or_empty()
       |> Map.get(:kind)
-      |> resolve_existing_agent_kind(:amp)
+      |> resolve_existing_agent_kind(:opencode)
 
     review = map_or_empty(Map.get(config, :review))
     review_agent = map_or_empty(Map.get(review, :agent))
@@ -333,7 +333,7 @@ defmodule Kollywood.StoryExecutionOverrides do
     quality_testing = map_or_empty(Map.get(quality, :testing))
     quality_testing_agent = map_or_empty(Map.get(quality_testing, :agent))
 
-    current_agent_kind = resolve_existing_agent_kind(Map.get(agent, :kind), :amp)
+    current_agent_kind = resolve_existing_agent_kind(Map.get(agent, :kind), :opencode)
     review_explicit = Map.get(review_agent, :explicit, false) == true
     testing_explicit = Map.get(testing_agent, :explicit, false) == true
 

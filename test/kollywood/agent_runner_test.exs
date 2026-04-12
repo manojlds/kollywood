@@ -2140,9 +2140,9 @@ defmodule Kollywood.AgentRunnerTest do
         start_timeout_ms: 120_000,
         stop_timeout_ms: 60_000
       },
-      review: %{enabled: false, max_cycles: 1, agent: %{kind: :amp}},
+      review: %{enabled: false, max_cycles: 1, agent: %{kind: :pi}},
       agent: %{
-        kind: :amp,
+        kind: :pi,
         max_concurrent_agents: 1,
         max_turns: 1,
         command: git_cli_path,
@@ -2371,7 +2371,7 @@ defmodule Kollywood.AgentRunnerTest do
     hooks = Map.merge(@no_hooks, hooks)
 
     base_agent = %{
-      kind: :amp,
+      kind: :pi,
       max_concurrent_agents: 2,
       max_turns: 3,
       command: cli_path,

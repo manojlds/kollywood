@@ -1115,7 +1115,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
           "execution_review_agent_kind" => "cursor",
           "execution_review_max_cycles" => "2",
           "execution_testing_enabled" => "false",
-          "execution_testing_agent_kind" => "amp",
+          "execution_testing_agent_kind" => "opencode",
           "execution_testing_max_cycles" => "1"
         }
       }
@@ -1141,7 +1141,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ ~s(value="cursor" selected)
       assert html =~ ~s(name="story[execution_review_max_cycles]" value="2")
       assert html =~ ~s(value="false" selected)
-      assert html =~ ~s(value="amp" selected)
+      assert html =~ ~s(value="opencode" selected)
       assert html =~ ~s(name="story[execution_testing_max_cycles]" value="1")
 
       view
@@ -2010,7 +2010,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       workspace:
         strategy: clone
       agent:
-        kind: amp
+        kind: opencode
         command: /bin/true
       quality:
         max_cycles: 1
@@ -2086,7 +2086,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       workspace:
         strategy: clone
       agent:
-        kind: amp
+        kind: opencode
         command: /bin/true
       quality:
         max_cycles: 1
@@ -2103,7 +2103,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
           max_cycles: 1
           timeout_ms: 10000
           agent:
-            kind: amp
+            kind: opencode
             command: /bin/true
             args: []
             env: {}
@@ -2444,7 +2444,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       workspace:
         strategy: clone
       agent:
-        kind: amp
+        kind: opencode
         command: /bin/true
       quality:
         max_cycles: 1

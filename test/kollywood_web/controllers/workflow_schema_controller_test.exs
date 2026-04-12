@@ -16,7 +16,6 @@ defmodule KollywoodWeb.WorkflowSchemaControllerTest do
     assert %{"fields" => agent_fields} = sections["agent"]
 
     assert agent_fields["kind"]["allowed"] == [
-             "amp",
              "claude",
              "codex",
              "cursor",

@@ -299,7 +299,7 @@ defmodule Kollywood.StepRetryTest do
       workspace:
         strategy: clone
       agent:
-        kind: amp
+        kind: opencode
         command: /bin/true
         retries_enabled: true
       quality:
@@ -314,7 +314,7 @@ defmodule Kollywood.StepRetryTest do
           enabled: true
           max_cycles: 1
           agent:
-            kind: amp
+            kind: opencode
             command: #{review_cli_path}
             args: []
             env: {}
@@ -684,7 +684,7 @@ defmodule Kollywood.StepRetryTest do
       workspace:
         strategy: clone
       agent:
-        kind: amp
+        kind: opencode
         command: /bin/true
         retries_enabled: true
       quality:
@@ -738,7 +738,7 @@ defmodule Kollywood.StepRetryTest do
       workspace:
         strategy: clone
       agent:
-        kind: amp
+        kind: opencode
         command: /bin/true
         retries_enabled: true
       quality:
@@ -775,7 +775,7 @@ defmodule Kollywood.StepRetryTest do
       workspace:
         strategy: clone
       agent:
-        kind: amp
+        kind: opencode
         command: /bin/true
         retries_enabled: true
       quality:
@@ -789,7 +789,7 @@ defmodule Kollywood.StepRetryTest do
           enabled: true
           max_cycles: 1
           agent:
-            kind: amp
+            kind: opencode
             command: #{review_cli_path}
             args: []
             env: {}
@@ -819,7 +819,7 @@ defmodule Kollywood.StepRetryTest do
       workspace:
         strategy: clone
       agent:
-        kind: amp
+        kind: opencode
         command: /bin/true
         retries_enabled: true
       quality:
@@ -905,7 +905,7 @@ defmodule Kollywood.StepRetryTest do
         root: #{workspaces_root}
         branch_prefix: kw/
       agent:
-        kind: amp
+        kind: opencode
         command: /bin/true
       quality:
         max_cycles: 1
@@ -1080,7 +1080,14 @@ defmodule Kollywood.StepRetryTest do
     #!/usr/bin/env bash
     set -eu
 
-    prompt="$(cat)"
+    prompt=""
+
+    if [ "$#" -gt 0 ]; then
+      prompt="${@: -1}"
+    else
+      prompt="$(cat)"
+    fi
+
     review_json_path=$(printf '%s' "$prompt" | grep -oP 'Write your review to `\\K[^`]+' || echo "/tmp/review.json")
     printf '{"verdict":"#{verdict}","summary":"#{summary}","findings":[]}' > "$review_json_path"
     """)

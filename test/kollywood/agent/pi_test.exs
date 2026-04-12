@@ -36,4 +36,24 @@ defmodule Kollywood.Agent.PiTest do
     assert {:ok, result} = Pi.run_turn(session, "ship pi adapter")
     assert result.output =~ "prompt:ship pi adapter"
   end
+
+  test "passes --model flag when model is configured in session", %{
+    workspace: workspace,
+    cli_path: cli_path
+  } do
+    assert {:ok, %Session{} = session} =
+             Pi.start_session(workspace, %{command: cli_path, model: "openai/gpt-4o"})
+
+    assert {:ok, result} = Pi.run_turn(session, "ship pi adapter")
+    assert result.output =~ "args:--print --model openai/gpt-4o"
+  end
+
+  test "prefers turn opts model over session model", %{workspace: workspace, cli_path: cli_path} do
+    assert {:ok, %Session{} = session} =
+             Pi.start_session(workspace, %{command: cli_path, model: "openai/gpt-4o"})
+
+    assert {:ok, result} = Pi.run_turn(session, "ship pi adapter", %{model: "anthropic/sonnet"})
+    assert result.output =~ "args:--print --model anthropic/sonnet"
+    refute result.output =~ "args:--print --model openai/gpt-4o"
+  end
 end

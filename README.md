@@ -143,7 +143,7 @@ Kollywood can run against a local PRD tracker file.
 - Default tracker path is `prd.json`
 - Stories use `status` values such as `draft`, `open`, `in_progress`, `done`, `failed`, `pending_merge`, `merged`, `cancelled`
 - Manual UI/API transitions intentionally block setting `in_progress` directly (that status is orchestrator-managed)
-- Default agent kind in `.kollywood/WORKFLOW.md` is `pi` (supported kinds: `amp`, `claude`, `codex`, `cursor`, `opencode`, `pi`)
+- Default agent kind in `.kollywood/WORKFLOW.md` is `pi` (supported kinds: `claude`, `codex`, `cursor`, `opencode`, `pi`)
 
 CLI helpers:
 

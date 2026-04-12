@@ -2523,7 +2523,7 @@ defmodule Kollywood.OrchestratorTest do
       runtime: %{},
       review: %{},
       agent: %{
-        kind: :amp,
+        kind: :pi,
         max_concurrent_agents: 1,
         max_turns: 1,
         retries_enabled: false,
@@ -2575,7 +2575,7 @@ defmodule Kollywood.OrchestratorTest do
       runtime: %{},
       review: %{},
       agent: %{
-        kind: :amp,
+        kind: :pi,
         max_concurrent_agents: 1,
         max_turns: 1,
         retries_enabled: false,
@@ -2630,7 +2630,7 @@ defmodule Kollywood.OrchestratorTest do
       runtime: %{},
       review: %{},
       agent: %{
-        kind: :amp,
+        kind: :pi,
         max_concurrent_agents: 1,
         max_turns: 1,
         retries_enabled: false,
@@ -2699,7 +2699,7 @@ defmodule Kollywood.OrchestratorTest do
       runtime: %{},
       review: %{},
       agent: %{
-        kind: :amp,
+        kind: :pi,
         max_concurrent_agents: 1,
         max_turns: 1,
         retries_enabled: false,
@@ -2769,7 +2769,7 @@ defmodule Kollywood.OrchestratorTest do
       runtime: %{},
       review: %{},
       agent: %{
-        kind: :amp,
+        kind: :pi,
         max_concurrent_agents: 1,
         max_turns: 1,
         retries_enabled: false,
@@ -2828,7 +2828,7 @@ defmodule Kollywood.OrchestratorTest do
       runtime: %{},
       review: %{},
       agent: %{
-        kind: :amp,
+        kind: :pi,
         max_concurrent_agents: 1,
         max_turns: 1,
         retries_enabled: false,
@@ -3366,7 +3366,7 @@ defmodule Kollywood.OrchestratorTest do
       root: #{workspace_root}
       strategy: clone
     agent:
-      kind: amp
+      kind: opencode
       max_concurrent_agents: #{Map.get(opts, :max_concurrent_agents, 2)}
       max_turns: #{Map.get(opts, :max_turns, 5)}
       max_retry_backoff_ms: #{Map.get(opts, :max_retry_backoff_ms, 300_000)}

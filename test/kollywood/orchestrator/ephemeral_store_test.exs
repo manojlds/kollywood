@@ -187,7 +187,7 @@ defmodule Kollywood.Orchestrator.EphemeralStoreTest do
       runtime: %{},
       review: %{},
       agent: %{
-        kind: :amp,
+        kind: :pi,
         max_concurrent_agents: 1,
         max_turns: 1,
         retries_enabled: true,

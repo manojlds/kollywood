@@ -37,7 +37,10 @@ defmodule Kollywood.Agent.Cursor do
   @impl true
   @spec run_turn(Session.t(), String.t(), map()) :: {:ok, map()} | {:error, String.t()}
   def run_turn(session, prompt, opts \\ %{}) do
-    opts = maybe_enable_visual_raw_log(opts)
+    opts =
+      opts
+      |> maybe_put_model_args(session)
+      |> maybe_enable_visual_raw_log()
 
     case CLI.run_turn(session, prompt, opts) do
       {:ok, result} ->
@@ -68,6 +71,32 @@ defmodule Kollywood.Agent.Cursor do
   end
 
   defp maybe_enable_visual_raw_log(opts), do: opts
+
+  defp maybe_put_model_args(opts, %Session{model: session_model}) when is_map(opts) do
+    model = model_from_opts(opts) || normalize_model(session_model)
+
+    if is_binary(model) and model != "" do
+      Map.update(opts, :extra_args, ["--model", model], fn extra_args ->
+        ["--model", model] ++ List.wrap(extra_args)
+      end)
+    else
+      opts
+    end
+  end
+
+  defp maybe_put_model_args(opts, _session), do: opts
+
+  defp model_from_opts(opts) do
+    model = Map.get(opts, :model) || Map.get(opts, "model")
+    normalize_model(model)
+  end
+
+  defp normalize_model(model) when is_binary(model) do
+    trimmed = String.trim(model)
+    if trimmed == "", do: nil, else: trimmed
+  end
+
+  defp normalize_model(_model), do: nil
 
   defp normalize_stream_result(%{raw_output: raw_output} = result) do
     case extract_final_output(raw_output) do

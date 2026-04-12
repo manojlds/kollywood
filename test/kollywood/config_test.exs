@@ -23,7 +23,7 @@ defmodule Kollywood.ConfigTest do
   workspace:
     root: ~/workspaces
   agent:
-    kind: amp
+    kind: opencode
     model: gpt-5
     max_concurrent_agents: 3
     project_max_concurrent_agents:
@@ -37,7 +37,7 @@ defmodule Kollywood.ConfigTest do
 
   test "parses valid WORKFLOW.md content" do
     assert {:ok, config, template} = Config.parse(@valid_workflow)
-    assert config.agent.kind == :amp
+    assert config.agent.kind == :opencode
     assert config.agent.model == "gpt-5"
     assert config.agent.max_concurrent_agents == 3
     assert config.agent.project_max_concurrent_agents == %{"alpha" => 1, "beta" => 2}
@@ -53,7 +53,7 @@ defmodule Kollywood.ConfigTest do
   end
 
   test "supports all agent kinds" do
-    for kind <- ~w(amp claude codex cursor opencode pi) do
+    for kind <- ~w(claude codex cursor opencode pi) do
       content = """
       ---
       workspace:
@@ -196,7 +196,7 @@ defmodule Kollywood.ConfigTest do
     workspace:
       root: /tmp
     agent:
-      kind: amp
+      kind: opencode
       project_max_concurrent_agents:
         alpha: 2
         beta: invalid
@@ -242,7 +242,7 @@ defmodule Kollywood.ConfigTest do
     workspace:
       root: /tmp
     agent:
-      kind: amp
+      kind: opencode
     ---
     prompt
     """
@@ -609,7 +609,7 @@ defmodule Kollywood.ConfigTest do
     workspace:
       root: /tmp
     agent:
-      kind: amp
+      kind: opencode
     ---
     prompt
     """
@@ -632,7 +632,7 @@ defmodule Kollywood.ConfigTest do
     workspace:
       root: /tmp
     agent:
-      kind: amp
+      kind: opencode
     ---
     prompt
     """
@@ -675,7 +675,7 @@ defmodule Kollywood.ConfigTest do
     workspace:
       root: /tmp
     agent:
-      kind: amp
+      kind: opencode
     ---
     prompt
     """
@@ -692,7 +692,7 @@ defmodule Kollywood.ConfigTest do
     workspace:
       root: /tmp
     agent:
-      kind: amp
+      kind: opencode
     ---
     prompt
     """
@@ -709,7 +709,7 @@ defmodule Kollywood.ConfigTest do
     workspace:
       root: /tmp
     agent:
-      kind: amp
+      kind: opencode
     ---
     prompt
     """
@@ -726,7 +726,7 @@ defmodule Kollywood.ConfigTest do
     workspace:
       root: /tmp
     agent:
-      kind: amp
+      kind: opencode
     ---
     prompt
     """

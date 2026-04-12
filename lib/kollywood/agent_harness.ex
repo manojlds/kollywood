@@ -5,7 +5,7 @@ defmodule Kollywood.AgentHarness do
 
   @default_timeout_ms 7_200_000
   @default_max_turns 20
-  @valid_agent_kinds ~w(amp claude codex cursor opencode pi)a
+  @valid_agent_kinds ~w(claude codex cursor opencode pi)a
 
   @type phase :: :agent | :review | :testing
   @type profile :: %{
@@ -19,7 +19,7 @@ defmodule Kollywood.AgentHarness do
   @spec resolve(Config.t(), phase(), keyword()) :: profile()
   def resolve(%Config{} = config, phase, opts \\ []) when phase in [:agent, :review, :testing] do
     base_agent = map_or_empty(Map.get(config, :agent))
-    base_kind = resolve_agent_kind(Map.get(base_agent, :kind), :amp)
+    base_kind = resolve_agent_kind(Map.get(base_agent, :kind), :opencode)
     base_harness = base_harness(base_agent)
     base_role = base_role(base_agent, base_kind)
 

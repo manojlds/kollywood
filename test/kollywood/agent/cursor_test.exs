@@ -82,6 +82,38 @@ defmodule Kollywood.Agent.CursorTest do
     assert :ok = Cursor.stop_session(session)
   end
 
+  test "passes --model flag when model is configured in session", %{
+    workspace: workspace,
+    cli_path: cli_path
+  } do
+    assert {:ok, %Session{} = session} =
+             Cursor.start_session(workspace, %{command: cli_path, model: "gpt-5"})
+
+    assert {:ok, result} = Cursor.run_turn(session, "hello")
+    assert result.raw_output =~ "\"type\":\"assistant\""
+  end
+
+  test "inserts --model into command args", %{workspace: workspace} do
+    session = %Session{
+      id: 1,
+      adapter: Cursor,
+      workspace_path: workspace,
+      command: "bash",
+      args: [
+        "-lc",
+        "printf 'args:%s\\n' \"$*\"; printf '{\"type\":\"result\",\"result\":\"ok\"}\\n'",
+        "--"
+      ],
+      env: %{},
+      timeout_ms: 10_000,
+      prompt_mode: :argv,
+      model: "cursor-model"
+    }
+
+    assert {:ok, result} = Cursor.run_turn(session, "hello")
+    assert result.raw_output =~ "args:--model cursor-model hello"
+  end
+
   defp wait_for_file(path, timeout_ms) do
     wait_until(timeout_ms, fn -> File.exists?(path) end)
   end

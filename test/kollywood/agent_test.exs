@@ -53,7 +53,6 @@ defmodule Kollywood.AgentTest do
   end
 
   test "maps agent kind to adapter module" do
-    assert Agent.adapter_module(:amp) == Kollywood.Agent.Amp
     assert Agent.adapter_module(:claude) == Kollywood.Agent.Claude
     assert Agent.adapter_module(:codex) == Kollywood.Agent.Codex
     assert Agent.adapter_module(:cursor) == Kollywood.Agent.Cursor
@@ -72,7 +71,7 @@ defmodule Kollywood.AgentTest do
       hooks: %{},
       raw: %{},
       agent: %{
-        kind: :amp,
+        kind: :pi,
         command: cli_path,
         model: "gpt-5",
         env: %{"KOLLYWOOD_TOKEN" => "abc123"},
@@ -82,7 +81,7 @@ defmodule Kollywood.AgentTest do
     }
 
     assert {:ok, %Session{} = session} = Agent.start_session(config, workspace)
-    assert session.adapter == Kollywood.Agent.Amp
+    assert session.adapter == Kollywood.Agent.Pi
     assert session.model == "gpt-5"
 
     assert {:ok, result} = Agent.run_turn(session, "finish stage 3")
