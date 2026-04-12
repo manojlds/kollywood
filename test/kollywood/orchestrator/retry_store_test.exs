@@ -103,7 +103,7 @@ defmodule Kollywood.Orchestrator.RetryStoreTest do
          repo_sync_interval_ms: 60_000}
       )
 
-    assert_receive {:runner_started, "ISS-RETRY-RESTORE", 1}, 1_000
+    assert_receive {:runner_started, "ISS-RETRY-RESTORE", 1}, 3_000
 
     assert_retry_store_empty!()
 

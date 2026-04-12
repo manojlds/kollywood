@@ -1,5 +1,5 @@
 defmodule Mix.Tasks.Kollywood.OrchTasksTest do
-  use ExUnit.Case, async: false
+  use Kollywood.DataCase, async: false
 
   import ExUnit.CaptureIO
 

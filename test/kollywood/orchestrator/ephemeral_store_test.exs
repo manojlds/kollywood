@@ -133,7 +133,7 @@ defmodule Kollywood.Orchestrator.EphemeralStoreTest do
     issue = issue("ISS-COMPLETE-RESTORE", "ABC-COMPLETE-RESTORE", 1)
     now_ms = System.monotonic_time(:millisecond)
 
-    assert :ok = EphemeralStore.upsert(:completed, issue.id, now_ms + 200)
+    assert :ok = EphemeralStore.upsert(:completed, issue.id, now_ms + 1_000)
 
     test_pid = self()
     tracker = fn _config -> {:ok, [issue]} end
@@ -157,14 +157,14 @@ defmodule Kollywood.Orchestrator.EphemeralStoreTest do
          ephemeral_store: EphemeralStore,
          agent_pool: agent_pool,
          claim_ttl_ms: 200,
-         completed_ttl_ms: 200,
+         completed_ttl_ms: 1_000,
          repo_sync_interval_ms: 60_000}
       )
 
     assert :ok = Orchestrator.poll_now(orchestrator)
-    refute_receive {:runner_started, "ISS-COMPLETE-RESTORE"}, 80
+    refute_receive {:runner_started, "ISS-COMPLETE-RESTORE"}, 200
 
-    Process.sleep(220)
+    Process.sleep(1_050)
     assert :ok = Orchestrator.poll_now(orchestrator)
     assert_receive {:runner_started, "ISS-COMPLETE-RESTORE"}, 1_000
 

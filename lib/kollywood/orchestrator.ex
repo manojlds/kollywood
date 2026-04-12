@@ -309,7 +309,7 @@ defmodule Kollywood.Orchestrator do
         maintenance_mode: maintenance_mode,
         leader_election_enabled: leader_election_enabled,
         leader?: not leader_election_enabled,
-        startup_reconciled?: not leader_election_enabled,
+        startup_reconciled?: false,
         leader_lease_name: to_string(leader_lease_name),
         leader_owner_id: to_string(leader_owner_id),
         leader_lease_ttl_ms: leader_lease_ttl_ms,
