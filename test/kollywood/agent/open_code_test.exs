@@ -40,5 +40,27 @@ defmodule Kollywood.Agent.OpenCodeTest do
 
     assert {:ok, result} = OpenCode.run_turn(session, "ship feature")
     assert result.output =~ "ship feature"
+    refute result.output =~ "--model"
+  end
+
+  test "passes anthropic/sonnet model via --model flag", %{
+    workspace: workspace,
+    cli_path: cli_path
+  } do
+    assert {:ok, %Session{} = session} =
+             OpenCode.start_session(workspace, %{command: cli_path, model: "anthropic/sonnet"})
+
+    assert {:ok, result} = OpenCode.run_turn(session, "ship feature")
+
+    assert result.output =~ "args:run --model anthropic/sonnet ship feature"
+  end
+
+  test "passes openai/gpt-4o model via --model flag", %{workspace: workspace, cli_path: cli_path} do
+    assert {:ok, %Session{} = session} =
+             OpenCode.start_session(workspace, %{command: cli_path, model: "openai/gpt-4o"})
+
+    assert {:ok, result} = OpenCode.run_turn(session, "ship feature")
+
+    assert result.output =~ "args:run --model openai/gpt-4o ship feature"
   end
 end
