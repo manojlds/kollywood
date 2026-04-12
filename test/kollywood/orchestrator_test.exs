@@ -3350,6 +3350,7 @@ defmodule Kollywood.OrchestratorTest do
 
     """
     ---
+    schema_version: 1
     tracker:
       kind: #{Map.get(opts, :tracker_kind, "linear")}#{tracker_path_line}
       active_states:

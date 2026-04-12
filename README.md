@@ -124,7 +124,12 @@ Workflow schema is available over API/CLI for machine consumers:
 ```bash
 curl -s http://127.0.0.1:4000/api/workflow/schema | jq
 kollywood workflow schema --json
+kollywood workflow validate --path .kollywood/WORKFLOW.md --json
+kollywood workflow migrate --check --path .kollywood/WORKFLOW.md
+kollywood workflow migrate --write --path .kollywood/WORKFLOW.md
 ```
+
+WORKFLOW documents now require top-level `schema_version: 1` in front matter.
 
 When ACP chat starts agent sessions, Kollywood injects `KOLLYWOOD_CLI` (pointing to `~/.local/bin/kollywood` when present) and prepends `~/.local/bin`/`~/.cargo/bin` to `PATH` so skills can reliably call the expected global CLI binary.
 

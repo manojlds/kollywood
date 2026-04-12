@@ -63,6 +63,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       workflow_path,
       """
       ---
+      schema_version: 1
       tracker:
         kind: prd_json
       workspace:
@@ -74,7 +75,6 @@ defmodule KollywoodWeb.DashboardLiveTest do
       git:
         base_branch: main
       ---
-
       Work on {{ issue.identifier }}.
       """
     )
@@ -266,6 +266,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
     } do
       write_workflow!(project, """
       ---
+      schema_version: 1
       agent:
         kind: claude
       quality:
@@ -275,7 +276,6 @@ defmodule KollywoodWeb.DashboardLiveTest do
         review:
           enabled: false
       ---
-
       You are working on {{ issue.identifier }}.
       """)
 
@@ -295,13 +295,13 @@ defmodule KollywoodWeb.DashboardLiveTest do
     } do
       write_workflow!(project, """
       ---
+      schema_version: 1
       quality:
         review:
           enabled: true
           prompt_template: |
             old template content
       ---
-
       Body here.
       """)
 
@@ -323,6 +323,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
     } do
       write_workflow!(project, """
       ---
+      schema_version: 1
       agent:
         kind: claude
         max_turns: 1
@@ -334,7 +335,6 @@ defmodule KollywoodWeb.DashboardLiveTest do
       git:
         base_branch: main
       ---
-
       Body here.
       """)
 
@@ -389,6 +389,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
     } do
       write_workflow!(project, """
       ---
+      schema_version: 1
       agent:
         kind: cursor
       workspace:
@@ -405,7 +406,6 @@ defmodule KollywoodWeb.DashboardLiveTest do
       git:
         base_branch: main
       ---
-
       Body here.
       """)
 
@@ -498,6 +498,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
     } do
       write_workflow!(project, """
       ---
+      schema_version: 1
       agent:
         kind: cursor
       workspace:
@@ -511,7 +512,6 @@ defmodule KollywoodWeb.DashboardLiveTest do
       git:
         base_branch: main
       ---
-
       Body here.
       """)
 
@@ -1375,10 +1375,10 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       write_workflow!(project, """
       ---
+      schema_version: 1
       preview:
         enabled: true
       ---
-
       body
       """)
 
@@ -1440,10 +1440,10 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       write_workflow!(project, """
       ---
+      schema_version: 1
       preview:
         enabled: true
       ---
-
       body
       """)
 
@@ -1481,10 +1481,10 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       write_workflow!(project, """
       ---
+      schema_version: 1
       preview:
         enabled: true
       ---
-
       body
       """)
 
@@ -1528,6 +1528,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       write_workflow!(remote_project, """
       ---
+      schema_version: 1
       tracker:
         kind: prd_json
       workspace:
@@ -1539,7 +1540,6 @@ defmodule KollywoodWeb.DashboardLiveTest do
       git:
         base_branch: main
       ---
-
       Work on {{ issue.identifier }}.
       """)
 
@@ -1608,12 +1608,12 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       write_workflow!(project, """
       ---
+      schema_version: 1
       agent:
         kind: claude
       workspace:
         strategy: clone
       ---
-
       Body
       """)
 
@@ -1652,7 +1652,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
       assert html =~ "Attempt workflow fingerprint"
       assert html =~ "attempt-sha-123"
       assert html =~ "Workflow version"
-      assert html =~ "v1.2.3"
+      assert html =~ "1"
       assert html =~ "Main agent"
       assert html =~ "claude 7200000ms (/usr/bin/claude)"
       assert html =~ "Review agent"
@@ -2005,6 +2005,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       write_workflow!(project, """
       ---
+      schema_version: 1
       tracker:
         kind: prd_json
       workspace:
@@ -2030,7 +2031,6 @@ defmodule KollywoodWeb.DashboardLiveTest do
       git:
         base_branch: main
       ---
-
       Work on {{ issue.identifier }}.
       """)
 
@@ -2081,6 +2081,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       write_workflow!(project, """
       ---
+      schema_version: 1
       tracker:
         kind: prd_json
       workspace:
@@ -2123,7 +2124,6 @@ defmodule KollywoodWeb.DashboardLiveTest do
       git:
         base_branch: main
       ---
-
       Work on {{ issue.identifier }}.
       """)
 
@@ -2439,6 +2439,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       write_workflow!(project, """
       ---
+      schema_version: 1
       tracker:
         kind: prd_json
       workspace:
@@ -2464,7 +2465,6 @@ defmodule KollywoodWeb.DashboardLiveTest do
       git:
         base_branch: main
       ---
-
       Work on {{ issue.identifier }}.
       """)
 
@@ -3145,7 +3145,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
         "path" => "/tmp/attempt-workflow.md",
         "sha256" => "attempt-sha-123",
         "identity_source" => "workflow_file",
-        "version" => "v1.2.3"
+        "version" => "1"
       },
       "resolved" => %{
         "agent" => %{
@@ -3471,6 +3471,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
     } do
       write_workflow!(project, """
       ---
+      schema_version: 1
       agent:
         kind: cursor
         max_turns: 1
@@ -3479,7 +3480,6 @@ defmodule KollywoodWeb.DashboardLiveTest do
         checks:
           required: []
       ---
-
       Original workflow body.
       """)
 
@@ -3490,6 +3490,7 @@ defmodule KollywoodWeb.DashboardLiveTest do
 
       write_workflow!(project, """
       ---
+      schema_version: 1
       agent:
         kind: claude
         max_turns: 9
@@ -3498,7 +3499,6 @@ defmodule KollywoodWeb.DashboardLiveTest do
         checks:
           required: []
       ---
-
       Background update should wait.
       """)
 

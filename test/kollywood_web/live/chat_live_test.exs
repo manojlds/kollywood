@@ -39,12 +39,12 @@ defmodule KollywoodWeb.ChatLiveTest do
       workflow_path,
       """
       ---
+      schema_version: 1
       workspace:
         strategy: clone
       agent:
         kind: opencode
       ---
-
       Work on {{ issue.identifier }}.
       """
     )

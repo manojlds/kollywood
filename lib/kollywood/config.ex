@@ -25,6 +25,7 @@ defmodule Kollywood.Config do
   @agent_model_pattern ~r/^[A-Za-z0-9][A-Za-z0-9._:+\/-]*$/
 
   @type t :: %__MODULE__{
+          workflow_schema_version: pos_integer(),
           tracker: map(),
           polling: map(),
           workspace: map(),
@@ -39,6 +40,7 @@ defmodule Kollywood.Config do
           publish: map(),
           git: map(),
           project_provider: publish_provider() | :local | nil,
+          workflow_document_version: pos_integer(),
           raw: map()
         }
 
@@ -57,10 +59,27 @@ defmodule Kollywood.Config do
     :publish,
     :git,
     :raw,
+    workflow_schema_version: 1,
+    workflow_document_version: 1,
     project_provider: nil
   ]
 
-  @workflow_schema_version "2026-04-06.1"
+  @workflow_schema_api_version "1"
+  @workflow_document_current_version 1
+  @workflow_document_min_supported_version 1
+  @workflow_document_default_version 1
+
+  @doc "Current supported WORKFLOW document schema version."
+  @spec workflow_document_current_version() :: pos_integer()
+  def workflow_document_current_version, do: @workflow_document_current_version
+
+  @doc "Minimum supported WORKFLOW document schema version."
+  @spec workflow_document_min_supported_version() :: pos_integer()
+  def workflow_document_min_supported_version, do: @workflow_document_min_supported_version
+
+  @doc "Default WORKFLOW document schema version for generators."
+  @spec workflow_document_default_version() :: pos_integer()
+  def workflow_document_default_version, do: @workflow_document_default_version
 
   @doc """
   Returns the versioned WORKFLOW front-matter schema used by `Kollywood.Config`.
@@ -71,11 +90,23 @@ defmodule Kollywood.Config do
   @spec workflow_schema() :: map()
   def workflow_schema do
     %{
-      schema_version: @workflow_schema_version,
+      schema_version: @workflow_schema_api_version,
+      document_current_version: @workflow_document_current_version,
+      document_min_supported_version: @workflow_document_min_supported_version,
+      document_default_version: @workflow_document_default_version,
+      deprecations: [],
       workflow_front_matter: %{
         format: "yaml_front_matter",
         file: ".kollywood/WORKFLOW.md",
-        required_sections: ["agent", "workspace"]
+        required_sections: ["schema_version", "agent", "workspace"]
+      },
+      top_level_fields: %{
+        "schema_version" => %{
+          type: "positive_integer",
+          required: true,
+          default: @workflow_document_default_version,
+          allowed: [@workflow_document_current_version]
+        }
       },
       sections: %{
         "tracker" => %{
@@ -297,6 +328,19 @@ defmodule Kollywood.Config do
       agent: atomize_keys(Map.get(map, "agent", %{})),
       publish: atomize_keys(Map.get(map, "publish", %{})),
       git: atomize_keys(Map.get(map, "git", %{})),
+      workflow_schema_version:
+        safe_positive_integer(
+          Map.get(map, "workflow_schema_version"),
+          @workflow_document_default_version
+        ),
+      workflow_document_version:
+        safe_positive_integer(
+          Map.get(map, "workflow_document_version"),
+          safe_positive_integer(
+            Map.get(map, "workflow_schema_version"),
+            @workflow_document_default_version
+          )
+        ),
       raw: Map.get(map, "raw", %{}),
       project_provider: safe_atom(Map.get(map, "project_provider"))
     }
@@ -338,6 +382,19 @@ defmodule Kollywood.Config do
 
   defp safe_atom(atom) when is_atom(atom), do: atom
   defp safe_atom(_), do: nil
+
+  defp safe_positive_integer(value, default)
+
+  defp safe_positive_integer(value, _default) when is_integer(value) and value > 0, do: value
+
+  defp safe_positive_integer(value, default) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {parsed, ""} when parsed > 0 -> parsed
+      _other -> default
+    end
+  end
+
+  defp safe_positive_integer(_value, default), do: default
 
   @doc """
   Returns the effective publish provider — `publish.provider` from WORKFLOW.md if explicitly set,
@@ -398,7 +455,8 @@ defmodule Kollywood.Config do
   end
 
   defp build_config(raw) do
-    with :ok <- validate_required_sections(raw),
+    with {:ok, workflow_schema_version} <- parse_workflow_schema_version(raw),
+         :ok <- validate_required_sections(raw),
          {:ok, agent_kind} <- parse_agent_kind(raw),
          {:ok, review_agent_kind} <- parse_review_agent_kind(raw, agent_kind),
          {:ok, quality} <- parse_quality(raw, review_agent_kind, agent_kind),
@@ -407,6 +465,8 @@ defmodule Kollywood.Config do
          {:ok, publish} <- parse_publish(raw),
          {:ok, git_policy} <- parse_git(raw) do
       config = %__MODULE__{
+        workflow_schema_version: workflow_schema_version,
+        workflow_document_version: workflow_schema_version,
         tracker: parse_tracker(raw),
         polling: parse_polling(raw),
         workspace: parse_workspace(raw),
@@ -425,6 +485,38 @@ defmodule Kollywood.Config do
 
       {:ok, config}
     end
+  end
+
+  defp parse_workflow_schema_version(raw) when is_map(raw) do
+    case Map.get(raw, "schema_version") do
+      version when is_integer(version) and version > 0 ->
+        if version == @workflow_document_current_version do
+          {:ok, version}
+        else
+          {:error,
+           "Unsupported schema_version #{version}. Supported version: #{@workflow_document_current_version}"}
+        end
+
+      version when is_binary(version) ->
+        case Integer.parse(String.trim(version)) do
+          {parsed, ""} when parsed > 0 ->
+            parse_workflow_schema_version(Map.put(raw, "schema_version", parsed))
+
+          _other ->
+            {:error, "schema_version must be a positive integer (got: #{inspect(version)})"}
+        end
+
+      nil ->
+        {:error,
+         "schema_version is required and must be #{@workflow_document_current_version} for this project"}
+
+      other ->
+        {:error, "schema_version must be a positive integer (got: #{inspect(other)})"}
+    end
+  end
+
+  defp parse_workflow_schema_version(_raw) do
+    {:error, "WORKFLOW front matter must be a YAML object"}
   end
 
   defp validate_required_sections(raw) do

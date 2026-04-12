@@ -252,6 +252,17 @@ defmodule Kollywood.AttemptDispatchPipelineTest do
         WorkerConsumer.start_link(
           name: nil,
           agent_pool: pool,
+          runner_fun: fn _issue, run_opts ->
+            on_event = Keyword.get(run_opts, :on_event, fn _ -> :ok end)
+
+            on_event.(%{
+              type: "turn_started",
+              turn: 1,
+              timestamp: DateTime.utc_now() |> DateTime.to_iso8601()
+            })
+
+            {:ok, %{"status" => "ok"}}
+          end,
           poll_interval_ms: 60_000,
           max_local_workers: 1
         )

@@ -53,6 +53,7 @@ defmodule Kollywood.Runtime.DockerTest do
     test "Config parses runtime.kind: docker with image" do
       yaml = """
       ---
+      schema_version: 1
       agent:
         kind: claude
       workspace:
@@ -78,6 +79,7 @@ defmodule Kollywood.Runtime.DockerTest do
     test "Config defaults image to nil when not specified" do
       yaml = """
       ---
+      schema_version: 1
       agent:
         kind: claude
       workspace:

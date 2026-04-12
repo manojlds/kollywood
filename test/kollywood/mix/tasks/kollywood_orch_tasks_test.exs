@@ -291,6 +291,7 @@ defmodule Mix.Tasks.Kollywood.OrchTasksTest do
 
     File.write!(workflow_path, """
     ---
+    schema_version: 1
     tracker:
       kind: prd_json
       path: #{tracker_path}

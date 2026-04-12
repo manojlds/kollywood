@@ -5,6 +5,7 @@ defmodule Kollywood.WorkflowStoreTest do
 
   @valid_content """
   ---
+  schema_version: 1
   workspace:
     root: /tmp/test
   agent:
@@ -37,6 +38,7 @@ defmodule Kollywood.WorkflowStoreTest do
     identity = WorkflowStore.get_workflow_identity(pid)
     assert identity.path == Path.expand(path)
     assert is_binary(identity.sha256)
+    assert identity.version == "1"
     assert identity.identity_source == "workflow_store"
     assert is_map(identity.file_stamp)
   end
@@ -50,6 +52,7 @@ defmodule Kollywood.WorkflowStoreTest do
 
     updated = """
     ---
+    schema_version: 1
     workspace:
       root: /tmp/updated
     agent:
@@ -68,6 +71,7 @@ defmodule Kollywood.WorkflowStoreTest do
 
     updated_identity = WorkflowStore.get_workflow_identity(pid)
     assert updated_identity.sha256 != original_identity.sha256
+    assert updated_identity.version == "1"
   end
 
   test "keeps last good config on bad reload", %{path: path} do

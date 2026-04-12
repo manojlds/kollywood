@@ -86,6 +86,7 @@ defmodule Kollywood.WorkflowStoreProjectContextTest do
   defp workflow_content do
     """
     ---
+    schema_version: 1
     tracker:
       kind: prd_json
     workspace:

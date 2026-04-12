@@ -294,6 +294,7 @@ defmodule Kollywood.StepRetryTest do
       project,
       """
       ---
+      schema_version: 1
       tracker:
         kind: prd_json
       workspace:
@@ -326,7 +327,6 @@ defmodule Kollywood.StepRetryTest do
       git:
         base_branch: main
       ---
-
       Work on {{ issue.identifier }}.
       """
     )
@@ -679,6 +679,7 @@ defmodule Kollywood.StepRetryTest do
       project,
       """
       ---
+      schema_version: 1
       tracker:
         kind: prd_json
       workspace:
@@ -708,7 +709,6 @@ defmodule Kollywood.StepRetryTest do
       git:
         base_branch: main
       ---
-
       Work on {{ issue.identifier }}.
       """
     )
@@ -733,6 +733,7 @@ defmodule Kollywood.StepRetryTest do
       project,
       """
       ---
+      schema_version: 1
       tracker:
         kind: prd_json
       workspace:
@@ -759,7 +760,6 @@ defmodule Kollywood.StepRetryTest do
       git:
         base_branch: main
       ---
-
       Work on {{ issue.identifier }}.
       """
     )
@@ -770,6 +770,7 @@ defmodule Kollywood.StepRetryTest do
       project,
       """
       ---
+      schema_version: 1
       tracker:
         kind: prd_json
       workspace:
@@ -801,7 +802,6 @@ defmodule Kollywood.StepRetryTest do
       git:
         base_branch: main
       ---
-
       Work on {{ issue.identifier }}.
       """
     )
@@ -814,6 +814,7 @@ defmodule Kollywood.StepRetryTest do
       project,
       """
       ---
+      schema_version: 1
       tracker:
         kind: prd_json
       workspace:
@@ -856,7 +857,6 @@ defmodule Kollywood.StepRetryTest do
       git:
         base_branch: main
       ---
-
       Work on {{ issue.identifier }}.
       """
     )
@@ -897,6 +897,7 @@ defmodule Kollywood.StepRetryTest do
       project,
       """
       ---
+      schema_version: 1
       tracker:
         kind: prd_json
       workspace:
@@ -924,7 +925,6 @@ defmodule Kollywood.StepRetryTest do
       git:
         base_branch: main
       ---
-
       Work on {{ issue.identifier }}.
       """
     )

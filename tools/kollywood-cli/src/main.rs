@@ -5,6 +5,7 @@ use reqwest::StatusCode;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use serde_yaml::Value as YamlValue;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::{self, Read};
@@ -109,7 +110,131 @@ fn run_workflow_command(api: &ApiClient, workflow: WorkflowArgs) -> Result<()> {
             let schema = api.fetch_workflow_schema()?;
             print_workflow_schema(&schema, args.json)
         }
+        WorkflowCommand::Validate(args) => run_workflow_validate(api, args),
+        WorkflowCommand::Migrate(args) => run_workflow_migrate(api, args),
     }
+}
+
+fn run_workflow_validate(api: &ApiClient, args: WorkflowValidateArgs) -> Result<()> {
+    let schema = api.fetch_workflow_schema()?;
+    let path = args
+        .path
+        .unwrap_or_else(|| ".kollywood/WORKFLOW.md".to_string());
+    let report = validate_workflow_file(&path, &schema)?;
+
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report)
+                .context("failed to render workflow validate JSON")?
+        );
+    } else {
+        println!(
+            "Workflow {} schema={} supported={} (required={})",
+            report.path,
+            report.detected_schema_version,
+            if report.supported { "yes" } else { "no" },
+            report.required_schema_version
+        );
+        println!(
+            "Needs migration: {}",
+            if report.needs_migration { "yes" } else { "no" }
+        );
+    }
+
+    if !report.supported {
+        bail!(
+            "workflow schema version {} is not supported (required {})",
+            report.detected_schema_version,
+            report.required_schema_version
+        );
+    }
+
+    Ok(())
+}
+
+fn run_workflow_migrate(api: &ApiClient, args: WorkflowMigrateArgs) -> Result<()> {
+    let schema = api.fetch_workflow_schema()?;
+    let path = args
+        .path
+        .unwrap_or_else(|| ".kollywood/WORKFLOW.md".to_string());
+    let report = validate_workflow_file(&path, &schema)?;
+
+    if args.check {
+        if args.write {
+            bail!("--check and --write are mutually exclusive");
+        }
+
+        if args.json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report)
+                    .context("failed to render workflow migrate check JSON")?
+            );
+        } else {
+            println!(
+                "Workflow {} schema={} required={} needs_migration={}",
+                report.path,
+                report.detected_schema_version,
+                report.required_schema_version,
+                if report.needs_migration { "yes" } else { "no" }
+            );
+        }
+
+        if report.needs_migration {
+            bail!(
+                "workflow migration required: expected schema_version {}",
+                report.required_schema_version
+            );
+        }
+
+        return Ok(());
+    }
+
+    if !args.write {
+        bail!("choose one mode: --check or --write");
+    }
+
+    if !report.needs_migration {
+        if args.json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "path": report.path,
+                    "changed": false,
+                    "schema_version": report.detected_schema_version
+                }))
+                .context("failed to render migrate JSON")?
+            );
+        } else {
+            println!("No migration needed for {}", report.path);
+        }
+
+        return Ok(());
+    }
+
+    let changed = migrate_workflow_file(&path, schema.document_default_version)?;
+
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "path": path,
+                "changed": changed,
+                "schema_version": schema.document_default_version
+            }))
+            .context("failed to render migrate JSON")?
+        );
+    } else if changed {
+        println!(
+            "Updated {} to schema_version {}",
+            path, schema.document_default_version
+        );
+    } else {
+        println!("No migration needed for {}", path);
+    }
+
+    Ok(())
 }
 
 #[derive(Parser, Debug)]
@@ -175,10 +300,39 @@ struct WorkflowArgs {
 #[derive(Subcommand, Debug)]
 enum WorkflowCommand {
     Schema(WorkflowSchemaArgs),
+    Validate(WorkflowValidateArgs),
+    Migrate(WorkflowMigrateArgs),
 }
 
 #[derive(Args, Debug)]
 struct WorkflowSchemaArgs {
+    #[arg(long, help = "Output raw JSON")]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+struct WorkflowValidateArgs {
+    #[arg(long, help = "Path to WORKFLOW.md (default: .kollywood/WORKFLOW.md)")]
+    path: Option<String>,
+
+    #[arg(long, help = "Output raw JSON")]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+struct WorkflowMigrateArgs {
+    #[arg(long, help = "Path to WORKFLOW.md (default: .kollywood/WORKFLOW.md)")]
+    path: Option<String>,
+
+    #[arg(
+        long,
+        help = "Check-only mode; exits non-zero when migration is needed"
+    )]
+    check: bool,
+
+    #[arg(long, help = "Write migrated WORKFLOW.md")]
+    write: bool,
+
     #[arg(long, help = "Output raw JSON")]
     json: bool,
 }
@@ -447,9 +601,25 @@ struct WorkflowSchema {
     #[serde(default)]
     schema_version: String,
     #[serde(default)]
+    document_current_version: u32,
+    #[serde(default)]
+    document_min_supported_version: u32,
+    #[serde(default)]
+    document_default_version: u32,
+    #[serde(default)]
     workflow_front_matter: Value,
     #[serde(default)]
     sections: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct WorkflowValidateReport {
+    path: String,
+    detected_schema_version: u32,
+    required_schema_version: u32,
+    minimum_supported_version: u32,
+    supported: bool,
+    needs_migration: bool,
 }
 
 struct ApiClient {
@@ -1298,12 +1468,122 @@ fn print_workflow_schema(schema: &WorkflowSchema, as_json: bool) -> Result<()> {
         section_count
     );
 
+    if schema.document_current_version > 0 {
+        println!(
+            "Document versions: current={}, min_supported={}, default={}",
+            schema.document_current_version,
+            schema.document_min_supported_version,
+            schema.document_default_version
+        );
+    }
+
     if !required_sections.is_empty() {
         println!("Required sections: {}", required_sections.join(", "));
     }
 
     println!("Use --json for full machine-readable schema.");
     Ok(())
+}
+
+fn validate_workflow_file(path: &str, schema: &WorkflowSchema) -> Result<WorkflowValidateReport> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("failed to read workflow file {}", path))?;
+
+    let detected = extract_workflow_schema_version(&content)?;
+    let required = if schema.document_current_version > 0 {
+        schema.document_current_version
+    } else {
+        1
+    };
+    let minimum = if schema.document_min_supported_version > 0 {
+        schema.document_min_supported_version
+    } else {
+        required
+    };
+
+    let supported = detected >= minimum && detected <= required;
+    let needs_migration = detected != schema.document_default_version.max(1);
+
+    Ok(WorkflowValidateReport {
+        path: path.to_string(),
+        detected_schema_version: detected,
+        required_schema_version: required,
+        minimum_supported_version: minimum,
+        supported,
+        needs_migration,
+    })
+}
+
+fn migrate_workflow_file(path: &str, target_version: u32) -> Result<bool> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("failed to read workflow file {}", path))?;
+
+    let (frontmatter, body) = parse_workflow_frontmatter(&content)?;
+
+    let current = frontmatter
+        .get("schema_version")
+        .and_then(yaml_value_to_u32)
+        .unwrap_or(0);
+
+    if current == target_version {
+        return Ok(false);
+    }
+
+    let mut updated = frontmatter;
+    updated.insert(
+        YamlValue::String("schema_version".to_string()),
+        YamlValue::Number(serde_yaml::Number::from(target_version as u64)),
+    );
+
+    let yaml = serde_yaml::to_string(&YamlValue::Mapping(updated))
+        .context("failed to serialize updated workflow front matter")?;
+    let yaml = yaml.trim_end_matches('\n');
+    let rendered = format!("---\n{}\n---\n\n{}", yaml, body.trim_start_matches('\n'));
+
+    fs::write(path, rendered)
+        .with_context(|| format!("failed to write migrated workflow file {}", path))?;
+
+    Ok(true)
+}
+
+fn extract_workflow_schema_version(content: &str) -> Result<u32> {
+    let (frontmatter, _body) = parse_workflow_frontmatter(content)?;
+
+    frontmatter
+        .get("schema_version")
+        .and_then(yaml_value_to_u32)
+        .filter(|value| *value > 0)
+        .ok_or_else(|| anyhow::anyhow!("schema_version must be a positive integer"))
+}
+
+fn parse_workflow_frontmatter(content: &str) -> Result<(serde_yaml::Mapping, String)> {
+    let mut parts = content.splitn(3, "---");
+    let head = parts.next().unwrap_or_default();
+    let yaml = parts.next();
+    let body = parts.next();
+
+    if !head.trim().is_empty() || yaml.is_none() || body.is_none() {
+        bail!("WORKFLOW.md must start with YAML front matter between --- delimiters");
+    }
+
+    let yaml = yaml.unwrap_or_default();
+    let body = body.unwrap_or_default().to_string();
+
+    let parsed: YamlValue =
+        serde_yaml::from_str(yaml).context("failed to parse workflow front matter YAML")?;
+
+    match parsed {
+        YamlValue::Mapping(map) => Ok((map, body)),
+        _ => bail!("WORKFLOW front matter must be a YAML object"),
+    }
+}
+
+fn yaml_value_to_u32(value: &YamlValue) -> Option<u32> {
+    match value {
+        YamlValue::Number(number) => number.as_u64().and_then(|n| u32::try_from(n).ok()),
+        YamlValue::String(text) => text.trim().parse::<u32>().ok(),
+        _ => None,
+    }
 }
 
 fn clean_non_empty(input: &str) -> Option<String> {
@@ -1351,9 +1631,9 @@ fn fallback<'a>(value: &'a str, default: &'a str) -> &'a str {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_add_payload, build_edit_payload, normalize_list_values, parse_import_records,
-        plan_delete_missing, print_workflow_schema, ImportMode, StoryAddArgs, StoryEditArgs,
-        WorkflowSchema,
+        build_add_payload, build_edit_payload, extract_workflow_schema_version,
+        migrate_workflow_file, normalize_list_values, parse_import_records, plan_delete_missing,
+        print_workflow_schema, ImportMode, StoryAddArgs, StoryEditArgs, WorkflowSchema,
     };
     use serde_json::{Map, Value};
 
@@ -1612,9 +1892,12 @@ mod tests {
     #[test]
     fn print_workflow_schema_plain_text_succeeds() {
         let schema = WorkflowSchema {
-            schema_version: "2026-04-06.1".to_string(),
+            schema_version: "1".to_string(),
+            document_current_version: 1,
+            document_min_supported_version: 1,
+            document_default_version: 1,
             workflow_front_matter: serde_json::json!({
-                "required_sections": ["agent", "workspace"]
+                "required_sections": ["schema_version", "agent", "workspace"]
             }),
             sections: {
                 let mut map = Map::<String, Value>::new();
@@ -1628,5 +1911,55 @@ mod tests {
         };
 
         print_workflow_schema(&schema, false).expect("should print plain schema summary");
+    }
+
+    #[test]
+    fn extract_workflow_schema_version_reads_integer() {
+        let workflow = r#"---
+schema_version: 1
+workspace:
+  strategy: clone
+agent:
+  kind: opencode
+---
+prompt
+"#;
+
+        let version = extract_workflow_schema_version(workflow).expect("should parse");
+        assert_eq!(version, 1);
+    }
+
+    #[test]
+    fn extract_workflow_schema_version_rejects_missing_field() {
+        let workflow = r#"---
+workspace:
+  strategy: clone
+agent:
+  kind: opencode
+---
+prompt
+"#;
+
+        let error = extract_workflow_schema_version(workflow).expect_err("should fail");
+        assert!(error.to_string().contains("schema_version"));
+    }
+
+    #[test]
+    fn migrate_workflow_file_inserts_schema_version_preserving_body() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("WORKFLOW.md");
+
+        std::fs::write(
+            &path,
+            "---\nworkspace:\n  strategy: clone\nagent:\n  kind: opencode\n---\n\nBody line\n",
+        )
+        .expect("write");
+
+        let changed = migrate_workflow_file(path.to_str().expect("path utf8"), 1).expect("migrate");
+        assert!(changed);
+
+        let updated = std::fs::read_to_string(&path).expect("read");
+        assert!(updated.contains("schema_version: 1"));
+        assert!(updated.contains("Body line"));
     }
 }

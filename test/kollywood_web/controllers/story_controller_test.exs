@@ -153,6 +153,7 @@ defmodule KollywoodWeb.StoryControllerTest do
   } do
     write_workflow!(project, """
     ---
+    schema_version: 1
     tracker:
       kind: prd_json
     workspace:
@@ -178,7 +179,6 @@ defmodule KollywoodWeb.StoryControllerTest do
     git:
       base_branch: main
     ---
-
     Work on {{ issue.identifier }}.
     """)
 

@@ -7448,7 +7448,7 @@ defmodule KollywoodWeb.DashboardLive do
   defp read_events_jsonl(_path), do: []
   # -- Settings Helpers --
 
-  @workflow_yaml_key_order ~w(tracker workspace agent quality preview runtime hooks publish git)
+  @workflow_yaml_key_order ~w(schema_version tracker workspace agent quality preview runtime hooks publish git)
 
   defp apply_settings(parsed, settings) do
     agent_p = Map.get(settings, "agent", %{})
@@ -7669,6 +7669,10 @@ defmodule KollywoodWeb.DashboardLive do
       |> String.trim()
 
     parsed
+    |> Map.put(
+      "schema_version",
+      parse_form_int(parsed, "schema_version", Map.get(parsed, "schema_version", 1))
+    )
     |> Map.put("agent", new_agent)
     |> Map.put("workspace", %{
       "strategy" =>
@@ -10215,7 +10219,15 @@ defmodule KollywoodWeb.DashboardLive do
       true ->
         case File.read(path) do
           {:ok, content} ->
-            %{"path" => path, "sha256" => sha256_hex(content)}
+            identity = %{"path" => path, "sha256" => sha256_hex(content)}
+
+            case Kollywood.Config.parse(content) do
+              {:ok, config, _prompt_template} ->
+                Map.put(identity, "version", Integer.to_string(config.workflow_schema_version))
+
+              _other ->
+                identity
+            end
 
           {:error, _reason} ->
             %{"path" => path}

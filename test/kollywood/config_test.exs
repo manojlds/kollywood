@@ -7,6 +7,7 @@ defmodule Kollywood.ConfigTest do
 
   @valid_workflow """
   ---
+  schema_version: 1
   tracker:
     kind: linear
     project_slug: my-project
@@ -37,6 +38,8 @@ defmodule Kollywood.ConfigTest do
 
   test "parses valid WORKFLOW.md content" do
     assert {:ok, config, template} = Config.parse(@valid_workflow)
+    assert config.workflow_schema_version == 1
+    assert config.workflow_document_version == 1
     assert config.agent.kind == :opencode
     assert config.agent.model == "gpt-5"
     assert config.agent.max_concurrent_agents == 3
@@ -56,6 +59,7 @@ defmodule Kollywood.ConfigTest do
     for kind <- ~w(claude codex cursor opencode pi) do
       content = """
       ---
+      schema_version: 1
       workspace:
         root: /tmp
       agent:
@@ -72,6 +76,7 @@ defmodule Kollywood.ConfigTest do
   test "rejects invalid agent kind" do
     content = """
     ---
+    schema_version: 1
     workspace:
       root: /tmp
     agent:
@@ -87,6 +92,7 @@ defmodule Kollywood.ConfigTest do
   test "rejects missing agent.kind" do
     content = """
     ---
+    schema_version: 1
     workspace:
       root: /tmp
     agent:
@@ -99,6 +105,51 @@ defmodule Kollywood.ConfigTest do
     assert msg =~ "agent.kind is required"
   end
 
+  test "requires schema_version" do
+    content = """
+    ---
+    workspace:
+      root: /tmp
+    agent:
+      kind: opencode
+    ---
+    prompt
+    """
+
+    assert {:error, msg} = Config.parse(content)
+    assert msg =~ "schema_version is required"
+  end
+
+  test "rejects unsupported schema_version" do
+    content = """
+    ---
+    schema_version: 2
+    workspace:
+      root: /tmp
+    agent:
+      kind: opencode
+    ---
+    prompt
+    """
+
+    assert {:error, msg} = Config.parse(content)
+    assert msg =~ "Unsupported schema_version"
+  end
+
+  test "from_serialized_map restores workflow versions" do
+    map = %{
+      "workflow_schema_version" => 1,
+      "workflow_document_version" => 1,
+      "workspace" => %{"strategy" => "clone"},
+      "agent" => %{"kind" => "opencode"}
+    }
+
+    config = Config.from_serialized_map(map)
+
+    assert config.workflow_schema_version == 1
+    assert config.workflow_document_version == 1
+  end
+
   test "rejects missing front matter" do
     assert {:error, _} = Config.parse("just some markdown")
   end
@@ -106,6 +157,7 @@ defmodule Kollywood.ConfigTest do
   test "uses defaults for optional fields" do
     content = """
     ---
+    schema_version: 1
     workspace:
       root: /tmp
     agent:
@@ -146,6 +198,7 @@ defmodule Kollywood.ConfigTest do
   test "parses optional agent runtime settings" do
     content = """
     ---
+    schema_version: 1
     workspace:
       root: /tmp
     agent:
@@ -173,6 +226,7 @@ defmodule Kollywood.ConfigTest do
   test "parses agent completion_signals and idle_timeout_ms" do
     content = """
     ---
+    schema_version: 1
     workspace:
       root: /tmp
     agent:
@@ -193,6 +247,7 @@ defmodule Kollywood.ConfigTest do
   test "ignores invalid project max concurrent agent entries" do
     content = """
     ---
+    schema_version: 1
     workspace:
       root: /tmp
     agent:
@@ -217,6 +272,7 @@ defmodule Kollywood.ConfigTest do
   test "defaults tracker settings for prd_json" do
     content = """
     ---
+    schema_version: 1
     tracker:
       kind: prd_json
     workspace:
@@ -237,6 +293,7 @@ defmodule Kollywood.ConfigTest do
   test "supports local tracker alias defaults" do
     content = """
     ---
+    schema_version: 1
     tracker:
       kind: local
     workspace:
@@ -256,6 +313,7 @@ defmodule Kollywood.ConfigTest do
   test "parses agent retries_enabled setting" do
     content = """
     ---
+    schema_version: 1
     workspace:
       root: /tmp
     agent:
@@ -272,6 +330,7 @@ defmodule Kollywood.ConfigTest do
   test "uses defaults for checks, runtime, and review" do
     content = """
     ---
+    schema_version: 1
     workspace:
       root: /tmp
     agent:
@@ -320,6 +379,7 @@ defmodule Kollywood.ConfigTest do
   test "parses checks and review settings" do
     content = """
     ---
+    schema_version: 1
     quality:
       max_cycles: 4
       checks:
@@ -373,6 +433,7 @@ defmodule Kollywood.ConfigTest do
   test "parses quality.testing and preview settings" do
     content = """
     ---
+    schema_version: 1
     quality:
       max_cycles: 4
       testing:
@@ -429,6 +490,7 @@ defmodule Kollywood.ConfigTest do
   test "parses codex for primary, review, and testing agent kinds" do
     content = """
     ---
+    schema_version: 1
     quality:
       review:
         enabled: true
@@ -455,6 +517,7 @@ defmodule Kollywood.ConfigTest do
   test "rejects invalid quality.testing.enabled" do
     content = """
     ---
+    schema_version: 1
     quality:
       testing:
         enabled: maybe
@@ -474,6 +537,7 @@ defmodule Kollywood.ConfigTest do
   test "rejects non-map quality.testing.agent" do
     content = """
     ---
+    schema_version: 1
     quality:
       testing:
         agent: cursor
@@ -492,6 +556,7 @@ defmodule Kollywood.ConfigTest do
   test "rejects invalid quality.testing.agent.kind" do
     content = """
     ---
+    schema_version: 1
     quality:
       testing:
         agent:
@@ -512,6 +577,7 @@ defmodule Kollywood.ConfigTest do
   test "rejects invalid preview.enabled" do
     content = """
     ---
+    schema_version: 1
     preview:
       enabled: sometimes
     workspace:
@@ -530,6 +596,7 @@ defmodule Kollywood.ConfigTest do
   test "parses publish and git policy settings" do
     content = """
     ---
+    schema_version: 1
     publish:
       provider: gitlab
       auto_push: on_pass
@@ -554,6 +621,7 @@ defmodule Kollywood.ConfigTest do
   test "parses publish.mode auto_merge as alias for merge" do
     content = """
     ---
+    schema_version: 1
     publish:
       provider: github
       mode: auto_merge
@@ -573,6 +641,7 @@ defmodule Kollywood.ConfigTest do
   test "omitting publish.mode preserves provider defaults" do
     content = """
     ---
+    schema_version: 1
     publish:
       provider: github
     workspace:
@@ -603,6 +672,7 @@ defmodule Kollywood.ConfigTest do
   test "derives mode from legacy publish fields and logs deprecation warning" do
     content = """
     ---
+    schema_version: 1
     publish:
       auto_push: on_pass
       auto_create_pr: ready
@@ -627,6 +697,7 @@ defmodule Kollywood.ConfigTest do
   test "derives auto_merge mode from legacy auto_merge on_pass without auto_push" do
     content = """
     ---
+    schema_version: 1
     publish:
       auto_merge: on_pass
     workspace:
@@ -649,6 +720,7 @@ defmodule Kollywood.ConfigTest do
   test "parses ready PR policy" do
     content = """
     ---
+    schema_version: 1
     publish:
       provider: github
       auto_push: never
@@ -670,6 +742,7 @@ defmodule Kollywood.ConfigTest do
   test "rejects invalid publish.provider" do
     content = """
     ---
+    schema_version: 1
     publish:
       provider: bitbucket
     workspace:
@@ -687,6 +760,7 @@ defmodule Kollywood.ConfigTest do
   test "rejects invalid publish.auto_push" do
     content = """
     ---
+    schema_version: 1
     publish:
       auto_push: always
     workspace:
@@ -704,6 +778,7 @@ defmodule Kollywood.ConfigTest do
   test "rejects invalid publish.auto_merge" do
     content = """
     ---
+    schema_version: 1
     publish:
       auto_merge: always
     workspace:
@@ -721,6 +796,7 @@ defmodule Kollywood.ConfigTest do
   test "rejects invalid publish.auto_create_pr" do
     content = """
     ---
+    schema_version: 1
     publish:
       auto_create_pr: yes
     workspace:
@@ -738,6 +814,7 @@ defmodule Kollywood.ConfigTest do
   test "parses runtime settings" do
     content = """
     ---
+    schema_version: 1
     runtime:
       processes:
         - server
@@ -770,6 +847,7 @@ defmodule Kollywood.ConfigTest do
   test "parses runtime.image as non-empty string" do
     content = """
     ---
+    schema_version: 1
     runtime:
       kind: docker
       image: ghcr.io/acme/runtime:1.2.3
@@ -789,6 +867,7 @@ defmodule Kollywood.ConfigTest do
   test "rejects empty runtime.image" do
     content = """
     ---
+    schema_version: 1
     runtime:
       kind: docker
       image: "   "
@@ -807,6 +886,7 @@ defmodule Kollywood.ConfigTest do
   test "rejects non-string runtime.image" do
     content = """
     ---
+    schema_version: 1
     runtime:
       kind: docker
       image: 123
@@ -825,6 +905,7 @@ defmodule Kollywood.ConfigTest do
   test "rejects invalid runtime kind" do
     content = """
     ---
+    schema_version: 1
     runtime:
       kind: invalid
     workspace:
@@ -842,6 +923,7 @@ defmodule Kollywood.ConfigTest do
   test "rejects legacy runtime.profile key" do
     content = """
     ---
+    schema_version: 1
     runtime:
       profile: checks_only
     workspace:
@@ -859,6 +941,7 @@ defmodule Kollywood.ConfigTest do
   test "rejects legacy runtime.full_stack key" do
     content = """
     ---
+    schema_version: 1
     runtime:
       full_stack:
         command: pitchfork
@@ -877,6 +960,7 @@ defmodule Kollywood.ConfigTest do
   test "rejects invalid runtime port value" do
     content = """
     ---
+    schema_version: 1
     runtime:
       ports:
         PORT: not-a-number
@@ -895,6 +979,7 @@ defmodule Kollywood.ConfigTest do
   test "rejects non-map runtime section" do
     content = """
     ---
+    schema_version: 1
     runtime: pitchfork
     workspace:
       root: /tmp
@@ -911,6 +996,7 @@ defmodule Kollywood.ConfigTest do
   test "rejects invalid review.agent.kind" do
     content = """
     ---
+    schema_version: 1
     quality:
       review:
         enabled: true

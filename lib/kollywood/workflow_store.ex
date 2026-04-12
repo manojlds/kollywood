@@ -118,6 +118,11 @@ defmodule Kollywood.WorkflowStore do
       path: state.path,
       sha256: state.content_sha256,
       file_stamp: format_file_stamp(state.file_stamp),
+      version:
+        case workflow_schema_version_from_config(state.config) do
+          version when is_integer(version) -> Integer.to_string(version)
+          _other -> nil
+        end,
       identity_source: "workflow_store"
     }
 
@@ -243,6 +248,12 @@ defmodule Kollywood.WorkflowStore do
   end
 
   defp format_file_stamp(_stamp), do: nil
+
+  defp workflow_schema_version_from_config(%Kollywood.Config{} = config) do
+    config.workflow_schema_version
+  end
+
+  defp workflow_schema_version_from_config(_config), do: nil
 
   # Fills in tracker.project_slug from the DB project slug (unless already set in YAML).
   # This allows the prd_json tracker to resolve its path via ServiceConfig rather than

@@ -63,6 +63,7 @@ Do not require a verbose user message that restates this skill's internal checkl
 ## `.kollywood/WORKFLOW.md` Requirements
 
 Build workflow config from resolved project settings and confirmations:
+- set top-level `schema_version: 1`
 - set tracker/provider fields from resolved project context
 - for local-tracker projects, use `tracker.kind: prd_json`
 - keep `workspace.strategy` explicit

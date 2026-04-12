@@ -7,6 +7,7 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshotTest do
   test "runtime image is nil when omitted" do
     workflow = """
     ---
+    schema_version: 1
     workspace:
       root: /tmp
     agent:
@@ -21,6 +22,7 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshotTest do
 
     snapshot = RunSettingsSnapshot.build(config)
 
+    assert get_in(snapshot, ["workflow", "version"]) == "1"
     assert get_in(snapshot, ["resolved", "runtime", "image"]) == "nil"
     assert get_in(snapshot, ["sources", "runtime", "image"]) == "default"
   end
@@ -28,6 +30,7 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshotTest do
   test "runtime image is included when configured" do
     workflow = """
     ---
+    schema_version: 1
     workspace:
       root: /tmp
     agent:
@@ -43,6 +46,7 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshotTest do
 
     snapshot = RunSettingsSnapshot.build(config)
 
+    assert get_in(snapshot, ["workflow", "version"]) == "1"
     assert get_in(snapshot, ["resolved", "runtime", "image"]) == "ghcr.io/acme/runtime:2.0.0"
     assert get_in(snapshot, ["sources", "runtime", "image"]) == "workflow"
   end
@@ -50,6 +54,7 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshotTest do
   test "agent completion and idle timeout sources are captured" do
     workflow = """
     ---
+    schema_version: 1
     workspace:
       root: /tmp
     agent:
@@ -65,6 +70,7 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshotTest do
 
     snapshot = RunSettingsSnapshot.build(config)
 
+    assert get_in(snapshot, ["workflow", "version"]) == "1"
     assert get_in(snapshot, ["resolved", "agent", "completion_signals"]) == ["TASK_DONE"]
     assert get_in(snapshot, ["resolved", "agent", "idle_timeout_ms"]) == 12_000
     assert get_in(snapshot, ["sources", "agent", "completion_signals"]) == "workflow"
@@ -74,6 +80,7 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshotTest do
   test "resolved phase agent keeps explicit role with harness defaults" do
     workflow = """
     ---
+    schema_version: 1
     workspace:
       root: /tmp
     agent:
@@ -106,6 +113,7 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshotTest do
 
     snapshot = RunSettingsSnapshot.build(config)
 
+    assert get_in(snapshot, ["workflow", "version"]) == "1"
     assert get_in(snapshot, ["resolved", "review", "agent", "kind"]) == "codex"
 
     assert get_in(snapshot, ["resolved", "review", "agent", "command"]) ==
@@ -120,5 +128,23 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshotTest do
              "/usr/local/bin/opencode"
 
     assert get_in(snapshot, ["resolved", "testing", "agent", "timeout_ms"]) == 7_200_000
+  end
+
+  test "workflow_identity_from_file records schema version when parse succeeds" do
+    workflow = """
+    ---
+    schema_version: 1
+    workspace:
+      root: /tmp
+    agent:
+      kind: opencode
+    ---
+    prompt
+    """
+
+    identity = RunSettingsSnapshot.workflow_identity_from_file("/tmp/WORKFLOW.md", workflow)
+
+    assert identity["identity_source"] == "workflow_file"
+    assert identity["version"] == "1"
   end
 end

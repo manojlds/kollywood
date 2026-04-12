@@ -56,11 +56,19 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshot do
 
   @spec workflow_identity_from_file(String.t(), String.t()) :: map()
   def workflow_identity_from_file(path, content) when is_binary(path) and is_binary(content) do
-    %{
+    base = %{
       "path" => Path.expand(path),
       "sha256" => sha256_hex(content),
       "identity_source" => "workflow_file"
     }
+
+    case Kollywood.Config.parse(content) do
+      {:ok, %Config{} = config, _prompt_template} ->
+        Map.put(base, "version", Integer.to_string(config.workflow_schema_version))
+
+      _other ->
+        base
+    end
   end
 
   def workflow_identity_from_file(_path, _content), do: %{}
@@ -95,20 +103,25 @@ defmodule Kollywood.Orchestrator.RunSettingsSnapshot do
       optional_string(Map.get(identity, "identity_source")) ||
         if(path, do: "workflow_file", else: "config_hash")
 
+    workflow_version =
+      optional_string(Map.get(identity, "version")) ||
+        Integer.to_string(config.workflow_schema_version)
+
     %{
       "path" => path,
       "sha256" => sha256,
       "identity_source" => source
     }
     |> maybe_put("file_stamp", if(file_stamp == %{}, do: nil, else: file_stamp))
-    |> maybe_put("version", optional_string(Map.get(identity, "version")))
+    |> maybe_put("version", workflow_version)
   end
 
   defp normalize_workflow_identity(_identity, %Config{} = config) do
     %{
       "path" => nil,
       "sha256" => config_sha256(config),
-      "identity_source" => "config_hash"
+      "identity_source" => "config_hash",
+      "version" => Integer.to_string(config.workflow_schema_version)
     }
   end
 

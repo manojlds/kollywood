@@ -5,10 +5,17 @@ defmodule KollywoodWeb.WorkflowSchemaControllerTest do
     conn = get(conn, ~p"/api/workflow/schema")
 
     assert %{"data" => data} = json_response(conn, 200)
-    assert is_binary(data["schema_version"])
+    assert data["schema_version"] == "1"
+    assert data["document_current_version"] == 1
+    assert data["document_min_supported_version"] == 1
+    assert data["document_default_version"] == 1
+    assert data["deprecations"] == []
 
     assert %{"required_sections" => required_sections} = data["workflow_front_matter"]
-    assert Enum.sort(required_sections) == Enum.sort(["agent", "workspace"])
+    assert Enum.sort(required_sections) == Enum.sort(["schema_version", "agent", "workspace"])
+
+    assert data["top_level_fields"]["schema_version"]["required"] == true
+    assert data["top_level_fields"]["schema_version"]["allowed"] == [1]
 
     assert %{"sections" => sections} = data
     assert is_map(sections)
