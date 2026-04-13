@@ -23,13 +23,7 @@ defmodule Kollywood.Store.Bootstrap do
   end
 
   defp run_bootstrap! do
-    if Repo.__adapter__() == Ecto.Adapters.SQLite3 do
-      db_path = Application.get_env(:kollywood, Repo)[:database]
-
-      if is_binary(db_path) and db_path != ":memory:" do
-        File.mkdir_p!(Path.dirname(Path.expand(db_path)))
-      end
-    end
+    maybe_ensure_sqlite_directory()
 
     migrations_path = Application.app_dir(:kollywood, "priv/repo/migrations")
     Ecto.Migrator.run(Repo, migrations_path, :up, all: true)
@@ -37,5 +31,19 @@ defmodule Kollywood.Store.Bootstrap do
     error ->
       Logger.error("Store bootstrap failed: #{Exception.message(error)}")
       reraise(error, __STACKTRACE__)
+  end
+
+  defp maybe_ensure_sqlite_directory do
+    case to_string(Repo.__adapter__()) do
+      "Elixir.Ecto.Adapters.SQLite3" ->
+        db_path = Application.get_env(:kollywood, Repo)[:database]
+
+        if is_binary(db_path) and db_path != ":memory:" do
+          File.mkdir_p!(Path.dirname(Path.expand(db_path)))
+        end
+
+      _other ->
+        :ok
+    end
   end
 end
