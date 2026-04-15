@@ -3,6 +3,20 @@ import Config
 truthy_env? = fn value -> value in ["1", "true", "TRUE", "yes", "YES"] end
 maybe_enable_ipv6 = fn value -> if truthy_env?.(value), do: [:inet6], else: [] end
 
+parse_bool_env = fn value ->
+  case value |> String.trim() |> String.downcase() do
+    "1" -> {:ok, true}
+    "true" -> {:ok, true}
+    "yes" -> {:ok, true}
+    "on" -> {:ok, true}
+    "0" -> {:ok, false}
+    "false" -> {:ok, false}
+    "no" -> {:ok, false}
+    "off" -> {:ok, false}
+    _other -> :error
+  end
+end
+
 # config/runtime.exs is executed for all environments, including
 # during releases. It is executed after compilation and before the
 # system starts, so it is typically used to load production configuration
@@ -132,6 +146,54 @@ if config_env() != :test do
     "local_queue" -> config :kollywood, worker_transport: :local_queue
     nil -> :ok
     _other -> :ok
+  end
+
+  case System.get_env("KOLLYWOOD_WORKER_CONSUMER_ENABLED") do
+    nil ->
+      :ok
+
+    value ->
+      case parse_bool_env.(value) do
+        {:ok, enabled} ->
+          config :kollywood, worker_consumer_enabled: enabled
+
+        :error ->
+          IO.warn(
+            "Ignoring invalid KOLLYWOOD_WORKER_CONSUMER_ENABLED=#{inspect(value)}; expected true/false"
+          )
+      end
+  end
+
+  case System.get_env("KOLLYWOOD_WORKER_CONSUMER_COUNT") do
+    nil ->
+      :ok
+
+    value ->
+      case Integer.parse(String.trim(value)) do
+        {parsed, ""} when parsed > 0 ->
+          config :kollywood, worker_consumer_count: parsed
+
+        _other ->
+          IO.warn(
+            "Ignoring invalid KOLLYWOOD_WORKER_CONSUMER_COUNT=#{inspect(value)}; expected a positive integer"
+          )
+      end
+  end
+
+  case System.get_env("KOLLYWOOD_WORKER_CONSUMER_CONCURRENCY") do
+    nil ->
+      :ok
+
+    value ->
+      case Integer.parse(String.trim(value)) do
+        {parsed, ""} when parsed > 0 ->
+          config :kollywood, worker_consumer_concurrency: parsed
+
+        _other ->
+          IO.warn(
+            "Ignoring invalid KOLLYWOOD_WORKER_CONSUMER_CONCURRENCY=#{inspect(value)}; expected a positive integer"
+          )
+      end
   end
 
   case System.get_env("KOLLYWOOD_ORCHESTRATOR_LEADER_ELECTION") do

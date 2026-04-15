@@ -62,9 +62,11 @@ defmodule Kollywood.Application do
            Application.get_env(:kollywood, :worker_consumer_enabled, true) do
         worker_count =
           Application.get_env(:kollywood, :worker_consumer_count, 1)
+          |> pos_int(1)
 
         worker_concurrency =
           Application.get_env(:kollywood, :worker_consumer_concurrency, 1)
+          |> pos_int(1)
 
         worker_children =
           for i <- 1..worker_count do
@@ -131,6 +133,9 @@ defmodule Kollywood.Application do
       children
     end
   end
+
+  defp pos_int(value, _default) when is_integer(value) and value > 0, do: value
+  defp pos_int(_value, default), do: default
 
   # Tell Phoenix to update the endpoint configuration
   # whenever the application is updated.

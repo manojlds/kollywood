@@ -105,6 +105,10 @@ If you switch adapters in development, run `mix clean` before recompiling.
 
 Production-style Linux setup is documented in `docs/deployment/systemd-postgres.md`.
 That doc also includes a macOS/Postgres path for laptop use.
+Topology guidance (SQLite vs Postgres, single-node, same-host multi-process,
+and multi-host workers) is documented in `docs/deployment/topologies.md`.
+Runtime/server env configuration reference is documented in
+`docs/deployment/config-reference.md`.
 
 ## Projects
 

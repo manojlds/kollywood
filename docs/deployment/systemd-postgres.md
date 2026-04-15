@@ -1,6 +1,9 @@
 # Systemd + Postgres Setup
 
 This is the recommended production-style setup for Kollywood on Linux.
+For topology selection (single-node vs same-host multi-process vs multi-host workers),
+see `docs/deployment/topologies.md`.
+For env/config variable details, see `docs/deployment/config-reference.md`.
 
 ## Linux Server
 
@@ -57,7 +60,7 @@ curl http://127.0.0.1:4000/api/health
 
 1. Install Docker Engine and the Compose plugin.
 2. Run `bin/install-postgres-docker-service --start`.
-3. Update `~/.config/kollywood-server/kollywood-server.env` to include `DATABASE_URL=$(~/projects/kollywood/bin/postgres-docker-service connection-url)`.
+3. Update `~/.kollywood/server.env` to include `DATABASE_URL=$(~/projects/kollywood/bin/postgres-docker-service connection-url)`.
 4. Ensure `KOLLYWOOD_CONTROL_STATE_BACKEND=db` and `KOLLYWOOD_ORCHESTRATOR_LEADER_ELECTION=true` are set.
 5. Run `mise x -- bash bin/deploy` from the dev repo.
 

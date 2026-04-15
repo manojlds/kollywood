@@ -7,7 +7,17 @@ REPO_DIR="${KOLLYWOOD_SERVER_DIR:-$DEFAULT_REPO_DIR}"
 RELEASE_DIR="$REPO_DIR/_build/prod/rel/kollywood"
 SERVICE_NAME="kollywood-server.service"
 DRAIN_TIMEOUT_SECONDS="${KOLLYWOOD_DRAIN_TIMEOUT_SECONDS:-900}"
-ENV_FILE="${KOLLYWOOD_ENV_FILE:-$HOME/.config/kollywood-server/kollywood-server.env}"
+DEFAULT_ENV_FILE="$HOME/.kollywood/server.env"
+LEGACY_ENV_FILE="$HOME/.config/kollywood-server/kollywood-server.env"
+if [[ -n "${KOLLYWOOD_ENV_FILE:-}" ]]; then
+  ENV_FILE="$KOLLYWOOD_ENV_FILE"
+elif [[ -f "$DEFAULT_ENV_FILE" ]]; then
+  ENV_FILE="$DEFAULT_ENV_FILE"
+elif [[ -f "$LEGACY_ENV_FILE" ]]; then
+  ENV_FILE="$LEGACY_ENV_FILE"
+else
+  ENV_FILE="$DEFAULT_ENV_FILE"
+fi
 POSTGRES_SERVICE_NAME="${KOLLYWOOD_POSTGRES_SERVICE_NAME:-kollywood-postgres.service}"
 
 DEPLOY_SUCCESS=0

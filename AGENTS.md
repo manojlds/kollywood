@@ -36,7 +36,7 @@ KOLLYWOOD_SERVER_DIR=/path/to/other/checkout mise x -- bash bin/deploy
 - **Deploy repo**: `~/projects/kollywood` (same checkout used for dev + deploy)
 - **Service**: `kollywood-server.service` (systemd user unit)
 - **Release**: `~/projects/kollywood/_build/prod/rel/kollywood`
-- **Env file**: `~/.config/kollywood-server/kollywood-server.env`
+- **Env file**: `~/.kollywood/server.env` (legacy fallback: `~/.config/kollywood-server/kollywood-server.env`)
 - **Manage**: `systemctl --user {status,restart,stop,logs} kollywood-server`
 - Migrations run automatically on release boot.
 - Do **not** use `pitchfork` to start the production server.

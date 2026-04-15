@@ -4,9 +4,11 @@ set -euo pipefail
 SERVICE_NAME="kollywood-server.service"
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 UNIT_DIR="$CONFIG_HOME/systemd/user"
-ENV_DIR="$CONFIG_HOME/kollywood-server"
+LEGACY_ENV_DIR="$CONFIG_HOME/kollywood-server"
+LEGACY_ENV_FILE="$LEGACY_ENV_DIR/kollywood-server.env"
 UNIT_FILE="$UNIT_DIR/$SERVICE_NAME"
-ENV_FILE="$ENV_DIR/kollywood-server.env"
+ENV_FILE=""
+ENV_FILE_EXPLICIT=0
 SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
 ROOT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 REPO_DIR="${KOLLYWOOD_SERVER_DIR:-$ROOT_DIR}"
@@ -27,7 +29,7 @@ Usage: bin/install-user-service [options]
 
 Options:
   --repo-dir PATH           Server checkout path (default: current repo)
-  --env-file PATH           Target env file path
+  --env-file PATH           Target env file path (default: <KOLLYWOOD_HOME>/server.env)
   --phx-host HOST           PHX_HOST value (default: localhost)
   --database-url URL        DATABASE_URL value for Postgres
   --port PORT               App port (default: 4000)
@@ -47,6 +49,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --env-file)
       ENV_FILE="$2"
+      ENV_FILE_EXPLICIT=1
       shift 2
       ;;
     --phx-host)
@@ -99,23 +102,33 @@ done
   exit 1
 }
 
-if [[ -z "$DATABASE_URL_VALUE" ]]; then
-  printf 'DATABASE_URL is required; pass --database-url or set DATABASE_URL\n' >&2
-  exit 1
+if [[ "$ENV_FILE_EXPLICIT" -eq 0 ]]; then
+  ENV_FILE="${KOLLYWOOD_HOME_VALUE%/}/server.env"
 fi
 
-if [[ -z "$SECRET_KEY_BASE_VALUE" ]]; then
-  SECRET_KEY_BASE_VALUE="$(openssl rand -base64 48 | tr -d '\n')"
-fi
-
-if [[ -z "$INTERNAL_API_TOKEN_VALUE" ]]; then
-  INTERNAL_API_TOKEN_VALUE="$(openssl rand -hex 32)"
+if [[ "$ENV_FILE_EXPLICIT" -eq 0 && ! -f "$ENV_FILE" && -f "$LEGACY_ENV_FILE" ]]; then
+  mkdir -p "$(dirname "$ENV_FILE")"
+  cp "$LEGACY_ENV_FILE" "$ENV_FILE"
+  printf 'Migrated legacy env file from %s to %s\n' "$LEGACY_ENV_FILE" "$ENV_FILE"
 fi
 
 mkdir -p "$UNIT_DIR"
 mkdir -p "$(dirname "$ENV_FILE")"
 
 if [[ ! -f "$ENV_FILE" || "$OVERWRITE_ENV" -eq 1 ]]; then
+  if [[ -z "$DATABASE_URL_VALUE" ]]; then
+    printf 'DATABASE_URL is required; pass --database-url or set DATABASE_URL\n' >&2
+    exit 1
+  fi
+
+  if [[ -z "$SECRET_KEY_BASE_VALUE" ]]; then
+    SECRET_KEY_BASE_VALUE="$(openssl rand -base64 48 | tr -d '\n')"
+  fi
+
+  if [[ -z "$INTERNAL_API_TOKEN_VALUE" ]]; then
+    INTERNAL_API_TOKEN_VALUE="$(openssl rand -hex 32)"
+  fi
+
   cat >"$ENV_FILE" <<EOF
 PHX_SERVER=true
 PHX_HOST=$PHX_HOST_VALUE
